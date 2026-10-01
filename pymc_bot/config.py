@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 DEFAULT_CONFIG_FILENAME = "pymc_bot_config.json"
 
@@ -43,12 +44,25 @@ def default_config_path() -> Path:
     return Path.cwd() / DEFAULT_CONFIG_FILENAME
 
 
+OFFLINE_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+
+
 class MinecraftSettings(BaseModel):
-    """Everything needed to join a server."""
+    """Everything needed to join a server.
+
+    ``auth="offline"`` (cracked servers): ``username`` is the in-game name,
+    1-16 characters of ``[A-Za-z0-9_]``.
+
+    ``auth="microsoft"`` (premium / online-mode): ``username`` is the **email of
+    the Microsoft account** - the in-game name is whatever that account owns and
+    is decided by Mojang. The first join prints a device code for
+    https://www.microsoft.com/link; the token is cached in ``profiles_folder``
+    afterwards, so later joins need no interaction.
+    """
 
     host: str = "127.0.0.1"
     port: int = Field(default=25565, ge=1, le=65535)
-    username: str = Field(default="PyMC_Bot", min_length=1, max_length=16)
+    username: str = Field(default="PyMC_Bot", min_length=1, max_length=254)
     # "auto" lets mineflayer sniff the protocol version from the server ping.
     version: str = "auto"
     # Cracked servers need "offline"; premium accounts use "microsoft".
@@ -57,6 +71,12 @@ class MinecraftSettings(BaseModel):
     view_distance: Literal["far", "normal", "short", "tiny"] = "normal"
     # auto -> try the Node bridge, fall back to the simulated world if unavailable.
     backend: Literal["auto", "node", "simulated"] = "auto"
+    # Directory for cached Microsoft refresh tokens; every account gets its own
+    # sub-folder so several premium accounts can coexist.
+    profiles_folder: str = ".pymc_profiles"
+    # Keep re-joining after a disconnect (handy when populating a server).
+    auto_rejoin: bool = True
+    rejoin_seconds: float = Field(default=10.0, ge=1.0, le=600.0)
 
     @field_validator("host")
     @classmethod
@@ -65,6 +85,31 @@ class MinecraftSettings(BaseModel):
         if not value:
             raise ValueError("host must not be empty")
         return value
+
+    @field_validator("username")
+    @classmethod
+    def _strip_username(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _check_credentials(self) -> MinecraftSettings:
+        if self.auth == "offline":
+            if not OFFLINE_NAME_RE.match(self.username):
+                raise ValueError(
+                    "offline usernames must be 1-16 characters using only letters, digits and '_' "
+                    f"(got {self.username!r})"
+                )
+        elif "@" not in self.username or "." not in self.username.split("@")[-1]:
+            raise ValueError(
+                "auth='microsoft' needs the Microsoft account email as the username "
+                f"(got {self.username!r}); the in-game name comes from the account"
+            )
+        return self
+
+    @property
+    def account_label(self) -> str:
+        """Short human description of the account used to join."""
+        return "premium (microsoft)" if self.auth == "microsoft" else "offline (cracked)"
 
 
 class OllamaSettings(BaseModel):
@@ -92,6 +137,67 @@ class AgentSettings(BaseModel):
     action_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
 
 
+class FleetBotSpec(BaseModel):
+    """One extra player in the fleet (persisted so a restart can restore it)."""
+
+    username: str = Field(min_length=1, max_length=254)
+    auth: Literal["offline", "microsoft"] = "offline"
+    ai: Literal["off", "heuristic", "ollama"] = "heuristic"
+
+    @field_validator("username")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+
+class FleetSettings(BaseModel):
+    """How to fill the server with players.
+
+    ``name_pattern`` may contain ``{n}`` (1-based index) and ``{name}`` (the
+    primary bot name). Names already taken are skipped automatically.
+    """
+
+    enabled: bool = True
+    max_bots: int = Field(default=25, ge=1, le=200)
+    count: int = Field(default=5, ge=1, le=200)
+    name_pattern: str = "PyMC_Bot_{n}"
+    auth: Literal["offline", "microsoft"] = "offline"
+    ai_mode: Literal["off", "heuristic", "ollama"] = "heuristic"
+    stagger_seconds: float = Field(default=1.5, ge=0.0, le=60.0)
+    chatter: bool = False
+    chatter_interval: float = Field(default=45.0, ge=1.0, le=3600.0)
+    chatter_lines: list[str] = Field(
+        default_factory=lambda: [
+            "hey everyone!",
+            "anyone want to build something?",
+            "nice server :)",
+            "found any diamonds yet?",
+            "brb mining",
+            "this place looks great",
+        ]
+    )
+    restore_on_start: bool = False
+    roster: list[FleetBotSpec] = Field(default_factory=list)
+
+    @field_validator("name_pattern")
+    @classmethod
+    def _valid_pattern(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name_pattern must not be empty")
+        if "{n}" not in value and "{i}" not in value:
+            raise ValueError("name_pattern must contain {n} so every bot gets a unique name")
+        expanded = value.replace("{n}", "1").replace("{i}", "1").replace("{name}", "Bot")
+        if len(expanded) > 254:
+            raise ValueError("name_pattern expands to a name that is too long")
+        return value
+
+    @field_validator("roster")
+    @classmethod
+    def _cap_roster(cls, value: list[FleetBotSpec]) -> list[FleetBotSpec]:
+        return value[:200]
+
+
 class ServerSettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -103,6 +209,7 @@ class AppSettings(BaseModel):
     minecraft: MinecraftSettings = Field(default_factory=MinecraftSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    fleet: FleetSettings = Field(default_factory=FleetSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 
     def public_dict(self) -> dict[str, Any]:
@@ -117,11 +224,13 @@ class ConfigStore:
     threads (bot + agent loop) all read the current config.
     """
 
-    def __init__(self, path: Path | str | None = None) -> None:
+    def __init__(self, path: Path | str | None = None, autoload: bool = True) -> None:
         self.path = Path(path) if path is not None else default_config_path()
         self._lock = threading.RLock()
         self._settings = AppSettings()
         self._load_error: str | None = None
+        if autoload and self.path.exists():
+            self.load()
 
     # ------------------------------------------------------------------ load
     def load(self) -> AppSettings:

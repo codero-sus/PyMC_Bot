@@ -27,7 +27,7 @@ Every request must carry an `id`; the bridge answers exactly once with the same 
 
 | `cmd` | `params` | `result` | Notes |
 | --- | --- | --- | --- |
-| `connect` | `host`, `port`, `username`, `version` (null = sniff), `auth` (`offline`/`microsoft`), `view_distance` | `{"connecting": true}` | replies immediately; the bot spawns later as an event |
+| `connect` | `host`, `port`, `username`, `version` (null = sniff), `auth` (`offline`/`microsoft`), `view_distance`, `profiles_folder` | `{"connecting": true}` | replies immediately; the bot spawns later as an event. For `microsoft`, `username` is the account **email** and `profiles_folder` is the token cache (Python gives every account its own sub-folder) |
 | `say` | `text` | `{"sent": true}` | chat message |
 | `command` | `text` | `{"sent": true}` | server command (`/` added if missing) |
 | `control` | `name` ∈ `forward back left right jump sneak sprint`, `state` | `{"control": ...}` | held keys |
@@ -47,17 +47,20 @@ Every request must carry an `id`; the bridge answers exactly once with the same 
 
 | `event` | Payload | Meaning |
 | --- | --- | --- |
-| `ready` | `caps: {"pathfinder": bool, "mineflayer": bool}`, `node` | sent once at startup; `start()` waits for it |
+| `ready` | `caps: {"pathfinder": bool, "mineflayer": bool, "auth": ["offline","microsoft"], "multiple_bots": "..."}`, `node` | sent once at startup; `start()` waits for it |
 | `log` | `level`, `message` | bridge log line, forwarded into the event stream |
 | `state` | `state` | world snapshot, pushed every 250 ms while connected |
 | `chat` | `username`, `message` | someone talked; Python logs it, greets new players |
+| `msa_code` | `user_code`, `verification_uri`, `expires_in`, `message` | **premium login**: the device code the user must enter (Python logs it at level `auth` and keeps it in the event data) |
+| `login` | `username` | authenticated and logged in (for premium this is the real in-game name) |
 | `spawn` | – | the bot is in the world → `connect()` returns |
 | `end` | `reason` | clean disconnect / TCP close |
 | `kicked` | `reason` | server kicked the bot (whitelist, ban, …) |
 | `error` | `message` | connection error, uncaught exception, unhandled rejection |
 
-The snapshot fields mirror the REST `bot` object: `status, position, yaw, pitch, health, food, dimension,
-time_of_day, players[], inventory[]`. Python merges each frame into its cached snapshot, so `GET
+The snapshot fields mirror the REST `bot` object: `status, username, position, yaw, pitch, health, food,
+dimension, time_of_day, players[], inventory[]`. For premium accounts `username` is the **in-game name**
+owned by the account, which is not the email used to log in. Python merges each frame into its cached snapshot, so `GET
 /api/status` never blocks on the child process.
 
 ## Failure handling
@@ -66,6 +69,8 @@ time_of_day, players[], inventory[]`. Python merges each frame into its cached s
   `control`, …) only log a warning so a hiccup cannot kill the AI loop.
 * `connect` raises when the bridge reports an `error`/`kicked`/`end` before `spawn`, including the server's
   reason (`"Timed out ..."`, `"getaddrinfo ENOTFOUND ..."`, `"You are not whitelisted"`, …).
+* A premium login that fails surfaces the server's own reason (`"Failed to obtain profile data ... does the
+  account own minecraft?"`), which Python raises as `BackendError` and the panel shows next to the player.
 * If the child process dies, `NodeBridgeBackend.connected` flips to `false`, the snapshot switches to
   `disconnected` and `MinecraftBot`'s monitor thread reconnects (3 attempts, 5s/10s/15s backoff) unless
   `auto_reconnect=False`.

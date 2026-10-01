@@ -22,8 +22,8 @@ Errors use the usual FastAPI shape and these status codes:
 | --- | --- | --- |
 | `GET` | `/` | the control panel (HTML) |
 | `GET` | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
-| `GET` | `/api/status` | everything the panel shows: bot snapshot, AI status, stats, backends, Ollama health |
-| `GET` | `/api/contract` | action list, bridge command list, WebSocket frame types |
+| `GET` | `/api/status` | everything the panel shows: selected bot snapshot, AI status, stats, **fleet**, backends, Ollama health |
+| `GET` | `/api/contract` | action list, bridge command list, auth/AI modes, WebSocket frame types |
 
 `GET /api/status` shape (truncated):
 
@@ -32,7 +32,7 @@ Errors use the usual FastAPI shape and these status codes:
   "version": "0.1.0", "time": 1767000000.0,
   "config_path": "/abs/path/pymc_bot_config.json", "config_load_error": null,
   "bot": {
-    "state": "connected", "status": "connected", "backend": "node",
+    "state": "connected", "username": "MainBot", "status": "connected", "backend": "node",
     "position": {"x": 12.5, "y": 64.0, "z": -3.1}, "yaw": 0.0, "pitch": -0.2,
     "health": 20, "food": 18, "dimension": "overworld", "time_of_day": "day",
     "players": [{"name": "Steve", "x": 1, "y": 64, "z": 2, "distance": 4.2}],
@@ -63,6 +63,54 @@ curl -X PUT localhost:8000/api/config -H 'content-type: application/json' \
        "ollama":{"enabled":true,"model":"llama3.2"},"agent":{"allow_attacking":false}}'
 ```
 
+### Fleet & premium players
+
+One instance controls the **main bot** (the `minecraft` config section) plus any number of **fleet**
+players. Premium players use `auth="microsoft"` and their **email** as the username.
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| `GET` | `/api/fleet/status` | – | every player with state/auth/ai/position + totals |
+| `POST` | `/api/fleet/populate` | `{"count":10,"pattern":"PyMC_Bot_{n}","auth":"offline","ai":"heuristic","stagger":1.5}` | register and join many players (staggered, background) |
+| `POST` | `/api/fleet/populate` | `{"usernames":["alpha","beta"]}` | explicit names instead of a pattern |
+| `POST` | `/api/fleet/spawn` | `{"username":"you@example.com","auth":"microsoft","ai":"heuristic"}` | add **one** player (premium or offline) |
+| `POST` | `/api/fleet/start` | `{"bot":"Pop_1"}` or `{}` | (re)connect one player, or all of them |
+| `POST` | `/api/fleet/stop` | `{"bot":"Pop_1","remove":false}` or `{}` | disconnect one, or all |
+| `POST` | `/api/fleet/remove` | `{"bot":"Pop_1"}` | disconnect **and forget** (no restore after restart) |
+| `POST` | `/api/fleet/select` | `{"bot":"Pop_1"}` or `{"bot":null}` | which player the panel controls |
+| `POST` | `/api/fleet/broadcast` | `{"message":"hi"}` | every connected bot says it |
+| `GET` | `/api/fleet/roster` | – | players remembered for `fleet.restore_on_start` |
+| `DELETE` | `/api/fleet/roster` | – | forget them (does not disconnect anyone) |
+
+Validation is strict and friendly: invalid offline names (`"bad name!"`), emails used with
+`auth="offline"`, non-emails with `auth="microsoft"`, duplicate names, names already used by the main bot,
+and batches that would exceed `fleet.max_bots` all return `422` with the reason.
+
+```bash
+# 5 extra offline players, then a premium one
+curl -sX POST localhost:8000/api/fleet/populate -H 'content-type: application/json' -d '{"count":5}'
+curl -sX POST localhost:8000/api/fleet/spawn -H 'content-type: application/json' \
+     -d '{"username":"you@example.com","auth":"microsoft"}'
+curl -s localhost:8000/api/fleet/status | jq '.connected, [.bots[] | {username, state, auth}]'
+```
+
+`/api/fleet/status` shape:
+
+```json
+{
+  "enabled": true, "max_bots": 25, "size": 6, "extra_bots": 5, "connected": 6,
+  "roster_size": 5, "selected": "PyMC_Bot_3",
+  "primary": {"username": "MainBot", "sponsor": "primary", "state": "connected", "selected": false},
+  "bots": [
+    {"username": "MainBot", "configured_username": "MainBot", "auth": "offline", "ai": "heuristic",
+     "ai_running": true, "sponsor": "primary", "state": "connected", "position": {"x":1,"y":64,"z":2},
+     "health": 20, "uptime": 42.0, "blocks_mined": 3, "chats_sent": 1, "reconnects": 0, "selected": false},
+    {"username": "PremiumPlayer", "configured_username": "you@example.com", "auth": "microsoft",
+     "ai": "off", "sponsor": "premium", "state": "connected", "error": null, "selected": false}
+  ]
+}
+```
+
 ### Bot control
 
 | Method | Path | Body | Description |
@@ -72,9 +120,12 @@ curl -X PUT localhost:8000/api/config -H 'content-type: application/json' \
 | `POST` | `/api/bot/reconnect` | – | stop + start |
 | `GET` | `/api/bot/snapshot` | – | world snapshot only |
 | `GET` | `/api/bot/chat` | – | recent chat history (`{"messages":[{"time","username","message"}]}`) |
-| `POST` | `/api/bot/chat` | `{"message": "hi"}` | send chat (respects `agent.max_chat_length`) |
-| `POST` | `/api/bot/command` | `{"command": "list"}` | run a server command (`/` is added if missing, needs op) |
-| `POST` | `/api/bot/action` | `{"action": "wander", "params": {}}` **or** `{"raw": "{...}"}` | run one JSON action immediately |
+| `POST` | `/api/bot/chat` | `{"message": "hi", "bot": "Pop_1"}` | send chat (respects `agent.max_chat_length`); `bot` may be a username, `"selected"` (default) or `"all"` |
+| `POST` | `/api/bot/command` | `{"command": "list", "bot": "all"}` | run a server command on the selected/all bots (`/` is added if missing, needs op) |
+| `POST` | `/api/bot/action` | `{"action": "wander", "params": {}, "bot": "all"}` **or** `{"raw": "{...}"}` | run one JSON action on the selected bot, one by name, or every bot |
+
+Which player "the bot" means is decided by `/api/fleet/select`: `/api/bot/*`, `/api/ai/*`, `/api/status`
+and the whole panel follow the selected player. The default is the main bot.
 
 ### AI (Ollama) loop
 

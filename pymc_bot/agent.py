@@ -142,10 +142,13 @@ class AgentLoop:
         log: EventLog | None = None,
         ollama: OllamaClient | None = None,
         heuristic: HeuristicPolicy | None = None,
+        prefer_ollama: bool = True,
     ) -> None:
         self.bot = bot
         self.store = store
         self.log = log or EventLog()
+        # Fleet bots default to heuristics so 20 extra players do not hammer one GPU.
+        self.prefer_ollama = prefer_ollama
         self._ollama = ollama
         self._heuristic = heuristic or HeuristicPolicy()
         self._thread: threading.Thread | None = None
@@ -228,7 +231,7 @@ class AgentLoop:
             state = self.bot.snapshot()
             decision: Decision | None = None
             try:
-                if settings.ollama.enabled:
+                if settings.ollama.enabled and self.prefer_ollama:
                     decision = self._ask_ollama(settings, state)
                 else:
                     decision = self._heuristic.decide(state, self.bot.recent_chat())
@@ -389,7 +392,7 @@ class AgentLoop:
         """Decide and execute a single action (used by ``POST /api/step``)."""
         settings = self._settings()
         state = self.bot.snapshot()
-        if settings.ollama.enabled:
+        if settings.ollama.enabled and self.prefer_ollama:
             try:
                 decision = self._ask_ollama(settings, state)
             except Exception as exc:

@@ -9,11 +9,10 @@ import time
 from typing import Any
 
 from pymc_bot import __version__
-from pymc_bot.agent import AgentLoop
 from pymc_bot.backends import BackendError, available_backends, node_available
-from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import ConfigStore, default_config_path
 from pymc_bot.events import EventLog
+from pymc_bot.fleet import BotFleet, FleetError
 from pymc_bot.ollama import OllamaClient
 
 
@@ -49,6 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--backend", choices=["auto", "node", "simulated"], default=None, help="override the backend")
     run.add_argument("--server", default=None, help="override host:port, e.g. play.example.com:25565")
     run.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (0 = run until Ctrl+C)")
+    run.add_argument("--populate", type=int, default=0, metavar="N",
+                     help="additionally spawn N offline players to populate the server")
+    run.add_argument("--premium", action="append", default=[], metavar="EMAIL",
+                     help="add a premium (Microsoft) player; the device code is printed here (repeatable)")
     run.add_argument("--quiet", action="store_true", help="only print warnings and errors")
 
     action = sub.add_parser("action", help="send one manual action to a running panel")
@@ -106,8 +109,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         store.update(patch)
 
     log = EventLog()
-    bot = MinecraftBot(store, log)
-    agent = AgentLoop(bot, store, log)
+    fleet = BotFleet(store, log)
+    bot = fleet.primary
+    agent = fleet.primary_agent()
 
     level_rank = {"debug": 10, "info": 20, "success": 20, "chat": 20, "bot": 20, "ai": 20, "warn": 30, "error": 40}
     minimum = 30 if args.quiet else 10
@@ -126,6 +130,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not args.no_ai:
         agent.start()
 
+    for email in args.premium:
+        try:
+            fleet.spawn(email, auth="microsoft", ai="off" if args.no_ai else "heuristic")
+            print(f"Adding premium player {email} - watch for the device code below.")
+        except FleetError as exc:
+            print(f"Could not add premium player {email}: {exc}", file=sys.stderr)
+    if args.populate:
+        try:
+            members = fleet.spawn_many(count=args.populate)
+            print(f"Populating the server with {len(members)} players: "
+                  f"{', '.join(m.username for m in members[:6])}{' ...' if len(members) > 6 else ''}")
+        except FleetError as exc:
+            print(f"Could not populate the server: {exc}", file=sys.stderr)
+
     deadline = time.monotonic() + args.seconds if args.seconds else None
     try:
         while deadline is None or time.monotonic() < deadline:
@@ -136,8 +154,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
-        agent.stop(wait=False)
-        bot.stop()
+        fleet.shutdown()
     return 0
 
 

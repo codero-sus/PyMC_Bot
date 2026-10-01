@@ -13,6 +13,7 @@
 const readline = require('readline');
 
 let bot = { connected: false, controls: {}, position: { x: 0, y: 64, z: 0 }, yaw: 0, pitch: 0, chats: [], digs: [] };
+let profilesFolder = null;
 let stateTimer = null;
 
 const send = (payload) => process.stdout.write(JSON.stringify(payload) + '\n');
@@ -20,6 +21,7 @@ const send = (payload) => process.stdout.write(JSON.stringify(payload) + '\n');
 function state() {
   return {
     status: bot.connected ? 'connected' : 'disconnected',
+    username: bot.ingameName || '',
     position: bot.position,
     yaw: bot.yaw,
     pitch: bot.pitch,
@@ -36,17 +38,33 @@ const COMMANDS = {
   ping: () => ({ pong: true, connected: bot.connected }),
   state: () => state(),
   connect: (params) => {
-    if (params.host === 'badhost') {
-      const error = 'getaddrinfo ENOTFOUND badhost';
+    profilesFolder = params.profiles_folder || null;
+    const premium = params.auth === 'microsoft';
+    // offline servers use the given name; premium accounts keep their own
+    bot.ingameName = premium ? 'PremiumPlayer' : params.username;
+    if (params.host === 'badhost' || (premium && params.username === 'bad@example.com')) {
+      const error = premium
+        ? 'Failed to obtain profile data for bad@example.com, does the account own minecraft?'
+        : 'getaddrinfo ENOTFOUND badhost';
       setTimeout(() => send({ event: 'error', message: error }), 20);
       return { connecting: true, connect_timeout_ms: 1000 };
     }
+    if (premium) {
+      send({
+        event: 'msa_code',
+        user_code: 'FAKE-CODE-1234',
+        verification_uri: 'https://www.microsoft.com/link',
+        expires_in: 900,
+        message: 'Sign in to Microsoft to finish the premium login.',
+      });
+    }
     setTimeout(() => {
       bot.connected = true;
+      send({ event: 'login', username: bot.ingameName });
       send({ event: 'spawn' });
       stateTimer = setInterval(() => send({ event: 'state', state: state() }), 100);
     }, 50);
-    return { connecting: true };
+    return { connecting: true, profiles_folder: profilesFolder };
   },
   say: (params) => { bot.chats.push(String(params.text)); setTimeout(() => send({ event: 'chat', username: 'Steve', message: 'nice' }), 10); return { sent: true }; },
   command: (params) => ({ sent: true, command: params.text }),

@@ -11,7 +11,8 @@
  *   stdin   {"id": 1, "cmd": "connect", "params": {...}}
  *   stdout  {"id": 1, "ok": true, "result": {...}}      // command reply
  *   stdout  {"event": "state", "state": {...}}          // unsolicited events
- *           events: ready, log, state, chat, spawn, end, kicked, error, exit
+ *           events: ready, log, state, chat, spawn, end, kicked, error, exit,
+ *                   msa_code (premium login: user code + verification URL)
  */
 
 'use strict';
@@ -101,6 +102,7 @@ function buildState() {
 
   return {
     status: 'connected',
+    username: bot.username,
     position: { x: Number(pos.x.toFixed(2)), y: Number(pos.y.toFixed(2)), z: Number(pos.z.toFixed(2)) },
     yaw: Number(bot.entity.yaw.toFixed(4)),
     pitch: Number(bot.entity.pitch.toFixed(4)),
@@ -163,18 +165,36 @@ async function cmdConnect(params) {
     }
     bot = null;
   }
+  const premium = params.auth === 'microsoft';
   const options = {
     host: String(params.host || '127.0.0.1'),
     port: Number(params.port || 25565),
+    // offline: the in-game name. microsoft: the account email (the real name
+    // is decided by the account and reported back in the state events).
     username: String(params.username || 'PyMC_Bot'),
-    auth: params.auth === 'microsoft' ? 'microsoft' : 'offline', // cracked servers use offline
+    auth: premium ? 'microsoft' : 'offline', // cracked servers use offline
     viewDistance: params.view_distance || 'normal',
     hideErrors: true,
-    checkTimeoutInterval: 60000,
+    checkTimeoutInterval: premium ? 120000 : 60000,
   };
   if (params.version) options.version = String(params.version);
+  if (premium) {
+    // Cache refresh tokens per account so only the first join needs a device code.
+    options.profilesFolder = params.profiles_folder || '.pymc_profiles';
+    options.onMsaCode = (data) => {
+      send({
+        event: 'msa_code',
+        user_code: data && data.user_code,
+        verification_uri: (data && (data.verification_uri || data.verificationUri)) || 'https://www.microsoft.com/link',
+        expires_in: (data && data.expires_in) || null,
+        message: (data && data.message) || 'Sign in to Microsoft to finish the premium login.',
+      });
+    };
+  }
 
-  log('info', `Connecting to ${options.host}:${options.port} as ${options.username} (version: ${params.version || 'auto'}).`);
+  log('info', `Connecting to ${options.host}:${options.port} as ${options.username} `
+    + `(auth: ${options.auth}, version: ${params.version || 'auto'}).`
+    + (premium ? ' First premium login shows a device code - watch the event stream.' : ''));
   bot = mineflayer.createBot(options);
 
   bot.once('spawn', () => {
@@ -187,6 +207,9 @@ async function cmdConnect(params) {
     }
     startStateLoop();
     send({ event: 'spawn' });
+  });
+  bot.once('login', () => {
+    log('success', `Logged in${premium ? ' (Microsoft)' : ''} as ${bot.username}.`);
   });
   bot.on('end', (reason) => {
     stopStateLoop();
@@ -409,6 +432,11 @@ rl.on('close', () => {
 
 send({
   event: 'ready',
-  caps: { pathfinder: Boolean(pathfinder), mineflayer: Boolean(mineflayer) },
+  caps: {
+    pathfinder: Boolean(pathfinder),
+    mineflayer: Boolean(mineflayer),
+    auth: ['offline', 'microsoft'],
+    multiple_bots: 'one process per bot - spawn several to populate a server',
+  },
   node: process.version,
 });
