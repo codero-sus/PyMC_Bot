@@ -1,0 +1,17 @@
+{
+  "name": "pymc-bot-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node-side Minecraft protocol adapter used by the Python PyMC_Bot controller.",
+  "main": "pymc_bot/node/minecraft_bridge.js",
+  "scripts": {
+    "bridge": "node pymc_bot/node/minecraft_bridge.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mineflayer": "^4.20.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
