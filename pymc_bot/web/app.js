@@ -11,6 +11,8 @@ let socket = null;
 let socketRetry = 1500;
 let logFilter = 'all';
 let configPath = '';
+let lastEventTs = 0;
+let pollTimer = null;
 
 /* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
@@ -48,6 +50,7 @@ function fmtUptime(seconds) {
 
 /* ---------------------------------------------------------------- log panel */
 function appendLog(entry) {
+  if (typeof entry.ts === 'number' && entry.ts > lastEventTs) lastEventTs = entry.ts;
   const log = $('log');
   const line = document.createElement('div');
   line.className = `log-line ${entry.level || 'info'}`;
@@ -317,11 +320,32 @@ function nowTime() {
 }
 
 /* ---------------------------------------------------------------------- ws */
+/* The panel prefers the /ws event stream, but some proxies refuse WebSocket
+ * upgrades; in that case we fall back to polling the REST endpoints so the UI
+ * keeps updating (slower, never frozen). */
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    try {
+      const [status, logs] = await Promise.all([api('/api/status'), api('/api/logs?limit=80')]);
+      renderStatus(status);
+      for (const entry of logs.events || []) {
+        if ((entry.ts || 0) > lastEventTs) appendLog(entry);
+      }
+    } catch (err) { /* keep polling */ }
+  }, 2500);
+}
+
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
 function connectSocket() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   socket = new WebSocket(`${proto}//${location.host}/ws`);
 
-  socket.onopen = () => { socketRetry = 1500; };
+  socket.onopen = () => { socketRetry = 1500; stopPolling(); };
   socket.onmessage = (message) => {
     let frame;
     try { frame = JSON.parse(message.data); } catch (err) { return; }
@@ -332,6 +356,7 @@ function connectSocket() {
     }
   };
   socket.onclose = () => {
+    startPolling();
     setTimeout(connectSocket, socketRetry);
     socketRetry = Math.min(socketRetry * 1.6, 15000);
   };
