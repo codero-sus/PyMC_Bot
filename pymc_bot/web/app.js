@@ -13,6 +13,7 @@ let logFilter = 'all';
 let configPath = '';
 let lastEventTs = 0;
 let pollTimer = null;
+let fleetStatus = null;
 
 /* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
@@ -268,6 +269,28 @@ function fillForm(cfg) {
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
+  applyAuthLabels();
+
+  const fleet = cfg.fleet || {};
+  set('fleet-count-input', fleet.count ?? 5);
+  set('fleet-pattern', fleet.name_pattern || 'PyMC_Bot_{n}');
+  set('fleet-auth', fleet.auth || 'offline');
+  set('fleet-ai', fleet.ai_mode || 'heuristic');
+  set('fleet-stagger', fleet.stagger_seconds ?? 1.5);
+  set('fleet-max', fleet.max_bots ?? 25);
+  check('fleet-chatter', fleet.chatter);
+  check('fleet-restore', fleet.restore_on_start);
+}
+
+/* With Microsoft auth the username field is the account email, not a game name. */
+function applyAuthLabels() {
+  const premium = $('cfg-auth').value === 'microsoft';
+  const label = $('username-field');
+  label.childNodes[0].nodeValue = premium ? 'Microsoft email ' : 'Username ';
+  $('cfg-username').placeholder = premium ? 'player@example.com' : 'PyMC_Bot';
+  $('auth-note').textContent = premium
+    ? 'Premium login: enable the AI brain below or keep it off. The first join prints a device code in the event stream - open the link and enter it; the token is then cached per account.'
+    : 'Offline (cracked) servers accept any username of 1-16 characters (letters, digits, _). No account needed.';
 }
 
 function collectForm() {
@@ -295,6 +318,16 @@ function collectForm() {
       allow_mining: $('cfg-allow-mining').checked,
       allow_attacking: $('cfg-allow-attack').checked,
       greet_players: $('cfg-greet').checked,
+    },
+    fleet: {
+      count: Number($('fleet-count-input').value) || 5,
+      name_pattern: $('fleet-pattern').value.trim() || 'PyMC_Bot_{n}',
+      auth: $('fleet-auth').value,
+      ai_mode: $('fleet-ai').value,
+      stagger_seconds: Number($('fleet-stagger').value) || 0,
+      max_bots: Number($('fleet-max').value) || 25,
+      chatter: $('fleet-chatter').checked,
+      restore_on_start: $('fleet-restore').checked,
     },
   };
 }
@@ -329,6 +362,7 @@ function startPolling() {
     try {
       const [status, logs] = await Promise.all([api('/api/status'), api('/api/logs?limit=80')]);
       renderStatus(status);
+      renderFleet(status);
       for (const entry of logs.events || []) {
         if ((entry.ts || 0) > lastEventTs) appendLog(entry);
       }
@@ -352,6 +386,7 @@ function connectSocket() {
     if (frame.type === 'event') appendLog(frame.data);
     else if (frame.type === 'status') {
       renderStatus(frame.data);
+      renderFleet(frame.data);
       if (frame.data.ollama) updateOllamaPill(frame.data.ollama);
     }
   };
@@ -380,6 +415,89 @@ function updateOllamaPill(health) {
   }
 }
 
+/* -------------------------------------------------------------------- fleet */
+const STATE_CLASS = {
+  connected: 'pill-on',
+  connecting: 'pill-connecting',
+  error: 'pill-error',
+  disconnected: 'pill-off',
+  stopped: 'pill-off',
+  queued: 'pill-unknown',
+};
+
+function renderFleet(status) {
+  const fleet = (status && status.fleet) || null;
+  fleetStatus = fleet;
+  if (!fleet) return;
+
+  $('fleet-count').textContent = `${fleet.connected} online / ${fleet.size} of ${fleet.max_bots}`;
+  $('fleet-count').className = 'pill ' + (fleet.connected ? 'pill-on' : 'pill-unknown');
+  $('world-player').textContent = fleet.selected;
+
+  // one shared player list for the top bar and the fleet card
+  for (const select of [$('topbar-select'), $('fleet-select')]) {
+    const previous = select.value;
+    select.innerHTML = '';
+    for (const bot of fleet.bots) {
+      const option = document.createElement('option');
+      option.value = bot.configured_username;
+      option.textContent = `${bot.username}${bot.sponsor === 'primary' ? ' (main)' : ''} · ${bot.state}`;
+      if (bot.selected) option.selected = true;
+      select.appendChild(option);
+    }
+    if (previous && !fleet.bots.some((b) => b.configured_username === previous)) select.value = '';
+  }
+
+  const body = $('fleet-body');
+  body.innerHTML = '';
+  for (const bot of fleet.bots) {
+    const row = document.createElement('tr');
+    if (bot.selected) row.className = 'selected';
+    const pos = bot.position ? `${num(bot.position.x, 0)}, ${num(bot.position.z, 0)}` : '–';
+    const premium = bot.auth === 'microsoft';
+    row.innerHTML = `
+      <td><span class="who">${bot.username}</span>${bot.sponsor === 'primary' ? ' <span class="mini">main</span>' : ''}
+        ${bot.error ? `<div class="mini error-text">${bot.error}</div>` : ''}</td>
+      <td>${premium ? '<span class="mini premium">premium</span>' : '<span class="mini">offline</span>'}</td>
+      <td><span class="pill ${STATE_CLASS[bot.state] || 'pill-unknown'}">${bot.state}</span></td>
+      <td>${bot.ai}${bot.ai_running ? ' ●' : ''}</td>
+      <td>${pos}</td>
+      <td class="row-actions"></td>`;
+    const actions = row.querySelector('.row-actions');
+    const add = (label, handler, title) => {
+      const button = document.createElement('button');
+      button.className = 'btn ghost small';
+      button.textContent = label;
+      if (title) button.title = title;
+      button.addEventListener('click', handler);
+      actions.appendChild(button);
+    };
+    add(bot.selected ? 'active' : 'use', () => selectBot(bot.configured_username).catch(reportError));
+    if (bot.sponsor !== 'primary') {
+      add('start', () => fleetCall('/api/fleet/start', { bot: bot.configured_username }).catch(reportError));
+      add('stop', () => fleetCall('/api/fleet/stop', { bot: bot.configured_username }).catch(reportError));
+      add('drop', () => fleetCall('/api/fleet/remove', { bot: bot.configured_username }).catch(reportError),
+          'Disconnect and forget this player');
+    }
+    body.appendChild(row);
+  }
+  if (!fleet.bots.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">no players yet</td></tr>';
+  }
+}
+
+async function fleetCall(path, params, method = 'POST') {
+  const result = await api(path, { method, body: JSON.stringify(params || {}) });
+  if (result.fleet) renderFleet({ fleet: result.fleet });
+  return result;
+}
+
+async function selectBot(username) {
+  const result = await api('/api/fleet/select', { method: 'POST', body: JSON.stringify({ bot: username }) });
+  appendLog({ level: 'info', source: 'panel', message: `Now controlling ${result.selected}`, time: nowTime() });
+  renderStatus(await api('/api/status'));
+}
+
 /* ------------------------------------------------------------------ actions */
 function wire() {
   $('btn-connect').addEventListener('click', async () => {
@@ -402,6 +520,62 @@ function wire() {
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));
   $('btn-refresh-models').addEventListener('click', refreshModels);
   $('btn-pull').addEventListener('click', pullModel);
+
+  $('cfg-auth').addEventListener('change', applyAuthLabels);
+
+  $('btn-populate').addEventListener('click', async () => {
+    try {
+      await saveConfig(true);
+      const payload = {
+        count: Number($('fleet-count-input').value) || 5,
+        pattern: $('fleet-pattern').value.trim() || 'PyMC_Bot_{n}',
+        auth: $('fleet-auth').value,
+        ai: $('fleet-ai').value,
+        stagger: Number($('fleet-stagger').value) || 0,
+      };
+      const result = await api('/api/fleet/populate', { method: 'POST', body: JSON.stringify(payload) });
+      renderFleet(result);
+      appendLog({
+        level: 'success', source: 'panel', time: nowTime(),
+        message: `Queued ${result.count} player(s): ${result.queued.slice(0, 6).join(', ')}${result.queued.length > 6 ? ' …' : ''}`,
+      });
+    } catch (err) { reportError(err); }
+  });
+
+  $('btn-add-premium').addEventListener('click', async () => {
+    const username = $('premium-email').value.trim();
+    if (!username) {
+      appendLog({ level: 'warn', source: 'panel', message: 'Enter the Microsoft account email first.', time: nowTime() });
+      return;
+    }
+    try {
+      const result = await api('/api/fleet/spawn', {
+        method: 'POST',
+        body: JSON.stringify({ username, auth: 'microsoft', ai: $('premium-ai').value }),
+      });
+      $('premium-email').value = '';
+      appendLog({
+        level: 'success', source: 'panel', time: nowTime(),
+        message: `Premium player ${username} is joining - the device code will appear in the log.`,
+      });
+      if (result.member) renderStatus(await api('/api/status'));
+    } catch (err) { reportError(err); }
+  });
+
+  $('btn-fleet-start').addEventListener('click', () => fleetCall('/api/fleet/start', {}).catch(reportError));
+  $('btn-fleet-stop').addEventListener('click', () => fleetCall('/api/fleet/stop', {}).catch(reportError));
+  $('btn-fleet-remove-all').addEventListener('click', () => fleetCall('/api/fleet/stop', { remove: true }).catch(reportError));
+  $('btn-fleet-select').addEventListener('click', () => selectBot($('fleet-select').value).catch(reportError));
+  $('topbar-select').addEventListener('change', (event) => selectBot(event.target.value).catch(reportError));
+  $('btn-fleet-broadcast').addEventListener('click', async () => {
+    const message = $('fleet-broadcast-input').value.trim();
+    if (!message) return;
+    try {
+      const result = await api('/api/fleet/broadcast', { method: 'POST', body: JSON.stringify({ message }) });
+      $('fleet-broadcast-input').value = '';
+      appendLog({ level: 'bot', source: 'panel', time: nowTime(), message: `${result.sent} bot(s) said: ${message}` });
+    } catch (err) { reportError(err); }
+  });
 
   $('btn-chat').addEventListener('click', sendChat);
   $('chat-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') sendChat(); });
@@ -475,6 +649,10 @@ async function runAction(payload) {
   appendLog({ level: result.ok ? 'success' : 'warn', source: 'panel', message: result.detail || 'action run', time: nowTime() });
 }
 
+async function refreshFleet() {
+  try { renderFleet(await api('/api/fleet/status')); } catch (err) { /* ignore */ }
+}
+
 async function refreshModels() {
   try {
     const data = await api('/api/ollama/models');
@@ -511,6 +689,7 @@ async function boot() {
   try { renderStatus(await api('/api/status')); } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   refreshModels();
+  await refreshFleet();
   connectSocket();
 }
 

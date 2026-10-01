@@ -54,6 +54,7 @@ def test_connect_and_state_updates(bridge: NodeBridgeBackend, wait_for):
     assert wait_for(lambda: bridge.connected, timeout=5)
     assert wait_for(lambda: bridge.snapshot()["position"] is not None, timeout=5)
 
+    assert wait_for(lambda: bridge.snapshot()["username"] == "ProtoBot", timeout=5)
     snapshot = bridge.snapshot()
     assert snapshot["status"] == "connected"
     assert snapshot["health"] == 19
@@ -108,6 +109,29 @@ def test_pathfinder_absent_falls_back(bridge: NodeBridgeBackend, wait_for):
     assert wait_for(lambda: bridge.connected, timeout=5)
     assert bridge.pathfind_to(1, 64, 1) is False
     bridge.stop_path()  # must not raise
+
+
+def test_premium_login_reports_the_device_code(bridge: NodeBridgeBackend, log: EventLog, wait_for):
+    """auth='microsoft' must surface the device code and the real in-game name."""
+    bridge.connect(_settings(host="127.0.0.1", username="buyer@example.com", auth="microsoft"))
+    assert wait_for(lambda: bridge.connected, timeout=5)
+
+    events = log.tail(60)
+    auth_events = [event for event in events if event["level"] == "auth"]
+    assert auth_events, "the device code must be logged for the user to enter"
+    assert "FAKE-CODE-1234" in auth_events[0]["message"]
+    assert auth_events[0]["data"]["verification_uri"].startswith("https://")
+
+    assert wait_for(lambda: bridge.snapshot()["username"] == "PremiumPlayer", timeout=5)  # not the email
+    snapshot = bridge.snapshot()
+    assert snapshot["server"]["username"] == "buyer@example.com"
+    assert any("Logged in as PremiumPlayer" in event["message"] for event in events)
+
+
+def test_premium_failure_reason_is_surfaced(bridge: NodeBridgeBackend):
+    with pytest.raises(BackendError) as excinfo:
+        bridge.connect(_settings(host="127.0.0.1", username="bad@example.com", auth="microsoft"))
+    assert "does the account own minecraft" in str(excinfo.value)
 
 
 def test_unknown_control_is_rejected(bridge: NodeBridgeBackend):

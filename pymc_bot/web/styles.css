@@ -65,6 +65,7 @@ h3 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; colo
 .pill-on { color: #052e1c; background: var(--accent); border-color: transparent; font-weight: 600; }
 .pill-connecting { color: #3b2a04; background: var(--warn); border-color: transparent; font-weight: 600; }
 .pill-error { color: #450a0a; background: var(--error); border-color: transparent; font-weight: 600; }
+.pill-unknown { color: var(--muted); }
 .badge { font-size: 0.72rem; padding: 3px 8px; border-radius: 6px; border: 1px dashed var(--warn); color: var(--warn); }
 
 /* ------------------------------------------------------------------ buttons */
@@ -171,3 +172,27 @@ details[open] summary { color: var(--text); margin-bottom: 0.7rem; }
   display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
   padding: 1rem 1.4rem 2rem; color: var(--muted); font-size: 0.76rem; max-width: 1680px; margin: 0 auto;
 }
+
+/* ------------------------------------------------------------------- fleet */
+.topbar-select {
+  width: auto; min-width: 150px; max-width: 240px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text); font-size: 0.8rem; padding: 6px 8px;
+}
+.premium-row { flex-wrap: wrap; }
+.premium-row select { max-width: 130px; }
+.fleet-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.8rem; }
+.fleet-table th {
+  text-align: left; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--muted); font-weight: 600; padding: 0 0.4rem 0.4rem; border-bottom: 1px solid var(--border);
+}
+.fleet-table td { padding: 0.45rem 0.4rem; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); vertical-align: middle; }
+.fleet-table tr.selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.fleet-table tr.selected .who { color: var(--accent); }
+.fleet-table .who { font-weight: 600; }
+.fleet-table .mini { font-size: 0.68rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; }
+.fleet-table .mini.premium { color: var(--ai); border-color: color-mix(in srgb, var(--ai) 45%, transparent); }
+.fleet-table .mini.error-text { display: block; border: 0; padding: 2px 0 0; color: var(--error); }
+.fleet-table .row-actions { white-space: nowrap; }
+.fleet-table .row-actions .btn { margin-right: 0.2rem; }
+.fleet-table td.empty { color: var(--muted); text-align: center; padding: 0.9rem; }

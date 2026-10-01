@@ -55,13 +55,16 @@ class MinecraftBot:
         store: ConfigStore,
         log: EventLog | None = None,
         auto_reconnect: bool = True,
-        max_reconnects: int = 3,
+        max_reconnects: int | None = 3,
         backend: BaseBackend | None = None,
+        rejoin_seconds: float | None = None,
     ) -> None:
         self.store = store
         self.log = log or EventLog()
         self.auto_reconnect = auto_reconnect
+        # None -> keep re-joining forever (what "populate the server" wants)
         self.max_reconnects = max_reconnects
+        self.rejoin_seconds = rejoin_seconds
         self._backend: BaseBackend | None = backend
         self._injected_backend = backend is not None
         self._state = STATE_DISCONNECTED
@@ -69,6 +72,7 @@ class MinecraftBot:
         self._motion_lock = threading.RLock()  # re-entrant: mine() -> wander() -> walk_to()
         self._cancel = threading.Event()
         self._stop_requested = False
+        self._configured_username: str | None = None
         self._monitor: threading.Thread | None = None
         self._reconnects = 0
         self._history: deque[dict[str, Any]] = deque(maxlen=100)
@@ -111,6 +115,20 @@ class MinecraftBot:
             return self._state == STATE_CONNECTED and self._backend is not None and self._backend.connected
 
     @property
+    def username(self) -> str:
+        """In-game name of this bot (falls back to the configured username).
+
+        With Microsoft auth the configured username is the account *email*, so
+        the real name is read back from the server snapshot.
+        """
+        snapshot_name = ""
+        backend = self.backend
+        if backend is not None:
+            snapshot_name = str(backend.snapshot().get("username") or "")
+        with self._lock:
+            return snapshot_name or self._configured_username or self.store.settings.minecraft.username
+
+    @property
     def stats(self) -> dict[str, Any]:
         with self._lock:
             data = dict(self._stats)
@@ -134,9 +152,10 @@ class MinecraftBot:
                 return
             self._state = STATE_CONNECTING
             self._stop_requested = False
+            self._configured_username = settings.minecraft.username
         self.log.add(
             f"Starting bot '{settings.minecraft.username}' -> {settings.minecraft.host}:{settings.minecraft.port} "
-            f"(auth: {settings.minecraft.auth})",
+            f"({settings.minecraft.account_label})",
             "info",
             "bot",
         )
@@ -231,17 +250,22 @@ class MinecraftBot:
                 self.log.add("Lost the connection to the server.", "warn", "bot")
                 with self._lock:
                     self._state = STATE_DISCONNECTED
-                if self.auto_reconnect and self._reconnects < self.max_reconnects:
+                unlimited = self.max_reconnects is None
+                if self.auto_reconnect and (unlimited or self._reconnects < self.max_reconnects):
                     self._try_reconnect()
+                elif self.auto_reconnect:
+                    self.log.add(
+                        f"Gave up after {self._reconnects} reconnect attempts.", "error", "bot"
+                    )
+                    with self._lock:
+                        self._state = STATE_ERROR
 
     def _try_reconnect(self) -> None:
         self._reconnects += 1
-        delay = min(30.0, 5.0 * self._reconnects)
-        self.log.add(
-            f"Reconnecting in {delay:.0f}s (attempt {self._reconnects}/{self.max_reconnects})...",
-            "info",
-            "bot",
-        )
+        base = self.rejoin_seconds or self.store.settings.minecraft.rejoin_seconds
+        delay = min(60.0, base * min(self._reconnects, 3))
+        attempt = f"{self._reconnects}" if self.max_reconnects is None else f"{self._reconnects}/{self.max_reconnects}"
+        self.log.add(f"Reconnecting in {delay:.0f}s (attempt {attempt})...", "info", "bot")
         for _ in range(int(delay * 10)):
             if self._stop_requested:
                 return
@@ -249,14 +273,27 @@ class MinecraftBot:
         if self._stop_requested:
             return
         try:
-            self._connect(self.store.settings)
+            self._connect(self._settings_for_reconnect())
             with self._lock:
                 self._state = STATE_CONNECTED
+            self._reconnects = 0
             self.log.add("Reconnected.", "success", "bot")
+            self._start_monitor()
         except Exception as exc:
             self.log.add(f"Reconnect failed: {exc}", "error", "bot")
             with self._lock:
                 self._state = STATE_ERROR
+
+    def _settings_for_reconnect(self) -> AppSettings:
+        """Config to reconnect with: the (possibly overridden) username we started with."""
+        settings = self.store.settings
+        with self._lock:
+            username = self._configured_username
+        if username and username != settings.minecraft.username:
+            settings = settings.model_copy(
+                update={"minecraft": settings.minecraft.model_copy(update={"username": username})}
+            )
+        return settings
 
     # ----------------------------------------------------------------- sensing
     def snapshot(self) -> dict[str, Any]:
@@ -297,7 +334,7 @@ class MinecraftBot:
         settings = self.store.settings
         if settings.agent.greet_players and username and username not in self._greeted:
             self._greeted.add(username)
-            self.say(f"Hi {username}! I'm {settings.minecraft.username}, an AI player. Ask me anything.")
+            self.say(f"Hi {username}! I'm {self.username}, an AI player. Ask me anything.")
         elif message.strip().lower().endswith(("pymc_bot", "bot?")) or "pymc_bot" in message.lower():
             self.say("Yes? I'm listening.")
 
@@ -313,7 +350,7 @@ class MinecraftBot:
         with self._lock:
             self._stats["chats_sent"] += 1
             self._stats["actions"] += 1
-        self.log.add(f"<{settings.minecraft.username}> {text}", "bot", "bot")
+        self.log.add(f"<{self.username}> {text}", "bot", "bot")
         return True
 
     def command(self, text: str) -> bool:

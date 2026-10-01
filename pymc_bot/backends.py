@@ -23,6 +23,7 @@ import math
 import os
 import queue
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,7 @@ def empty_snapshot(status: str = "disconnected", backend: str = "") -> dict[str,
     return {
         "status": status,
         "backend": backend,
+        "username": "",
         "position": None,
         "yaw": 0.0,
         "pitch": 0.0,
@@ -479,6 +481,7 @@ class NodeBridgeBackend(BaseBackend):
                 "version": version,
                 "auth": settings.auth,
                 "view_distance": settings.view_distance,
+                "profiles_folder": self._profiles_folder(settings),
             },
             timeout=settings.connect_timeout + 5,
         )
@@ -585,6 +588,18 @@ class NodeBridgeBackend(BaseBackend):
             message = str(payload.get("message", ""))
             self.log.add(f"<{username}> {message}", "chat", "node")
             self._emit_chat(username, message)
+        elif event == "msa_code":
+            code = payload.get("user_code") or "?"
+            uri = payload.get("verification_uri") or "https://www.microsoft.com/link"
+            self.log.add(
+                f"Premium login: open {uri} and enter the code {code} "
+                f"(account: {self._username}). The code expires soon - do it now.",
+                "auth",
+                "node",
+                data={"user_code": code, "verification_uri": uri, "username": self._username},
+            )
+        elif event == "login":
+            self.log.add(f"Logged in as {payload.get('username', self._username)}.", "success", "node")
         elif event == "spawn":
             self._connected = True
             self._snapshot["status"] = "connected"
@@ -640,6 +655,23 @@ class NodeBridgeBackend(BaseBackend):
             self._pending.pop(request_id, None)
             raise BackendError(f"Bridge command '{cmd}' timed out after {timeout:.0f}s") from exc
         return response
+
+    def _profiles_folder(self, settings: MinecraftSettings) -> str | None:
+        """Per-account token cache directory (premium accounts only)."""
+        if settings.auth != "microsoft":
+            return None
+        base = Path(settings.profiles_folder).expanduser()
+        if not base.is_absolute():
+            base = Path.cwd() / base
+        # One folder per account: tokens must never be shared between logins.
+        safe = re.sub(r"[^A-Za-z0-9._@-]", "_", settings.username)[:64] or "account"
+        folder = base / safe
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # pragma: no cover - depends on the filesystem
+            self.log.add(f"Could not create the token cache folder {folder}: {exc}", "warn", "node")
+            return str(base)
+        return str(folder)
 
     def _fire(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Best-effort command: log failures instead of raising."""

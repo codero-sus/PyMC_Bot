@@ -17,6 +17,7 @@
       </div>
     </div>
     <div class="topbar-right">
+      <select id="topbar-select" title="Player the panel is controlling" class="topbar-select"></select>
       <span id="stub-banner" class="badge warn hidden" title="The Ollama endpoint looks like the demo stub, not a real model.">demo brain (stub)</span>
       <span id="status-pill" class="pill pill-off">disconnected</span>
       <button id="btn-connect" class="btn primary">Connect</button>
@@ -35,7 +36,15 @@
       <div class="fields two">
         <label>Host <input id="cfg-host" type="text" placeholder="127.0.0.1" /></label>
         <label>Port <input id="cfg-port" type="number" min="1" max="65535" /></label>
-        <label>Username <input id="cfg-username" type="text" maxlength="16" placeholder="PyMC_Bot" /></label>
+        <label>Auth
+          <select id="cfg-auth">
+            <option value="offline">offline (cracked)</option>
+            <option value="microsoft">microsoft account</option>
+          </select>
+        </label>
+        <label id="username-field">Username
+          <input id="cfg-username" type="text" maxlength="254" placeholder="PyMC_Bot" />
+        </label>
         <label>Version
           <input id="cfg-version" type="text" list="versions" placeholder="auto" />
           <datalist id="versions">
@@ -44,12 +53,6 @@
             <option value="1.18.2"></option><option value="1.16.5"></option><option value="1.12.2"></option>
             <option value="1.8.9"></option>
           </datalist>
-        </label>
-        <label>Auth
-          <select id="cfg-auth">
-            <option value="offline">offline (cracked)</option>
-            <option value="microsoft">microsoft account</option>
-          </select>
         </label>
         <label>Backend
           <select id="cfg-backend">
@@ -70,7 +73,74 @@
         <button id="btn-save-connect" class="btn primary">Save &amp; connect</button>
         <button id="btn-save" class="btn">Save settings</button>
       </div>
+      <p id="auth-note" class="note"></p>
       <p id="backend-note" class="note"></p>
+    </section>
+
+    <!-- -------------------------------------------------------------- fleet -->
+    <section class="card" id="card-fleet">
+      <header>
+        <h2>Players <span class="tag">fleet</span></h2>
+        <span id="fleet-count" class="pill pill-unknown">0 / 25</span>
+      </header>
+      <p class="note">Fill the server with players. Offline bots use any name; <strong>premium</strong> bots each
+        need their own Microsoft account email (first join shows a device code in the log).</p>
+
+      <div class="inline">
+        <select id="fleet-select" title="Which player the panel controls"></select>
+        <button id="btn-fleet-select" class="btn" title="Make this the active player">Use</button>
+      </div>
+
+      <div class="fields two">
+        <label>Players to add <input id="fleet-count-input" type="number" min="1" max="200" value="5" /></label>
+        <label>Name pattern <input id="fleet-pattern" type="text" placeholder="PyMC_Bot_{n}" /></label>
+        <label>Fleet auth
+          <select id="fleet-auth">
+            <option value="offline">offline (cracked)</option>
+            <option value="microsoft">microsoft (premium)</option>
+          </select>
+        </label>
+        <label>Fleet AI
+          <select id="fleet-ai">
+            <option value="heuristic">heuristic (cheap)</option>
+            <option value="off">off (just stand there)</option>
+            <option value="ollama">ollama (uses the model)</option>
+          </select>
+        </label>
+        <label>Gap between joins (s) <input id="fleet-stagger" type="number" min="0" max="60" step="0.5" /></label>
+        <label>Max players <input id="fleet-max" type="number" min="1" max="200" /></label>
+      </div>
+      <div class="actions wrap">
+        <button id="btn-populate" class="btn primary">Add players</button>
+        <button id="btn-fleet-start" class="btn">Reconnect all</button>
+        <button id="btn-fleet-stop" class="btn">Disconnect all</button>
+        <button id="btn-fleet-remove-all" class="btn danger">Remove all extras</button>
+      </div>
+
+      <div class="inline premium-row">
+        <input id="premium-email" type="email" placeholder="premium@example.com (Microsoft account)" />
+        <select id="premium-ai">
+          <option value="heuristic">heuristic</option>
+          <option value="ollama">ollama</option>
+          <option value="off">off</option>
+        </select>
+        <button id="btn-add-premium" class="btn primary" title="Add a premium (Microsoft) player">Add premium player</button>
+      </div>
+      <div class="inline">
+        <input id="fleet-broadcast-input" type="text" placeholder="make every bot say this…" maxlength="200" />
+        <button id="btn-fleet-broadcast" class="btn">Broadcast</button>
+      </div>
+      <div class="permissions">
+        <label class="check"><input id="fleet-chatter" type="checkbox" /> idle chatter</label>
+        <label class="check"><input id="fleet-restore" type="checkbox" /> restore these players on restart</label>
+      </div>
+
+      <table class="fleet-table">
+        <thead>
+          <tr><th>player</th><th>auth</th><th>state</th><th>ai</th><th>pos</th><th>actions</th></tr>
+        </thead>
+        <tbody id="fleet-body"><tr><td colspan="6" class="empty">no extra players yet</td></tr></tbody>
+      </table>
     </section>
 
     <!-- --------------------------------------------------------------- brain -->
@@ -114,7 +184,7 @@
     <!-- --------------------------------------------------------------- world -->
     <section class="card" id="card-world">
       <header>
-        <h2>Live view</h2>
+        <h2>Live view <span id="world-player" class="tag">—</span></h2>
         <span id="world-backend" class="hint"></span>
       </header>
       <div class="meters">
