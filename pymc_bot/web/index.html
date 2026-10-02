@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PyMC_Bot — control panel</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>PyMC_Bot</h1>
+        <p class="tagline">Python Minecraft player bot &middot; v{{ version }}</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <select id="topbar-select" title="Player the panel is controlling" class="topbar-select"></select>
+      <span id="stub-banner" class="badge warn hidden" title="The Ollama endpoint looks like the demo stub, not a real model.">demo brain (stub)</span>
+      <span id="status-pill" class="pill pill-off">disconnected</span>
+      <button id="btn-connect" class="btn primary">Connect</button>
+      <button id="btn-disconnect" class="btn">Disconnect</button>
+      <button id="btn-reconnect" class="btn ghost" title="Stop and reconnect with the saved settings">Reconnect</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- ------------------------------------------------------------ server -->
+    <section class="card" id="card-server">
+      <header>
+        <h2>Minecraft server</h2>
+        <span class="hint">cracked / offline-mode friendly</span>
+      </header>
+      <div class="fields two">
+        <label>Host <input id="cfg-host" type="text" placeholder="127.0.0.1" /></label>
+        <label>Port <input id="cfg-port" type="number" min="1" max="65535" /></label>
+        <label>Auth
+          <select id="cfg-auth">
+            <option value="offline">offline (cracked)</option>
+            <option value="microsoft">microsoft account</option>
+          </select>
+        </label>
+        <label id="username-field">Username
+          <input id="cfg-username" type="text" maxlength="254" placeholder="PyMC_Bot" />
+        </label>
+        <label>Version
+          <input id="cfg-version" type="text" list="versions" placeholder="auto" />
+          <datalist id="versions">
+            <option value="auto"></option><option value="1.21.4"></option><option value="1.21.1"></option>
+            <option value="1.20.4"></option><option value="1.20.1"></option><option value="1.19.4"></option>
+            <option value="1.18.2"></option><option value="1.16.5"></option><option value="1.12.2"></option>
+            <option value="1.8.9"></option>
+          </datalist>
+        </label>
+        <label>Backend
+          <select id="cfg-backend">
+            <option value="auto">auto (node if available)</option>
+            <option value="node">node / mineflayer</option>
+            <option value="simulated">simulated world</option>
+          </select>
+        </label>
+        <label>View distance
+          <select id="cfg-view">
+            <option value="far">far</option><option value="normal">normal</option>
+            <option value="short">short</option><option value="tiny">tiny</option>
+          </select>
+        </label>
+        <label>Connect timeout (s) <input id="cfg-timeout" type="number" min="1" max="180" step="1" /></label>
+      </div>
+      <div class="actions">
+        <button id="btn-save-connect" class="btn primary">Save &amp; connect</button>
+        <button id="btn-save" class="btn">Save settings</button>
+      </div>
+      <p id="auth-note" class="note"></p>
+      <p id="backend-note" class="note"></p>
+    </section>
+
+    <!-- -------------------------------------------------------------- fleet -->
+    <section class="card" id="card-fleet">
+      <header>
+        <h2>Players <span class="tag">fleet</span></h2>
+        <span id="fleet-count" class="pill pill-unknown">0 / 25</span>
+      </header>
+      <p class="note">Fill the server with players. Offline bots use any name; <strong>premium</strong> bots each
+        need their own Microsoft account email (first join shows a device code in the log).</p>
+
+      <div class="inline">
+        <select id="fleet-select" title="Which player the panel controls"></select>
+        <button id="btn-fleet-select" class="btn" title="Make this the active player">Use</button>
+      </div>
+
+      <div class="fields two">
+        <label>Players to add <input id="fleet-count-input" type="number" min="1" max="200" value="5" /></label>
+        <label>Name pattern <input id="fleet-pattern" type="text" placeholder="PyMC_Bot_{n}" /></label>
+        <label>Fleet auth
+          <select id="fleet-auth">
+            <option value="offline">offline (cracked)</option>
+            <option value="microsoft">microsoft (premium)</option>
+          </select>
+        </label>
+        <label>Fleet AI
+          <select id="fleet-ai">
+            <option value="heuristic">heuristic (cheap)</option>
+            <option value="off">off (just stand there)</option>
+            <option value="ollama">ollama (uses the model)</option>
+          </select>
+        </label>
+        <label>Gap between joins (s) <input id="fleet-stagger" type="number" min="0" max="60" step="0.5" /></label>
+        <label>Max players <input id="fleet-max" type="number" min="1" max="200" /></label>
+      </div>
+      <div class="actions wrap">
+        <button id="btn-populate" class="btn primary">Add players</button>
+        <button id="btn-fleet-start" class="btn">Reconnect all</button>
+        <button id="btn-fleet-stop" class="btn">Disconnect all</button>
+        <button id="btn-fleet-remove-all" class="btn danger">Remove all extras</button>
+      </div>
+
+      <div class="inline premium-row">
+        <input id="premium-email" type="email" placeholder="premium@example.com (Microsoft account)" />
+        <select id="premium-ai">
+          <option value="heuristic">heuristic</option>
+          <option value="ollama">ollama</option>
+          <option value="off">off</option>
+        </select>
+        <button id="btn-add-premium" class="btn primary" title="Add a premium (Microsoft) player">Add premium player</button>
+      </div>
+      <div class="inline">
+        <input id="fleet-broadcast-input" type="text" placeholder="make every bot say this…" maxlength="200" />
+        <button id="btn-fleet-broadcast" class="btn">Broadcast</button>
+      </div>
+      <div class="permissions">
+        <label class="check"><input id="fleet-chatter" type="checkbox" /> idle chatter</label>
+        <label class="check"><input id="fleet-restore" type="checkbox" /> restore these players on restart</label>
+      </div>
+
+      <h3>Anti-AFK <span class="hint" id="antiafk-state">—</span></h3>
+      <p class="note">Every bot walks a step, hops, crouches, swings and turns its head in randomised bursts,
+        so servers do not kick it for standing still. The AI and manual commands always win.</p>
+      <div class="permissions">
+        <label class="check"><input id="antiafk-enabled" type="checkbox" /> keep bots active</label>
+        <label class="check antiafk-window">idle <input id="antiafk-min" type="number" min="1" max="600" step="1" /> – <input id="antiafk-max" type="number" min="1" max="900" step="1" /> s</label>
+        <label class="check"><input id="antiafk-look" type="checkbox" /> look around</label>
+        <label class="check"><input id="antiafk-walk" type="checkbox" /> walk / strafe</label>
+        <label class="check"><input id="antiafk-jump" type="checkbox" /> jump</label>
+        <label class="check"><input id="antiafk-sneak" type="checkbox" /> crouch</label>
+        <label class="check"><input id="antiafk-swing" type="checkbox" /> swing arm</label>
+      </div>
+      <div class="actions">
+        <button id="btn-antiafk-poke" class="btn">Poke all now</button>
+      </div>
+
+      <table class="fleet-table">
+        <thead>
+          <tr><th>player</th><th>auth</th><th>state</th><th>ai</th><th>idle</th><th>pos</th><th>actions</th></tr>
+        </thead>
+        <tbody id="fleet-body"><tr><td colspan="7" class="empty">no extra players yet</td></tr></tbody>
+      </table>
+    </section>
+
+    <!-- --------------------------------------------------------------- brain -->
+    <section class="card" id="card-brain">
+      <header>
+        <h2>AI brain <span class="tag">ollama</span></h2>
+        <span id="ollama-health" class="pill pill-unknown">checking…</span>
+      </header>
+      <label class="switch">
+        <input id="cfg-ollama-enabled" type="checkbox" />
+        <span>Let Ollama decide the bot's actions</span>
+      </label>
+      <p class="note">When disabled (or unreachable) the bot runs a small built-in heuristic policy, so it always keeps playing.</p>
+      <div class="fields two">
+        <label>Ollama URL <input id="cfg-ollama-url" type="text" placeholder="http://127.0.0.1:11434" /></label>
+        <label>Model
+          <input id="cfg-ollama-model" type="text" list="models" placeholder="llama3.2" />
+          <datalist id="models"></datalist>
+        </label>
+        <label>Decision interval (s) <input id="cfg-ollama-interval" type="number" min="0.5" max="300" step="0.5" /></label>
+        <label>Temperature <input id="cfg-ollama-temp" type="number" min="0" max="2" step="0.05" /></label>
+      </div>
+      <div class="actions">
+        <button id="btn-ai-start" class="btn primary">Start AI</button>
+        <button id="btn-ai-stop" class="btn">Stop AI</button>
+        <button id="btn-ai-step" class="btn ghost" title="Decide and perform exactly one action">Step once</button>
+        <button id="btn-refresh-models" class="btn ghost">Refresh models</button>
+        <button id="btn-pull" class="btn ghost">Pull model</button>
+      </div>
+      <div class="permissions">
+        <strong>AI permissions</strong>
+        <label class="check"><input id="cfg-allow-movement" type="checkbox" /> move</label>
+        <label class="check"><input id="cfg-allow-chat" type="checkbox" /> chat</label>
+        <label class="check"><input id="cfg-allow-mining" type="checkbox" /> mine</label>
+        <label class="check"><input id="cfg-allow-attack" type="checkbox" /> attack</label>
+        <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
+      </div>
+      <p id="ai-status" class="note"></p>
+    </section>
+
+    <!-- --------------------------------------------------------------- world -->
+    <section class="card" id="card-world">
+      <header>
+        <h2>Live view <span id="world-player" class="tag">—</span></h2>
+        <span id="world-backend" class="hint"></span>
+      </header>
+      <div class="meters">
+        <div class="meter"><span class="meter-label">health</span><div class="bar"><i id="bar-health" class="fill health"></i></div><span id="val-health" class="meter-val">–</span></div>
+        <div class="meter"><span class="meter-label">food</span><div class="bar"><i id="bar-food" class="fill food"></i></div><span id="val-food" class="meter-val">–</span></div>
+      </div>
+      <div class="stat-grid">
+        <div><span>position</span><strong id="val-pos">–</strong></div>
+        <div><span>yaw / pitch</span><strong id="val-yaw">–</strong></div>
+        <div><span>dimension</span><strong id="val-dim">–</strong></div>
+        <div><span>time</span><strong id="val-time">–</strong></div>
+        <div><span>uptime</span><strong id="val-uptime">–</strong></div>
+        <div><span>blocks mined</span><strong id="val-mined">0</strong></div>
+        <div><span>walked</span><strong id="val-walked">0 m</strong></div>
+        <div><span>chats sent</span><strong id="val-chats">0</strong></div>
+      </div>
+      <div class="two-col">
+        <div>
+          <h3>Players nearby</h3>
+          <ul id="player-list" class="list"><li class="empty">nobody in range</li></ul>
+        </div>
+        <div>
+          <h3>Inventory</h3>
+          <div id="inventory" class="chips"><span class="empty">empty</span></div>
+        </div>
+      </div>
+      <canvas id="minimap" width="640" height="220" aria-label="minimap"></canvas>
+    </section>
+
+    <!-- ------------------------------------------------------------ controls -->
+    <section class="card" id="card-controls">
+      <header>
+        <h2>Manual control</h2>
+        <span class="hint">humans override the AI</span>
+      </header>
+      <div class="inline">
+        <input id="chat-input" type="text" placeholder="say something in chat…" maxlength="200" />
+        <button id="btn-chat" class="btn primary">Send chat</button>
+      </div>
+      <div class="inline">
+        <input id="command-input" type="text" placeholder="/command (needs op)" maxlength="200" />
+        <button id="btn-command" class="btn">Run command</button>
+      </div>
+      <h3>Quick actions</h3>
+      <div class="actions wrap" id="quick-actions">
+        <button class="btn ghost" data-action='{"action":"wander"}'>wander</button>
+        <button class="btn ghost" data-action='{"action":"follow","player":"Steve"}'>follow Steve</button>
+        <button class="btn ghost" data-action='{"action":"mine","block":"oak_log"}'>mine oak_log</button>
+        <button class="btn ghost" data-action='{"action":"mine","block":"stone"}'>mine stone</button>
+        <button class="btn ghost" data-action='{"action":"jump"}'>jump</button>
+        <button class="btn ghost" data-action='{"action":"eat"}'>eat</button>
+        <button class="btn ghost" data-action='{"action":"stop"}'>stop</button>
+        <button class="btn ghost" data-action='{"action":"say","message":"Hello from Python!"}'>say hi</button>
+      </div>
+      <div class="inline">
+        <input id="action-input" type="text" placeholder='{"action":"goto","x":10,"y":64,"z":-20}' />
+        <button id="btn-action" class="btn">Run action</button>
+      </div>
+      <p class="note">Actions are the same JSON the AI emits — anything valid there works here.</p>
+    </section>
+
+    <!-- ---------------------------------------------------------------- logs -->
+    <section class="card span-2" id="card-logs">
+      <header>
+        <h2>Event stream</h2>
+        <div class="inline tight">
+          <label class="check"><input id="log-autoscroll" type="checkbox" checked /> autoscroll</label>
+          <select id="log-filter">
+            <option value="all">all levels</option>
+            <option value="chat">chat only</option>
+            <option value="ai">ai + chat</option>
+            <option value="warn">warnings/errors</option>
+          </select>
+          <button id="btn-clear-logs" class="btn ghost small">clear</button>
+        </div>
+      </header>
+      <div id="log" class="log" role="log" aria-live="polite"></div>
+    </section>
+
+    <!-- -------------------------------------------------------------- config -->
+    <section class="card span-2" id="card-advanced">
+      <header>
+        <h2>Advanced</h2>
+        <span id="config-path" class="hint"></span>
+      </header>
+      <details>
+        <summary>Raw config JSON (saved to disk)</summary>
+        <textarea id="raw-config" spellcheck="false" rows="18"></textarea>
+        <div class="actions">
+          <button id="btn-raw-save" class="btn primary">Save raw config</button>
+          <button id="btn-raw-reload" class="btn">Reload</button>
+          <button id="btn-reset" class="btn danger">Reset to defaults</button>
+        </div>
+        <p class="note" id="raw-config-status"></p>
+      </details>
+      <details>
+        <summary>HTTP API</summary>
+        <ul class="api-list">
+          <li><code>GET /api/status</code> — bot, AI, stats, backends, Ollama health</li>
+          <li><code>PUT /api/config</code> — partial config merge (JSON body)</li>
+          <li><code>POST /api/bot/start|stop|reconnect</code> — connection control</li>
+          <li><code>POST /api/bot/chat</code> <code>{"message":"hi"}</code></li>
+          <li><code>POST /api/bot/action</code> <code>{"action":"wander"}</code> or <code>{"raw":"{...}"}</code></li>
+          <li><code>POST /api/ai/start|stop|step</code> — the Ollama decision loop</li>
+          <li><code>WS /ws</code> — live <code>event</code> / <code>status</code> frames</li>
+        </ul>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>PyMC_Bot runs a real Minecraft client through mineflayer (Node) and is driven from Python.</span>
+    <span id="footer-conn" class="hint"></span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

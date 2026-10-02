@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local runtime state
+pymc_bot_config.json
+.pymc_profiles/
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
