@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pymc_bot.agent import AgentLoop
+from pymc_bot.antiafk import AntiAfkKeeper
 from pymc_bot.backends import BackendError
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import (
@@ -138,6 +139,8 @@ class BotFleet:
         self._stopping = threading.Event()
         self._chatter_thread: threading.Thread | None = None
         self._batch_thread: threading.Thread | None = None
+        self.antiafk = AntiAfkKeeper(self.all_bots, self.store, self.log)
+        self.antiafk.start()
 
     # ------------------------------------------------------------- primary bot
     @property
@@ -226,6 +229,15 @@ class BotFleet:
             if primary is None:
                 return None
         return None
+
+    def all_bots(self) -> list[MinecraftBot]:
+        """Every player of this instance: the main bot plus the fleet."""
+        bots: list[MinecraftBot] = []
+        with self._lock:
+            if self._primary is not None:
+                bots.append(self._primary)
+            bots.extend(member.bot for member in self._members.values() if member.bot is not None)
+        return bots
 
     @property
     def members(self) -> list[FleetMember]:
@@ -318,6 +330,9 @@ class BotFleet:
             self.log.add(f"Player '{member.username}' could not join: {exc}", "error", "fleet")
             return
         member.state = "connected"
+        if member.bot is not None:
+            member.bot.touch_activity()
+            self.antiafk.record(member.bot).schedule(self.store.settings.antiafk, self.antiafk._rng)
         self.log.add(f"Player '{member.bot.username}' is now in the game.", "success", "fleet")
         if member.agent is not None and member.ai != "off":
             member.agent.start()
@@ -490,7 +505,8 @@ class BotFleet:
             self._stop_member(member)
         with self._lock:
             self._members.clear()
-            agent = self._primary_agent
+            self.antiafk.stop(wait=False)
+        agent = self._primary_agent
         if agent is not None:
             agent.stop(wait=False)
         if self._primary is not None:
@@ -590,6 +606,9 @@ class BotFleet:
             "chats_sent": (bot.stats["chats_sent"] if bot is not None else 0),
             "reconnects": (bot.stats["reconnects"] if bot is not None else 0),
             "joined_at": member.created_at,
+            "busy": bool(bot.busy) if bot is not None else False,
+            "idle_seconds": round(bot.idle_seconds, 1) if bot is not None else None,
+            "antiafk_pokes": self.antiafk.record(bot).pokes if bot is not None else 0,
         }
 
     def status(self) -> dict[str, Any]:
@@ -613,12 +632,20 @@ class BotFleet:
             "chats_sent": primary.stats["chats_sent"],
             "reconnects": primary.stats["reconnects"],
             "joined_at": None,
+            "busy": primary.busy,
+            "idle_seconds": round(primary.idle_seconds, 1),
+            "antiafk_pokes": self.antiafk.record(primary).pokes,
         }
         selected = self.selected_bot().username
         for entry in [primary_status, *bots]:
             entry["selected"] = entry["username"] == selected
         return {
             "enabled": settings.fleet.enabled,
+            "antiafk": {
+                "enabled": self.store.settings.antiafk.enabled,
+                "running": self.antiafk.running,
+                "pokes": self.antiafk.status([self.primary, *(m.bot for m in self.members if m.bot)])["pokes"],
+            },
             "max_bots": settings.fleet.max_bots,
             "size": 1 + len(bots),
             "extra_bots": len(bots),

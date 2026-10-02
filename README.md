@@ -33,6 +33,9 @@ Minecraft versions), and it is driven purely by JSON from Python.
   built-in heuristic policy, so it never just stands there.
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
   players one email at a time, and can keep the crowd alive (rejoin on kick, optional idle chatter).
+* **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
+  head in smooth, randomised bursts, so servers do not kick them for standing still. It never fights the AI
+  or your manual commands, and it scales to the whole fleet from one thread.
 
 ---
 
@@ -111,6 +114,41 @@ Headless equivalent:
 python -m pymc_bot run --populate 20            # 20 offline players join the configured server
 python -m pymc_bot run --premium you@example.com  # add a premium player (prints the device code)
 ```
+
+### Anti-AFK (never get kicked for standing still)
+
+Enabled by default for **every** bot — the main one and the whole fleet. When a bot has been idle for a
+while (8–25 s by default, randomised), it performs a short burst of human-ish habits:
+
+| Habit | What it looks like |
+| --- | --- |
+| `look` | head turns over several small steps (never a snap), occasionally glancing up or down |
+| `look_at_player` | turns towards a nearby player for a moment, then looks away |
+| `stroll` | walks one to three blocks somewhere else, then stops |
+| `strafe` | a short sideways step while looking slightly off-axis |
+| `hop` | one or two jumps in place |
+| `crouch` | a brief sneak |
+| `swing` | swings the arm a couple of times (some plugins only check animation) |
+
+Two or three habits are often chained, the same habit never repeats back-to-back, and the intervals are
+jittered — so the pattern does not look like a metronome. The keeper only touches bots that are **not** busy:
+AI decisions, follows, mining and your manual commands always take priority.
+
+```jsonc
+"antiafk": {
+  "enabled": true,
+  "interval_min": 8.0,        // idle seconds before a burst (randomised)
+  "interval_max": 25.0,
+  "look": true, "look_at_players": true, "walk": true, "jump": true, "sneak": true, "swing": true,
+  "max_walk_distance": 3.0,
+  "combo_probability": 0.35,  // chance of chaining 2-3 habits in one burst
+  "verbose": false            // log every burst to the event stream
+}
+```
+
+Controls live in the **Players → Anti-AFK** row (toggle, idle window, which habits, **Poke all now**), and the
+player table shows each bot's idle time and how many anti-AFK bursts it has done. From the API:
+`GET /api/antiafk/status` and `POST /api/antiafk/poke {"bot": "all"}`.
 
 > Only connect the bot to servers you own or are allowed to use it on. Many servers forbid client bots;
 > check their rules first. Attacking other players is **disabled by default**.
@@ -259,7 +297,7 @@ every 1.5s. Full endpoint list: [docs/API.md](docs/API.md). The Python↔Node br
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 131 tests, no Minecraft server, no LLM required
+pytest -q                       # 163 tests, no Minecraft server, no LLM required
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -278,6 +316,7 @@ pymc_bot/
 ├── backends.py      simulated world + Node/mineflayer adapter
 ├── bot.py           player controller: steering, pathfinding, mining, chat, stats
 ├── fleet.py         one or many players: spawn/populate, premium accounts, roster, chatter
+├── antiafk.py       anti-AFK keeper: human-like walking, looking, jumping, crouching, swinging
 ├── agent.py         decision loop, action validation, permissions, heuristics
 ├── ollama.py        tiny Ollama HTTP client
 ├── ollama_stub.py   Ollama-compatible demo stub (not an LLM)
@@ -300,6 +339,8 @@ scripts/dev.sh       small helper for common tasks
 | Premium bot joins again after a restart with no prompt | that is the per-account token cache in `.pymc_profiles/` working as intended |
 | `fleet is full` | raise `fleet.max_bots` or stop/remove players first |
 | Bots get kicked while joining in bulk | increase **Gap between joins** (2–3s) or ask the server to raise its throttling |
+| Still kicked for AFK | lower `antiafk.interval_min`/`interval_max` (some servers use 60 s windows), keep *walk* and *swing* enabled, or turn on `verbose` to confirm bursts happen |
+| Bots wander off while you are not looking | set a smaller `antiafk.max_walk_distance`, or disable `walk` (look/swing/jump already defeat most AFK plugins) |
 | Panel shows `demo brain (stub)` | you are pointing Ollama at `python -m pymc_bot stub`, not a real model |
 | Bot stands still | AI off (press **Start AI**), or movement permission disabled, or the server is unreachable |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |

@@ -16,6 +16,8 @@ import random
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from pymc_bot.backends import BackendError, BaseBackend, create_backend
@@ -85,6 +87,55 @@ class MinecraftBot:
             "started_at": None,
         }
         self._last_position: tuple[float, float] | None = None
+        self._active_actions = 0
+        self._current_action: str | None = None
+        self._last_activity = time.time()
+
+    # -------------------------------------------------------------- activity
+    @contextmanager
+    def activity(self, name: str) -> Iterator[None]:
+        """Mark the bot as busy with ``name`` while the block runs.
+
+        The anti-AFK keeper watches this so it never fights the AI or a human
+        command for the keyboard.
+        """
+        with self._lock:
+            self._active_actions += 1
+            self._current_action = name
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active_actions -= 1
+                if self._active_actions <= 0:
+                    self._active_actions = 0
+                    self._current_action = None
+                self._last_activity = time.time()
+
+    def touch_activity(self) -> None:
+        """Record that something (AI, human, anti-AFK) just used this bot."""
+        with self._lock:
+            self._last_activity = time.time()
+
+    @property
+    def busy(self) -> bool:
+        """True while an action owns the bot (walking, mining, following...)."""
+        with self._lock:
+            return self._active_actions > 0
+
+    @property
+    def current_action(self) -> str | None:
+        with self._lock:
+            return self._current_action
+
+    @property
+    def idle_seconds(self) -> float:
+        with self._lock:
+            return max(0.0, time.time() - self._last_activity)
+
+    def can_poke(self, min_idle: float = 0.0) -> bool:
+        """True when the anti-AFK keeper may take over for a moment."""
+        return self.connected and not self.busy and self.idle_seconds >= min_idle
 
     # ---------------------------------------------------------- cancellation
     def cancel_actions(self) -> None:
@@ -132,6 +183,8 @@ class MinecraftBot:
     def stats(self) -> dict[str, Any]:
         with self._lock:
             data = dict(self._stats)
+            data["current_action"] = self._current_action
+            data["idle_seconds"] = round(max(0.0, time.time() - self._last_activity), 1)
             started = data.get("started_at")
             data["uptime"] = round(time.time() - started, 1) if started else 0.0
             data["reconnects"] = self._reconnects
@@ -302,6 +355,8 @@ class MinecraftBot:
             return {"status": STATE_DISCONNECTED, "backend": None}
         data = backend.snapshot()
         data["state"] = self.state
+        data["busy"] = self.busy
+        data["idle_seconds"] = self.idle_seconds
         return data
 
     def position(self) -> dict[str, float] | None:
@@ -346,10 +401,11 @@ class MinecraftBot:
         text = (text or "").strip().replace("\n", " ")[: settings.agent.max_chat_length]
         if not text:
             return False
-        backend.say(text)
-        with self._lock:
-            self._stats["chats_sent"] += 1
-            self._stats["actions"] += 1
+        with self.activity("say"):
+            backend.say(text)
+            with self._lock:
+                self._stats["chats_sent"] += 1
+                self._stats["actions"] += 1
         self.log.add(f"<{self.username}> {text}", "bot", "bot")
         return True
 
@@ -357,7 +413,8 @@ class MinecraftBot:
         backend = self.backend
         if backend is None or not backend.connected:
             return False
-        backend.command(text)
+        with self.activity("command"):
+            backend.command(text)
         self.log.add(f"command -> /{text.lstrip('/')}", "info", "bot")
         return True
 
@@ -424,7 +481,7 @@ class MinecraftBot:
             return False
         try:
             start = time.monotonic()
-            with self._lock:
+            with self.activity("walk"), self._lock:
                 self._stats["actions"] += 1
             destination = f"({x:.0f}, {y:.0f}, {z:.0f})" if y is not None else f"({x:.0f}, {z:.0f})"
             self.log.add(f"Walking to {destination}.", "info", "bot")
@@ -534,6 +591,13 @@ class MinecraftBot:
         seconds = seconds or settings.agent.action_timeout
         deadline = time.monotonic() + seconds
         self.log.add(f"Following {player}.", "info", "bot")
+        return self._run_follow(player, deadline, distance)
+
+    def _run_follow(self, player: str, deadline: float, distance: float) -> bool:
+        with self.activity("follow"):
+            return self._follow_loop(player, deadline, distance)
+
+    def _follow_loop(self, player: str, deadline: float, distance: float) -> bool:
         while time.monotonic() < deadline:
             if self.cancelled:
                 break
@@ -550,6 +614,26 @@ class MinecraftBot:
         self._stop_motion()
         return True
 
+    def look(self, yaw: float, pitch: float | None = None) -> bool:
+        """Turn the head (yaw only when pitch is omitted)."""
+        backend = self.backend
+        pose = self._current_pose()
+        if backend is None or not backend.connected or pose is None:
+            return False
+        try:
+            backend.look(yaw, pose[3] if pitch is None else pitch)
+        except BackendError:
+            return False
+        self.touch_activity()
+        return True
+
+    def swing_arm(self) -> bool:
+        """Swing the arm (a very cheap 'I am here' signal)."""
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        return bool(backend.swing_arm())
+
     def look_at_player(self, player: str) -> bool:
         backend = self.backend
         target = self.find_player(player)
@@ -559,24 +643,26 @@ class MinecraftBot:
         dx = target["x"] - pose[0]
         dy = target.get("y", pose[1] + 1.6) + 0.5 - (pose[1] + 1.6)
         dz = target["z"] - pose[2]
-        try:
-            backend.look(yaw_to(dx, dz), pitch_to(dx, dy, dz))
-        except BackendError:
-            return False
+        with self.activity("look_at_player"):
+            try:
+                backend.look(yaw_to(dx, dz), pitch_to(dx, dy, dz))
+            except BackendError:
+                return False
         return True
 
     def jump(self) -> bool:
         backend = self.backend
         if backend is None or not backend.connected:
             return False
-        backend.jump()
-        with self._lock:
+        with self.activity("jump"), self._lock:
+            backend.jump()
             self._stats["actions"] += 1
         self.log.add("Jumped.", "debug", "bot")
         return True
 
     def stop_moving(self) -> bool:
         self._stop_motion()
+        self.touch_activity()
         self.log.add("Stopped moving.", "info", "bot")
         return True
 
@@ -585,7 +671,7 @@ class MinecraftBot:
         backend = self.backend
         if backend is None or not backend.connected:
             return False
-        with self._motion_lock:
+        with self._motion_lock, self.activity("mine"):
             with self._lock:
                 self._stats["actions"] += 1
             for attempt in range(max(1, attempts)):
@@ -606,7 +692,8 @@ class MinecraftBot:
         backend = self.backend
         if backend is None or not backend.connected:
             return False
-        result = bool(getattr(backend, "eat", lambda: False)())
+        with self.activity("eat"):
+            result = bool(getattr(backend, "eat", lambda: False)())
         self.log.add("Ate some food." if result else "Nothing to eat (or still full).", "info", "bot")
         return result
 
@@ -614,7 +701,7 @@ class MinecraftBot:
         backend = self.backend
         if backend is None or not backend.connected:
             return False
-        with self._lock:
+        with self.activity("attack"), self._lock:
             self._stats["actions"] += 1
         return bool(backend.attack(player))
 

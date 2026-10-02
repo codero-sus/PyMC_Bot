@@ -14,6 +14,7 @@ const readline = require('readline');
 
 let bot = { connected: false, controls: {}, position: { x: 0, y: 64, z: 0 }, yaw: 0, pitch: 0, chats: [], digs: [] };
 let profilesFolder = null;
+let swings = 0;
 let stateTimer = null;
 
 const send = (payload) => process.stdout.write(JSON.stringify(payload) + '\n');
@@ -77,6 +78,7 @@ const COMMANDS = {
   eat: () => ({ ate: true, item: 'bread' }),
   attack: (params) => ({ attacked: params.player }),
   jump: () => ({ jumped: true }),
+  swing_arm: () => { swings += 1; return { swung: true, swings }; },
   disconnect: () => { bot.connected = false; if (stateTimer) clearInterval(stateTimer); stateTimer = null; return { disconnected: true }; },
 };
 

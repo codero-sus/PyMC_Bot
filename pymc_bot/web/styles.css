@@ -196,3 +196,10 @@ details[open] summary { color: var(--text); margin-bottom: 0.7rem; }
 .fleet-table .row-actions { white-space: nowrap; }
 .fleet-table .row-actions .btn { margin-right: 0.2rem; }
 .fleet-table td.empty { color: var(--muted); text-align: center; padding: 0.9rem; }
+
+/* ---------------------------------------------------------------- antiafk */
+.antiafk-window input { width: 62px; }
+.antiafk-window { color: var(--muted); }
+.antiafk-window input { color: var(--text); }
+.fleet-table .idle-cell { font-variant-numeric: tabular-nums; color: var(--muted); }
+.fleet-table .idle-cell .mini { border: 0; padding: 0; color: var(--accent); }

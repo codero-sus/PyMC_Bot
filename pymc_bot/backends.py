@@ -146,6 +146,10 @@ class BaseBackend(abc.ABC):
         time.sleep(0.15)
         self.set_control("jump", False)
 
+    def swing_arm(self) -> bool:
+        """Swing the arm. Backends without animations may return False."""
+        return False
+
     @abc.abstractmethod
     def stop_motion(self) -> None: ...
 
@@ -333,6 +337,12 @@ class SimulatedBackend(BaseBackend):
 
     def jump(self) -> None:
         self._pending_jump = True
+        self._swings = getattr(self, "_swings", 0)
+
+    def swing_arm(self) -> bool:
+        self._swings = getattr(self, "_swings", 0) + 1
+        self.arm_swings = self._swings
+        return True
 
     def stop_motion(self) -> None:
         for name in ("forward", "back", "left", "right", "sneak", "sprint"):
@@ -710,6 +720,10 @@ class NodeBridgeBackend(BaseBackend):
 
     def stop_path(self) -> None:
         self._fire("stop_path", {})
+
+    def swing_arm(self) -> bool:
+        response = self._fire("swing_arm", {})
+        return bool(response and response.get("ok"))
 
     def dig(self, block: str) -> bool:
         response = self._fire("dig", {"block": block, "timeout": 20})

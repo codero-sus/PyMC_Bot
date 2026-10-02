@@ -82,6 +82,7 @@ def test_primitives_reach_the_bridge(bridge: NodeBridgeBackend, wait_for):
     bridge.look(1.0, -0.2)
     bridge.command("list")
     bridge.jump()
+    assert bridge.swing_arm() is True
     assert bridge.dig("stone") is True
     assert bridge.attack("Steve") is True
 
