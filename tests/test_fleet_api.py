@@ -193,3 +193,84 @@ def test_all_bots_stop_when_the_panel_shuts_down(tmp_path: Path):
     # after the context manager exits, everything must be shut down
     assert app.state.fleet.members == []
     assert app.state.fleet.primary.state == "disconnected"
+
+
+# -------------------------------------------------------------------- antiafk
+def test_antiafk_keeps_a_populated_server_alive(client: TestClient):
+    """The point of the feature: idle bots keep moving without being told to."""
+    client.put(
+        "/api/config",
+        json={"antiafk": {"enabled": True, "interval_min": 1.0, "interval_max": 1.5, "verbose": True}},
+    )
+    client.post("/api/fleet/populate", json={"count": 2, "stagger": 0.05, "ai": "off"})
+    assert _wait(client, lambda status: status["connected"] == 3)
+
+    def every_bot_was_poked(status: dict) -> bool:
+        return all(bot["antiafk_pokes"] >= 1 for bot in status["bots"] if bot["state"] == "connected")
+
+    assert _wait(client, every_bot_was_poked, timeout=25)
+
+    status = client.get("/api/antiafk/status").json()
+    assert status["enabled"] is True
+    assert status["running"] is True
+    assert status["pokes"] >= 3
+    for bot in status["bots"]:
+        assert bot["last_habits"], "each poke records what the bot did"
+        assert set(bot["last_habits"]) <= {"look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"}
+
+
+def test_antiafk_can_be_switched_off(client: TestClient):
+    client.put("/api/config", json={"antiafk": {"enabled": False}})
+    assert client.get("/api/status").json()["antiafk"]["enabled"] is False
+    assert client.get("/api/antiafk/status").json()["enabled"] is False
+
+    client.put("/api/config", json={"antiafk": {"enabled": True, "interval_min": 1.0, "interval_max": 1.2}})
+    assert client.get("/api/status").json()["antiafk"]["enabled"] is True
+
+
+def test_poke_endpoint_for_one_bot_reports_habits(client: TestClient):
+    client.put("/api/config", json={"antiafk": {"verbose": True}})
+    response = client.post("/api/antiafk/poke", json={"bot": "selected"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["results"][0]["poked"] is True
+    assert payload["results"][0]["habits"]
+
+
+def test_poke_endpoint_for_a_crowd_queues_in_the_background(client: TestClient):
+    client.post("/api/fleet/populate", json={"count": 2, "stagger": 0.05})
+    assert _wait(client, lambda status: status["connected"] == 3)
+
+    payload = client.post("/api/antiafk/poke", json={"bot": "all"}).json()
+    assert payload["queued"] == 3
+    assert _wait(
+        client,
+        lambda status: all(bot["antiafk_pokes"] >= 1 for bot in status["bots"]),
+        timeout=25,
+    )
+
+
+def test_poke_unknown_bot_is_a_404(client: TestClient):
+    assert client.post("/api/antiafk/poke", json={"bot": "ghost"}).status_code == 404
+
+
+def test_fleet_status_exposes_idle_and_poke_counts(client: TestClient):
+    status = client.get("/api/fleet/status").json()
+    assert status["antiafk"]["enabled"] is True
+    primary = status["primary"]
+    assert "idle_seconds" in primary and "busy" in primary and "antiafk_pokes" in primary
+
+
+def test_idle_time_grows_while_a_bot_waits(client: TestClient):
+    client.post("/api/fleet/populate", json={"count": 1, "stagger": 0.05, "ai": "off"})
+    assert _wait(client, lambda status: status["connected"] == 2)
+
+    def idle_seen() -> float:
+        entry = next(bot for bot in client.get("/api/fleet/status").json()["bots"] if bot["sponsor"] == "populate")
+        return entry["idle_seconds"] or 0.0
+
+    first = idle_seen()
+    assert first < 5.0
+    time.sleep(1.5)
+    assert idle_seen() >= first + 1.0

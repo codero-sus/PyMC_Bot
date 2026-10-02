@@ -39,6 +39,7 @@ Every request must carry an `id`; the bridge answers exactly once with the same 
 | `eat` | – | `{"ate": true, "item": "bread"}` | equips and consumes the first food item |
 | `attack` | `player` | `{"attacked": "Steve"}` | only called when the AI is allowed to attack |
 | `jump` | – | `{"jumped": true}` | short hop |
+| `swing_arm` | – | `{"swung": true}` | arm swing animation (used by anti-AFK) |
 | `disconnect` | – | `{"disconnected": true}` | graceful quit |
 | `ping` | – | `{"pong": true, "connected": bool}` | liveness |
 | `state` | – | world snapshot | on demand; the bridge also pushes it periodically |

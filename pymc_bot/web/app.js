@@ -271,6 +271,16 @@ function fillForm(cfg) {
   $('config-path').textContent = configPath;
   applyAuthLabels();
 
+  const afk = cfg.antiafk || {};
+  check('antiafk-enabled', afk.enabled !== false);
+  set('antiafk-min', afk.interval_min ?? 8);
+  set('antiafk-max', afk.interval_max ?? 25);
+  check('antiafk-look', afk.look !== false);
+  check('antiafk-walk', afk.walk !== false);
+  check('antiafk-jump', afk.jump !== false);
+  check('antiafk-sneak', afk.sneak !== false);
+  check('antiafk-swing', afk.swing !== false);
+
   const fleet = cfg.fleet || {};
   set('fleet-count-input', fleet.count ?? 5);
   set('fleet-pattern', fleet.name_pattern || 'PyMC_Bot_{n}');
@@ -319,6 +329,17 @@ function collectForm() {
       allow_attacking: $('cfg-allow-attack').checked,
       greet_players: $('cfg-greet').checked,
     },
+    antiafk: {
+      enabled: $('antiafk-enabled').checked,
+      interval_min: Number($('antiafk-min').value) || 8,
+      interval_max: Number($('antiafk-max').value) || 25,
+      look: $('antiafk-look').checked,
+      look_at_players: $('antiafk-look').checked,
+      walk: $('antiafk-walk').checked,
+      jump: $('antiafk-jump').checked,
+      sneak: $('antiafk-sneak').checked,
+      swing: $('antiafk-swing').checked,
+    },
     fleet: {
       count: Number($('fleet-count-input').value) || 5,
       name_pattern: $('fleet-pattern').value.trim() || 'PyMC_Bot_{n}',
@@ -363,6 +384,8 @@ function startPolling() {
       const [status, logs] = await Promise.all([api('/api/status'), api('/api/logs?limit=80')]);
       renderStatus(status);
       renderFleet(status);
+      renderAntiAfk(status.antiafk);
+      renderAntiAfk(status.antiafk);
       for (const entry of logs.events || []) {
         if ((entry.ts || 0) > lastEventTs) appendLog(entry);
       }
@@ -387,6 +410,7 @@ function connectSocket() {
     else if (frame.type === 'status') {
       renderStatus(frame.data);
       renderFleet(frame.data);
+      renderAntiAfk(frame.data.antiafk);
       if (frame.data.ollama) updateOllamaPill(frame.data.ollama);
     }
   };
@@ -425,6 +449,15 @@ const STATE_CLASS = {
   queued: 'pill-unknown',
 };
 
+function renderAntiAfk(antiafk) {
+  if (!antiafk) return;
+  const el = $('antiafk-state');
+  if (!el) return;
+  el.textContent = antiafk.enabled
+    ? `on · ${antiafk.pokes} bursts so far${antiafk.running ? '' : ' (starting…)'}`
+    : 'off';
+}
+
 function renderFleet(status) {
   const fleet = (status && status.fleet) || null;
   fleetStatus = fleet;
@@ -455,12 +488,17 @@ function renderFleet(status) {
     if (bot.selected) row.className = 'selected';
     const pos = bot.position ? `${num(bot.position.x, 0)}, ${num(bot.position.z, 0)}` : '–';
     const premium = bot.auth === 'microsoft';
+    const idle = bot.state === 'connected'
+      ? `${bot.idle_seconds === null || bot.idle_seconds === undefined ? '–' : Math.round(bot.idle_seconds) + 's'}` +
+        (bot.antiafk_pokes ? `<div class="mini">afk ×${bot.antiafk_pokes}</div>` : '')
+      : '–';
     row.innerHTML = `
       <td><span class="who">${bot.username}</span>${bot.sponsor === 'primary' ? ' <span class="mini">main</span>' : ''}
         ${bot.error ? `<div class="mini error-text">${bot.error}</div>` : ''}</td>
       <td>${premium ? '<span class="mini premium">premium</span>' : '<span class="mini">offline</span>'}</td>
       <td><span class="pill ${STATE_CLASS[bot.state] || 'pill-unknown'}">${bot.state}</span></td>
       <td>${bot.ai}${bot.ai_running ? ' ●' : ''}</td>
+      <td class="idle-cell">${idle}</td>
       <td>${pos}</td>
       <td class="row-actions"></td>`;
     const actions = row.querySelector('.row-actions');
@@ -559,6 +597,19 @@ function wire() {
         message: `Premium player ${username} is joining - the device code will appear in the log.`,
       });
       if (result.member) renderStatus(await api('/api/status'));
+    } catch (err) { reportError(err); }
+  });
+
+  $('btn-antiafk-poke').addEventListener('click', async () => {
+    try {
+      const result = await api('/api/antiafk/poke', { method: 'POST', body: JSON.stringify({ bot: 'all' }) });
+      const poked = result.results.filter((entry) => entry.poked);
+      appendLog({
+        level: poked.length ? 'success' : 'warn', source: 'panel', time: nowTime(),
+        message: `Anti-AFK poke: ${poked.length}/${result.results.length} bots moved` +
+          (poked.length ? ` (${[...new Set(poked.flatMap((entry) => entry.habits))].join(', ')})` : ''),
+      });
+      renderStatus(await api('/api/status'));
     } catch (err) { reportError(err); }
   });
 
@@ -686,7 +737,12 @@ async function boot() {
     const logs = await api('/api/logs?limit=120');
     for (const entry of logs.events || []) appendLog(entry);
   } catch (err) { reportError(err); }
-  try { renderStatus(await api('/api/status')); } catch (err) { reportError(err); }
+  try {
+    const status = await api('/api/status');
+    renderStatus(status);
+    renderFleet(status);
+    renderAntiAfk(status.antiafk);
+  } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   refreshModels();
   await refreshFleet();

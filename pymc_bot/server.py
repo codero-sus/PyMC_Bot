@@ -30,7 +30,7 @@ OLLAMA_HEALTH_TTL = 15.0
 
 BRIDGE_COMMANDS = [
     "connect", "say", "command", "control", "look", "stop_motion", "pathfind_to",
-    "stop_path", "dig", "eat", "attack", "jump", "disconnect", "ping", "state",
+    "stop_path", "dig", "eat", "attack", "jump", "swing_arm", "disconnect", "ping", "state",
 ]
 
 AuthMode = Literal["offline", "microsoft"]
@@ -157,6 +157,11 @@ def create_app(
             "agent": agent_status,
             "stats": controller.stats,
             "fleet": bot_fleet.status(),
+            "antiafk": {
+                "enabled": store.settings.antiafk.enabled,
+                "running": bot_fleet.antiafk.running,
+                "pokes": bot_fleet.antiafk.status([])["pokes"],
+            },
             "backends": available_backends(),
             "ollama": {**ollama_health(), "settings": store.settings.ollama.model_dump()},
         }
@@ -236,6 +241,7 @@ def create_app(
             "bridge_commands": BRIDGE_COMMANDS,
             "auth_modes": ["offline", "microsoft"],
             "ai_modes": list(AI_MODES),
+            "antiafk_habits": ["look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"],
             "websocket": {"path": "/ws", "frames": ["hello", "event", "status"]},
         }
 
@@ -418,6 +424,11 @@ def create_app(
             "queued": [member.username for member in members],
             "count": len(members),
             "fleet": bot_fleet.status(),
+            "antiafk": {
+                "enabled": store.settings.antiafk.enabled,
+                "running": bot_fleet.antiafk.running,
+                "pokes": bot_fleet.antiafk.status([])["pokes"],
+            },
         }
 
     @app.post("/api/fleet/start")
@@ -503,6 +514,40 @@ def create_app(
         agent = bot_fleet.agent_for(controller)
         ok, detail = agent.run_once()
         return {"ok": ok, "detail": detail, "decision": agent.status["last_decision"]}
+
+    # ---------------------------------------------------------------- antiafk
+    @app.get("/api/antiafk/status")
+    def antiafk_status() -> dict[str, Any]:
+        return bot_fleet.antiafk.status(bot_fleet.all_bots())
+
+    @app.post("/api/antiafk/poke")
+    def antiafk_poke(request: FleetTargetRequest = FleetTargetRequest()) -> dict[str, Any]:  # noqa: B008
+        """Force an anti-AFK burst right now (selected bot, one by name, or all)."""
+        try:
+            bots = bot_fleet.action_target(request.bot or "all")
+        except FleetError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if len(bots) == 1:
+            bot = bots[0]
+            habits = bot_fleet.antiafk.poke_bot(bot)
+            bot_fleet.log.add(
+                f"Anti-AFK poke: {bot.username} did {', '.join(habits) or 'nothing'}.",
+                "info",
+                "antiafk",
+            )
+            return {"ok": bool(habits), "results": [{"username": bot.username, "habits": habits, "poked": bool(habits)}]}
+
+        # A crowd is poked in the background so the request returns immediately:
+        # each burst can last a few seconds, and 200 of them would time out.
+        def _poke_all() -> None:
+            poked = 0
+            for bot in bots:
+                if bot.connected and bot_fleet.antiafk.poke_bot(bot):
+                    poked += 1
+            bot_fleet.log.add(f"Anti-AFK poke: {poked}/{len(bots)} bots moved.", "info", "antiafk")
+
+        threading.Thread(target=_poke_all, name="antiafk-poke-all", daemon=True).start()
+        return {"ok": True, "queued": len(bots), "results": []}
 
     # ------------------------------------------------------------------ ollama
     @app.get("/api/ollama/health")

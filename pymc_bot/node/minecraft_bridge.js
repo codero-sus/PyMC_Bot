@@ -357,6 +357,12 @@ function cmdAttack(params) {
   return { attacked: name };
 }
 
+function cmdSwingArm() {
+  if (!bot) throw new Error('not connected');
+  bot.swingArm('right');
+  return { swung: true };
+}
+
 function cmdJump() {
   if (!bot) throw new Error('not connected');
   bot.setControlState('jump', true);
@@ -390,6 +396,7 @@ const COMMANDS = {
   eat: cmdEat,
   attack: cmdAttack,
   jump: cmdJump,
+  swing_arm: cmdSwingArm,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),

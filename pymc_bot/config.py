@@ -198,6 +198,38 @@ class FleetSettings(BaseModel):
         return value[:200]
 
 
+class AntiAfkSettings(BaseModel):
+    """Keep every bot looking alive so servers do not kick it for being AFK.
+
+    Some servers kick for no movement, others for no head rotation, others for
+    no arm swings - so the anti-AFK keeper mixes all of them, with randomised
+    timing and smooth head turns so it does not look like a metronome.
+    """
+
+    enabled: bool = True
+    # Idle time (no AI action, no manual command) before a "burst" happens.
+    interval_min: float = Field(default=8.0, ge=1.0, le=600.0)
+    interval_max: float = Field(default=25.0, ge=1.0, le=900.0)
+    # Which habits the bots may perform.
+    look: bool = True
+    look_at_players: bool = True
+    walk: bool = True
+    max_walk_distance: float = Field(default=3.0, ge=0.5, le=12.0)
+    jump: bool = True
+    sneak: bool = True
+    swing: bool = True
+    # Chance (0-1) that a burst performs 1/2/3 habits in a row instead of one.
+    combo_probability: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Log every burst (debug) - keeps the panel readable for big fleets.
+    verbose: bool = False
+
+    @model_validator(mode="after")
+    def _check_intervals(self) -> AntiAfkSettings:
+        if self.interval_max < self.interval_min:
+            raise ValueError("antiafk.interval_max must be >= antiafk.interval_min")
+        return self
+
+
 class ServerSettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -209,6 +241,7 @@ class AppSettings(BaseModel):
     minecraft: MinecraftSettings = Field(default_factory=MinecraftSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    antiafk: AntiAfkSettings = Field(default_factory=AntiAfkSettings)
     fleet: FleetSettings = Field(default_factory=FleetSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 

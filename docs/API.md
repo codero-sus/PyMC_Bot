@@ -94,21 +94,41 @@ curl -sX POST localhost:8000/api/fleet/spawn -H 'content-type: application/json'
 curl -s localhost:8000/api/fleet/status | jq '.connected, [.bots[] | {username, state, auth}]'
 ```
 
-`/api/fleet/status` shape:
+`/api/fleet/status` shape (anti-AFK fields shown):
 
 ```json
 {
   "enabled": true, "max_bots": 25, "size": 6, "extra_bots": 5, "connected": 6,
   "roster_size": 5, "selected": "PyMC_Bot_3",
+  "antiafk": {"enabled": true, "running": true, "pokes": 17},
   "primary": {"username": "MainBot", "sponsor": "primary", "state": "connected", "selected": false},
   "bots": [
     {"username": "MainBot", "configured_username": "MainBot", "auth": "offline", "ai": "heuristic",
      "ai_running": true, "sponsor": "primary", "state": "connected", "position": {"x":1,"y":64,"z":2},
-     "health": 20, "uptime": 42.0, "blocks_mined": 3, "chats_sent": 1, "reconnects": 0, "selected": false},
+     "health": 20, "uptime": 42.0, "blocks_mined": 3, "chats_sent": 1, "reconnects": 0, "selected": false,
+     "busy": false, "idle_seconds": 4.2, "antiafk_pokes": 3},
     {"username": "PremiumPlayer", "configured_username": "you@example.com", "auth": "microsoft",
      "ai": "off", "sponsor": "premium", "state": "connected", "error": null, "selected": false}
   ]
 }
+```
+
+### Anti-AFK
+
+Keeps every bot moving and looking around so servers do not kick it for being idle. On by default.
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| `GET` | `/api/antiafk/status` | – | keeper settings, total bursts, and per bot: idle seconds, busy flag, poke count, last habits |
+| `POST` | `/api/antiafk/poke` | `{"bot":"all"}` / `{"bot":"selected"}` / `{"bot":"PyMC_Bot_3"}` | force a burst now. One bot answers with its habits; a crowd is queued in the background (`{"queued": N}`) |
+
+Configuration lives in the `antiafk` section of `PUT /api/config` (see the README). Toggling it off stops all
+bursts immediately; the per-bot `idle_seconds` / `antiafk_pokes` numbers are also part of
+`GET /api/fleet/status` and of every `status` WebSocket frame.
+
+```bash
+curl -s localhost:8000/api/antiafk/status | jq '{pokes, bots: [.bots[] | {username, idle_seconds, last_habits}]}'
+curl -sX POST localhost:8000/api/antiafk/poke -H 'content-type: application/json' -d '{"bot":"all"}'
 ```
 
 ### Bot control

@@ -135,11 +135,27 @@
         <label class="check"><input id="fleet-restore" type="checkbox" /> restore these players on restart</label>
       </div>
 
+      <h3>Anti-AFK <span class="hint" id="antiafk-state">—</span></h3>
+      <p class="note">Every bot walks a step, hops, crouches, swings and turns its head in randomised bursts,
+        so servers do not kick it for standing still. The AI and manual commands always win.</p>
+      <div class="permissions">
+        <label class="check"><input id="antiafk-enabled" type="checkbox" /> keep bots active</label>
+        <label class="check antiafk-window">idle <input id="antiafk-min" type="number" min="1" max="600" step="1" /> – <input id="antiafk-max" type="number" min="1" max="900" step="1" /> s</label>
+        <label class="check"><input id="antiafk-look" type="checkbox" /> look around</label>
+        <label class="check"><input id="antiafk-walk" type="checkbox" /> walk / strafe</label>
+        <label class="check"><input id="antiafk-jump" type="checkbox" /> jump</label>
+        <label class="check"><input id="antiafk-sneak" type="checkbox" /> crouch</label>
+        <label class="check"><input id="antiafk-swing" type="checkbox" /> swing arm</label>
+      </div>
+      <div class="actions">
+        <button id="btn-antiafk-poke" class="btn">Poke all now</button>
+      </div>
+
       <table class="fleet-table">
         <thead>
-          <tr><th>player</th><th>auth</th><th>state</th><th>ai</th><th>pos</th><th>actions</th></tr>
+          <tr><th>player</th><th>auth</th><th>state</th><th>ai</th><th>idle</th><th>pos</th><th>actions</th></tr>
         </thead>
-        <tbody id="fleet-body"><tr><td colspan="6" class="empty">no extra players yet</td></tr></tbody>
+        <tbody id="fleet-body"><tr><td colspan="7" class="empty">no extra players yet</td></tr></tbody>
       </table>
     </section>
 
