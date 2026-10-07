@@ -119,9 +119,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib signature
         path = self.path.split("?")[0].rstrip("/")
         if path in ("/api/tags", "/api/tags/"):
-            self._send(
-                {"models": [{"name": STUB_MODEL, "model": STUB_MODEL, "size": 1, "details": {"family": "stub"}}]}
-            )
+            models = [{"name": STUB_MODEL, "model": STUB_MODEL, "size": 1, "details": {"family": "stub"}}]
+            for name in self.server.created_models:
+                models.append(
+                    {
+                        "name": name,
+                        "model": name,
+                        "size": 12,
+                        "details": {"family": "pymc-trained", "note": "created via /api/create"},
+                    }
+                )
+            self._send({"models": models})
         elif path == "/api/version":
             self._send({"version": "0.0.0-pymc-stub"})
         elif path == "/":
@@ -155,12 +163,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"model": model, "response": self.brain.decide(prompt), "done": True})
         elif path == "/api/pull":
             self._send({"status": "success"})
+        elif path == "/api/create":
+            # The demo stub "creates" the model: remember its name so /api/tags lists it.
+            created = str(payload.get("model") or "pymc-trained")
+            self.server.created_models[created] = {
+                "modelfile": str(payload.get("modelfile") or ""),
+                "from": payload.get("from"),
+                "system": payload.get("system"),
+            }
+            self._send({"status": "success", "model": created, "created": created})
+        elif path == "/api/delete":
+            self.server.created_models.pop(str(payload.get("model") or ""), None)
+            self._send({"status": "success"})
         else:
             self._send({"error": "not found"}, status=404)
 
 
+class StubServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that remembers models "created" through /api/create."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.created_models: dict[str, dict[str, Any]] = {}
+
+
 def serve(host: str = "127.0.0.1", port: int = 11434) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = StubServer((host, port), Handler)
     thread = threading.Thread(target=httpd.serve_forever, name="ollama-stub", daemon=True)
     thread.start()
     return httpd
@@ -174,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.quiet:
         Handler.log_message = lambda *a, **k: None  # type: ignore[assignment]
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    httpd = StubServer((args.host, args.port), Handler)
     print(f"[ollama-stub] listening on http://{args.host}:{args.port} (model: {STUB_MODEL}) - NOT a real LLM")
     try:
         httpd.serve_forever()

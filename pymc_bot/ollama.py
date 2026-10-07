@@ -123,6 +123,33 @@ class OllamaClient:
         """Download/pull a model (`POST /api/pull`)."""
         return self._post("/api/pull", {"model": model or self.model, "stream": False}, timeout=timeout)
 
+    def create_model(
+        self,
+        name: str,
+        *,
+        base_model: str | None = None,
+        system: str | None = None,
+        modelfile: str | None = None,
+        parameters: dict[str, Any] | None = None,
+        timeout: float = 600.0,
+    ) -> dict[str, Any]:
+        """Create (or overwrite) an Ollama model: ``POST /api/create``.
+
+        Used by ``pymc_bot train --ollama-model NAME`` to import a trained playtime
+        policy as an Ollama model (its Modelfile carries the learned habits as a system
+        prompt, so the panel can pick it like any other model).
+        """
+        payload: dict[str, Any] = {"model": name, "stream": False}
+        if modelfile:
+            payload["modelfile"] = modelfile
+        else:
+            payload["from"] = base_model or self.model
+            if system:
+                payload["system"] = system
+            if parameters:
+                payload["parameters"] = parameters
+        return self._post("/api/create", payload, timeout=timeout)
+
     def close(self) -> None:
         if self._owns_client:
             self._client.close()

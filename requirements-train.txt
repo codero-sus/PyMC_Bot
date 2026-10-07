@@ -1,0 +1,6 @@
+# Optional extras for training the player model on recorded playtime.
+#
+# The default engine (--engine mlp) only needs NumPy, which is already a runtime
+# dependency. Install this file to use --engine transformer (a small attention model).
+-r requirements.txt
+torch>=2.2

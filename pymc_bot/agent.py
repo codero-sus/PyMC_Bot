@@ -23,6 +23,7 @@ from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.events import EventLog
 from pymc_bot.ollama import OllamaClient, OllamaError
+from pymc_bot.train import list_models
 
 ACTIONS: dict[str, str] = {
     "say": 'chat: {"action": "say", "message": "hello"}',
@@ -143,12 +144,18 @@ class AgentLoop:
         ollama: OllamaClient | None = None,
         heuristic: HeuristicPolicy | None = None,
         prefer_ollama: bool = True,
+        brain: str | None = None,
     ) -> None:
         self.bot = bot
         self.store = store
         self.log = log or EventLog()
         # Fleet bots default to heuristics so 20 extra players do not hammer one GPU.
         self.prefer_ollama = prefer_ollama
+        # Per-bot override of ``agent.mode`` (the fleet uses it so one bot can run the
+        # model trained on playtime while the others stay on heuristics / Ollama).
+        self._brain_override = brain if brain and brain != "auto" else None
+        self._trained: Any | None = None
+        self._trained_key: tuple[Any, ...] | None = None
         self._ollama = ollama
         self._heuristic = heuristic or HeuristicPolicy()
         self._thread: threading.Thread | None = None
@@ -190,15 +197,95 @@ class AgentLoop:
         self.log.add("AI agent loop stopped.", "info", "agent")
         return True
 
+    # ----------------------------------------------------------------- brain
+    def brain(self, settings: AppSettings | None = None) -> str:
+        """Which brain this loop uses right now."""
+        if self._brain_override:
+            return self._brain_override
+        settings = settings or self._settings()
+        return settings.agent.mode
+
+    def policy(self, settings: AppSettings | None = None) -> Any | None:
+        """The trained playtime policy, loaded (and cached) on demand.
+
+        Returns ``None`` when no checkpoint exists yet, so the agent can fall back to
+        the heuristic instead of refusing to play.
+        """
+        settings = settings or self._settings()
+        training = settings.training
+        run = (training.active_run or "").strip()
+        key = (training.models_dir, run, training.temperature, training.step_seconds)
+        with self._lock:
+            if self._trained_key == key:
+                return self._trained
+        policy = None
+        try:
+            from pymc_bot.local_model import TrainedPolicy
+
+            if not run:
+                runs = [
+                    card
+                    for card in list_models(training.models_dir)
+                    if card.get("checkpoint_exists")
+                ]
+                if not runs:
+                    raise FileNotFoundError(
+                        f"no trained model in {training.models_dir} - train one with "
+                        "'python -m pymc_bot train --dataset " + training.dataset + "'"
+                    )
+                run = str(runs[0]["run"])
+            policy = TrainedPolicy.load(
+                run,
+                training.models_dir,
+                temperature=training.temperature,
+                step_seconds=training.step_seconds,
+                include_blocks=bool(training.include_blocks),
+            )
+            self.log.add(
+                f"Loaded trained player model '{policy.run.run}' "
+                f"({policy.run.engine}, step {policy.run.card.get('step')}, "
+                f"{policy.run.card.get('params')} params) from {policy.run.checkpoint}",
+                "success",
+                "agent",
+            )
+        except Exception as exc:
+            self.log.add(f"Trained brain unavailable ({exc}); using built-in behaviour.", "warn", "agent")
+            policy = None
+        with self._lock:
+            self._trained = policy
+            self._trained_key = key
+        return policy
+
+    def _decide(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
+        """Pick the next decision with the configured brain."""
+        brain = self.brain(settings)
+        if brain == "trained":
+            policy = self.policy(settings)
+            if policy is None:
+                return self._heuristic.decide(state, self.bot.recent_chat())
+            return policy.decide(state)
+        if brain == "heuristic":
+            return self._heuristic.decide(state, self.bot.recent_chat())
+        if brain == "ollama":
+            return self._ask_ollama(settings, state)
+        # auto: Ollama when it is switched on, otherwise the built-in behaviour.
+        if settings.ollama.enabled and self.prefer_ollama:
+            return self._ask_ollama(settings, state)
+        return self._heuristic.decide(state, self.bot.recent_chat())
+
     # ----------------------------------------------------------------- stats
     @property
     def status(self) -> dict[str, Any]:
+        with self._lock:
+            trained = self._trained
         return {
             "running": self.running,
             "decisions": self._decisions,
             "errors": self._errors,
             "last_error": self._last_error,
             "last_decision": self._last_decision,
+            "brain": self.brain(),
+            "trained": trained.describe() if trained is not None else None,
         }
 
     # ------------------------------------------------------------ main logic
@@ -223,7 +310,14 @@ class AgentLoop:
         failures = 0
         while not self._stop_event.is_set():
             settings = self._settings()
-            interval = settings.ollama.decision_interval
+            brain = self.brain(settings)
+            # The trained policy plays at the recording cadence (a few bursts a second),
+            # the high level brains think once per decision_interval.
+            interval = (
+                max(0.15, settings.training.step_seconds)
+                if brain == "trained"
+                else settings.ollama.decision_interval
+            )
             if not self.bot.connected:
                 if self._wait(1.0):
                     break
@@ -231,10 +325,7 @@ class AgentLoop:
             state = self.bot.snapshot()
             decision: Decision | None = None
             try:
-                if settings.ollama.enabled and self.prefer_ollama:
-                    decision = self._ask_ollama(settings, state)
-                else:
-                    decision = self._heuristic.decide(state, self.bot.recent_chat())
+                decision = self._decide(settings, state)
             except Exception as exc:
                 failures += 1
                 self._errors += 1
@@ -307,6 +398,17 @@ class AgentLoop:
         agent = settings.agent
         action = decision.action
         params = decision.params or {}
+
+        # A trained playtime model predicts low level controls, so it executes itself.
+        if str(decision.source or "").startswith("trained:"):
+            policy = self.policy(settings)
+            if policy is None:
+                return False, "the trained model is not available any more"
+            if not agent.allow_movement and action in (
+                "forward", "back", "left", "right", "jump", "sneak", "move", "look"
+            ):
+                return False, "movement is disabled in settings"
+            return policy.act(self.bot, decision)
 
         def blocked(flag: str, allowed: bool) -> bool:
             if allowed:
@@ -392,13 +494,10 @@ class AgentLoop:
         """Decide and execute a single action (used by ``POST /api/step``)."""
         settings = self._settings()
         state = self.bot.snapshot()
-        if settings.ollama.enabled and self.prefer_ollama:
-            try:
-                decision = self._ask_ollama(settings, state)
-            except Exception as exc:
-                self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
-                decision = self._heuristic.decide(state, self.bot.recent_chat())
-        else:
+        try:
+            decision = self._decide(settings, state)
+        except Exception as exc:
+            self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
             decision = self._heuristic.decide(state, self.bot.recent_chat())
         self._decisions += 1
         self._last_decision = {**decision.to_dict(), "ts": time.time()}

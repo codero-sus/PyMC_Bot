@@ -105,6 +105,7 @@
             <option value="heuristic">heuristic (cheap)</option>
             <option value="off">off (just stand there)</option>
             <option value="ollama">ollama (uses the model)</option>
+            <option value="trained">trained (model from playtime)</option>
           </select>
         </label>
         <label>Gap between joins (s) <input id="fleet-stagger" type="number" min="0" max="60" step="0.5" /></label>
@@ -122,6 +123,7 @@
         <select id="premium-ai">
           <option value="heuristic">heuristic</option>
           <option value="ollama">ollama</option>
+          <option value="trained">trained</option>
           <option value="off">off</option>
         </select>
         <button id="btn-add-premium" class="btn primary" title="Add a premium (Microsoft) player">Add premium player</button>
@@ -165,9 +167,17 @@
         <h2>AI brain <span class="tag">ollama</span></h2>
         <span id="ollama-health" class="pill pill-unknown">checking…</span>
       </header>
+      <label>Brain
+        <select id="cfg-agent-mode" title="Who decides the bot's actions">
+          <option value="auto">auto — Ollama when enabled, else heuristic</option>
+          <option value="heuristic">heuristic — built-in, no model</option>
+          <option value="ollama">ollama — the local LLM</option>
+          <option value="trained">trained — the model trained on playtime</option>
+        </select>
+      </label>
       <label class="switch">
         <input id="cfg-ollama-enabled" type="checkbox" />
-        <span>Let Ollama decide the bot's actions</span>
+        <span>Let Ollama decide the bot's actions (brain = auto)</span>
       </label>
       <p class="note">When disabled (or unreachable) the bot runs a small built-in heuristic policy, so it always keeps playing.</p>
       <div class="fields two">
@@ -195,6 +205,57 @@
         <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
       </div>
       <p id="ai-status" class="note"></p>
+    </section>
+
+
+    <!-- ----------------------------------------------------------- training -->
+    <section class="card span-2" id="card-training">
+      <header>
+        <h2>Player model <span class="tag">train on playtime</span></h2>
+        <span id="train-state" class="pill pill-unknown">idle</span>
+      </header>
+      <p class="note">The Fabric mod in <code>./mod</code> records your own playtime (position, look direction,
+        block neighbourhood, nearby entities and every key you pressed) into
+        <code>pymc-playtime/dataset.jsonl</code>. Train a model on it here — it checkpoints itself
+        as it goes and can then play the bot (<strong>brain = trained</strong>).</p>
+
+      <div class="fields three">
+        <label>Dataset <input id="train-dataset" type="text" placeholder="pymc-playtime/dataset.jsonl" /></label>
+        <label>Steps <input id="train-steps" type="number" min="1" max="2000000" step="50" /></label>
+        <label>Checkpoint every <input id="train-checkpoint" type="number" min="1" max="100000" step="10" /></label>
+        <label>Engine
+          <select id="train-engine">
+            <option value="mlp">mlp — NumPy, no extra deps</option>
+            <option value="transformer">transformer — tiny attention model (needs torch)</option>
+          </select>
+        </label>
+        <label>Batch size <input id="train-batch" type="number" min="1" max="4096" step="8" /></label>
+        <label>Learning rate <input id="train-lr" type="number" min="0.00001" max="1" step="0.0005" /></label>
+      </div>
+      <div class="actions wrap">
+        <button id="btn-train-start" class="btn primary">Train on playtime</button>
+        <button id="btn-train-stop" class="btn">Stop training</button>
+        <button id="btn-train-resume" class="btn ghost" title="Continue the run from its last checkpoint">Resume</button>
+        <button id="btn-train-simulate" class="btn ghost" title="No recording yet? Train on 5 minutes of synthetic playtime">Demo: simulate 5 min</button>
+        <button id="btn-policy-preview" class="btn ghost" title="Ask the active model what it would do right now">Preview next action</button>
+      </div>
+
+      <div class="progress"><div id="train-progress-bar" class="progress-bar" style="width:0%"></div></div>
+      <p id="train-status" class="note">No dataset loaded yet.</p>
+      <p id="policy-preview" class="note mono"></p>
+
+      <h3>Checkpoints <span class="hint" id="models-dir">models/</span></h3>
+      <table class="fleet-table">
+        <thead>
+          <tr><th>run</th><th>engine</th><th>step</th><th>params</th><th>val loss</th><th>val acc</th><th>actions</th></tr>
+        </thead>
+        <tbody id="model-body"><tr><td colspan="7" class="empty">nothing trained yet</td></tr></tbody>
+      </table>
+      <div class="actions wrap">
+        <button id="btn-model-activate" class="btn">Activate selected</button>
+        <button id="btn-model-export" class="btn ghost" title="Export the selected model to Ollama as a persona model">Export to Ollama</button>
+        <button id="btn-models-refresh" class="btn ghost">Refresh list</button>
+      </div>
     </section>
 
     <!-- --------------------------------------------------------------- world -->

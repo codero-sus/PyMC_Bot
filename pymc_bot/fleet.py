@@ -35,7 +35,7 @@ from pymc_bot.config import (
 )
 from pymc_bot.events import EventLog
 
-AI_MODES = ("off", "heuristic", "ollama")
+AI_MODES = ("off", "heuristic", "ollama", "trained")
 SPONSORS = ("primary", "populate", "premium", "custom")
 
 
@@ -197,11 +197,12 @@ class BotFleet:
         with self._lock:
             if bot is self._primary or self._primary is None and bot is not None:
                 return self.primary_agent()
+            # fleet bots follow their own ai mode through AgentLoop(brain=...)
             for member in self._members.values():
                 if member.bot is bot:
                     if member.agent is None:
                         member.agent = AgentLoop(
-                            bot, self.store, self.log, prefer_ollama=(member.ai == "ollama")
+                            bot, self.store, self.log, prefer_ollama=(member.ai == "ollama"), brain=member.ai
                         )
                     return member.agent
         return AgentLoop(bot, self.store, self.log)
@@ -301,7 +302,7 @@ class BotFleet:
                 rejoin_seconds=settings.minecraft.rejoin_seconds,
             )
             member.agent = AgentLoop(
-                member.bot, self.store, self.log, prefer_ollama=(ai == "ollama")
+                member.bot, self.store, self.log, prefer_ollama=(ai == "ollama"), brain=ai
             )
             self._members[member.key] = member
 
