@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import random
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,27 @@ from pymc_bot.train import read_card, resolve_run_dir
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pymc_bot.bot import MinecraftBot
+
+
+def mask_actions(
+    probabilities: dict[str, float], allowed: Collection[str] | None
+) -> dict[str, float]:
+    """Drop the actions a setting forbids and renormalise the rest.
+
+    The trained brain predicts the player's own key presses, including left clicks. The
+    permission gates still win: an action that is not in ``allowed`` gets probability 0,
+    and if everything is forbidden the model is forced to idle.
+    """
+    if not allowed:
+        return probabilities
+    kept = {name: (value if name in allowed else 0.0) for name, value in probabilities.items()}
+    total = sum(kept.values())
+    if total <= 0.0:
+        # Nothing the model wants is allowed, so it waits.
+        idle = {name: 0.0 for name in probabilities}
+        idle["none"] = 1.0
+        return idle
+    return {name: value / total for name, value in kept.items()}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -232,10 +254,17 @@ class TrainedPolicy:
         return observation
 
     # -------------------------------------------------------------- inference
-    def predict_observation(self, observation: dict[str, Any], *, sample: bool = True) -> Prediction:
+    def predict_observation(
+        self,
+        observation: dict[str, Any],
+        *,
+        sample: bool = True,
+        allowed: Collection[str] | None = None,
+    ) -> Prediction:
         features = np.asarray([encode(observation, self.include_blocks)], dtype=np.float32)
         probs, motion = self.model.predict(features)
         probabilities = {name: float(value) for name, value in zip(self.actions, probs[0], strict=False)}
+        probabilities = mask_actions(probabilities, allowed)
         if sample and self.temperature > 0.0:
             action = self._sample(probabilities)
         else:
@@ -255,7 +284,8 @@ class TrainedPolicy:
         return prediction
 
     def predict(self, snapshot: dict[str, Any], **kwargs: Any) -> Prediction:
-        return self.predict_observation(self.observe(snapshot, **kwargs))
+        allowed = kwargs.pop("allowed", None)
+        return self.predict_observation(self.observe(snapshot, **kwargs), allowed=allowed)
 
     def _sample(self, probabilities: dict[str, float]) -> str:
         temperature = max(1e-3, self.temperature)
@@ -269,11 +299,15 @@ class TrainedPolicy:
                 return name
         return max(probabilities.items(), key=lambda item: item[1])[0]
 
-    def decide(self, snapshot: dict[str, Any]) -> Any:
-        """Agent-compatible decision (imported lazily to avoid a circular import)."""
+    def decide(self, snapshot: dict[str, Any], *, allowed: Collection[str] | None = None) -> Any:
+        """Agent-compatible decision (imported lazily to avoid a circular import).
+
+        ``allowed`` restricts the action space to what the permission gates permit, so a
+        model trained on playtime can never attack, mine or move when the settings say no.
+        """
         from pymc_bot.agent import Decision
 
-        prediction = self.predict(snapshot)
+        prediction = self.predict(snapshot, allowed=allowed)
         return Decision(
             action=prediction.action,
             params={

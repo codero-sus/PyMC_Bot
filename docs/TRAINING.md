@@ -93,6 +93,12 @@ python -m pymc_bot train --dataset pymc-playtime/dataset.jsonl --steps 4000 --en
 **Activate** and **Export to Ollama**. **Resume** continues the selected run, and
 **Demo: simulate 5 min** trains on synthetic playtime when you just want to see it work.
 
+The trained brain goes through the same permission gates as every other brain: **looking around and
+idling are always allowed, but moving, mining/using and attacking follow the switches in the panel**.
+A predicted action that a setting forbids has its probability set to zero before the model picks (and
+if everything it wants is disabled, it waits), so a model trained on your playtime can never do
+something you turned off.
+
 ## 3. Run it
 
 ```bash

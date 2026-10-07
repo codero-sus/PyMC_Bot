@@ -307,7 +307,7 @@ def synthesize_playtime(
                     "food": int(food),
                     "dimension": "overworld",
                     "blocks": _fake_blocks(rng, profile),
-                    "nearby": _fake_nearby(rng, profile, x, y, z, yaw),
+                    "nearby": _fake_nearby(rng, profile, x, y, z, yaw, mood),
                 }
                 action_counts[action] = action_counts.get(action, 0) + 1
                 handle.write(
@@ -378,18 +378,50 @@ def _fake_blocks(rng: random.Random, profile: str) -> list[list[Any]]:
 
 
 def _fake_nearby(
-    rng: random.Random, profile: str, x: float, y: float, z: float, yaw: float
+    rng: random.Random,
+    profile: str,
+    x: float,
+    y: float,
+    z: float,
+    yaw: float,
+    mood: str = "explore",
 ) -> list[dict[str, Any]]:
+    """The neighbours a player in this mood would actually see.
+
+    Who is around is what a player reacts to, so the two have to agree: mobs within
+    reach while fighting, somebody standing next to you while chatting, animals or
+    nothing at all while exploring or mining. Without this the model learns a
+    correlation that does not exist ("anything nearby -> swing") and fights the other
+    players on the server.
+    """
     entries: list[dict[str, Any]] = []
-    count = rng.choice([0, 0, 1, 1, 2, 3]) if profile != "fighter" else rng.choice([1, 1, 2, 3, 4])
-    kinds = {
-        "explorer": ["minecraft:cow", "minecraft:sheep", "minecraft:player"],
-        "builder": ["minecraft:villager", "minecraft:player"],
-        "fighter": ["minecraft:zombie", "minecraft:skeleton", "minecraft:creeper"],
-    }[profile]
+    if mood == "combat":
+        count = rng.choice([1, 1, 2, 2, 3])
+        kinds = ["minecraft:zombie", "minecraft:skeleton", "minecraft:creeper", "minecraft:spider"]
+        low, high = 1.5, 5.0
+    elif mood == "chat":
+        count = rng.choice([1, 1, 2])
+        kinds = ["minecraft:player"]
+        low, high = 2.5, 9.0
+    elif mood == "mine":
+        count = rng.choice([0, 0, 1])
+        kinds = [
+            {"explorer": "minecraft:cow", "builder": "minecraft:villager", "fighter": "minecraft:skeleton"}[
+                profile
+            ]
+        ]
+        low, high = 9.0, 16.0
+    else:  # exploring: mostly alone, sometimes animals or another player in the distance
+        count = rng.choice([0, 0, 0, 1, 1, 2])
+        kinds = {
+            "explorer": ["minecraft:cow", "minecraft:sheep", "minecraft:player"],
+            "builder": ["minecraft:villager", "minecraft:player"],
+            "fighter": ["minecraft:zombie", "minecraft:creeper"],
+        }[profile]
+        low, high = 6.0, 18.0
     for _ in range(count):
         angle = math.radians(yaw + rng.uniform(-90, 90))
-        distance = rng.uniform(1.5, 12.0)
+        distance = rng.uniform(low, high)
         kind = rng.choice(kinds)
         entries.append(
             {

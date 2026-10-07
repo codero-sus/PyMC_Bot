@@ -236,3 +236,36 @@ def test_policy_priors_and_modelfile(trained: Path):
     assert modelfile.startswith("FROM llama3.2")
     assert "forward" in modelfile
     assert "Minecraft" in modelfile
+
+
+# ------------------------------------------------------------------ permission gates
+def test_mask_actions_renormalises_the_rest(trained: Path):
+    from pymc_bot.local_model import mask_actions
+
+    masked = mask_actions({"forward": 0.5, "attack": 0.3, "none": 0.2}, {"forward", "none"})
+    assert masked["attack"] == 0.0
+    assert masked["forward"] + masked["none"] == pytest.approx(1.0)
+    assert masked["forward"] > masked["none"]
+
+
+def test_mask_actions_forces_idle_when_everything_is_forbidden(trained: Path):
+    from pymc_bot.local_model import mask_actions
+
+    masked = mask_actions({"forward": 0.9, "attack": 0.1, "none": 0.0}, {"look"})
+    assert masked["none"] == 1.0
+    assert max(masked, key=masked.get) == "none"
+
+
+def test_decide_never_picks_a_forbidden_action(trained: Path):
+    policy = TrainedPolicy.load("policy", trained, temperature=1.0)  # sampling on
+    allowed = {"look", "none", "forward"}
+    actions = {policy.decide(snapshot(), allowed=allowed).action for _ in range(40)}
+    assert actions <= allowed
+    assert actions  # something was chosen
+
+
+def test_prediction_reports_the_masked_probabilities(trained: Path):
+    policy = TrainedPolicy.load("policy", trained, temperature=1.0)
+    prediction = policy.predict(snapshot(), allowed={"none"})
+    assert prediction.action == "none"
+    assert prediction.probs["none"] == pytest.approx(1.0)

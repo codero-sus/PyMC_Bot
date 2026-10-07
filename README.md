@@ -208,9 +208,11 @@ python -m pymc_bot run --think trained --run-name playtime-dataset --backend sim
 
 The policy predicts a burst of play (default 0.4 s) and applies the same low-level controls the mod
 recorded, including the predicted head turn — so the bot walks, strafes, hops and looks around the way you
-did, and the anti-AFK keeper treats it as activity. Keep Ollama for chat and high-level planning; the
-trained brain is a separate, local, dependency-light model (`--engine mlp` needs nothing but NumPy;
-`--engine transformer` adds a small attention model). Full details, metrics and troubleshooting:
+did, and the anti-AFK keeper treats it as activity. It obeys the same permission gates as the other
+brains (looking and idling always; moving, mining/using and attacking only when their switches are on),
+so a model trained on your playtime can never do something you turned off. Keep Ollama for chat and
+high-level planning; the trained brain is a separate, local, dependency-light model (`--engine mlp`
+needs nothing but NumPy; `--engine transformer` adds a small attention model). Full details, metrics and troubleshooting:
 [docs/TRAINING.md](docs/TRAINING.md).
 
 ---
@@ -374,7 +376,7 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 234 tests, no Minecraft server, no LLM required (2 skip without torch)
+pytest -q                       # 242 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 

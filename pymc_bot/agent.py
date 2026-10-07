@@ -256,6 +256,24 @@ class AgentLoop:
             self._trained_key = key
         return policy
 
+    def allowed_trained_actions(self, settings: AppSettings | None = None) -> set[str]:
+        """Low level actions the trained policy may pick, given the permission gates.
+
+        Looking around and idling are always allowed; everything else follows the same
+        switches as the high level brains, so a model trained on playtime cannot attack
+        or mine when the config forbids it.
+        """
+        settings = settings or self._settings()
+        agent = settings.agent
+        allowed = {"look", "none"}
+        if agent.allow_movement:
+            allowed |= {"forward", "back", "left", "right", "jump", "sneak", "move"}
+        if agent.allow_mining:
+            allowed |= {"use", "hold"}
+        if agent.allow_attacking:
+            allowed.add("attack")
+        return allowed
+
     def _decide(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         """Pick the next decision with the configured brain."""
         brain = self.brain(settings)
@@ -263,7 +281,7 @@ class AgentLoop:
             policy = self.policy(settings)
             if policy is None:
                 return self._heuristic.decide(state, self.bot.recent_chat())
-            return policy.decide(state)
+            return policy.decide(state, allowed=self.allowed_trained_actions(settings))
         if brain == "heuristic":
             return self._heuristic.decide(state, self.bot.recent_chat())
         if brain == "ollama":
@@ -408,6 +426,10 @@ class AgentLoop:
                 "forward", "back", "left", "right", "jump", "sneak", "move", "look"
             ):
                 return False, "movement is disabled in settings"
+            if not agent.allow_attacking and action == "attack":
+                return False, "attacking is disabled in settings"
+            if not agent.allow_mining and action in ("use", "hold"):
+                return False, "mining is disabled in settings"
             return policy.act(self.bot, decision)
 
         def blocked(flag: str, allowed: bool) -> bool:

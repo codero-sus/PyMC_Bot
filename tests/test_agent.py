@@ -170,3 +170,45 @@ def test_disabled_ai_never_calls_ollama(store: ConfigStore, live_bot: MinecraftB
     ok, _detail = agent.run_once()
     assert isinstance(ok, bool)
     assert agent.status["errors"] == 0
+
+
+# ------------------------------------------------------- trained brain gates
+def test_allowed_trained_actions_follow_the_switches(live_bot: MinecraftBot, store: ConfigStore, log: EventLog):
+    agent = AgentLoop(live_bot, store, log)
+    store.update({"agent": {"allow_movement": False, "allow_mining": False, "allow_attacking": False}})
+    assert agent.allowed_trained_actions() == {"look", "none"}
+    store.update({"agent": {"allow_movement": True, "allow_attacking": True, "allow_mining": True}})
+    allowed = agent.allowed_trained_actions()
+    assert {"forward", "jump", "attack", "use"} <= allowed
+    assert "say" not in allowed  # the low level vocabulary only
+
+
+def test_trained_attack_is_refused_when_attacking_is_off(
+    live_bot: MinecraftBot, store: ConfigStore, log: EventLog, monkeypatch
+):
+    """A model trained on playtime must not be able to punch people when the config says no."""
+
+    class StubPolicy:
+        def act(self, bot, decision):  # pragma: no cover - must not be reached
+            raise AssertionError("the policy must not run a forbidden action")
+
+    store.update({"agent": {"allow_attacking": False}})
+    agent = AgentLoop(live_bot, store, log)
+    monkeypatch.setattr(agent, "policy", lambda settings=None: StubPolicy())
+    decision = Decision(action="attack", params={"seconds": 0.2}, source="trained:policy")
+    ok, detail = agent.execute(decision)
+    assert ok is False and "attacking is disabled" in detail
+
+
+def test_trained_use_is_gated_by_mining(
+    live_bot: MinecraftBot, store: ConfigStore, log: EventLog, monkeypatch
+):
+    class StubPolicy:
+        def act(self, bot, decision):  # pragma: no cover - must not be reached
+            raise AssertionError("the policy must not run a forbidden action")
+
+    store.update({"agent": {"allow_mining": False}})
+    agent = AgentLoop(live_bot, store, log)
+    monkeypatch.setattr(agent, "policy", lambda settings=None: StubPolicy())
+    ok, detail = agent.execute(Decision(action="use", params={}, source="trained:policy"))
+    assert ok is False and "mining is disabled" in detail
