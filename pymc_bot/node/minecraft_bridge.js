@@ -26,6 +26,16 @@ let bot = null;
 let stateTimer = null;
 
 const CONNECT_TIMEOUT_MS = 30000;
+/** How many entities the bridge reports to the trained brain (matches the trainer default). */
+const ADVANCED_ENTITY_LIMIT = 24;
+/** Mobs the trained brain should treat as dangerous (a cheap fallback for mob hostility). */
+const HOSTILE_ENTITIES = new Set([
+  'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'wither_skeleton', 'creeper', 'spider',
+  'cave_spider', 'enderman', 'witch', 'slime', 'magma_cube', 'pillager', 'vindicator',
+  'evoker', 'ravager', 'warden', 'blaze', 'ghast', 'hoglin', 'zoglin', 'piglin',
+  'piglin_brute', 'phantom', 'silverfish', 'endermite', 'guardian', 'elder_guardian',
+  'shulker', 'vex', 'wither', 'ender_dragon',
+]);
 
 /* ------------------------------------------------------------------ output */
 function send(payload) {
@@ -98,6 +108,37 @@ function buildState() {
     ? bot.inventory.items().map((item) => ({ name: item.name, count: item.count }))
     : [];
 
+  // Entities and the held item: the trained brain's "advanced" inputs. mineflayer knows
+  // every entity the client tracks, so the bot can learn to react to what is around it.
+  const entities = [];
+  const tracked = bot.entities || {};
+  for (const id of Object.keys(tracked)) {
+    const entity = tracked[id];
+    if (!entity || !entity.position || entity === bot.entity) continue;
+    const ex = entity.position.x - pos.x;
+    const ey = entity.position.y - pos.y;
+    const ez = entity.position.z - pos.z;
+    const isPlayer = entity.type === 'player' || Boolean(entity.username);
+    const kind = isPlayer ? 'player' : String(entity.name || entity.displayName || entity.type || 'unknown');
+    entities.push({
+      type: (isPlayer || kind.includes(':')) ? (isPlayer ? 'minecraft:player' : kind) : `minecraft:${kind}`,
+      dx: Number(ex.toFixed(2)),
+      dy: Number(ey.toFixed(2)),
+      dz: Number(ez.toFixed(2)),
+      dist: Number(Math.sqrt(ex * ex + ey * ey + ez * ez).toFixed(2)),
+      hostile: !isPlayer && HOSTILE_ENTITIES.has(kind),
+      player: isPlayer,
+      health: typeof entity.health === 'number' ? Number(entity.health.toFixed(1)) : 0,
+      on_ground: Boolean(entity.onGround),
+      yaw: entity.yaw === undefined ? 0 : Number((entity.yaw * 180 / Math.PI).toFixed(1)),
+      count: entity.itemStack ? entity.itemStack.count : 0,
+      held_item: entity.heldItem && entity.heldItem.name ? `minecraft:${entity.heldItem.name}` : '',
+    });
+  }
+  entities.sort((a, b) => a.dist - b.dist);
+  entities.length = Math.min(entities.length, ADVANCED_ENTITY_LIMIT);
+  const heldItem = bot.heldItem && bot.heldItem.name ? `minecraft:${bot.heldItem.name}` : '';
+
   const timeOfDay = bot.time && typeof bot.time.timeOfDay === 'number' ? bot.time.timeOfDay : 0;
 
   return {
@@ -112,6 +153,8 @@ function buildState() {
     time_of_day: timeOfDay < 13000 ? 'day' : 'night',
     players,
     inventory,
+    held_item: heldItem,
+    entities,
   };
 }
 

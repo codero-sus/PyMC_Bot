@@ -141,7 +141,11 @@ def test_chat_is_blocked_when_disabled(store: ConfigStore, log: EventLog):
 
 
 def test_wander_and_stop(live_bot: MinecraftBot):
-    assert live_bot.wander(radius=6, steps=2) is True
+    import random as _random
+
+    # wander() picks its directions from an RNG: pass a seeded one so the test is
+    # about the walk, not about which direction happened to come up.
+    assert live_bot.wander(radius=6, steps=2, rng=_random.Random(4242)) is True
     assert live_bot.stop_moving() is True
     assert live_bot.stats["distance_walked"] > 0
 

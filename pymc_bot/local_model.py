@@ -24,12 +24,15 @@ import numpy as np
 
 from pymc_bot.features import (
     ACTION_SPACE,
-    FEATURE_VERSION,
     TARGET_NAMES,
+    Vocabulary,
     default_blocks,
     denormalise_targets,
     encode,
+    entity_class,
+    layout_version,
 )
+from pymc_bot.features import feature_dim as layout_dim
 from pymc_bot.models import checkpoint_filename, load_model
 from pymc_bot.train import read_card, resolve_run_dir
 
@@ -56,6 +59,16 @@ def mask_actions(
         idle["none"] = 1.0
         return idle
     return {name: value / total for name, value in kept.items()}
+
+
+def _relative_spot(entry: dict[str, Any]) -> tuple[float, float, float]:
+    """Where an entity sits relative to the player, rounded so two reports of the same
+    entity (the bridge's player list and its entity list) collapse onto one key."""
+    return (
+        round(float(entry.get("dx") or 0.0), 1),
+        round(float(entry.get("dy") or 0.0), 1),
+        round(float(entry.get("dz") or 0.0), 1),
+    )
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -147,6 +160,7 @@ class TrainedPolicy:
         step_seconds: float = DEFAULT_STEP_SECONDS,
         include_blocks: bool | None = None,
         seed: int | None = None,
+        vocab: Vocabulary | None = None,
     ) -> None:
         self.run = run
         self.model = model
@@ -155,6 +169,12 @@ class TrainedPolicy:
         self.include_blocks = (
             bool(run.card.get("include_blocks", True)) if include_blocks is None else bool(include_blocks)
         )
+        # Advanced models carry the entity/item words they were trained with; an empty
+        # vocabulary is the fixed basic layout.
+        self.vocab = vocab if vocab is not None else Vocabulary.from_dict(
+            {"entities": run.card.get("entity_vocabulary"), "items": run.card.get("item_vocabulary")}
+        )
+        self.advanced = bool(self.vocab.entities or self.vocab.items)
         self._rng = random.Random(seed)
         self._last_position: tuple[float, float, float] | None = None
         self._predictions = 0
@@ -165,10 +185,19 @@ class TrainedPolicy:
         if feature_dim and feature_dim != getattr(model, "feature_dim", feature_dim):
             raise PolicyError("checkpoint feature size does not match its model.json card")
         version = run.card.get("feature_version")
-        if version is not None and int(version) != FEATURE_VERSION:
+        expected = layout_version(self.vocab)
+        if version is not None and int(version) != expected:
             raise PolicyError(
                 f"checkpoint was trained with feature layout v{version}, this build uses "
-                f"v{FEATURE_VERSION} - retrain the model"
+                f"v{expected} - retrain the model"
+            )
+        # An advanced model must be fed the entity/item layout its vocabulary defines.
+        expected_dim = layout_dim(self.include_blocks, self.vocab)
+        model_dim = int(getattr(model, "feature_dim", 0) or 0)
+        if model_dim and model_dim != expected_dim:
+            raise PolicyError(
+                f"checkpoint expects {model_dim} features but the entity/item vocabulary "
+                f"({self.vocab.describe()}) defines {expected_dim} - retrain the model"
             )
 
     # ------------------------------------------------------------- factories
@@ -251,7 +280,41 @@ class TrainedPolicy:
         observation["blocks"] = (
             snapshot.get("blocks") if isinstance(snapshot.get("blocks"), list) else default_blocks()
         )
+        # Advanced models also look at what the entity and item vocabularies cover. The
+        # bridge reports the players it can see plus the inventory; anything it does not
+        # expose degrades to "nothing there" instead of inventing data.
+        observation["entities"] = self._live_entities(snapshot, nearby)
+        items = snapshot.get("items")
+        observation["items"] = items if isinstance(items, list) else []
+        inventory = snapshot.get("inventory")
+        observation["inventory"] = inventory if isinstance(inventory, list) else []
+        held = snapshot.get("held_item")
+        if isinstance(held, str) and held:
+            observation["held_item"] = held
+        armor = snapshot.get("armor")
+        observation["armor"] = [name for name in (armor or []) if isinstance(name, str)]
+        ground = snapshot.get("ground_items")
+        observation["ground_items"] = [entry for entry in (ground or []) if isinstance(entry, dict)]
         return observation
+
+    def _live_entities(self, snapshot: dict[str, Any], nearby: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Everything the model can see: the bridge's entity list plus the players.
+
+        A player can appear in both lists (the bridge reports players separately), so the
+        `players` entries are only added when no entity already describes that spot.
+        """
+        entities: list[dict[str, Any]] = [
+            entry for entry in (snapshot.get("entities") or []) if isinstance(entry, dict)
+        ]
+        spots = {
+            _relative_spot(entry) for entry in entities if entity_class(entry) == 0
+        }
+        for entry in nearby:
+            spot = _relative_spot(entry)
+            if entity_class(entry) == 0 and spot in spots:
+                continue
+            entities.append(entry)
+        return entities
 
     # -------------------------------------------------------------- inference
     def predict_observation(
@@ -261,7 +324,7 @@ class TrainedPolicy:
         sample: bool = True,
         allowed: Collection[str] | None = None,
     ) -> Prediction:
-        features = np.asarray([encode(observation, self.include_blocks)], dtype=np.float32)
+        features = np.asarray([encode(observation, self.include_blocks, self.vocab)], dtype=np.float32)
         probs, motion = self.model.predict(features)
         probabilities = {name: float(value) for name, value in zip(self.actions, probs[0], strict=False)}
         probabilities = mask_actions(probabilities, allowed)
@@ -384,7 +447,7 @@ class TrainedPolicy:
         return ok, f"trained: {pressed or action} for {seconds:.2f}s"
 
     # ----------------------------------------------------------------- status
-    def describe(self) -> dict[str, Any]:
+    def describe(self) -> dict[str, Any]:  # noqa: D401 - short status dict
         card = self.run.card
         return {
             "run": self.run.run,
@@ -397,6 +460,9 @@ class TrainedPolicy:
             "targets": [str(name) for name in (card.get("targets") or TARGET_NAMES)],
             "feature_dim": card.get("feature_dim"),
             "include_blocks": self.include_blocks,
+            "advanced": self.advanced,
+            "entity_vocabulary": list(self.vocab.entities),
+            "item_vocabulary": list(self.vocab.items),
             "trained_on": card.get("dataset"),
             "metrics": card.get("metrics"),
             "predictions": self._predictions,

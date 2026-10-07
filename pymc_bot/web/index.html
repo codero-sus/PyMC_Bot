@@ -232,6 +232,22 @@
         <label>Batch size <input id="train-batch" type="number" min="1" max="4096" step="8" /></label>
         <label>Learning rate <input id="train-lr" type="number" min="0.00001" max="1" step="0.0005" /></label>
       </div>
+
+      <fieldset class="group" id="train-advanced-group">
+        <legend>Advanced training <span class="tag">entities + items</span></legend>
+        <p class="note">Learn which <strong>entities</strong> and <strong>items</strong> your playtime actually
+          contains and give each one its own inputs (how close, where relative to your view, how many, in
+          your hand) instead of the coarse “hostile / passive” buckets. Needs a recording made with
+          <code>/pymc advanced on</code> in the mod; the learned words are stored in the checkpoint, so the
+          bot encodes the live world exactly the same way. Leave the sliders at 0 to use the defaults
+          (24 entities, 32 items).</p>
+        <label class="check"><input id="train-advanced" type="checkbox" /> Advanced mode (entities + items)</label>
+        <div class="fields three">
+          <label>Entity words <input id="train-entity-slots" type="number" min="0" max="256" step="4" /></label>
+          <label>Item words <input id="train-item-slots" type="number" min="0" max="512" step="4" /></label>
+        </div>
+        <p id="train-advanced-status" class="note mono">nothing learned yet</p>
+      </fieldset>
       <div class="actions wrap">
         <button id="btn-train-start" class="btn primary">Train on playtime</button>
         <button id="btn-train-stop" class="btn">Stop training</button>
@@ -247,9 +263,9 @@
       <h3>Checkpoints <span class="hint" id="models-dir">models/</span></h3>
       <table class="fleet-table">
         <thead>
-          <tr><th>run</th><th>engine</th><th>step</th><th>params</th><th>val loss</th><th>val acc</th><th>actions</th></tr>
+          <tr><th>run</th><th>engine</th><th>mode</th><th>step</th><th>params</th><th>val loss</th><th>val acc</th><th>actions</th></tr>
         </thead>
-        <tbody id="model-body"><tr><td colspan="7" class="empty">nothing trained yet</td></tr></tbody>
+        <tbody id="model-body"><tr><td colspan="8" class="empty">nothing trained yet</td></tr></tbody>
       </table>
       <div class="actions wrap">
         <button id="btn-model-activate" class="btn">Activate selected</button>

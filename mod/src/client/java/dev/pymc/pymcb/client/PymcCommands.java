@@ -18,6 +18,9 @@ import net.minecraft.network.chat.Component;
  * /pymc record episode          close the current episode and start a new one
  * /pymc export                  write dataset.jsonl for the Python trainer
  * /pymc sample &lt;ticks&gt;          change the sampling rate (2 ticks = 100 ms)
+ * /pymc advanced on|off|status   record entities, items, armour and drops too
+ * /pymc entities &lt;n&gt;            how many entities to record per sample (advanced)
+ * /pymc drops &lt;n&gt;               how many dropped item stacks to record (advanced)
  * /pymc status                  where the dataset lives, how big it is
  * /pymc train                   print the exact command to train on this dataset
  * </pre>
@@ -47,9 +50,41 @@ public final class PymcCommands {
                                         "sampling every " + ticks + " tick(s) (~" + ticks * 50 + " ms)");
                             }));
 
+            LiteralArgumentBuilder<FabricClientCommandSource> advanced = literal("advanced")
+                    .then(literal("on").executes(ctx -> {
+                        PlaytimeConfig.get().setAdvanced(true);
+                        return feedback(ctx.getSource(),
+                                "advanced recording ON - entities, items, held item, armour and drops "
+                                + "are written from now on; train with --advanced");
+                    }))
+                    .then(literal("off").executes(ctx -> {
+                        PlaytimeConfig.get().setAdvanced(false);
+                        return feedback(ctx.getSource(), "advanced recording off - back to the basic schema");
+                    }))
+                    .then(literal("status").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())));
+
+            LiteralArgumentBuilder<FabricClientCommandSource> entities = literal("entities")
+                    .then(argument("count", IntegerArgumentType.integer(0, 128))
+                            .executes(ctx -> {
+                                int count = IntegerArgumentType.getInteger(ctx, "count");
+                                PlaytimeConfig.get().setMaxEntities(count);
+                                return feedback(ctx.getSource(), "recording up to " + count + " entities per sample");
+                            }));
+
+            LiteralArgumentBuilder<FabricClientCommandSource> drops = literal("drops")
+                    .then(argument("count", IntegerArgumentType.integer(0, 64))
+                            .executes(ctx -> {
+                                int count = IntegerArgumentType.getInteger(ctx, "count");
+                                PlaytimeConfig.get().setMaxGroundItems(count);
+                                return feedback(ctx.getSource(), "recording up to " + count + " dropped stack(s) per sample");
+                            }));
+
             dispatcher.register(literal("pymc")
                     .then(record)
                     .then(sample)
+                    .then(advanced)
+                    .then(entities)
+                    .then(drops)
                     .then(literal("param").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())))
                     .then(literal("status").executes(ctx -> feedback(ctx.getSource(), recorder.status())))
                     .then(literal("export").executes(ctx -> feedback(ctx.getSource(), recorder.export())))
@@ -60,8 +95,14 @@ public final class PymcCommands {
     private String trainHint() {
         String dataset = recorder.datasetPath() == null ? "<gameDir>/pymc-playtime/dataset.jsonl"
                 : recorder.datasetPath().toString();
+        String advancedFlag = PlaytimeConfig.get().advanced ? " --advanced" : "";
+        String mode = PlaytimeConfig.get().advanced
+                ? "recording mode: advanced (entities + items)"
+                : "recording mode: basic - run /pymc advanced on to record entities and items";
         return "dataset: " + dataset + "\n"
-                + "train it with:  python -m pymc_bot train --dataset \"" + dataset + "\" --steps 5000\n"
+                + mode + "\n"
+                + "train it with:  python -m pymc_bot train --dataset \"" + dataset + "\" --steps 5000"
+                + advancedFlag + "\n"
                 + "then either run the native policy in the panel (Agent -> trained) or\n"
                 + "python -m pymc_bot train --dataset \"" + dataset + "\" --ollama-model pymc-playtime\n"
                 + "to import it into Ollama and select it in the config page.";

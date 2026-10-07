@@ -7,24 +7,36 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from pymc_bot.features import (
     ACTION_SPACE,
+    ADVANCED_FEATURE_VERSION,
+    ADVANCED_GLOBAL_DIM,
     BLOCK_CLASSES,
     CELLS,
     DIMENSIONS,
     FEATURE_VERSION,
     NEARBY_CLASSES,
     NEARBY_SLOTS,
+    Vocabulary,
     action_of,
+    advanced_feature_dim,
+    advanced_features,
     block_class,
     default_blocks,
     denormalise_targets,
     encode,
     entity_class,
     feature_dim,
+    layout_version,
+    learn_vocabulary,
     movement_deltas,
     normalise_targets,
+    observation_entities,
+    observation_items,
     summarise,
+    vocabulary_coverage,
     wrap_degrees,
 )
 
@@ -193,3 +205,125 @@ def test_summarise_counts_actions_and_episodes():
     assert summary["episodes"] == 1
     assert summary["actions"] == {"look": 2, "forward": 1}
     assert summary["hostile_entities_seen"] == 3  # one zombie per sample
+
+
+# --------------------------------------------------------------------- advanced
+ADVANCED_OBSERVATION = {
+    "x": 10.0,
+    "y": 64.0,
+    "z": -5.0,
+    "yaw": 90.0,  # facing -X (west)
+    "pitch": 0.0,
+    "entities": [
+        {"type": "minecraft:zombie", "dx": -3.0, "dy": 0.0, "dz": 0.0, "dist": 3.0, "hostile": True},
+        {"type": "minecraft:player", "dx": 2.0, "dy": 0.0, "dz": 0.0, "dist": 2.0, "player": True},
+    ],
+    "items": [[0, "minecraft:iron_sword", 1], [1, "minecraft:cooked_beef", 5]],
+    "held_item": "minecraft:iron_sword",
+    "armor": ["minecraft:iron_helmet"],
+    "ground_items": [{"item": "minecraft:oak_log", "count": 3, "dist": 2.5}],
+}
+
+
+def test_learn_vocabulary_keeps_what_the_playtime_contains():
+    vocab = learn_vocabulary([ADVANCED_OBSERVATION], entity_slots=4, item_slots=4)
+    assert vocab.entities[:2] == ("player", "zombie")
+    assert "iron_sword" in vocab.items and "cooked_beef" in vocab.items
+    assert len(vocab.entities) <= 4 and len(vocab.items) <= 4
+
+
+def test_vocabulary_is_ranked_by_frequency_then_seeded():
+    observations = [
+        {"entities": [{"type": "minecraft:cow", "dist": 4.0}]} for _ in range(5)
+    ] + [{"entities": [{"type": "minecraft:warden", "dist": 4.0, "hostile": True}]}]
+    vocab = learn_vocabulary(observations, entity_slots=3, item_slots=1)
+    assert vocab.entities[0] == "cow"  # most frequent wins
+    assert "warden" in vocab.entities  # still kept within the slots
+
+
+def test_advanced_layout_extends_the_basic_one():
+    vocab = Vocabulary(entities=("zombie",), items=("iron_sword",))
+    assert layout_version() == FEATURE_VERSION
+    assert layout_version(vocab) == ADVANCED_FEATURE_VERSION
+    assert advanced_feature_dim(None) == 0
+    assert advanced_feature_dim(vocab) == 1 * 4 + 1 * 3 + ADVANCED_GLOBAL_DIM
+    assert feature_dim(True, vocab) == feature_dim(True) + advanced_feature_dim(vocab)
+
+
+def test_advanced_encode_matches_the_declared_dimension():
+    vocab = learn_vocabulary([ADVANCED_OBSERVATION], entity_slots=4, item_slots=4)
+    vector = encode(ADVANCED_OBSERVATION, True, vocab)
+    assert len(vector) == feature_dim(True, vocab)
+    # the basic half must stay byte-for-byte compatible
+    assert vector[: feature_dim(True)] == encode(ADVANCED_OBSERVATION, True)
+
+
+def test_advanced_features_place_entities_and_items_in_their_own_slots():
+    observation = dict(
+        ADVANCED_OBSERVATION,
+        entities=[
+            *ADVANCED_OBSERVATION["entities"],
+            # 3 blocks to the side of a player facing west (-X): a pure lateral bearing
+            {"type": "minecraft:cow", "dx": 0.0, "dy": 0.0, "dz": -3.0, "dist": 3.0},
+        ],
+    )
+    vocab = Vocabulary(entities=("player", "zombie", "cow"), items=("iron_sword", "cooked_beef"))
+    values = advanced_features(observation, vocab)
+    present_player, closeness_player, sin_player, cos_player = values[0:4]
+    present_zombie, closeness_zombie, sin_zombie, cos_zombie = values[4:8]
+    present_cow, closeness_cow, sin_cow, cos_cow = values[8:12]
+    assert present_player == present_zombie == present_cow == 1.0
+    assert closeness_player > closeness_zombie  # the player is nearer
+    # yaw 90 means facing -X: the zombie straight ahead, the player straight behind
+    assert cos_zombie > 0.9 and cos_player < -0.9
+    assert sin_zombie == pytest.approx(0.0, abs=0.01) and sin_player == pytest.approx(0.0, abs=0.01)
+    # the cow is beside the view, so it is the lateral component that carries it
+    assert abs(sin_cow) > 0.99 and abs(cos_cow) < 0.01
+    assert closeness_cow == pytest.approx(closeness_zombie)
+    tail = values[12:]  # the rest is the item and global half
+    assert tail[0:3] == [1.0, pytest.approx(1 / 16), 1.0]  # sword: carried, counted, held
+    assert tail[3:6] == [1.0, pytest.approx(5 / 16), 0.0]  # food: carried, not held
+    globals_ = tail[6:]
+    assert len(globals_) == ADVANCED_GLOBAL_DIM
+    assert globals_[2] > 0.0  # a weapon is carried
+    assert globals_[4] > 0.0  # food is carried
+    assert globals_[6] > 0.0  # armour is worn
+    assert globals_[7] > 0.0 and globals_[8] > 0.0  # something is lying on the ground nearby
+
+
+def test_advanced_features_ignore_unknown_entities_and_items():
+    vocab = Vocabulary(entities=("creeper",), items=("bread",))
+    values = advanced_features(ADVANCED_OBSERVATION, vocab)
+    assert values[0:4] == [0.0, 0.0, 0.0, 0.0]  # no creeper in sight
+    assert values[4:7] == [0.0, 0.0, 0.0]  # bread is not carried
+
+
+def test_observation_entities_prefers_the_richest_source():
+    richer = dict(ADVANCED_OBSERVATION, nearby=[{"type": "minecraft:cow", "dist": 9.0}])
+    assert observation_entities(richer)[0]["type"] == "minecraft:zombie"  # entities win over nearby
+    only_nearby = {"nearby": [{"type": "minecraft:cow", "dist": 9.0}]}
+    assert observation_entities(only_nearby) == only_nearby["nearby"]
+    players = {"players": [{"name": "Steve", "x": 1.0, "y": 64.0, "z": 1.0}]}
+    assert len(observation_entities(players)) == 1
+
+
+def test_observation_items_reads_mod_and_bridge_shapes():
+    from_bridge = {"items": [], "inventory": [{"name": "stone", "count": 3}], "held_item": "diamond_sword"}
+    assert observation_items(from_bridge) == {"stone": 3, "diamond_sword": 1}
+    from_mod = {"items": [[0, "minecraft:oak_log", 2], [5, "minecraft:bread", 1]]}
+    assert observation_items(from_mod) == {"oak_log": 2, "bread": 1}
+
+
+def test_vocabulary_coverage_reports_what_it_can_describe():
+    vocab = learn_vocabulary([ADVANCED_OBSERVATION], entity_slots=4, item_slots=4)
+    coverage = vocabulary_coverage([ADVANCED_OBSERVATION], vocab)
+    assert coverage["entity_coverage"] == 1.0
+    assert coverage["item_coverage"] == 1.0
+    assert coverage["entity_types"]["zombie"] == 1
+
+
+def test_vocabulary_round_trips_through_json():
+    vocab = Vocabulary(entities=("player", "cow"), items=("bread",))
+    assert Vocabulary.from_dict(vocab.to_dict()) == vocab
+    assert Vocabulary.from_dict(None) == Vocabulary()
+    assert vocab.describe() == {"entities": 2, "items": 1}

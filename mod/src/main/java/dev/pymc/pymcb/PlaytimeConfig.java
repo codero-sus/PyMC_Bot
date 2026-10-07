@@ -29,6 +29,16 @@ public final class PlaytimeConfig {
     /** Whether to write the 3x3x3 block neighbourhood (adds ~600 bytes per sample). */
     public boolean includeBlocks = true;
 
+    // ---------------------------------------------------------------- advanced mode
+    /** Write the advanced half of the schema (entities, items, armour, drops). */
+    public boolean advanced = false;
+    /** Maximum entities written per sample in advanced mode. */
+    public int maxEntities = 24;
+    /** How far (blocks) an entity may be and still be written in advanced mode. */
+    public double entityRange = 32.0;
+    /** Maximum dropped item stacks written per sample in advanced mode. */
+    public int maxGroundItems = 8;
+
     public static PlaytimeConfig get() {
         return INSTANCE;
     }
@@ -45,6 +55,10 @@ public final class PlaytimeConfig {
                 cfg.turnDegrees = (float) doubleProp(props, "turnDegrees", cfg.turnDegrees, 0.0, 180.0);
                 cfg.maxNearby = intProp(props, "maxNearby", cfg.maxNearby, 0, 64);
                 cfg.includeBlocks = boolProp(props, "includeBlocks", cfg.includeBlocks);
+                cfg.advanced = boolProp(props, "advanced", cfg.advanced);
+                cfg.maxEntities = intProp(props, "maxEntities", cfg.maxEntities, 0, 128);
+                cfg.entityRange = doubleProp(props, "entityRange", cfg.entityRange, 4.0, 128.0);
+                cfg.maxGroundItems = intProp(props, "maxGroundItems", cfg.maxGroundItems, 0, 64);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
             }
@@ -63,6 +77,10 @@ public final class PlaytimeConfig {
         props.setProperty("turnDegrees", Double.toString(turnDegrees));
         props.setProperty("maxNearby", Integer.toString(maxNearby));
         props.setProperty("includeBlocks", Boolean.toString(includeBlocks));
+        props.setProperty("advanced", Boolean.toString(advanced));
+        props.setProperty("maxEntities", Integer.toString(maxEntities));
+        props.setProperty("entityRange", Double.toString(entityRange));
+        props.setProperty("maxGroundItems", Integer.toString(maxGroundItems));
         props.setProperty("_comment", "PyMC Playtime Recorder - sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());
@@ -79,10 +97,29 @@ public final class PlaytimeConfig {
         save();
     }
 
+    /** Turn advanced (entity + item) recording on or off and persist it. */
+    public void setAdvanced(boolean enabled) {
+        advanced = enabled;
+        save();
+    }
+
+    public void setMaxEntities(int limit) {
+        maxEntities = Math.max(0, Math.min(128, limit));
+        save();
+    }
+
+    public void setMaxGroundItems(int limit) {
+        maxGroundItems = Math.max(0, Math.min(64, limit));
+        save();
+    }
+
     public String describe() {
         return String.format(Locale.ROOT,
                 "sample every %d tick(s) (~%d ms), moveEpsilon=%.3f, turnDegrees=%.1f, maxNearby=%d, includeBlocks=%s",
-                sampleTicks, sampleTicks * 50, moveEpsilon, turnDegrees, maxNearby, includeBlocks);
+                sampleTicks, sampleTicks * 50, moveEpsilon, turnDegrees, maxNearby, includeBlocks)
+                + String.format(Locale.ROOT,
+                "\nadvanced=%s (entities<=%d within %.0f blocks, ground items<=%d)",
+                advanced, maxEntities, entityRange, maxGroundItems);
     }
 
     private static Path path() {

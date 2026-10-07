@@ -210,6 +210,7 @@ def synthesize_playtime(
     profiles: Iterable[str] = ("explorer", "builder", "fighter"),
     seed: int = 7,
     instruction: str = INSTRUCTION,
+    advanced: bool = False,
 ) -> dict[str, Any]:
     """Fabricate a player session and write it as a dataset file.
 
@@ -217,6 +218,10 @@ def synthesize_playtime(
     generator walks a fake world, turns the view, jumps, sneaks, swings and switches
     hotbar slots, and emits samples with exactly the mod's schema. Handy for demos and
     for testing the trainer without a Minecraft client installed.
+
+    ``advanced=True`` also writes the entity and item half of the schema (``entities``,
+    ``items``, ``held_item``, ``armor``, ``ground_items``), which is what the mod records
+    with ``/pymc advanced on`` and what an advanced model trains on.
     """
     rng = random.Random(seed)
     samples_per_minute = 60.0 / (sample_ticks * 0.05)
@@ -235,6 +240,7 @@ def synthesize_playtime(
             yaw, pitch = rng.uniform(-180, 180), 0.0
             slot, health, food = 0, 20.0, 20.0
             count = max(20, total_samples // len(names))
+            spawn_ticks = rng.randint(10, 30)  # a fresh spawn with nothing in hand
             mood = "explore"
             mood_left = rng.randint(20, 60)
             for tick in range(count):
@@ -282,8 +288,22 @@ def synthesize_playtime(
 
                 if action not in ACTION_SPACE:  # pragma: no cover - defensive
                     action = "none"
-                health = max(4.0, min(20.0, health + rng.uniform(-0.6, 0.4)))
-                food = max(6.0, min(20.0, food + rng.uniform(-0.3, 0.2)))
+                # Health and hunger follow the mood instead of random-walking: a fight
+                # costs health, everything else regenerates; eating restores hunger. A
+                # session that decays to permanent near-death (the old behaviour) taught
+                # the model that "nearly dead and starving" is the normal state.
+                if mood == "combat":
+                    health -= rng.uniform(0.0, 0.4)
+                else:
+                    health += rng.uniform(0.1, 0.5)  # regeneration between fights
+                health = max(6.0, min(20.0, health))
+                if action in ("use", "hold"):
+                    food += rng.uniform(2.0, 6.0)  # ate something
+                elif mood == "explore" and moved > 0.2:
+                    food -= rng.uniform(0.0, 0.12)
+                else:
+                    food -= rng.uniform(0.0, 0.04)
+                food = max(6.0, min(20.0, food))
                 pitch = max(-60.0, min(60.0, pitch + rng.uniform(-3, 3)))
 
                 observation = {
@@ -309,6 +329,22 @@ def synthesize_playtime(
                     "blocks": _fake_blocks(rng, profile),
                     "nearby": _fake_nearby(rng, profile, x, y, z, yaw, mood),
                 }
+                if advanced:
+                    entities = _fake_entities(rng, profile, mood, x, y, z, yaw)
+                    if tick < spawn_ticks:
+                        # Every session starts empty handed and unarmoured: without this
+                        # state in the data a model never learns what to do when the bot
+                        # spawns on a server with nothing in its inventory.
+                        items, held, armor = _fresh_spawn_inventory(rng, slot)
+                    else:
+                        items, held, armor = _fake_inventory(rng, profile, mood, slot)
+                        if mood == "chat" and rng.random() < 0.5:
+                            held = ""  # weapons away while typing
+                    observation["entities"] = entities
+                    observation["items"] = items
+                    observation["held_item"] = held
+                    observation["armor"] = armor
+                    observation["ground_items"] = _fake_ground_items(rng, profile, mood)
                 action_counts[action] = action_counts.get(action, 0) + 1
                 handle.write(
                     json.dumps(
@@ -439,11 +475,136 @@ def _fake_nearby(
     return entries
 
 
+HOTBAR_BY_MOOD: dict[str, tuple[str, ...]] = {
+    "explore": ("minecraft:stone_sword", "minecraft:oak_planks", "minecraft:torch", "minecraft:bread"),
+    "mine": ("minecraft:iron_pickaxe", "minecraft:stone_shovel", "minecraft:torch", "minecraft:cobblestone"),
+    "combat": ("minecraft:iron_sword", "minecraft:shield", "minecraft:cooked_beef", "minecraft:bow"),
+    "chat": ("minecraft:bread", "minecraft:oak_planks", "minecraft:torch", "minecraft:shield"),
+}
+
+ARMOR_BY_PROFILE: dict[str, tuple[str, ...]] = {
+    "explorer": ("minecraft:leather_helmet", "minecraft:leather_boots"),
+    "builder": ("minecraft:iron_helmet", "minecraft:iron_chestplate", "minecraft:iron_leggings"),
+    "fighter": ("minecraft:diamond_helmet", "minecraft:diamond_chestplate", "minecraft:diamond_boots"),
+}
+
+GROUND_LOOT_BY_MOOD: dict[str, tuple[str, ...]] = {
+    "explore": ("minecraft:wheat_seeds", "minecraft:bone"),
+    "mine": ("minecraft:cobblestone", "minecraft:coal", "minecraft:raw_iron"),
+    "combat": ("minecraft:rotten_flesh", "minecraft:bone", "minecraft:arrow"),
+    "chat": ("minecraft:apple",),
+}
+
+
+def _fake_inventory(
+    rng: random.Random, profile: str, mood: str, selected: int
+) -> tuple[list[list[Any]], str, list[str]]:
+    """A hotbar and armour that match what the player is doing (items are how Minecraft players act)."""
+    hotbar = list(HOTBAR_BY_MOOD[mood])
+    while len(hotbar) < 9:
+        hotbar.append(hotbar[rng.randrange(len(hotbar))] if rng.random() < 0.6 else "minecraft:air")
+    rng.shuffle(hotbar)
+    items: list[list[Any]] = []
+    for index, name in enumerate(hotbar):
+        if name == "minecraft:air":
+            continue
+        count = 1 if name.endswith(("sword", "pickaxe", "shovel", "shield", "bow")) else rng.randint(1, 8)
+        items.append([index, name, count])
+    # A few things kept in the main inventory, the way a session accumulates junk.
+    for index in range(9, 9 + rng.randint(1, 4)):
+        name = rng.choice(
+            ("minecraft:cobblestone", "minecraft:dirt", "minecraft:oak_log", "minecraft:coal", "minecraft:stick")
+        )
+        items.append([index, name, rng.randint(1, 12)])
+    held = hotbar[selected % len(hotbar)]
+    if held == "minecraft:air":
+        held = next((entry[1] for entry in items), "minecraft:air")
+    armor = list(ARMOR_BY_PROFILE.get(profile, ()))
+    return items, held, armor
+
+
+def _fresh_spawn_inventory(rng: random.Random, selected: int) -> tuple[list[list[Any]], str, list[str]]:
+    """What a player carries right after joining: no armour, an empty hand, a bit of junk."""
+    items: list[list[Any]] = []
+    for index in range(rng.randint(0, 2)):
+        items.append([index, rng.choice(("minecraft:dirt", "minecraft:cobblestone")), rng.randint(1, 12)])
+    return items, "", []
+
+
+def _fake_entities(
+    rng: random.Random, profile: str, mood: str, x: float, y: float, z: float, yaw: float
+) -> list[dict[str, Any]]:
+    """Everything the player can see: the neighbours that matter plus distant scenery."""
+    entities: list[dict[str, Any]] = []
+    for entry in _fake_nearby(rng, profile, x, y, z, yaw, mood):
+        entity = dict(entry)
+        entity["player"] = _short_type(entity["type"]) == "player" or entity["type"].endswith("player")
+        if entity["player"]:
+            entity["health"] = 20.0
+            entity["held_item"] = rng.choice(("minecraft:iron_sword", "minecraft:bow", "minecraft:shield"))
+        else:
+            entity["held_item"] = ""
+        entity["on_ground"] = rng.random() < 0.9
+        entity["yaw"] = round(rng.uniform(-180, 180), 1)
+        entities.append(entity)
+    # Distant animals/players wandering about - context the advanced encoder can learn from.
+    for _ in range(rng.choice([0, 1, 1, 2])):
+        angle = math.radians(yaw + rng.uniform(-180, 180))
+        distance = rng.uniform(14.0, 26.0)
+        kind = rng.choice(("minecraft:cow", "minecraft:sheep", "minecraft:zombie", "minecraft:player"))
+        entities.append(
+            {
+                "type": kind,
+                "dx": round(-math.sin(angle) * distance, 2),
+                "dy": 0.0,
+                "dz": round(math.cos(angle) * distance, 2),
+                "dist": round(distance, 2),
+                "hostile": kind.endswith("zombie"),
+                "player": kind.endswith("player"),
+                "health": 20.0,
+                "held_item": "",
+                "on_ground": True,
+                "yaw": round(rng.uniform(-180, 180), 1),
+            }
+        )
+    entities.sort(key=lambda entry: entry["dist"])
+    return entities
+
+
+def _fake_ground_items(rng: random.Random, profile: str, mood: str) -> list[dict[str, Any]]:
+    """Drops lying around after mining/fighting - what a player walks over to pick up."""
+    stacks: list[dict[str, Any]] = []
+    for _ in range(rng.choice([0, 0, 1, 1, 2])):
+        stacks.append(
+            {
+                "item": rng.choice(GROUND_LOOT_BY_MOOD[mood]),
+                "count": rng.randint(1, 4),
+                "dist": round(rng.uniform(1.0, 6.0), 2),
+            }
+        )
+    stacks.sort(key=lambda entry: entry["dist"])
+    return stacks
+
+
+def _short_type(name: str) -> str:
+    return str(name or "").split(":")[-1]
+
+
 def dataset_summary(path: str | Path) -> dict[str, Any]:
     """Small report used by ``pymc_bot train --inspect`` and the panel."""
-    from pymc_bot.features import summarise
+    from pymc_bot.features import learn_vocabulary, summarise, vocabulary_coverage
 
     examples = load_examples(path)
-    summary = summarise([observation for observation, _ in examples])
+    observations = [observation for observation, _ in examples]
+    summary = summarise(observations)
     summary["dataset"] = str(path)
+    # What an advanced model could learn from this dataset.
+    vocab = learn_vocabulary(observations)
+    summary["vocabulary"] = vocab.describe()
+    summary.update(
+        {key: value for key, value in vocabulary_coverage(observations, vocab).items() if key != "samples_with_entities_or_items"}
+    )
+    summary["entities_and_items"] = bool(
+        any(observation.get("entities") or observation.get("items") for observation in observations)
+    )
     return summary

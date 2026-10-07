@@ -34,10 +34,15 @@ import numpy as np
 
 from pymc_bot.features import (
     ACTION_SPACE,
-    FEATURE_VERSION,
+    DEFAULT_ENTITY_SLOTS,
+    DEFAULT_ITEM_SLOTS,
     TARGET_NAMES,
+    Vocabulary,
     encode,
+    layout_version,
+    learn_vocabulary,
     normalise_targets,
+    vocabulary_coverage,
 )
 from pymc_bot.models import (
     balanced_accuracy,
@@ -88,6 +93,11 @@ class TrainConfig:
     #: How strongly to balance (1.0 = full, 0.5 = tempered, 0.0 = off).
     class_weight_power: float = 0.5
     include_blocks: bool = True
+    #: Advanced training: learn entity and item vocabularies from the playtime and feed
+    #: them to the model (layout v2). The mod records them with ``/pymc advanced on``.
+    advanced: bool = False
+    entity_slots: int = DEFAULT_ENTITY_SLOTS
+    item_slots: int = DEFAULT_ITEM_SLOTS
     seed: int = 0
     resume: bool = False
     from_checkpoint: str = ""
@@ -120,20 +130,26 @@ class Dataset:
     actions: list[str]
     summary: dict[str, Any] = field(default_factory=dict)
     episodes: int = 0
+    #: Entity/item words this dataset was encoded with (empty = basic layout).
+    vocab: Vocabulary = field(default_factory=Vocabulary)
 
     def __len__(self) -> int:
         return int(len(self.y))
 
     def split(self, val_split: float, seed: int = 0) -> tuple[Dataset, Dataset]:
         if val_split <= 0.0 or len(self) < 10:
-            empty = Dataset(self.X[:0], self.y[:0], self.T[:0], self.actions, {})
+            empty = Dataset(self.X[:0], self.y[:0], self.T[:0], self.actions, {}, vocab=self.vocab)
             return self, empty
         rng = np.random.default_rng(seed)
         order = rng.permutation(len(self))
         cut = max(1, int(len(self) * val_split))
         val_idx, train_idx = order[:cut], order[cut:]
-        train = Dataset(self.X[train_idx], self.y[train_idx], self.T[train_idx], self.actions, self.summary)
-        val = Dataset(self.X[val_idx], self.y[val_idx], self.T[val_idx], self.actions, self.summary)
+        train = Dataset(
+            self.X[train_idx], self.y[train_idx], self.T[train_idx], self.actions, self.summary, vocab=self.vocab
+        )
+        val = Dataset(
+            self.X[val_idx], self.y[val_idx], self.T[val_idx], self.actions, self.summary, vocab=self.vocab
+        )
         train.episodes = val.episodes = self.episodes
         return train, val
 
@@ -159,8 +175,17 @@ def build_dataset(
     *,
     include_blocks: bool = True,
     limit: int | None = None,
+    advanced: bool = False,
+    entity_slots: int = DEFAULT_ENTITY_SLOTS,
+    item_slots: int = DEFAULT_ITEM_SLOTS,
 ) -> Dataset:
-    """Turn a playtime dataset (or episode directory) into arrays."""
+    """Turn a playtime dataset (or episode directory) into arrays.
+
+    ``advanced=True`` first learns which entities and items the recording contains
+    (:func:`pymc_bot.features.learn_vocabulary`) and appends those words to every
+    feature vector. The vocabulary travels with the checkpoint, so the live bot encodes
+    its world exactly the same way.
+    """
     examples = load_examples(path, limit=limit)
     if not examples:
         raise ValueError(
@@ -171,7 +196,14 @@ def build_dataset(
     transitions = pair_transitions(examples)
     actions = list(ACTION_SPACE)
     index_of = {name: index for index, name in enumerate(actions)}
-    X = np.asarray([encode(observation, include_blocks) for observation, _, _ in transitions], dtype=np.float32)
+    vocab = (
+        learn_vocabulary([observation for observation, _, _ in transitions], entity_slots=entity_slots, item_slots=item_slots)
+        if advanced
+        else Vocabulary()
+    )
+    X = np.asarray(
+        [encode(observation, include_blocks, vocab) for observation, _, _ in transitions], dtype=np.float32
+    )
     y = np.asarray([index_of[action] for _, action, _ in transitions], dtype=np.int64)
     T = np.asarray([normalise_targets(targets) for _, _, targets in transitions], dtype=np.float32)
     counts: dict[str, int] = {}
@@ -183,8 +215,20 @@ def build_dataset(
         "episodes": len(episodes),
         "actions": dict(sorted(counts.items(), key=lambda item: -item[1])),
         "files": [str(file) for file in dataset_files(path)],
+        "advanced": bool(advanced),
+        "vocabulary": vocab.describe(),
     }
-    return Dataset(X, y, T, actions, summary, episodes=len(episodes))
+    if advanced:
+        summary.update(
+            {
+                key: value
+                for key, value in vocabulary_coverage(
+                    [observation for observation, _, _ in transitions], vocab
+                ).items()
+                if key != "samples_with_entities_or_items"
+            }
+        )
+    return Dataset(X, y, T, actions, summary, episodes=len(episodes), vocab=vocab)
 
 
 def dump_rng(rng: random.Random) -> list[Any]:
@@ -295,12 +339,42 @@ def train(
     """
     started = time.monotonic()
     emit = on_event or (lambda _event: None)
-    dataset = build_dataset(config.dataset, include_blocks=config.include_blocks)
     run_name = config.run_name or default_run_name(config.dataset)
     config.run_name = run_name
     run_dir = resolve_run_dir(config.models_dir, run_name)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "checkpoints").mkdir(exist_ok=True)
+
+    # Adopt the saved settings of the run *before* the dataset is built: a run that was
+    # trained with the advanced entity/item layout must be resumed with the same columns.
+    resume_from: Path | None = None
+    state: dict[str, Any] = {}
+    if config.resume:
+        state = read_state(config.models_dir, run_name) or {}
+        saved = state.get("config") or {}
+        for key in (
+            "hidden",
+            "lr",
+            "batch_size",
+            "include_blocks",
+            "reg_weight",
+            "advanced",
+            "entity_slots",
+            "item_slots",
+        ):
+            if key in saved:
+                value = saved[key]
+                setattr(config, key, tuple(value) if key == "hidden" else value)
+        config.engine = saved.get("engine", config.engine)
+        candidate = (
+            Path(config.from_checkpoint)
+            if config.from_checkpoint
+            else run_dir / checkpoint_filename(config.engine)
+        )
+        if candidate.is_file():
+            resume_from = candidate
+    elif config.from_checkpoint:
+        resume_from = Path(config.from_checkpoint)
 
     if config.engine in ("transformer", "torch") and not torch_available():
         raise RuntimeError(
@@ -308,27 +382,18 @@ def train(
             "use --engine mlp for the dependency-free model"
         )
 
+    dataset = build_dataset(
+        config.dataset,
+        include_blocks=config.include_blocks,
+        advanced=config.advanced,
+        entity_slots=config.entity_slots,
+        item_slots=config.item_slots,
+    )
     train_set, val_set = dataset.split(config.val_split, seed=config.seed)
     feature_dim = int(dataset.X.shape[1]) if len(dataset) else 0
     if not feature_dim:
         raise ValueError("the dataset produced no features")
     checkpoint_path = run_dir / checkpoint_filename(config.engine)
-
-    resume_from: Path | None = None
-    state: dict[str, Any] = {}
-    if config.resume:
-        state = read_state(config.models_dir, run_name) or {}
-        candidate = Path(config.from_checkpoint) if config.from_checkpoint else checkpoint_path
-        if candidate.is_file():
-            resume_from = candidate
-            saved = state.get("config") or {}
-            for key in ("engine", "hidden", "lr", "batch_size", "include_blocks", "reg_weight"):
-                if key in saved and key not in ("engine",):
-                    value = saved[key]
-                    setattr(config, key, tuple(value) if key == "hidden" else value)
-            config.engine = saved.get("engine", config.engine)
-    elif config.from_checkpoint:
-        resume_from = Path(config.from_checkpoint)
 
     model = load_model(resume_from, kind=config.engine) if resume_from else build_model(
         config.engine,
@@ -377,6 +442,8 @@ def train(
             "total_steps": total_steps,
             "resumed_from": str(resume_from) if resume_from else None,
             "feature_dim": feature_dim,
+            "advanced": bool(config.advanced),
+            "vocabulary": dataset.vocab.describe(),
         }
     )
 
@@ -384,7 +451,16 @@ def train(
         """Write checkpoint + metrics + model card (``stopping`` marks the final write)."""
         """Write the checkpoint, the metrics and the model card."""
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        model.save(checkpoint_path, extra={"step": step, "epoch": epoch, "run": run_name, "engine": config.engine})
+        layout = {
+            "step": step,
+            "epoch": epoch,
+            "run": run_name,
+            "engine": config.engine,
+            "feature_version": layout_version(dataset.vocab),
+            "advanced": bool(config.advanced),
+            **dataset.vocab.to_dict(),
+        }
+        model.save(checkpoint_path, extra=layout)
         history_path = run_dir / "checkpoints" / f"step-{step:07d}{checkpoint_path.suffix}"
         model.save(history_path, extra={"step": step, "epoch": epoch, "run": run_name})
         metrics_line = {**metrics, "step": step, "epoch": epoch, "samples_seen": samples_seen}
@@ -418,9 +494,12 @@ def train(
             "run": run_name,
             "engine": config.engine,
             "checkpoint_file": checkpoint_path.name,
-            "feature_version": FEATURE_VERSION,
+            "feature_version": layout_version(dataset.vocab),
             "feature_dim": feature_dim,
             "include_blocks": config.include_blocks,
+            "advanced": bool(config.advanced),
+            "entity_vocabulary": list(dataset.vocab.entities),
+            "item_vocabulary": list(dataset.vocab.items),
             "class_weights": config.class_weights,
             "class_weight_values": None if weights is None else [round(float(w), 4) for w in weights],
             "actions": dataset.actions,
@@ -445,7 +524,15 @@ def train(
             "created_at": created_at,
             "updated_at": time.time(),
             "stopping": stopping,
-            "notes": "Trained on recorded playtime (Fabric mod ./mod) - run natively, no Ollama needed.",
+            "notes": (
+                "Trained on recorded playtime (Fabric mod ./mod) - run natively, no Ollama needed."
+                + (
+                    " Advanced training: entity and item vocabularies learned from the recording"
+                    f" ({len(dataset.vocab.entities)} entities, {len(dataset.vocab.items)} items)."
+                    if config.advanced
+                    else ""
+                )
+            ),
         }
         (run_dir / CARD_FILENAME).write_text(json.dumps(card, indent=2), encoding="utf-8")
         return card

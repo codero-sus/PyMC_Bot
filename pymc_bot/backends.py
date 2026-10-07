@@ -202,7 +202,18 @@ class SimulatedBackend(BaseBackend):
         self._pitch = 0.0
         self._health = 20.0
         self._food = 20.0
-        self._inventory: dict[str, int] = {"oak_log": 3, "dirt": 2}
+        # A starter kit a player would have after a few minutes: the trained brain's item
+        # inputs (advanced training) need something to look at.
+        self._inventory: dict[str, int] = {
+            "oak_log": 3,
+            "dirt": 2,
+            "iron_sword": 1,
+            "iron_pickaxe": 1,
+            "bread": 3,
+            "torch": 8,
+        }
+        self._held_item = "iron_sword"
+        self._selected_slot = 2
         self._connected_at: float | None = None
         self._last_error: str | None = None
         self._server = {"host": "", "port": 0, "version": ""}
@@ -373,11 +384,76 @@ class SimulatedBackend(BaseBackend):
         snap["inventory"] = [
             {"name": name, "count": count} for name, count in sorted(self._inventory.items()) if count > 0
         ]
+        # What the bot is holding: the trained brain uses it like the mod's recording does.
+        snap["held_item"] = self._held_item if self._inventory.get(self._held_item, 0) > 0 else (
+            snap["inventory"][0]["name"] if snap["inventory"] else ""
+        )
+        snap["selected_slot"] = self._selected_slot
+        snap["entities"] = self._entity_list()
+        snap["ground_items"] = self._ground_items()
         snap["server"] = dict(self._server)
         snap["last_error"] = self._last_error
         snap["connected_at"] = self._connected_at
         snap["uptime"] = round(time.time() - self._connected_at, 1) if self._connected_at else 0.0
         return snap
+
+    # The simulated neighbourhood: a couple of mobs, an animal and a dropped stack, so the
+    # trained brain's entity and item inputs can be exercised without a Minecraft server.
+    MOBS: tuple[dict[str, Any], ...] = (
+        {"type": "minecraft:zombie", "x": -5.0, "y": GROUND_Y, "z": -9.0, "hostile": True, "health": 20.0},
+        {"type": "minecraft:cow", "x": 9.0, "y": GROUND_Y, "z": 5.0, "hostile": False, "health": 10.0},
+    )
+
+    def _entity_list(self) -> list[dict[str, Any]]:
+        """Everything in range, in the same shape the mod and the bridge report it."""
+        x, y, z = self._position
+        entries: list[dict[str, Any]] = []
+        for player in self._player_list():
+            entries.append(
+                {
+                    "type": "minecraft:player",
+                    "dx": round(player["x"] - x, 2),
+                    "dy": round(player["y"] - y, 2),
+                    "dz": round(player["z"] - z, 2),
+                    "dist": player["distance"],
+                    "hostile": False,
+                    "player": True,
+                    "health": 20.0,
+                    "on_ground": True,
+                    "count": 0,
+                    "held_item": "minecraft:iron_sword",
+                }
+            )
+        for mob in self.MOBS:
+            dx, dy, dz = mob["x"] - x, mob["y"] - y, mob["z"] - z
+            entries.append(
+                {
+                    "type": mob["type"],
+                    "dx": round(dx, 2),
+                    "dy": round(dy, 2),
+                    "dz": round(dz, 2),
+                    "dist": round(math.sqrt(dx * dx + dy * dy + dz * dz), 2),
+                    "hostile": bool(mob["hostile"]),
+                    "player": False,
+                    "health": mob["health"],
+                    "on_ground": True,
+                    "count": 0,
+                    "held_item": "",
+                }
+            )
+        entries.sort(key=lambda entry: entry["dist"])
+        return entries[:24]
+
+    def _ground_items(self) -> list[dict[str, Any]]:
+        x, y, z = self._position
+        dx, dz = 2.0 - x, 3.0 - z
+        return [
+            {
+                "item": "minecraft:oak_log",
+                "count": 1,
+                "dist": round(math.sqrt(dx * dx + dz * dz), 2),
+            }
+        ]
 
     def _player_list(self) -> list[dict[str, Any]]:
         out = []

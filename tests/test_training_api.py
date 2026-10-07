@@ -187,3 +187,59 @@ def test_the_trained_brain_actually_drives_the_connected_bot(panel):
     position = status["bot"]["position"]
     assert abs(position["x"]) + abs(position["z"]) > 0.5
     client.post("/api/ai/stop")
+
+
+# ------------------------------------------------------------- advanced training
+def _payload(panel) -> dict:
+    """The whole training payload (status + dataset + advanced overview)."""
+    response = panel["client"].get("/api/training/status")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_advanced_training_from_the_panel(panel):
+    _train_demo(panel, advanced=True, run_name="api-advanced")
+    payload = _payload(panel)
+    overview = payload["advanced"]
+    assert overview["trained"] is True
+    assert overview["run"] == "api-advanced"
+    assert overview["entities"] and overview["items"]
+    assert overview["entity_slots"] == len(overview["entities"])
+    assert payload["dataset"]["entities_and_items"] is True
+    assert payload["dataset"]["vocabulary"]["entities"] > 0
+    assert payload["dataset"]["entity_coverage"] is not None
+
+    card = next(card for card in list_models(panel["models_dir"]) if card["run"] == "api-advanced")
+    assert card["advanced"] is True
+    assert card["feature_version"] == 2
+    assert card["feature_dim"] > 215
+    assert overview["coverage"]["entity"] == card["dataset_summary"]["entity_coverage"]
+
+
+def test_simulate_respects_advanced_mode(panel):
+    """`simulate_minutes` has to generate the schema the run will be trained on."""
+    _train_demo(panel, simulate_minutes=0.2, steps=10, run_name="plain-demo")
+    plain = _payload(panel)
+    assert plain["dataset"]["entities_and_items"] is False
+    assert plain["advanced"]["trained"] is False
+
+    _train_demo(panel, simulate_minutes=0.2, steps=10, advanced=True, run_name="rich-demo")
+    rich = _payload(panel)
+    assert rich["dataset"]["entities_and_items"] is True
+    assert rich["advanced"]["trained"] is True
+    assert rich["advanced"]["run"] == "rich-demo"
+
+
+def test_advanced_settings_are_remembered_in_the_config(panel):
+    _train_demo(panel, advanced=True, run_name="remember-me")
+    saved = json.loads(panel["config_path"].read_text())
+    assert saved["training"]["advanced"] is True
+    assert saved["training"]["entity_slots"] == 24
+    assert saved["training"]["active_run"] == "remember-me"
+
+
+def test_contract_advertises_the_advanced_signals(panel):
+    contract = panel["client"].get("/api/contract").json()
+    assert "advanced" in contract["training_modes"]
+    assert "entities" in contract["advanced_signals"]
+    assert "items" in contract["advanced_signals"]

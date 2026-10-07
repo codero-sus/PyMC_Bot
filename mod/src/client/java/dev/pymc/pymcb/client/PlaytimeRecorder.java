@@ -21,7 +21,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
@@ -64,6 +67,7 @@ public final class PlaytimeRecorder {
     private long episodeStartTick;
     private int episodeSamples;
     private long totalSamples;
+    private long advancedSamples;
     private int episodeNumber = 1;
     private long lastSampleTick;
 
@@ -107,6 +111,7 @@ public final class PlaytimeRecorder {
         episodeStartTick = 0;
         episodeSamples = 0;
         totalSamples = 0;
+        advancedSamples = 0;
         lastSampleTick = 0;
         lastPos = null;
         hasPrevView = false;
@@ -332,7 +337,20 @@ public final class PlaytimeRecorder {
         if (PlaytimeConfig.get().includeBlocks) {
             sample.blocks = blockNeighbourhood(player);
         }
+        if (PlaytimeConfig.get().advanced) {
+            advancedSamples++;
+        }
         sample.nearby = nearbyEntities(player, pos);
+        if (PlaytimeConfig.get().advanced) {
+            // Advanced recording: every entity in range (id, where, health, held item,
+            // whether it is a player), the inventory with what is in hand, the armour and
+            // the dropped stacks - the raw material an advanced model learns from.
+            sample.entities = visibleEntities(player, pos);
+            sample.groundItems = groundItems(player, pos);
+            sample.items = inventory(player);
+            sample.heldItem = itemName(player.getMainHandItem());
+            sample.armor = armor(player);
+        }
         sample.moved = movedSinceSample;
 
         writeLine(toJson(sample));
@@ -386,6 +404,84 @@ public final class PlaytimeRecorder {
         return hits.size() > limit ? new ArrayList<>(hits.subList(0, limit)) : hits;
     }
 
+    /** Every entity the player can see, described well enough for the item/entity vocabulary. */
+    private static List<VisualEntity> visibleEntities(LocalPlayer player, Vec3 pos) {
+        PlaytimeConfig cfg = PlaytimeConfig.get();
+        List<VisualEntity> out = new ArrayList<>();
+        for (Entity entity : player.level().getEntities(player, player.getBoundingBox().inflate(cfg.entityRange))) {
+            if (entity == player) {
+                continue;
+            }
+            Vec3 diff = entity.position().subtract(pos);
+            VisualEntity hit = new VisualEntity();
+            hit.type = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
+            hit.dx = diff.x;
+            hit.dy = diff.y;
+            hit.dz = diff.z;
+            hit.dist = diff.length();
+            hit.hostile = entity instanceof Monster;
+            hit.player = entity instanceof Player;
+            hit.health = entity instanceof LivingEntity living ? living.getHealth() : 0.0f;
+            hit.onGround = entity.onGround();
+            hit.yaw = entity.getYRot();
+            hit.heldItem = entity instanceof LivingEntity living ? itemName(living.getMainHandItem()) : "";
+            hit.count = entity instanceof ItemEntity drop ? drop.getItem().getCount() : 0;
+            out.add(hit);
+        }
+        out.sort((a, b) -> Double.compare(a.dist, b.dist));
+        return out.size() > cfg.maxEntities ? new ArrayList<>(out.subList(0, cfg.maxEntities)) : out;
+    }
+
+    /** Dropped item stacks lying around, so the model learns what is worth walking over. */
+    private static List<GroundItem> groundItems(LocalPlayer player, Vec3 pos) {
+        PlaytimeConfig cfg = PlaytimeConfig.get();
+        List<GroundItem> out = new ArrayList<>();
+        for (Entity entity : player.level().getEntities(player, player.getBoundingBox().inflate(12.0))) {
+            if (!(entity instanceof ItemEntity drop)) {
+                continue;
+            }
+            Vec3 diff = entity.position().subtract(pos);
+            GroundItem hit = new GroundItem();
+            hit.item = itemName(drop.getItem());
+            hit.count = drop.getItem().getCount();
+            hit.dist = diff.length();
+            out.add(hit);
+        }
+        out.sort((a, b) -> Double.compare(a.dist, b.dist));
+        return out.size() > cfg.maxGroundItems ? new ArrayList<>(out.subList(0, cfg.maxGroundItems)) : out;
+    }
+
+    /** The whole inventory as [slot, item, count] - hotbar first, then the main rows. */
+    private static List<InvItem> inventory(LocalPlayer player) {
+        var inventory = player.getInventory();
+        List<InvItem> out = new ArrayList<>();
+        for (int slot = 0; slot < 36; slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            out.add(new InvItem(slot, itemName(stack), stack.getCount()));
+        }
+        return out;
+    }
+
+    private static List<String> armor(LocalPlayer player) {
+        List<String> out = new ArrayList<>(4);
+        for (ItemStack stack : player.getArmorSlots()) {
+            if (!stack.isEmpty()) {
+                out.add(itemName(stack));
+            }
+        }
+        return out;
+    }
+
+    private static String itemName(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return "";
+        }
+        return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+    }
+
     // ------------------------------------------------------------------ writing
 
     private void writeLine(String line) {
@@ -436,6 +532,63 @@ public final class PlaytimeRecorder {
             }
             sb.append(']');
         }
+        if (s.entities != null) {
+            sb.append(", \"entities\": [");
+            for (int i = 0; i < s.entities.size(); i++) {
+                VisualEntity e = s.entities.get(i);
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append("{\"type\": \"").append(Json.escape(e.type)).append('"')
+                  .append(", \"dx\": ").append(Json.number(e.dx, 2))
+                  .append(", \"dy\": ").append(Json.number(e.dy, 2))
+                  .append(", \"dz\": ").append(Json.number(e.dz, 2))
+                  .append(", \"dist\": ").append(Json.number(e.dist, 2))
+                  .append(", \"hostile\": ").append(e.hostile)
+                  .append(", \"player\": ").append(e.player)
+                  .append(", \"health\": ").append(Json.number(e.health, 1))
+                  .append(", \"on_ground\": ").append(e.onGround)
+                  .append(", \"yaw\": ").append(Json.number(e.yaw, 1))
+                  .append(", \"count\": ").append(e.count)
+                  .append(", \"held_item\": \"").append(Json.escape(e.heldItem)).append("\"}");
+            }
+            sb.append(']');
+        }
+        if (s.items != null) {
+            sb.append(", \"items\": [");
+            for (int i = 0; i < s.items.size(); i++) {
+                InvItem item = s.items.get(i);
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append('[').append(item.slot).append(", \"").append(Json.escape(item.item))
+                  .append("\", ").append(item.count).append(']');
+            }
+            sb.append(']');
+            sb.append(", \"held_item\": \"").append(Json.escape(s.heldItem == null ? "" : s.heldItem)).append('"');
+            sb.append(", \"armor\": [");
+            for (int i = 0; i < s.armor.size(); i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append('"').append(Json.escape(s.armor.get(i))).append('"');
+            }
+            sb.append(']');
+        }
+        if (s.groundItems != null) {
+            sb.append(", \"ground_items\": [");
+            for (int i = 0; i < s.groundItems.size(); i++) {
+                GroundItem g = s.groundItems.get(i);
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append("{\"item\": \"").append(Json.escape(g.item)).append('"')
+                  .append(", \"count\": ").append(g.count)
+                  .append(", \"dist\": ").append(Json.number(g.dist, 2))
+                  .append('}');
+            }
+            sb.append(']');
+        }
         sb.append(", \"nearby\": [");
         for (int i = 0; i < s.nearby.size(); i++) {
             EntityHit e = s.nearby.get(i);
@@ -470,6 +623,8 @@ public final class PlaytimeRecorder {
         sb.append("  \"samples\": ").append(totalSamples).append(",\n");
         sb.append("  \"episode\": ").append(episodeNumber).append(",\n");
         sb.append("  \"episode_samples\": ").append(episodeSamples).append(",\n");
+        sb.append("  \"advanced\": ").append(PlaytimeConfig.get().advanced).append(",\n");
+        sb.append("  \"entities_offered\": ").append(advancedSamples).append(",\n");
         sb.append("  \"dataset\": \"").append(datasetPath == null ? "" : Json.escape(datasetPath.toString())).append("\"\n");
         sb.append("}\n");
         try {
@@ -493,6 +648,7 @@ public final class PlaytimeRecorder {
             return "nothing recorded yet - run /pymc record start first";
         }
         String system = "You are a Minecraft player bot. Given the observation, reply with the action to take next.";
+        boolean advanced = PlaytimeConfig.get().advanced;
         long lines = 0;
         int files = 0;
         if (active) {
@@ -546,7 +702,10 @@ public final class PlaytimeRecorder {
         }
         return String.format(Locale.ROOT,
                 "exported %d sample(s) from %d episode file(s) -> %s (%.1f MB)",
-                lines, files, datasetPath, Files.exists(datasetPath) ? datasetPath.toFile().length() / 1048576.0 : 0.0);
+                lines, files, datasetPath, Files.exists(datasetPath) ? datasetPath.toFile().length() / 1048576.0 : 0.0)
+                + (advanced
+                ? "\nadvanced data included (entities, items, held item, armour, drops)"
+                : "\nbasic recording - run /pymc advanced on before recording to also export entities and items");
     }
 
     /** Pulls the "activity" value out of a raw episode line without a full JSON parser. */
@@ -584,6 +743,8 @@ public final class PlaytimeRecorder {
                 datasetLines = -1;
             }
         }
+        sb.append("advanced: ").append(PlaytimeConfig.get().advanced ? "ON (entities + items)" : "off")
+          .append(" - ").append(advancedSamples).append(" advanced sample(s) this run\n");
         sb.append("dataset.jsonl: ").append(datasetLines < 0 ? "unreadable" : datasetLines + " sample(s)")
           .append(datasetPath == null ? "" : " (" + datasetPath + ")");
         return sb.toString();
@@ -629,6 +790,12 @@ public final class PlaytimeRecorder {
         String dimension;
         List<BlockHit> blocks;
         List<EntityHit> nearby;
+        // Advanced mode (only written when PlaytimeConfig.advanced is on).
+        List<VisualEntity> entities;
+        List<InvItem> items;
+        List<GroundItem> groundItems;
+        List<String> armor;
+        String heldItem;
     }
 
     record BlockHit(int dx, int dy, int dz, String block) {
@@ -639,5 +806,29 @@ public final class PlaytimeRecorder {
         double dx, dy, dz, dist;
         boolean hostile;
         float health;
+    }
+
+    /** One entity, described for the advanced entity vocabulary. */
+    static final class VisualEntity {
+        String type;
+        double dx, dy, dz, dist;
+        float yaw;
+        float health;
+        int count;
+        boolean hostile;
+        boolean player;
+        boolean onGround;
+        String heldItem = "";
+    }
+
+    /** One inventory slot: [slot, item, count]. */
+    record InvItem(int slot, String item, int count) {
+    }
+
+    /** One dropped stack on the ground. */
+    static final class GroundItem {
+        String item;
+        int count;
+        double dist;
     }
 }

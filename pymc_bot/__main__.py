@@ -86,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--checkpoint-every", type=int, default=None, help="write a checkpoint every N steps")
     train.add_argument("--max-seconds", type=float, default=0.0, help="stop after N seconds (long runs)")
     train.add_argument("--no-blocks", action="store_true", help="ignore the 3x3x3 block neighbourhood")
+    train.add_argument("--advanced", action="store_true",
+                       help="advanced training: learn entity and item vocabularies from the playtime")
+    train.add_argument("--entity-slots", type=int, default=0, metavar="N",
+                       help="entity words to learn in advanced mode (0 = config/default 24)")
+    train.add_argument("--item-slots", type=int, default=0, metavar="N",
+                       help="item words to learn in advanced mode (0 = config/default 32)")
     train.add_argument("--resume", action="store_true", help="continue the run from its last checkpoint")
     train.add_argument("--from-checkpoint", default="", help="resume from a specific checkpoint file")
     train.add_argument("--ollama-model", default="", metavar="NAME",
@@ -250,9 +256,10 @@ def cmd_train(args: argparse.Namespace) -> int:
     models_dir = args.models_dir or training.models_dir
     dataset = args.dataset or training.dataset
 
+    advanced = bool(args.advanced or training.advanced)
     if args.simulate > 0:
         target = Path(args.simulate_out) if args.simulate_out else Path(dataset)
-        info = synthesize_playtime(target, minutes=args.simulate)
+        info = synthesize_playtime(target, minutes=args.simulate, advanced=advanced)
         print(
             f"Generated {info['samples']} synthetic playtime samples "
             f"({info['minutes']} min) -> {info['dataset']}"
@@ -275,14 +282,18 @@ def cmd_train(args: argparse.Namespace) -> int:
         max_seconds=args.max_seconds,
         checkpoint_every=args.checkpoint_every or training.checkpoint_every,
         include_blocks=not args.no_blocks and training.include_blocks,
+        advanced=advanced,
+        entity_slots=args.entity_slots or training.entity_slots,
+        item_slots=args.item_slots or training.item_slots,
         hidden=tuple(int(part) for part in args.hidden.split(",")) if args.hidden else tuple(training.hidden),
         resume=args.resume,
         from_checkpoint=args.from_checkpoint,
         verbose=not args.quiet,
     )
+    mode = "advanced (entities + items)" if config.advanced else "basic"
     print(
         f"Training '{config.run_name}' on {config.dataset} "
-        f"({config.engine}, {config.steps} steps, checkpoint every {config.checkpoint_every}) -> "
+        f"({config.engine}, {config.steps} steps, checkpoint every {config.checkpoint_every}, {mode}) -> "
         f"{Path(config.models_dir).expanduser() / config.run_name}"
     )
     if not args.quiet:
@@ -341,12 +352,18 @@ def cmd_models(args: argparse.Namespace) -> int:
         print("Train one with:  python -m pymc_bot train --simulate 5   (or use the Fabric mod in ./mod)")
         return 0
     active = store.settings.training.active_run
-    print(f"{'run':32} {'engine':12} {'step':>7} {'params':>9} {'val_loss':>9} {'val_acc':>8}  active")
+    print(f"{'run':32} {'engine':12} {'mode':26} {'step':>7} {'params':>9} {'val_loss':>9} {'val_acc':>8}  active")
     for card in runs:
         metrics = card.get("metrics") or {}
         marker = "<=" if card.get("run") == active else ""
+        mode = (
+            f"advanced ({len(card.get('entity_vocabulary') or [])}e/"
+            f"{len(card.get('item_vocabulary') or [])}i)"
+            if card.get("advanced")
+            else "basic"
+        )
         print(
-            f"{str(card.get('run'))[:32]:32} {str(card.get('engine'))[:12]:12} "
+            f"{str(card.get('run'))[:32]:32} {str(card.get('engine'))[:12]:12} {mode[:26]:26} "
             f"{card.get('step') or 0:>7} {card.get('params') or 0:>9} "
             f"{(metrics.get('val_loss') if metrics.get('val_loss') is not None else float('nan')):>9.4f} "
             f"{(metrics.get('val_accuracy') or 0.0):>8.3f}  {marker}"

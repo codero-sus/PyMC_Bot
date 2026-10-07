@@ -564,9 +564,13 @@ class MinecraftBot:
     def goto(self, x: float, z: float, y: float | None = None, tolerance: float = 1.5) -> bool:
         return self.walk_to(x, z, y, tolerance=tolerance)
 
-    def wander(self, radius: int | None = None, steps: int = 3) -> bool:
-        """Random exploration: a few short hops in random directions."""
+    def wander(self, radius: int | None = None, steps: int = 3, rng: random.Random | None = None) -> bool:
+        """Random exploration: a few short hops in random directions.
+
+        ``rng`` lets callers (tests, the anti-AFK keeper) pick the directions themselves.
+        """
         settings = self.store.settings
+        picker = rng or random
         radius = radius or settings.agent.wander_radius
         pose = self._current_pose()
         if pose is None:
@@ -576,8 +580,8 @@ class MinecraftBot:
         for _ in range(max(1, steps)):
             if self.cancelled:
                 break
-            angle = random.uniform(0, 2 * math.pi)
-            distance = random.uniform(radius * 0.4, radius)
+            angle = picker.uniform(0, 2 * math.pi)
+            distance = picker.uniform(radius * 0.4, radius)
             tx = origin[0] + math.cos(angle) * distance
             tz = origin[1] + math.sin(angle) * distance
             if self.walk_to(tx, tz, tolerance=1.5, timeout=min(12.0, settings.agent.action_timeout)):
