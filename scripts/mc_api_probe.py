@@ -41,6 +41,8 @@ LOOKUPS: list[tuple[str, str]] = [
     ("net.minecraft.world.phys.Vec3", r"distanceTo|length|subtract"),
     ("net.minecraft.world.level.block.state.BlockState", r"getBlock|isAir"),
     ("net.minecraft.client.player.LocalPlayer", r"."),
+    ("net.minecraft.resources.Identifier", r"fromNamespaceAndPath|getNamespace|getPath|withDefaultNamespace"),
+    ("net.minecraft.client.Minecraft", r"options|getInstance|level|player"),
 ]
 
 # Renames we are not sure about: report which of these exist.

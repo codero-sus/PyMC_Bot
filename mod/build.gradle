@@ -40,6 +40,8 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
+	// Loom 1.18 itself needs a Java 25 Gradle JVM, but Minecraft 1.21.11 runs on Java 21,
+	// so the mod is always compiled to Java 21 bytecode.
 	it.options.release = 21
 }
 
