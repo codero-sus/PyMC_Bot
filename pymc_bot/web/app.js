@@ -261,6 +261,7 @@ function fillForm(cfg) {
   set('cfg-ollama-interval', ol.decision_interval || 6);
   set('cfg-ollama-temp', ol.temperature ?? 0.4);
 
+  set('cfg-agent-mode', ag.mode || 'auto');
   check('cfg-allow-movement', ag.allow_movement);
   check('cfg-allow-chat', ag.allow_chat);
   check('cfg-allow-mining', ag.allow_mining);
@@ -280,6 +281,14 @@ function fillForm(cfg) {
   check('antiafk-jump', afk.jump !== false);
   check('antiafk-sneak', afk.sneak !== false);
   check('antiafk-swing', afk.swing !== false);
+
+  const tr = cfg.training || {};
+  set('train-dataset', tr.dataset || 'pymc-playtime/dataset.jsonl');
+  set('train-engine', tr.engine || 'mlp');
+  set('train-steps', tr.steps ?? 1000);
+  set('train-batch', tr.batch_size ?? 64);
+  set('train-lr', tr.lr ?? 0.003);
+  set('train-checkpoint', tr.checkpoint_every ?? 200);
 
   const fleet = cfg.fleet || {};
   set('fleet-count-input', fleet.count ?? 5);
@@ -303,6 +312,9 @@ function applyAuthLabels() {
     : 'Offline (cracked) servers accept any username of 1-16 characters (letters, digits, _). No account needed.';
 }
 
+let modelList = [];
+let selectedModel = '';
+
 function collectForm() {
   return {
     minecraft: {
@@ -323,6 +335,7 @@ function collectForm() {
       temperature: Number($('cfg-ollama-temp').value ?? 0.4),
     },
     agent: {
+      mode: $('cfg-agent-mode').value,
       allow_movement: $('cfg-allow-movement').checked,
       allow_chat: $('cfg-allow-chat').checked,
       allow_mining: $('cfg-allow-mining').checked,
@@ -339,6 +352,14 @@ function collectForm() {
       jump: $('antiafk-jump').checked,
       sneak: $('antiafk-sneak').checked,
       swing: $('antiafk-swing').checked,
+    },
+    training: {
+      dataset: $('train-dataset').value.trim() || 'pymc-playtime/dataset.jsonl',
+      engine: $('train-engine').value,
+      steps: Number($('train-steps').value) || 1000,
+      batch_size: Number($('train-batch').value) || 64,
+      lr: Number($('train-lr').value) || 0.003,
+      checkpoint_every: Number($('train-checkpoint').value) || 200,
     },
     fleet: {
       count: Number($('fleet-count-input').value) || 5,
@@ -385,7 +406,11 @@ function startPolling() {
       renderStatus(status);
       renderFleet(status);
       renderAntiAfk(status.antiafk);
-      renderAntiAfk(status.antiafk);
+      renderTraining({ status: { ...(status.training || {}), running: status.training?.running }, brain: status.training?.brain, settings: { dataset: status.training?.dataset } });
+      if (status.training?.running) {
+        const detail = await api('/api/training/status');
+        renderTraining(detail);
+      }
       for (const entry of logs.events || []) {
         if ((entry.ts || 0) > lastEventTs) appendLog(entry);
       }
@@ -412,6 +437,7 @@ function connectSocket() {
       renderFleet(frame.data);
       renderAntiAfk(frame.data.antiafk);
       if (frame.data.ollama) updateOllamaPill(frame.data.ollama);
+      if (frame.data.training) refreshTraining();
     }
   };
   socket.onclose = () => {
@@ -448,6 +474,138 @@ const STATE_CLASS = {
   stopped: 'pill-off',
   queued: 'pill-unknown',
 };
+
+function renderTraining(training) {
+  if (!training) return;
+  const status = training.status || {};
+  const dataset = training.dataset || {};
+  const el = $('train-state');
+  const running = Boolean(status.running);
+  el.textContent = running ? `training step ${status.step || 0}/${status.total_steps || '?'}` : 'idle';
+  el.className = 'pill ' + (running ? 'pill-on' : 'pill-unknown');
+  const bar = $('train-progress-bar');
+  const progress = status.progress ?? (status.total_steps ? (status.step || 0) / status.total_steps : 0);
+  bar.style.width = `${Math.round(Math.min(1, Math.max(0, progress || 0)) * 100)}%`;
+
+  const bits = [];
+  if (dataset.exists) {
+    bits.push(`${dataset.samples ?? 0} samples from ${dataset.episodes ?? 0} episode(s)`);
+    const top = Object.entries(dataset.actions || {}).slice(0, 4).map(([name, count]) => `${name} ${count}`);
+    if (top.length) bits.push(`mostly ${top.join(', ')}`);
+  } else {
+    bits.push(`no dataset at ${dataset.dataset || training.settings?.dataset || 'pymc-playtime/dataset.jsonl'}`);
+  }
+  if (running || status.summary) {
+    bits.push(`loss ${status.loss ?? '—'} · val ${status.val_loss ?? '—'} · acc ${status.val_acc ?? '—'}`);
+  }
+  if (status.error) bits.push(`error: ${status.error}`);
+  if (status.run) bits.push(`run '${status.run}'`);
+  bits.push(`brain: ${training.brain || 'auto'}${training.active_run ? ` (model '${training.active_run}')` : ''}`);
+  $('train-status').textContent = bits.join(' · ');
+}
+
+function renderModels(payload) {
+  if (!payload) return;
+  modelList = payload.models || [];
+  if (!selectedModel && payload.active_run) selectedModel = payload.active_run;
+  if (!selectedModel && modelList.length) selectedModel = modelList[0].run;
+  $('models-dir').textContent = payload.models_dir || 'models/';
+  const body = $('model-body');
+  body.innerHTML = '';
+  if (!modelList.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">nothing trained yet — press “Train on playtime”</td></tr>';
+    return;
+  }
+  for (const card of modelList) {
+    const row = document.createElement('tr');
+    const active = card.run === payload.active_run;
+    row.className = active ? 'row-active' : '';
+    const metrics = card.metrics || {};
+    const cells = [
+      `${card.run}${active ? ' ✓' : ''}`,
+      card.engine || 'mlp',
+      card.step ?? 0,
+      card.params ?? 0,
+      metrics.val_loss === null || metrics.val_loss === undefined ? '—' : Number(metrics.val_loss).toFixed(4),
+      metrics.val_accuracy === null || metrics.val_accuracy === undefined ? '—' : Number(metrics.val_accuracy).toFixed(3),
+      `${card.checkpoint_exists ? '' : '⚠ '}${card.checkpoints?.length || 0} file(s)`,
+    ];
+    for (const value of cells) {
+      const td = document.createElement('td');
+      td.textContent = String(value);
+      row.appendChild(td);
+    }
+    row.addEventListener('click', () => {
+      selectedModel = card.run;
+      renderModels({ models: modelList, active_run: payload.active_run, models_dir: payload.models_dir });
+    });
+    body.appendChild(row);
+  }
+}
+
+async function refreshTraining() {
+  try {
+    const data = await api('/api/training/status');
+    renderTraining(data);
+  } catch (err) { /* keep the panel alive */ }
+}
+
+async function refreshTrainedModels() {
+  try {
+    renderModels(await api('/api/models'));
+  } catch (err) { reportError(err); }
+}
+
+async function startTraining(extra = {}) {
+  try {
+    await saveConfig(true);
+    const payload = {
+      dataset: $('train-dataset').value.trim() || undefined,
+      engine: $('train-engine').value,
+      steps: Number($('train-steps').value) || 1000,
+      batch_size: Number($('train-batch').value) || 64,
+      lr: Number($('train-lr').value) || 0.003,
+      checkpoint_every: Number($('train-checkpoint').value) || 200,
+      ...extra,
+    };
+    const data = await api('/api/training/start', { method: 'POST', body: JSON.stringify(payload) });
+    appendLog({ level: 'success', source: 'panel', time: nowTime(),
+      message: `Training '${data.run}' on ${payload.dataset || data.dataset?.dataset || 'the configured dataset'} (self-checkpointing).` });
+    renderTraining(data);
+    await refreshTrainedModels();
+  } catch (err) { reportError(err); }
+}
+
+async function activateModel() {
+  if (!selectedModel) { reportError(new Error('Pick a checkpoint row first.')); return; }
+  try {
+    const data = await api('/api/models/activate', { method: 'POST', body: JSON.stringify({ run: selectedModel }) });
+    appendLog({ level: 'success', source: 'panel', time: nowTime(),
+      message: `Brain = trained (${data.active_run}); the bot now plays with the model trained on playtime.` });
+    await loadConfig();
+    await refreshTrainedModels();
+  } catch (err) { reportError(err); }
+}
+
+async function exportModelToOllama() {
+  if (!selectedModel) { reportError(new Error('Pick a checkpoint row first.')); return; }
+  try {
+    const data = await api('/api/models/export-ollama', { method: 'POST', body: JSON.stringify({ run: selectedModel }) });
+    appendLog({ level: 'success', source: 'panel', time: nowTime(), message: `Exported to Ollama as '${data.model}' (${Object.entries(data.priors || {}).slice(0, 3).map(([k, v]) => `${k}:${v}`).join(', ')}).` });
+    await refreshModels();
+  } catch (err) { reportError(err); }
+}
+
+async function previewPolicy() {
+  try {
+    const data = await api('/api/policy/preview');
+    const prediction = data.prediction || {};
+    const top = Object.entries(prediction.probs || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([name, value]) => `${name} ${(value * 100).toFixed(0)}%`).join(' · ');
+    $('policy-preview').textContent =
+      `model '${data.run}' would do: ${prediction.action} (${top}) — turn ${prediction.motion?.dyaw ?? 0}°, step ${prediction.motion?.forward ?? 0} blocks`;
+  } catch (err) { reportError(err); }
+}
 
 function renderAntiAfk(antiafk) {
   if (!antiafk) return;
@@ -557,6 +715,17 @@ function wire() {
   $('btn-ai-stop').addEventListener('click', () => api('/api/ai/stop', { method: 'POST' }).catch(reportError));
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));
   $('btn-refresh-models').addEventListener('click', refreshModels);
+  $('btn-train-start').addEventListener('click', () => startTraining());
+  $('btn-train-stop').addEventListener('click', () =>
+    api('/api/training/stop', { method: 'POST' })
+      .then(() => appendLog({ level: 'info', source: 'panel', message: 'Stopping training (it saves a checkpoint first).', time: nowTime() }))
+      .catch(reportError));
+  $('btn-train-resume').addEventListener('click', () => startTraining({ resume: true }));
+  $('btn-train-simulate').addEventListener('click', () => startTraining({ simulate_minutes: 5, run_name: '' }));
+  $('btn-model-activate').addEventListener('click', activateModel);
+  $('btn-model-export').addEventListener('click', exportModelToOllama);
+  $('btn-models-refresh').addEventListener('click', refreshTrainedModels);
+  $('btn-policy-preview').addEventListener('click', previewPolicy);
   $('btn-pull').addEventListener('click', pullModel);
 
   $('cfg-auth').addEventListener('change', applyAuthLabels);
@@ -746,6 +915,8 @@ async function boot() {
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   refreshModels();
   await refreshFleet();
+  await refreshTrainedModels();
+  await refreshTraining();
   connectSocket();
 }
 

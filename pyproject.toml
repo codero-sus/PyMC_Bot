@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "codero-sus" }]
-keywords = ["minecraft", "bot", "mineflayer", "ollama", "fastapi", "uvicorn"]
+keywords = ["minecraft", "bot", "mineflayer", "ollama", "fastapi", "uvicorn", "fabric", "imitation-learning"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -25,6 +25,7 @@ dependencies = [
   "pydantic>=2.6",
   "httpx>=0.27",
   "jinja2>=3.1",
+  "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,12 @@ dev = [
   "pytest>=8.0",
   "pytest-cov>=4.1",
   "ruff>=0.4",
+]
+
+# Optional: the tiny transformer training engine (--engine transformer).
+# The default --engine mlp needs nothing beyond NumPy.
+train = [
+  "torch>=2.2",
 ]
 
 [project.scripts]

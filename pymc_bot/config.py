@@ -125,8 +125,19 @@ class OllamaSettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    """What the AI player is allowed to do."""
+    """What the AI player is allowed to do.
 
+    ``mode`` chooses the brain:
+
+    * ``auto``        - Ollama when it is enabled and reachable, else the heuristic.
+    * ``heuristic``   - always the built-in deterministic behaviour.
+    * ``ollama``      - always the local LLM (falls back to the heuristic on errors).
+    * ``trained``     - the player model trained on recorded playtime
+      (:mod:`pymc_bot.local_model`), either the run named in ``training.active_run``
+      or the newest one in ``training.models_dir``. No Ollama needed.
+    """
+
+    mode: Literal["auto", "heuristic", "ollama", "trained"] = "auto"
     allow_movement: bool = True
     allow_chat: bool = True
     allow_mining: bool = True
@@ -142,7 +153,7 @@ class FleetBotSpec(BaseModel):
 
     username: str = Field(min_length=1, max_length=254)
     auth: Literal["offline", "microsoft"] = "offline"
-    ai: Literal["off", "heuristic", "ollama"] = "heuristic"
+    ai: Literal["off", "heuristic", "ollama", "trained"] = "heuristic"
 
     @field_validator("username")
     @classmethod
@@ -162,7 +173,7 @@ class FleetSettings(BaseModel):
     count: int = Field(default=5, ge=1, le=200)
     name_pattern: str = "PyMC_Bot_{n}"
     auth: Literal["offline", "microsoft"] = "offline"
-    ai_mode: Literal["off", "heuristic", "ollama"] = "heuristic"
+    ai_mode: Literal["off", "heuristic", "ollama", "trained"] = "heuristic"
     stagger_seconds: float = Field(default=1.5, ge=0.0, le=60.0)
     chatter: bool = False
     chatter_interval: float = Field(default=45.0, ge=1.0, le=3600.0)
@@ -230,6 +241,41 @@ class AntiAfkSettings(BaseModel):
         return self
 
 
+class TrainingSettings(BaseModel):
+    """Training a Minecraft player model on recorded playtime.
+
+    The Fabric mod in ``./mod`` records the player into
+    ``<gameDir>/pymc-playtime/``; ``dataset`` is the file the trainer reads and
+    ``models_dir`` is where checkpoints (and their ``model.json`` cards) land.
+    """
+
+    models_dir: str = "models"
+    dataset: str = "pymc-playtime/dataset.jsonl"
+    # Empty means "the newest trained run in models_dir".
+    active_run: str = ""
+    engine: Literal["mlp", "transformer"] = "mlp"
+    steps: int = Field(default=1000, ge=1, le=2_000_000)
+    batch_size: int = Field(default=64, ge=1, le=4096)
+    lr: float = Field(default=3e-3, gt=0.0, le=1.0)
+    checkpoint_every: int = Field(default=200, ge=1, le=100_000)
+    hidden: list[int] = Field(default_factory=lambda: [128, 64])
+    include_blocks: bool = True
+    val_split: float = Field(default=0.1, ge=0.0, le=0.5)
+    # How the trained policy is used when it drives the bot.
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    step_seconds: float = Field(default=0.4, ge=0.1, le=3.0)
+    # Retrain in the background whenever the dataset grows past this many new samples.
+    auto_retrain_samples: int = Field(default=0, ge=0, le=10_000_000)
+
+    @field_validator("hidden")
+    @classmethod
+    def _check_hidden(cls, value: list[int]) -> list[int]:
+        cleaned = [int(size) for size in value if int(size) > 0]
+        if not cleaned:
+            raise ValueError("training.hidden must contain at least one positive layer size")
+        return cleaned[:4]
+
+
 class ServerSettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -242,6 +288,7 @@ class AppSettings(BaseModel):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     antiafk: AntiAfkSettings = Field(default_factory=AntiAfkSettings)
+    training: TrainingSettings = Field(default_factory=TrainingSettings)
     fleet: FleetSettings = Field(default_factory=FleetSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 

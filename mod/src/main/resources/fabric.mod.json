@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "pymcplaytime",
+	"version": "${version}",
+	"name": "PyMC Playtime Recorder",
+	"description": "Records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player LLM on. Use /pymc record start, play, then /pymc export.",
+	"authors": [
+		"PyMC Bot"
+	],
+	"contact": {
+		"homepage": "https://github.com/codero-sus/PyMC_Bot",
+		"sources": "https://github.com/codero-sus/PyMC_Bot"
+	},
+	"license": "MIT",
+	"icon": "assets/pymcplaytime/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"dev.pymc.pymcb.client.PymcPlaytimeClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

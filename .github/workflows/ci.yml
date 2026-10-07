@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "arena/**"]
   pull_request:
   workflow_dispatch:
 
@@ -63,3 +63,47 @@ jobs:
           python -m pymc_bot --version
           python -m pymc_bot doctor
           python -m pymc_bot run --backend simulated --no-ai --seconds 3 --quiet --config /tmp/ci.json
+      - name: Train a player model on synthetic playtime, then run it
+        run: |
+          python -m pymc_bot train --simulate 3 --simulate-out /tmp/ci-playtime.jsonl --models-dir /tmp/ci-models --run-name ci --steps 60 --checkpoint-every 30 --quiet
+          python -m pymc_bot models --models-dir /tmp/ci-models
+          python -m pymc_bot run --backend simulated --think trained --models-dir /tmp/ci-models --run-name ci --no-ai --seconds 1 --quiet --config /tmp/ci-train.json
+
+  training-transformer:
+    name: training (transformer engine, torch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (CPU torch)
+        run: |
+          pip install -r requirements-dev.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Transformer engine tests
+        run: pytest tests/test_train.py tests/test_local_model.py -q
+
+  mod:
+    name: mod (fabric, java 21)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the Fabric mod (downloads Minecraft + Fabric API)
+        working-directory: mod
+        run: |
+          chmod +x gradlew
+          ./gradlew build --no-daemon --stacktrace
+      - name: Show the built jar
+        working-directory: mod
+        run: ls -la build/libs/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pymcplaytime-jar
+          path: mod/build/libs/*.jar
+          if-no-files-found: warn

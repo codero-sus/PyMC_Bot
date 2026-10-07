@@ -23,7 +23,10 @@ from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore, default_config_path
 from pymc_bot.events import EventLog
 from pymc_bot.fleet import AI_MODES, BotFleet, FleetError
+from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
 from pymc_bot.ollama import OllamaClient, OllamaError
+from pymc_bot.playtime import dataset_summary, load_examples, synthesize_playtime
+from pymc_bot.train import TrainConfig, TrainingService, default_run_name, list_models, read_card
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 OLLAMA_HEALTH_TTL = 15.0
@@ -56,6 +59,43 @@ class ActionRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     raw: str | None = None
     bot: str | None = None
+
+
+class TrainingRequest(BaseModel):
+    """Body of ``POST /api/training/start`` (everything is optional)."""
+
+    dataset: str | None = None
+    run_name: str | None = None
+    engine: Literal["mlp", "transformer"] | None = None
+    steps: int | None = Field(default=None, ge=1, le=2_000_000)
+    epochs: int = Field(default=0, ge=0, le=10_000)
+    batch_size: int | None = Field(default=None, ge=1, le=4096)
+    lr: float | None = Field(default=None, gt=0.0, le=1.0)
+    checkpoint_every: int | None = Field(default=None, ge=1, le=100_000)
+    max_seconds: float = Field(default=0.0, ge=0.0, le=86400.0)
+    hidden: list[int] | None = None
+    d_model: int = Field(default=64, ge=8, le=512)
+    heads: int = Field(default=4, ge=1, le=16)
+    layers: int = Field(default=2, ge=1, le=8)
+    reg_weight: float = Field(default=0.5, ge=0.0, le=10.0)
+    include_blocks: bool | None = None
+    resume: bool = False
+    #: Generate this many minutes of synthetic playtime first (demos / tests).
+    simulate_minutes: float = Field(default=0.0, ge=0.0, le=600.0)
+
+
+class ActivateModelRequest(BaseModel):
+    """Body of ``POST /api/models/activate``."""
+
+    run: str = Field(min_length=1)
+
+
+class ExportOllamaRequest(BaseModel):
+    """Body of ``POST /api/models/export-ollama``."""
+
+    run: str = Field(min_length=1)
+    name: str | None = None
+    base_model: str | None = None
 
 
 class ModelRequest(BaseModel):
@@ -123,6 +163,45 @@ def create_app(
         except FleetError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    training_service = TrainingService(event_log)
+    dataset_cache: dict[str, Any] = {"path": None, "mtime": 0.0, "summary": None}
+
+    def models_dir() -> str:
+        return store.settings.training.models_dir
+
+    def dataset_overview(path: str | None = None) -> dict[str, Any]:
+        """Cached statistics for the training dataset (kept fresh, cheap to poll)."""
+        target = Path(path or store.settings.training.dataset).expanduser()
+        mtime = 0.0
+        if target.is_file():
+            mtime = target.stat().st_mtime
+        if (
+            dataset_cache["summary"] is not None
+            and dataset_cache["path"] == str(target)
+            and dataset_cache["mtime"] == mtime
+        ):
+            return dataset_cache["summary"]
+        summary: dict[str, Any] = {"dataset": str(target), "exists": target.is_file()}
+        if target.is_file():
+            try:
+                summary.update(dataset_summary(target))
+            except Exception as exc:  # pragma: no cover - unreadable dataset
+                summary["error"] = str(exc)
+        dataset_cache.update({"path": str(target), "mtime": mtime, "summary": summary})
+        return summary
+
+    def training_payload() -> dict[str, Any]:
+        settings = store.settings.training
+        status = training_service.status()
+        return {
+            "status": status,
+            "settings": settings.model_dump(mode="json"),
+            "models_dir": str(Path(settings.models_dir).expanduser()),
+            "active_run": settings.active_run,
+            "dataset": dataset_overview(),
+            "brain": store.settings.agent.mode,
+        }
+
     health_cache: dict[str, Any] = {"ts": 0.0, "ok": None, "detail": ""}
 
     def ollama_health(force: bool = False) -> dict[str, Any]:
@@ -161,6 +240,14 @@ def create_app(
                 "enabled": store.settings.antiafk.enabled,
                 "running": bot_fleet.antiafk.running,
                 "pokes": bot_fleet.antiafk.status([])["pokes"],
+            },
+            "training": {
+                "running": training_service.running,
+                "step": training_service.status().get("step"),
+                "run": training_service.status().get("run"),
+                "active_run": store.settings.training.active_run,
+                "brain": store.settings.agent.mode,
+                "models": len(list_models(store.settings.training.models_dir)),
             },
             "backends": available_backends(),
             "ollama": {**ollama_health(), "settings": store.settings.ollama.model_dump()},
@@ -242,6 +329,12 @@ def create_app(
             "auth_modes": ["offline", "microsoft"],
             "ai_modes": list(AI_MODES),
             "antiafk_habits": ["look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"],
+            "brains": ["auto", "heuristic", "ollama", "trained"],
+            "training_engines": ["mlp", "transformer"],
+            "player_actions": [
+                "forward", "back", "left", "right", "jump", "sneak",
+                "look", "attack", "use", "hold", "move", "none",
+            ],
             "websocket": {"path": "/ws", "frames": ["hello", "event", "status"]},
         }
 
@@ -579,6 +672,207 @@ def create_app(
             client.close()
         event_log.add(f"Ollama model '{request.model}' is ready.", "success", "ollama")
         return {"ok": True, "model": request.model}
+
+    # --------------------------------------------------------------- training
+    @app.get("/api/training/status")
+    def training_status() -> dict[str, Any]:
+        return training_payload()
+
+    @app.get("/api/training/dataset")
+    def training_dataset(dataset: str | None = None) -> dict[str, Any]:
+        return dataset_overview(dataset)
+
+    @app.post("/api/training/start")
+    def training_start(request: TrainingRequest) -> dict[str, Any]:
+        if training_service.running:
+            raise HTTPException(status_code=409, detail="training is already running")
+        settings = store.settings.training
+        dataset = (request.dataset or settings.dataset).strip()
+
+        if request.simulate_minutes and request.simulate_minutes > 0:
+            info = synthesize_playtime(dataset, minutes=request.simulate_minutes)
+            event_log.add(
+                f"Generated {info['samples']} synthetic playtime samples for the demo "
+                f"({info['minutes']} min of pretend play).",
+                "info",
+                "train",
+            )
+        if not Path(dataset).expanduser().is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"no playtime dataset at {dataset} - record some with the Fabric mod in ./mod "
+                    "(/pymc record start, /pymc export), or ask for a synthetic one with "
+                    '{"simulate_minutes": 5}'
+                ),
+            )
+
+        config = TrainConfig(
+            dataset=dataset,
+            run_name=(request.run_name or default_run_name(dataset)),
+            models_dir=settings.models_dir,
+            engine=request.engine or settings.engine,
+            hidden=tuple(request.hidden or settings.hidden),
+            d_model=request.d_model,
+            layers=request.layers,
+            heads=request.heads,
+            batch_size=request.batch_size or settings.batch_size,
+            lr=request.lr or settings.lr,
+            steps=request.steps or settings.steps,
+            epochs=request.epochs,
+            max_seconds=request.max_seconds,
+            checkpoint_every=request.checkpoint_every or settings.checkpoint_every,
+            val_split=settings.val_split,
+            reg_weight=request.reg_weight,
+            include_blocks=settings.include_blocks if request.include_blocks is None else request.include_blocks,
+            resume=request.resume,
+        )
+        if not training_service.start(config):
+            raise HTTPException(status_code=409, detail="training is already running")
+        # Remember what the panel asked for, so a restart keeps the same setup.
+        store.update(
+            {
+                "training": {
+                    "dataset": dataset,
+                    "engine": config.engine,
+                    "steps": config.steps,
+                    "batch_size": config.batch_size,
+                    "checkpoint_every": config.checkpoint_every,
+                    "active_run": config.run_name,
+                }
+            }
+        )
+        return {"ok": True, "run": config.run_name, "config": config.to_dict(), **training_payload()}
+
+    @app.post("/api/training/stop")
+    def training_stop() -> dict[str, Any]:
+        stopped = training_service.stop(wait=False)
+        if not stopped:
+            raise HTTPException(status_code=409, detail="training is not running")
+        return {"ok": True, "stopping": True}
+
+    # ----------------------------------------------------------------- models
+    @app.get("/api/models")
+    def models_list() -> dict[str, Any]:
+        settings = store.settings.training
+        return {
+            "models_dir": str(Path(settings.models_dir).expanduser()),
+            "active_run": settings.active_run,
+            "brain": store.settings.agent.mode,
+            "models": list_models(settings.models_dir),
+        }
+
+    @app.get("/api/models/{run}")
+    def model_detail(run: str) -> dict[str, Any]:
+        card = read_card(models_dir(), run)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"no trained model '{run}'")
+        return card
+
+    @app.post("/api/models/activate")
+    def model_activate(request: ActivateModelRequest) -> dict[str, Any]:
+        card = read_card(models_dir(), request.run)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"no trained model '{request.run}'")
+        store.update({"training": {"active_run": request.run}, "agent": {"mode": "trained"}})
+        # Restart the AI loop so it picks the model up immediately.
+        agent = selected_agent()
+        was_running = agent.running
+        if was_running:
+            agent.stop(wait=True)
+            selected_agent().start()
+        policy = None
+        try:
+            policy = selected_agent().policy(store.settings)
+        except Exception as exc:  # pragma: no cover - defensive
+            event_log.add(f"Could not preload the trained model: {exc}", "warn", "train")
+        event_log.add(
+            f"Activated player model '{request.run}' "
+            f"({card.get('engine')}, step {card.get('step')}, {card.get('params')} params) - "
+            f"brain: trained{'' if was_running else ' (start the AI loop to play)'}.",
+            "success",
+            "train",
+        )
+        return {
+            "ok": True,
+            "active_run": request.run,
+            "brain": store.settings.agent.mode,
+            "agent_running": selected_agent().running,
+            "policy": policy.describe() if policy is not None else None,
+        }
+
+    @app.post("/api/models/deactivate")
+    def model_deactivate() -> dict[str, Any]:
+        store.update({"agent": {"mode": "auto"}})
+        event_log.add("Brain back to auto (Ollama when enabled, else heuristics).", "info", "train")
+        return {"ok": True, "brain": store.settings.agent.mode}
+
+    @app.get("/api/policy/preview")
+    def policy_preview(run: str | None = None) -> dict[str, Any]:
+        """What would the trained model do right now, given the live bot snapshot?"""
+        settings = store.settings.training
+        try:
+            policy = TrainedPolicy.load(
+                run or settings.active_run or "",
+                settings.models_dir,
+                temperature=0.0,
+                step_seconds=settings.step_seconds,
+            )
+            snapshot = selected_bot().snapshot()
+            prediction = policy.predict(snapshot)
+        except PolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - defensive (torch missing, bad checkpoint...)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "run": policy.run.run,
+            "prediction": prediction.to_dict(),
+            "observation": {
+                "position": snapshot.get("position"),
+                "yaw": snapshot.get("yaw"),
+                "pitch": snapshot.get("pitch"),
+                "health": snapshot.get("health"),
+                "food": snapshot.get("food"),
+                "players": len(snapshot.get("players") or []),
+            },
+            "policy": policy.describe(),
+        }
+
+    @app.post("/api/models/export-ollama")
+    def model_export_ollama(request: ExportOllamaRequest) -> dict[str, Any]:
+        settings = store.settings
+        try:
+            policy = TrainedPolicy.load(request.run, settings.training.models_dir)
+        except PolicyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        name = (request.name or f"pymc-{request.run}").strip()
+        client = OllamaClient(
+            base_url=settings.ollama.base_url,
+            model=settings.ollama.model,
+            timeout=max(120.0, settings.ollama.request_timeout),
+        )
+        try:
+            result = export_ollama_model(
+                policy,
+                name=name,
+                client=client,
+                base_model=request.base_model or settings.ollama.model,
+                observations=[
+                    observation
+                    for observation, _ in load_examples(settings.training.dataset, limit=200)
+                ],
+            )
+        except OllamaError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            client.close()
+        event_log.add(
+            f"Exported player model '{request.run}' to Ollama as '{name}' ({result['modelfile']}).",
+            "success",
+            "train",
+        )
+        return {"ok": True, "model": name, "modelfile": result["modelfile"], "priors": result["priors"]["priorities"]}
 
     # ---------------------------------------------------------------- backends
     @app.get("/api/backends")

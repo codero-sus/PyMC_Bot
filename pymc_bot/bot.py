@@ -634,6 +634,59 @@ class MinecraftBot:
             return False
         return bool(backend.swing_arm())
 
+    def control(self, name: str, state: bool) -> bool:
+        """Press or release one low level control (forward/back/left/right/jump/sneak/sprint).
+
+        This is the same primitive the Fabric mod records while a human plays, which is
+        what lets a model trained on playtime drive the bot directly.
+        """
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        try:
+            backend.set_control(name, bool(state))
+        except BackendError:
+            return False
+        self.touch_activity()
+        return True
+
+    def control_burst(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
+        """Hold a set of controls for a short burst, then release them.
+
+        Used by the trained playtime policy: the model predicts what the recorded player
+        pressed during the next sample, and the bot holds exactly that for one sample
+        interval. The burst registers as an activity so the anti-AFK keeper stays out of
+        the way, and it honours :meth:`cancel_actions` so a stop request is immediate.
+        """
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        pressed = {name: bool(state) for name, state in controls.items() if state}
+        if not pressed:
+            return True
+        with self.activity("trained"), self._lock:
+            try:
+                for name, state in pressed.items():
+                    backend.set_control(name, state)
+            except BackendError:
+                return False
+            self._stats["actions"] += 1
+        try:
+            deadline = time.monotonic() + max(0.05, min(10.0, seconds))
+            while time.monotonic() < deadline:
+                if self.cancelled:
+                    break
+                time.sleep(0.05)
+        finally:
+            with self._lock:
+                for name in pressed:
+                    try:
+                        backend.set_control(name, False)
+                    except BackendError:  # pragma: no cover - backend went away mid burst
+                        continue
+        self.touch_activity()
+        return True
+
     def look_at_player(self, player: str) -> bool:
         backend = self.backend
         target = self.find_player(player)
