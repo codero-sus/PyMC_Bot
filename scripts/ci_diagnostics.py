@@ -64,6 +64,17 @@ def post_check_run(repo: str, sha: str, token: str, title: str, summary: str, co
     return str(body.get("html_url", ""))
 
 
+def write_step_summary(title: str, summary: str) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"### {title}\n\n{summary}\n\n")
+    except OSError as exc:  # pragma: no cover - CI only
+        print(f"ci_diagnostics: could not write the step summary ({exc})", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("log", nargs="?", default="ci.log", help="log file to summarise")
@@ -81,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     summary = "```text\n" + read_tail(args.log, args.limit) + "\n```"
+    # The step summary needs no extra permissions and is visible in the Actions UI,
+    # so write it even when the check-run call below succeeds.
+    write_step_summary(args.title, summary)
     try:
         url = post_check_run(args.repo, args.sha, token, args.title, summary, args.conclusion)
     except (urllib.error.URLError, urllib.error.HTTPError) as exc:  # pragma: no cover - CI only

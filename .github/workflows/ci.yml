@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# checks: write lets the failure steps publish the log tail as a check summary.
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   lint:
     name: lint (ruff)
@@ -64,7 +69,7 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_diagnostics.py pytest.log --title "pytest failed (python ${{ matrix.python-version }})"
+        run: python3 scripts/ci_diagnostics.py pytest.log --title "pytest failed (python ${{ matrix.python-version }})"
       - name: CLI smoke test
         run: |
           python -m pymc_bot --version
@@ -96,7 +101,7 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
+        run: python3 scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
 
   mod:
     name: mod (fabric, java 21)
@@ -114,11 +119,22 @@ jobs:
           set -o pipefail
           chmod +x gradlew
           ./gradlew build --no-daemon --stacktrace 2>&1 | tee gradle.log
+      - name: Extract the gradle errors
+        if: failure()
+        run: |
+          grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt
+          wc -l mod/errors.txt
+      - name: Probe the Minecraft API signatures
+        if: always()
+        run: python3 scripts/mc_api_probe.py | tee mod/api-probe.log
       - name: Publish mod build diagnostics
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_diagnostics.py mod/gradle.log --title "Gradle build failed" --limit 20000
+        run: |
+          python scripts/ci_diagnostics.py mod/errors.txt --title "Gradle errors (extracted)" --limit 12000
+          python scripts/ci_diagnostics.py mod/api-probe.log --title "Minecraft API probe" --limit 24000
+          python scripts/ci_diagnostics.py mod/gradle.log --title "Gradle log tail" --limit 12000
       - name: Show the built jar
         working-directory: mod
         run: ls -la build/libs/
