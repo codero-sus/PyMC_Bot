@@ -104,14 +104,16 @@ jobs:
         run: python3 scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
 
   mod:
-    name: mod (fabric, java 21)
+    name: mod (fabric, java 25 build / java 21 target)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
+          # Loom 1.18 (the 1.21.11 template) resolves only on a Java 25 runtime; the mod
+          # itself is still compiled with --release 21 so it runs on any Java 21 game.
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build the Fabric mod (downloads Minecraft + Fabric API)
         working-directory: mod

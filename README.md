@@ -388,7 +388,8 @@ the AI loop against the Ollama stub. The training stack is covered end to end as
 pinned in `tests/test_features.py`, `tests/test_train.py` covers checkpoints/resume/metrics, and
 `tests/test_local_model.py` lets a real trained model drive a simulated bot.
 CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12, the transformer engine with PyTorch,
-and **builds the Fabric mod with JDK 21** (uploading the jar as an artifact).
+and **builds the Fabric mod on JDK 25** (Loom 1.18 needs a Java 25 Gradle runtime; the
+mod targets Java 21) and uploads the jar as an artifact.
 
 ```
 pymc_bot/
@@ -434,7 +435,7 @@ scripts/dev.sh       small helper for common tasks
 | Trained model only walks forward | play/train more, or lower `training.temperature`; check `val_balanced_accuracy` in the model card |
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
 | Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |
-| `./gradlew build` fails in `mod/` | needs JDK 21; the mod builds in CI on every push, so compare with the `mod` job there |
+| `./gradlew build` fails in `mod/` | needs **JDK 25** to run Gradle (Loom 1.18 rejects older runtimes with "requires at least JVM runtime version 25"); the mod builds in CI on every push, so compare with the `mod` job there |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |
 
 ## License

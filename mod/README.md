@@ -44,7 +44,8 @@ cd mod
 ./gradlew runClient        # launch a dev client with the mod loaded
 ```
 
-Requires **JDK 21** (Gradle will download itself via the wrapper). Versions live in
+Requires **JDK 25** for Gradle (Loom 1.18 only resolves on a Java 25 runtime; the mod is
+compiled down to Java 21 bytecode); Gradle downloads itself via the wrapper. Versions live in
 `gradle.properties` (Minecraft 1.21.11, Fabric Loader 0.19.5, Fabric API 0.141.6+1.21.11);
 [check them on fabricmc.net/develop](https://fabricmc.net/develop) and bump them there.
 To play on another Minecraft version, update `minecraft_version`, `loader_version` and
