@@ -53,6 +53,9 @@ pymc_bot = ["web/*.html", "node/*.js", "node/package.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Make `pytest` (not only `python -m pytest`) import the local package, so the
+# suite runs the same way in CI as on a developer machine.
+pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
