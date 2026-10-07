@@ -79,6 +79,10 @@ class TrainingRequest(BaseModel):
     layers: int = Field(default=2, ge=1, le=8)
     reg_weight: float = Field(default=0.5, ge=0.0, le=10.0)
     include_blocks: bool | None = None
+    #: Advanced training: learn entity and item vocabularies from the playtime.
+    advanced: bool | None = None
+    entity_slots: int | None = Field(default=None, ge=0, le=256)
+    item_slots: int | None = Field(default=None, ge=0, le=512)
     resume: bool = False
     #: Generate this many minutes of synthetic playtime first (demos / tests).
     simulate_minutes: float = Field(default=0.0, ge=0.0, le=600.0)
@@ -200,6 +204,37 @@ def create_app(
             "active_run": settings.active_run,
             "dataset": dataset_overview(),
             "brain": store.settings.agent.mode,
+            "advanced": advanced_overview(),
+        }
+
+    def advanced_overview() -> dict[str, Any]:
+        """What the newest trained model learned about entities and items."""
+        settings = store.settings.training
+        runs = [card for card in list_models(settings.models_dir) if card.get("checkpoint_exists")]
+        wanted = (settings.active_run or "").strip()
+        card = next((run for run in runs if run.get("run") == wanted), None) if wanted else None
+        card = card or (runs[0] if runs else None)
+        if not card:
+            return {
+                "available": dataset_overview().get("entities_and_items", False),
+                "trained": False,
+                "entities": [],
+                "items": [],
+            }
+        entities = [str(name) for name in card.get("entity_vocabulary") or []]
+        items = [str(name) for name in card.get("item_vocabulary") or []]
+        return {
+            "available": dataset_overview().get("entities_and_items", False),
+            "trained": bool(card.get("advanced")),
+            "run": card.get("run"),
+            "entities": entities,
+            "items": items,
+            "entity_slots": len(entities),
+            "item_slots": len(items),
+            "coverage": {
+                "entity": (card.get("dataset_summary") or {}).get("entity_coverage"),
+                "item": (card.get("dataset_summary") or {}).get("item_coverage"),
+            },
         }
 
     health_cache: dict[str, Any] = {"ts": 0.0, "ok": None, "detail": ""}
@@ -331,6 +366,8 @@ def create_app(
             "antiafk_habits": ["look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"],
             "brains": ["auto", "heuristic", "ollama", "trained"],
             "training_engines": ["mlp", "transformer"],
+            "training_modes": ["basic", "advanced"],
+            "advanced_signals": ["entities", "items", "held_item", "armor", "ground_items"],
             "player_actions": [
                 "forward", "back", "left", "right", "jump", "sneak",
                 "look", "attack", "use", "hold", "move", "none",
@@ -688,9 +725,10 @@ def create_app(
             raise HTTPException(status_code=409, detail="training is already running")
         settings = store.settings.training
         dataset = (request.dataset or settings.dataset).strip()
+        advanced = settings.advanced if request.advanced is None else bool(request.advanced)
 
         if request.simulate_minutes and request.simulate_minutes > 0:
-            info = synthesize_playtime(dataset, minutes=request.simulate_minutes)
+            info = synthesize_playtime(dataset, minutes=request.simulate_minutes, advanced=advanced)
             event_log.add(
                 f"Generated {info['samples']} synthetic playtime samples for the demo "
                 f"({info['minutes']} min of pretend play).",
@@ -725,6 +763,9 @@ def create_app(
             val_split=settings.val_split,
             reg_weight=request.reg_weight,
             include_blocks=settings.include_blocks if request.include_blocks is None else request.include_blocks,
+            advanced=advanced,
+            entity_slots=request.entity_slots if request.entity_slots is not None else settings.entity_slots,
+            item_slots=request.item_slots if request.item_slots is not None else settings.item_slots,
             resume=request.resume,
         )
         if not training_service.start(config):
@@ -739,6 +780,9 @@ def create_app(
                     "batch_size": config.batch_size,
                     "checkpoint_every": config.checkpoint_every,
                     "active_run": config.run_name,
+                    "advanced": config.advanced,
+                    "entity_slots": config.entity_slots,
+                    "item_slots": config.item_slots,
                 }
             }
         )

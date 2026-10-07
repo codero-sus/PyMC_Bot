@@ -186,6 +186,7 @@ the trained brain. Training runs in a background thread and checkpoint itself ev
   "steps": 2000, "batch_size": 64, "lr": 0.003,
   "checkpoint_every": 200, "max_seconds": 0,
   "hidden": [128, 64], "include_blocks": true,
+  "advanced": false, "entity_slots": 24, "item_slots": 32,
   "resume": false,
   "simulate_minutes": 0
 }
@@ -203,8 +204,27 @@ curl -X POST localhost:8000/api/models/activate -H 'content-type: application/js
 curl localhost:8000/api/policy/preview
 ```
 
-`/api/status` gains a `training` block (`running`, `step`, `run`, `active_run`, `brain`, `models`), and
-`/api/contract` lists the brains, the training engines and the recorded player actions.
+`advanced: true` learns the entity and item vocabularies the recording contains (the mod writes them
+with `/pymc advanced on`) and feeds each word to the model with its distance and bearing; `entity_slots`
+and `item_slots` cap the vocabularies. The learned words are stored in the checkpoint and in
+`model.json`, so the bot encodes the live world into exactly the same slots.
+
+`/api/status` gains a `training` block (`running`, `step`, `run`, `active_run`, `brain`, `models`) and,
+next to it, an `advanced` overview:
+
+```json
+{
+  "available": true, "trained": true, "run": "playtime-dataset",
+  "entities": ["player", "zombie", "creeper", "..."], "items": ["iron_sword", "cooked_beef", "..."],
+  "entity_slots": 24, "item_slots": 32,
+  "coverage": {"entity": 1.0, "item": 0.98}
+}
+```
+
+`/api/training/dataset` reports the same budget for the dataset itself (`entities_and_items`,
+`vocabulary`, `entity_coverage`, `item_coverage`, top entity/item types), and `/api/contract` lists the
+brains, the training engines, the training modes (`basic`, `advanced`), the advanced signals
+(`entities`, `items`, `held_item`, `armor`, `ground_items`) and the recorded player actions.
 
 ### Ollama
 

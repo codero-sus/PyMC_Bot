@@ -27,8 +27,8 @@ Minecraft versions), and it is driven purely by JSON from Python.
                                         └───────────────────────────────────────────┘
 ```
 
-* **Works without Minecraft** – a built-in simulated world (`backend: simulated`) lets you try the whole
-  panel, movement and AI loop on any machine, and it is what the test suite runs against.
+* **Works without Minecraft** – a built-in simulated world (`backend: simulated`, reporting players, a mob, an animal, a dropped
+  stack and a starter inventory, so trained models have entity and item inputs) lets you try the whole panel, movement and AI loop on any machine, and it is what the test suite runs against.
 * **Works without an LLM** – if Ollama is disabled or unreachable the bot keeps playing with a small
   built-in heuristic policy, so it never just stands there.
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
@@ -175,6 +175,8 @@ The bot can learn **how you play** and then play like that itself. Three steps:
 The mod samples your playtime 20×/s — position, velocity, view, posture, hotbar, health/food, the 3×3×3
 block neighbourhood, nearby entities, and the action you were performing
 (`forward`, `back`, `left`, `right`, `jump`, `sneak`, `look`, `attack`, `use`, `hold`, `move`, `none`).
+`/pymc advanced on` additionally records **entities, items, the held item, armour and dropped stacks**
+for [advanced training](#advanced-training-entities-and-items).
 
 **2. Train** – *checkpointing itself as it goes*:
 
@@ -214,6 +216,30 @@ so a model trained on your playtime can never do something you turned off. Keep 
 high-level planning; the trained brain is a separate, local, dependency-light model (`--engine mlp`
 needs nothing but NumPy; `--engine transformer` adds a small attention model). Full details, metrics and troubleshooting:
 [docs/TRAINING.md](docs/TRAINING.md).
+
+### Advanced training (entities + items)
+
+The basic encoder describes the world in coarse buckets ("hostile", "passive", "resource block").
+Advanced training **learns the entity and item words your playtime actually contains** and feeds each one
+to the model with its distance and where it sits relative to your view — so "a creeper four blocks away
+while holding a sword" is a different situation from "a cow across the field while holding a pickaxe":
+
+```text
+/pymc advanced on        # in game, before recording: entities + items + drops are written too
+/pymc record start  ...  /pymc record stop  ...  /pymc export
+```
+
+```bash
+python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --advanced --steps 2000
+python -m pymc_bot train --dataset ... --advanced --entity-slots 32 --item-slots 48   # bigger vocabularies
+python -m pymc_bot train --dataset ... --inspect      # vocabulary + coverage before you train
+```
+
+The learned vocabulary is stored in the checkpoint and in `model.json`, so the bot encodes the live world
+into exactly the same slots (layout v2; `feature_version` guards the hand-off). In the panel it is the
+**Advanced training** box in the *Player model* card: tick it, train, and the status line shows what the
+dataset offers and which words the newest model learned. Details:
+[docs/TRAINING.md](docs/TRAINING.md#advanced-training-entities-and-items).
 
 ---
 
@@ -257,7 +283,7 @@ never mistaken for a real model.
 | --- | --- |
 | `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent]` | run the web config panel (Uvicorn) |
 | `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|trained]` | headless bot: connect and play (optionally populate the server), logs to stdout |
-| `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable) |
+| `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Ollama, config, server settings) |
@@ -300,6 +326,8 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "steps": 1000, "batch_size": 64, "lr": 0.003, "checkpoint_every": 200,
     "hidden": [128, 64],                // MLP layers
     "include_blocks": true,             // feed the 3x3x3 block neighbourhood
+    "advanced": false,                  // advanced training: learn entity + item vocabularies
+    "entity_slots": 24, "item_slots": 32,  // how many entity/item words the model learns
     "val_split": 0.1,
     "temperature": 0.2,                 // 0 = deterministic, >0 samples among similar actions
     "step_seconds": 0.4,                // how long one predicted action is held
@@ -376,7 +404,7 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 242 tests, no Minecraft server, no LLM required (2 skip without torch)
+pytest -q                       # 264 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -434,6 +462,7 @@ scripts/dev.sh       small helper for common tasks
 | Panel shows `demo brain (stub)` | you are pointing Ollama at `python -m pymc_bot stub`, not a real model |
 | Bot stands still | AI off (press **Start AI**), or movement permission disabled, or the server is unreachable |
 | `no playtime samples found` | record with the mod first (`/pymc record start`, `/pymc export`), or try `python -m pymc_bot train --simulate 5` |
+| advanced training looks like basic training | `train --inspect` shows an empty vocabulary: the recording was made before `/pymc advanced on`, so there is nothing extra to learn. Record again with it on. |
 | Trained model only walks forward | play/train more, or lower `training.temperature`; check `val_balanced_accuracy` in the model card |
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
 | Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |

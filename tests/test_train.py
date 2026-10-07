@@ -267,3 +267,111 @@ def test_transformer_engine_requires_torch(dataset_file: Path, models_dir: Path)
 def test_unknown_engine_is_rejected(dataset_file: Path, models_dir: Path):
     with pytest.raises(ValueError, match="unknown engine"):
         train(quick_config(dataset_file, models_dir, engine="banana", steps=1))
+
+
+# ------------------------------------------------------------- advanced training
+@pytest.fixture(scope="module")
+def advanced_dataset_file(tmp_path_factory) -> Path:
+    """A synthetic session recorded with the advanced (entity + item) schema."""
+    target = tmp_path_factory.mktemp("playtime-advanced") / "dataset.jsonl"
+    synthesize_playtime(target, minutes=1.5, seed=13, advanced=True)
+    return target
+
+
+def test_build_dataset_learns_the_vocabulary(advanced_dataset_file: Path):
+    from pymc_bot.features import feature_dim, layout_version
+
+    basic = build_dataset(advanced_dataset_file)
+    advanced = build_dataset(advanced_dataset_file, advanced=True)
+    assert advanced.X.shape[0] == basic.X.shape[0]  # same samples, richer features
+    assert advanced.X.shape[1] > basic.X.shape[1]
+    assert advanced.X.shape[1] == feature_dim(True, advanced.vocab)
+    assert basic.vocab.entities == () and basic.vocab.items == ()
+    assert advanced.vocab.entities and advanced.vocab.items
+    assert "zombie" in advanced.vocab.entities  # the combat profile fights them
+    assert any(name.endswith("sword") or name.endswith("pickaxe") for name in advanced.vocab.items)
+    assert advanced.summary["advanced"] is True
+    assert advanced.summary["vocabulary"] == advanced.vocab.describe()
+    assert advanced.summary["entity_coverage"] == 1.0
+    assert layout_version(advanced.vocab) == 2
+    # the basic half of an advanced vector is still the basic vector
+    assert list(advanced.X[0][: basic.X.shape[1]]) == pytest.approx(list(basic.X[0]), abs=1e-6)
+
+
+def test_advanced_slots_are_configurable(advanced_dataset_file: Path):
+    small = build_dataset(advanced_dataset_file, advanced=True, entity_slots=2, item_slots=3)
+    assert len(small.vocab.entities) == 2
+    assert len(small.vocab.items) == 3
+
+
+def test_train_writes_the_vocabulary_into_the_card_and_checkpoint(advanced_dataset_file: Path, tmp_path: Path):
+    models_dir = tmp_path / "models"
+    summary = train(
+        TrainConfig(
+            dataset=str(advanced_dataset_file),
+            run_name="advanced-run",
+            models_dir=str(models_dir),
+            steps=20,
+            checkpoint_every=20,
+            batch_size=32,
+            log_every=20,
+            advanced=True,
+            verbose=False,
+        )
+    )
+    card = read_card(models_dir, "advanced-run")
+    assert summary["run"] == "advanced-run"
+    assert card["advanced"] is True
+    assert card["feature_version"] == 2
+    from pymc_bot.features import Vocabulary, feature_dim
+
+    vocab = Vocabulary(entities=tuple(card["entity_vocabulary"]), items=tuple(card["item_vocabulary"]))
+    assert card["feature_dim"] == feature_dim(True, vocab)
+    assert card["item_vocabulary"]
+    assert "Advanced training" in card["notes"]
+    assert card["dataset_summary"]["advanced"] is True
+    state = read_state(models_dir, "advanced-run")
+    assert state["config"]["advanced"] is True
+    # the checkpoint carries the same words, so a bare .npz still knows its layout
+    import numpy as np
+
+    from pymc_bot.models import _read_meta
+
+    with np.load(models_dir / "advanced-run" / card["checkpoint_file"], allow_pickle=False) as data:
+        meta = _read_meta(data)
+    assert meta["feature_version"] == card["feature_version"]
+    assert list(meta["entities"]) == card["entity_vocabulary"]
+    assert list(meta["items"]) == card["item_vocabulary"]
+
+
+def test_resume_keeps_advanced_mode(advanced_dataset_file: Path, tmp_path: Path):
+    models_dir = tmp_path / "models"
+    config = TrainConfig(
+        dataset=str(advanced_dataset_file),
+        run_name="resume-advanced",
+        models_dir=str(models_dir),
+        steps=10,
+        checkpoint_every=10,
+        batch_size=32,
+        log_every=10,
+        advanced=True,
+        verbose=False,
+    )
+    train(config)
+    # a fresh config that forgot the flag must still come back as an advanced run
+    resumed = TrainConfig(
+        dataset=str(advanced_dataset_file),
+        run_name="resume-advanced",
+        models_dir=str(models_dir),
+        steps=20,
+        checkpoint_every=10,
+        batch_size=32,
+        log_every=10,
+        resume=True,
+        verbose=False,
+    )
+    summary = train(resumed)
+    assert resumed.advanced is True
+    assert summary["steps"] == 20
+    card = read_card(models_dir, "resume-advanced")
+    assert card["advanced"] is True and card["step"] == 20

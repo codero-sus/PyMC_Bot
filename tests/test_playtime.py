@@ -179,3 +179,33 @@ def test_synthetic_neighbours_match_the_mood(tmp_path: Path):
             assert sample["activity"] in {"look", "none"}, sample
             greeted += 1
     assert fought > 0 and greeted > 0  # both situations really occur
+
+
+def test_synthetic_session_stays_alive_and_fed(tmp_path: Path):
+    """A fabricated session must not decay into permanent near-death.
+
+    The old generator random-walked health and hunger downwards, so "nearly dead and
+    starving" became the normal state in the data - and a model trained on it behaved
+    oddly on a healthy bot.
+    """
+    dataset = tmp_path / "dataset.jsonl"
+    synthesize_playtime(dataset, minutes=10.0, seed=5, advanced=True)
+    samples = [json.loads(line)["input"] for line in dataset.read_text().splitlines()]
+    health = [sample["health"] for sample in samples]
+    food = [sample["food"] for sample in samples]
+    assert min(health) >= 6.0 and min(food) >= 6.0
+    assert sum(health) / len(health) > 12.0  # mostly healthy
+    assert sum(food) / len(food) > 12.0
+    assert health[0] == 20.0 and food[0] >= 19  # a session starts full
+
+
+def test_synthetic_inventory_is_plausible(tmp_path: Path):
+    dataset = tmp_path / "dataset.jsonl"
+    synthesize_playtime(dataset, minutes=6.0, seed=9, advanced=True)
+    samples = [json.loads(line)["input"] for line in dataset.read_text().splitlines()]
+    carried = [sum(count for _slot, _item, count in sample["items"]) for sample in samples]
+    assert max(carried) <= 120  # no infinite stacks
+    assert sum(carried) / len(carried) < 60
+    # sessions start empty handed so the model learns that state too
+    assert any(sample["held_item"] == "" for sample in samples)
+    assert any(not sample["armor"] for sample in samples)

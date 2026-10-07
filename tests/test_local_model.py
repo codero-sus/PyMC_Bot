@@ -269,3 +269,83 @@ def test_prediction_reports_the_masked_probabilities(trained: Path):
     prediction = policy.predict(snapshot(), allowed={"none"})
     assert prediction.action == "none"
     assert prediction.probs["none"] == pytest.approx(1.0)
+
+
+# ------------------------------------------------------------ advanced training
+@pytest.fixture(scope="module")
+def advanced_trained(tmp_path_factory) -> Path:
+    """A tiny advanced model trained on synthetic playtime with entity + item data."""
+    root = tmp_path_factory.mktemp("policy-advanced")
+    dataset = root / "dataset.jsonl"
+    synthesize_playtime(dataset, minutes=1.0, seed=23, advanced=True)
+    train(
+        TrainConfig(
+            dataset=str(dataset),
+            run_name="adv",
+            models_dir=str(root / "models"),
+            steps=30,
+            checkpoint_every=30,
+            batch_size=32,
+            log_every=30,
+            advanced=True,
+        )
+    )
+    return root / "models"
+
+
+def test_advanced_policy_loads_its_vocabulary(advanced_trained: Path):
+    policy = TrainedPolicy.load("adv", advanced_trained)
+    assert policy.advanced is True
+    assert policy.vocab.entities and policy.vocab.items
+    description = policy.describe()
+    assert description["advanced"] is True
+    assert description["entity_vocabulary"] == list(policy.vocab.entities)
+    assert description["item_vocabulary"] == list(policy.vocab.items)
+
+
+def test_advanced_policy_encodes_live_entity_and_item_data(advanced_trained: Path):
+    policy = TrainedPolicy.load("adv", advanced_trained)
+    snapshot = {
+        "position": {"x": 4.0, "y": 64.0, "z": 4.0},
+        "yaw": 0.0,
+        "pitch": 0.0,
+        "players": [{"name": "Steve", "x": 6.0, "y": 64.0, "z": 4.0, "distance": 2.0}],
+        "entities": [
+            {"type": "minecraft:zombie", "dx": 3.0, "dy": 0.0, "dz": 1.0, "dist": 3.2, "hostile": True}
+        ],
+        "inventory": [{"name": "iron_sword", "count": 1}],
+        "held_item": "minecraft:iron_sword",
+        "armor": ["minecraft:iron_helmet"],
+    }
+    observation = policy.observe(snapshot)
+    assert {entry["type"] for entry in observation["entities"]} == {"minecraft:zombie", "minecraft:player"}
+    assert observation["held_item"] == "minecraft:iron_sword"
+    assert observation["inventory"][0]["name"] == "iron_sword"
+    prediction = policy.predict(snapshot)
+    assert prediction.action in policy.actions
+    # the model was trained on this vocabulary: the words must land in real columns
+    from pymc_bot.features import encode, feature_dim
+
+    vector = encode(observation, policy.include_blocks, policy.vocab)
+    assert len(vector) == feature_dim(policy.include_blocks, policy.vocab)
+    assert any(value != 0.0 for value in vector[-40:])  # the advanced half is populated
+    assert policy.describe()["predictions"] >= 1
+
+
+def test_advanced_policy_prefers_the_richest_entity_source(advanced_trained: Path):
+    policy = TrainedPolicy.load("adv", advanced_trained)
+    snapshot = {
+        "position": {"x": 0.0, "y": 64.0, "z": 0.0},
+        # a player appears in both lists: it must be counted once, from `entities`
+        "entities": [{"type": "minecraft:player", "dx": 1.0, "dy": 0.0, "dz": 0.0, "dist": 1.0, "player": True}],
+        "players": [{"name": "Steve", "x": 1.0, "y": 64.0, "z": 0.0, "distance": 1.0}],
+    }
+    observation = policy.observe(snapshot)
+    assert len(observation["entities"]) == 1
+
+
+def test_basic_policy_has_no_vocabulary(trained: Path):
+    policy = TrainedPolicy.load("policy", trained)
+    assert policy.advanced is False
+    assert policy.vocab.describe() == {"entities": 0, "items": 0}
+    assert policy.describe()["advanced"] is False

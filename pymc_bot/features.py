@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 FEATURE_VERSION = 1
@@ -123,6 +124,180 @@ PASSIVE_ENTITIES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# advanced training: entity and item vocabularies
+# ---------------------------------------------------------------------------
+#: Layout ids. v1 is the fixed, hand written encoding; v2 adds the entity and item
+#: vocabularies that "advanced training" learns from the recorded playtime.
+FEATURE_VERSION = 1
+ADVANCED_FEATURE_VERSION = 2
+
+DEFAULT_ENTITY_SLOTS = 24
+DEFAULT_ITEM_SLOTS = 32
+ENTITY_RANGE = 24.0
+ITEM_COUNT_SCALE = 16.0
+
+#: Entity ids that always get a slot when a vocabulary is learned (they exist in every
+#: world and the ones a player reacts to), so a rare-but-important mob is never dropped
+#: just because the recording was short.
+SEED_ENTITIES: tuple[str, ...] = (
+    "player",
+    "zombie",
+    "skeleton",
+    "creeper",
+    "spider",
+    "enderman",
+    "witch",
+    "slime",
+    "drowned",
+    "husk",
+    "phantom",
+    "blaze",
+    "ghast",
+    "piglin",
+    "hoglin",
+    "cow",
+    "sheep",
+    "pig",
+    "chicken",
+    "villager",
+    "wolf",
+    "horse",
+    "rabbit",
+    "iron_golem",
+)
+
+#: Item *suffixes* that always get a slot: any sword, any pickaxe, any food.
+SEED_ITEM_SUFFIXES: tuple[str, ...] = (
+    "sword",
+    "pickaxe",
+    "axe",
+    "shovel",
+    "hoe",
+    "bow",
+    "shield",
+    "apple",
+    "bread",
+    "beef",
+    "porkchop",
+    "chicken",
+    "mutton",
+    "carrot",
+    "potato",
+    "torch",
+    "oak_log",
+    "oak_planks",
+    "cobblestone",
+    "dirt",
+    "stone",
+    "coal",
+    "iron_ingot",
+    "diamond",
+)
+
+WEAPON_HINTS = ("sword", "axe", "bow", "crossbow", "trident", "mace", "arrow", "tnt", "firework")
+TOOL_HINTS = ("pickaxe", "shovel", "hoe", "shears", "fishing_rod", "flint_and_steel", "bucket")
+FOOD_HINTS = (
+    "apple",
+    "bread",
+    "beef",
+    "porkchop",
+    "mutton",
+    "chicken",
+    "rabbit",
+    "cod",
+    "salmon",
+    "potato",
+    "carrot",
+    "beetroot",
+    "melon",
+    "cookie",
+    "cake",
+    "stew",
+    "soup",
+    "berries",
+    "kelp",
+    "honey",
+    "milk",
+)
+ARMOR_HINTS = ("helmet", "chestplate", "leggings", "boots", "shield", "elytra")
+
+#: The global part of the advanced block (see :func:`advanced_features`).
+ADVANCED_GLOBAL_DIM = 13
+
+
+@dataclass(frozen=True)
+class Vocabulary:
+    """The entity and item words an advanced model learned from the playtime.
+
+    The trainer learns which ids actually occur in the recording (plus the seeds above)
+    and stores them in the checkpoint, so the live bot encodes its world into exactly the
+    same slots. An empty vocabulary means "use the fixed :func:`encode` layout".
+    """
+
+    entities: tuple[str, ...] = ()
+    items: tuple[str, ...] = ()
+
+    @property
+    def slots(self) -> tuple[int, int]:
+        return len(self.entities), len(self.items)
+
+    def entity_index(self, name: Any) -> int | None:
+        short = _short_name(name)
+        try:
+            return self.entities.index(short)
+        except ValueError:
+            return None
+
+    def item_index(self, name: Any) -> int | None:
+        short = _short_name(name)
+        try:
+            return self.items.index(short)
+        except ValueError:
+            return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"entities": list(self.entities), "items": list(self.items)}
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> Vocabulary:
+        if isinstance(payload, Vocabulary):
+            return payload
+        if not isinstance(payload, dict):
+            return cls()
+        return cls(
+            entities=tuple(str(name) for name in payload.get("entities") or ()),
+            items=tuple(str(name) for name in payload.get("items") or ()),
+        )
+
+    def describe(self) -> dict[str, Any]:
+        return {"entities": len(self.entities), "items": len(self.items)}
+
+
+def _top_names(counts: dict[str, float], seeds: Sequence[str], slots: int, *, seed_suffix: bool) -> tuple[str, ...]:
+    """Pick ``slots`` ids: the seeds that occur first, then whatever is most frequent."""
+    chosen: list[str] = []
+    rest = sorted(counts, key=lambda name: (-counts[name], name))
+    if seed_suffix:
+        for suffix in seeds:
+            for name in rest:
+                if name.endswith(suffix) and name not in chosen:
+                    chosen.append(name)
+                    break
+    else:
+        for seed in seeds:
+            if seed in counts:
+                chosen.append(seed)
+    if slots > 0:
+        for name in rest:
+            if len(chosen) >= slots:
+                break
+            if name not in chosen:
+                chosen.append(name)
+        return tuple(chosen[:slots])
+    return tuple(chosen)
+
+
 def _short_name(name: Any) -> str:
     """``"minecraft:oak_log"`` -> ``"oak_log"``; tolerates full ids and namespaces."""
     text = str(name or "").strip().lower()
@@ -191,15 +366,282 @@ def _dimension_index(name: Any) -> int:
     return len(DIMENSIONS) - 1
 
 
-def feature_dim(include_blocks: bool = True) -> int:
-    """Length of the vector :func:`encode` returns."""
+def observation_entities(observation: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every entity a sample knows about, from the mod or from the live bridge.
+
+    Advanced recordings write the full list into ``entities``; a basic recording (and
+    the older bridge) only has the closest few in ``nearby``; a live snapshot has the
+    players in ``players``. The first key that carries data wins, so an entity is never
+    counted twice.
+    """
+    observation = observation or {}
+    for key in ("entities", "nearby", "players"):
+        entries = [
+            entry
+            for entry in (observation.get(key) or [])
+            if isinstance(entry, dict) and (entry.get("type") or entry.get("name") or entry.get("kind"))
+        ]
+        if entries:
+            return entries
+    return []
+
+
+def _entity_delta(observation: dict[str, Any], entry: dict[str, Any]) -> tuple[float, float, float, float]:
+    """``(dx, dy, dz, dist)`` of an entity relative to the observer."""
+    dx = _number(entry.get("dx"))
+    dy = _number(entry.get("dy"))
+    dz = _number(entry.get("dz"))
+    if dx == 0.0 and dy == 0.0 and dz == 0.0 and observation.get("x") is not None:
+        dx = _number(entry.get("x")) - _number(observation.get("x"))
+        dy = _number(entry.get("y")) - _number(observation.get("y"))
+        dz = _number(entry.get("z")) - _number(observation.get("z"))
+    distance = _number(entry.get("dist"), math.sqrt(dx * dx + dy * dy + dz * dz))
+    return dx, dy, dz, distance
+
+
+def _entity_name(entry: dict[str, Any]) -> str:
+    if entry.get("player") or _short_name(entry.get("type")) in ("player", "remoteplayer"):
+        return "player"
+    return _short_name(entry.get("type") or entry.get("name") or entry.get("kind") or "unknown")
+
+
+def observation_items(observation: dict[str, Any]) -> dict[str, int]:
+    """Item id -> total count in the player's inventory (and hands/armour)."""
+    observation = observation or {}
+    counts: dict[str, int] = {}
+    for entry in observation.get("items") or []:
+        name: Any = None
+        count = 1
+        if isinstance(entry, dict):
+            name, count = entry.get("name") or entry.get("item"), entry.get("count") or 1
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            # [slot, "minecraft:oak_log", 3] from the mod, or ["oak_log", 3] from a bridge
+            if isinstance(entry[0], str):
+                name = entry[0]
+                count = entry[2] if len(entry) > 2 else entry[1]
+            else:
+                name = entry[1]
+                count = entry[2] if len(entry) > 2 else 1
+        if isinstance(name, str) and name:
+            short = _short_name(name)
+            counts[short] = counts.get(short, 0) + int(_number(count, 1.0))
+    for entry in observation.get("inventory") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            short = _short_name(entry["name"])
+            counts[short] = counts.get(short, 0) + int(_number(entry.get("count"), 1.0))
+    for key in ("held_item", "offhand"):
+        name = observation.get(key)
+        if isinstance(name, str) and name:
+            short = _short_name(name)
+            counts.setdefault(short, 1)
+    for name in observation.get("armor") or []:
+        if isinstance(name, str) and name:
+            short = _short_name(name)
+            counts.setdefault(short, 1)
+    return counts
+
+
+def observation_ground_items(observation: dict[str, Any], vocab: Vocabulary | None = None) -> list[dict[str, Any]]:
+    """Dropped item stacks around the player (``ground_items`` from the mod)."""
+    observation = observation or {}
+    stacks = [entry for entry in (observation.get("ground_items") or []) if isinstance(entry, dict)]
+    if stacks or not observation.get("entities"):
+        return stacks
+    # A recording may keep drops inside ``entities`` (they are entities in Minecraft).
+    return [
+        entry
+        for entry in observation["entities"]
+        if isinstance(entry, dict) and _short_name(entry.get("type")) in ("item", "item_stack")
+    ]
+
+
+def _item_flags(item: str) -> tuple[bool, bool, bool, bool]:
+    """``(weapon, tool, food, armour)`` hints for one item id."""
+    name = _short_name(item)
+    weapon = any(hint in name for hint in WEAPON_HINTS)
+    tool = any(hint in name for hint in TOOL_HINTS)
+    food = any(hint in name for hint in FOOD_HINTS)
+    armor = any(hint in name for hint in ARMOR_HINTS)
+    return weapon, tool, food, armor
+
+
+def learn_vocabulary(
+    observations: Iterable[dict[str, Any]],
+    *,
+    entity_slots: int = DEFAULT_ENTITY_SLOTS,
+    item_slots: int = DEFAULT_ITEM_SLOTS,
+) -> Vocabulary:
+    """Learn which entities and items the recorded playtime actually contains.
+
+    Ids are ranked by how often they show up (the seeds in :data:`SEED_ENTITIES` and
+    :data:`SEED_ITEM_SUFFIXES` are kept even when they are rare), and the result is stored
+    in the checkpoint so the live bot encodes its world into exactly the same slots.
+    """
+    entity_counts: dict[str, float] = {}
+    item_counts: dict[str, float] = {}
+    for observation in observations or []:
+        for entry in observation_entities(observation):
+            name = _entity_name(entry)
+            entity_counts[name] = entity_counts.get(name, 0.0) + 1.0
+        for name, count in observation_items(observation).items():
+            item_counts[name] = item_counts.get(name, 0.0) + float(count)
+    return Vocabulary(
+        entities=_top_names(entity_counts, SEED_ENTITIES, entity_slots, seed_suffix=False),
+        items=_top_names(item_counts, SEED_ITEM_SUFFIXES, item_slots, seed_suffix=True),
+    )
+
+
+def vocabulary_coverage(observations: Sequence[dict[str, Any]], vocab: Vocabulary) -> dict[str, Any]:
+    """How much of a dataset the learned vocabulary can actually describe."""
+    seen_entities: dict[str, int] = {}
+    seen_items: dict[str, int] = {}
+    described = 0
+    for observation in observations:
+        entities = observation_entities(observation)
+        items = observation_items(observation)
+        for entry in entities:
+            name = _entity_name(entry)
+            seen_entities[name] = seen_entities.get(name, 0) + 1
+        for name, count in items.items():
+            seen_items[name] = seen_items.get(name, 0) + count
+        if entities or items:
+            described += 1
+    known = sum(count for name, count in seen_entities.items() if vocab.entity_index(name) is not None)
+    total = sum(seen_entities.values()) or 1
+    known_items = sum(count for name, count in seen_items.items() if vocab.item_index(name) is not None)
+    total_items = sum(seen_items.values()) or 1
+    return {
+        "entity_types": dict(sorted(seen_entities.items(), key=lambda item: (-item[1], item[0]))[:20]),
+        "item_types": dict(sorted(seen_items.items(), key=lambda item: (-item[1], item[0]))[:20]),
+        "entity_coverage": round(known / total, 4),
+        "item_coverage": round(known_items / total_items, 4),
+        "samples_with_entities_or_items": described,
+    }
+
+
+def layout_version(vocab: Vocabulary | None = None) -> int:
+    """The feature layout id a model with this vocabulary was trained with."""
+    if vocab is None or (not vocab.entities and not vocab.items):
+        return FEATURE_VERSION
+    return ADVANCED_FEATURE_VERSION
+
+
+def _bearing_sin_cos(dx: float, dz: float, yaw_degrees: float) -> tuple[float, float]:
+    """Where an entity sits relative to the way the player is looking."""
+    if dx == 0.0 and dz == 0.0:
+        return 0.0, 0.0
+    bearing = math.degrees(math.atan2(-dx, dz))
+    relative = math.radians(wrap_degrees(bearing - yaw_degrees))
+    return math.sin(relative), math.cos(relative)
+
+
+def advanced_features(observation: dict[str, Any], vocab: Vocabulary) -> list[float]:
+    """Entity and item features for the ids the model learned from the playtime.
+
+    Per entity word: is it here, how close is it, where is it relative to the view.
+    Per item word: is it carried, how many, is it in the player's hand.
+    Then a handful of globals (weapons, food, armour, drops, closest threat/player).
+    """
+    observation = observation or {}
+    yaw = _number(observation.get("yaw"))
+    out: list[float] = []
+
+    entities = observation_entities(observation)
+    per_entity: dict[str, list[tuple[float, tuple[float, float]]]] = {}
+    for entry in entities:
+        name = _entity_name(entry)
+        dx, _dy, dz, distance = _entity_delta(observation, entry)
+        per_entity.setdefault(name, []).append((distance, _bearing_sin_cos(dx, dz, yaw)))
+
+    for name in vocab.entities:
+        found = per_entity.get(name) or []
+        if not found:
+            out.extend([0.0, 0.0, 0.0, 0.0])
+            continue
+        nearest_distance, (sin_bearing, cos_bearing) = min(found, key=lambda item: item[0])
+        out.append(1.0)
+        out.append(_clamp(1.0 - nearest_distance / ENTITY_RANGE, 0.0, 1.0))
+        out.append(sin_bearing)
+        out.append(cos_bearing)
+
+    carried = observation_items(observation)
+    held = _short_name(observation.get("held_item") or "")
+    for name in vocab.items:
+        count = carried.get(name, 0)
+        out.append(1.0 if count else 0.0)
+        out.append(_clamp(count / ITEM_COUNT_SCALE, 0.0, 1.0))
+        out.append(1.0 if held and held == name else 0.0)
+
+    # Globals: what the player is equipped to do, and what is lying on the floor.
+    weapons = tools = foods = blockers = armor_pieces = 0
+    for name, count in carried.items():
+        weapon, tool, food, armor = _item_flags(name)
+        weapons += count if weapon else 0
+        tools += count if tool else 0
+        foods += count if food else 0
+        armor_pieces += 1 if armor else 0
+        blockers += count if not (weapon or tool or food or armor) else 0
+    ground = observation_ground_items(observation)
+    nearest_ground = min((_number(entry.get("dist"), ENTITY_RANGE) for entry in ground), default=None)
+    hostiles = [
+        _number(entry.get("dist"), ENTITY_RANGE)
+        for entry in entities
+        if entity_class(entry) == 1
+    ]
+    players = [_number(entry.get("dist"), ENTITY_RANGE) for entry in entities if entity_class(entry) == 0]
+    out.extend(
+        [
+            _clamp(sum(carried.values()) / 36.0, 0.0, 2.0),
+            _clamp(len(carried) / 16.0, 0.0, 2.0),
+            _clamp(weapons / 4.0, 0.0, 1.0),
+            _clamp(tools / 4.0, 0.0, 1.0),
+            _clamp(foods / 8.0, 0.0, 1.0),
+            _clamp(blockers / 32.0, 0.0, 1.0),
+            _clamp(armor_pieces / 4.0, 0.0, 1.0),
+            _clamp(len(ground) / 4.0, 0.0, 1.0),
+            _clamp(1.0 - nearest_ground / ENTITY_RANGE, 0.0, 1.0) if nearest_ground is not None else 0.0,
+            _clamp(1.0 - min(hostiles) / ENTITY_RANGE, 0.0, 1.0) if hostiles else 0.0,
+            _clamp(len(hostiles) / 4.0, 0.0, 1.0),
+            _clamp(1.0 - min(players) / ENTITY_RANGE, 0.0, 1.0) if players else 0.0,
+            _clamp(len(players) / 4.0, 0.0, 1.0),
+        ]
+    )
+    return out
+
+
+def basic_feature_dim(include_blocks: bool = True) -> int:
+    """Length of the fixed part of the vector (layout v1)."""
     base = 3 + 3 + 1 + 4 + 4 + 9 + 2 + len(DIMENSIONS) + 2 + NEARBY_SLOTS * (len(NEARBY_CLASSES) + 4)
     blocks = len(CELLS) * len(BLOCK_CLASSES) if include_blocks else 0
     return base + blocks
 
 
-def encode(observation: dict[str, Any], include_blocks: bool = True) -> list[float]:
-    """Encode one observation (mod sample or live bot snapshot) as a feature vector."""
+def advanced_feature_dim(vocab: Vocabulary | None) -> int:
+    """Extra floats the entity/item vocabularies add (0 without a vocabulary)."""
+    if vocab is None or (not vocab.entities and not vocab.items):
+        return 0
+    return len(vocab.entities) * 4 + len(vocab.items) * 3 + ADVANCED_GLOBAL_DIM
+
+
+def feature_dim(include_blocks: bool = True, vocab: Vocabulary | None = None) -> int:
+    """Length of the vector :func:`encode` returns.
+
+    ``vocab`` selects the advanced layout, so the trainer and the live bot can never
+    disagree about what a column means.
+    """
+    return basic_feature_dim(include_blocks) + advanced_feature_dim(vocab)
+
+
+def encode(
+    observation: dict[str, Any],
+    include_blocks: bool = True,
+    vocab: Vocabulary | None = None,
+) -> list[float]:
+    """Encode one observation (mod sample or live bot snapshot) as a feature vector.
+
+    With a ``vocab`` learned by :func:`learn_vocabulary` the entity and item words are
+    appended after the fixed block (layout v2, "advanced training").
+    """
     observation = observation or {}
     out: list[float] = []
 
@@ -269,11 +711,18 @@ def encode(observation: dict[str, Any], include_blocks: bool = True) -> list[flo
                 kind = block_class("minecraft:stone") if dy == -1 else block_class("minecraft:air")
             out.extend(1.0 if index == kind else 0.0 for index in range(len(BLOCK_CLASSES)))
 
+    if vocab is not None and (vocab.entities or vocab.items):
+        out.extend(advanced_features(observation, vocab))
+
     return out
 
 
-def encode_many(observations: Iterable[dict[str, Any]], include_blocks: bool = True) -> list[list[float]]:
-    return [encode(observation, include_blocks) for observation in observations]
+def encode_many(
+    observations: Iterable[dict[str, Any]],
+    include_blocks: bool = True,
+    vocab: Vocabulary | None = None,
+) -> list[list[float]]:
+    return [encode(observation, include_blocks, vocab) for observation in observations]
 
 
 def action_of(observation: dict[str, Any]) -> str:

@@ -14,6 +14,10 @@ Then, from the repository root:
 
 ```powershell
 python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl"
+
+# advanced: learn the entity and item words the recording contains
+# (/pymc advanced on before recording)
+python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --advanced
 python -m pymc_bot run --think trained --run-name playtime-dataset
 ```
 
@@ -66,6 +70,10 @@ Install by dropping the jar plus [Fabric API](https://modrinth.com/mod/fabric-ap
 | `/pymc export` | Flatten every episode into `pymc-playtime/dataset.jsonl` (the trainer input). |
 | `/pymc status` | Recording state, dataset size, config. |
 | `/pymc sample <ticks>` | Sampling rate: 2 ticks = one sample every 100 ms (20 Hz, the default). |
+| `/pymc advanced on\|off` | Advanced recording: also write entities, items, the held item, armour and dropped stacks (what `train --advanced` learns from). |
+| `/pymc advanced status` | Show the full recorder configuration, including the advanced limits. |
+| `/pymc entities <n>` | How many entities to write per sample in advanced mode (default 24, 0 disables). |
+| `/pymc drops <n>` | How many dropped item stacks to write per sample (default 8). |
 | `/pymc param` | Show the current recorder configuration. |
 | `/pymc train` | Print the exact Python command to train on this dataset. |
 
@@ -98,8 +106,26 @@ One NDJSON line per sample (default every 2 client ticks ≈ 100 ms):
  "episode": "run-20261007-181500"}
 ```
 
-Roughly **1.2 KB per sample ≈ 1.4 MB per minute of playtime**; a 10-minute session is
-plenty to see the model imitate your habits, an hour makes it noticeably better.
+With `/pymc advanced on` every sample also carries the entity and item half of the schema:
+
+```json
+ "entities": [{"type": "minecraft:zombie", "dx": 3.1, "dy": 0.0, "dz": -1.4, "dist": 3.4,
+               "hostile": true, "player": false, "health": 20.0, "on_ground": true,
+               "yaw": 87.5, "count": 0, "held_item": ""}],
+ "items": [[0, "minecraft:iron_sword", 1], [3, "minecraft:cooked_beef", 5]],
+ "held_item": "minecraft:iron_sword",
+ "armor": ["minecraft:iron_helmet", "minecraft:iron_boots"],
+ "ground_items": [{"item": "minecraft:oak_log", "count": 3, "dist": 2.4}]
+```
+
+`entities` is every entity within `entityRange` blocks (players, mobs, drops — with the held item and
+whether it is hostile), `items` is the whole inventory as `[slot, item, count]`, and `ground_items`
+are the dropped stacks nearby. `train --advanced` learns which of those words matter and how close
+they are, which is what makes the bot react to *what* is around it instead of just "something is".
+
+Roughly **1.2 KB per sample ≈ 1.4 MB per minute of playtime**, about 2-4x that in advanced mode
+(24 entity slots by default); a 10-minute session is plenty to see the model imitate your habits, an
+hour makes it noticeably better.
 
 ## Privacy / safety
 

@@ -289,6 +289,9 @@ function fillForm(cfg) {
   set('train-batch', tr.batch_size ?? 64);
   set('train-lr', tr.lr ?? 0.003);
   set('train-checkpoint', tr.checkpoint_every ?? 200);
+  check('train-advanced', tr.advanced);
+  set('train-entity-slots', tr.entity_slots ?? 24);
+  set('train-item-slots', tr.item_slots ?? 32);
 
   const fleet = cfg.fleet || {};
   set('fleet-count-input', fleet.count ?? 5);
@@ -360,6 +363,9 @@ function collectForm() {
       batch_size: Number($('train-batch').value) || 64,
       lr: Number($('train-lr').value) || 0.003,
       checkpoint_every: Number($('train-checkpoint').value) || 200,
+      advanced: $('train-advanced').checked,
+      entity_slots: Number($('train-entity-slots').value) || 0,
+      item_slots: Number($('train-item-slots').value) || 0,
     },
     fleet: {
       count: Number($('fleet-count-input').value) || 5,
@@ -498,10 +504,30 @@ function renderTraining(training) {
   if (running || status.summary) {
     bits.push(`loss ${status.loss ?? '—'} · val ${status.val_loss ?? '—'} · acc ${status.val_acc ?? '—'}`);
   }
+  if (status.advanced) bits.push('advanced mode (entities + items)');
   if (status.error) bits.push(`error: ${status.error}`);
   if (status.run) bits.push(`run '${status.run}'`);
   bits.push(`brain: ${training.brain || 'auto'}${training.active_run ? ` (model '${training.active_run}')` : ''}`);
   $('train-status').textContent = bits.join(' · ');
+
+  // Advanced training: what the dataset offers and what the newest model learned.
+  const advanced = training.advanced || {};
+  const pieces = [];
+  if (dataset.entities_and_items) {
+    pieces.push(`dataset has entity + item data`);
+    if (dataset.entity_coverage !== undefined) pieces.push(`entity coverage ${(dataset.entity_coverage * 100).toFixed(0)}%`);
+    if (dataset.item_coverage !== undefined) pieces.push(`item coverage ${(dataset.item_coverage * 100).toFixed(0)}%`);
+  } else if (dataset.exists) {
+    pieces.push('dataset has no entity/item data yet — record with /pymc advanced on');
+  }
+  if (advanced.trained && advanced.run) {
+    pieces.push(`${advanced.run}: ${advanced.entity_slots || 0} entity word(s), ${advanced.item_slots || 0} item word(s)`);
+    if (advanced.entities?.length) pieces.push(`entities: ${advanced.entities.slice(0, 6).join(', ')}`);
+    if (advanced.items?.length) pieces.push(`items: ${advanced.items.slice(0, 6).join(', ')}`);
+  } else if (dataset.exists) {
+    pieces.push('no advanced model trained yet');
+  }
+  $('train-advanced-status').textContent = pieces.length ? pieces.join(' · ') : 'nothing learned yet';
 }
 
 function renderModels(payload) {
@@ -513,7 +539,7 @@ function renderModels(payload) {
   const body = $('model-body');
   body.innerHTML = '';
   if (!modelList.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">nothing trained yet — press “Train on playtime”</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="empty">nothing trained yet — press “Train on playtime”</td></tr>';
     return;
   }
   for (const card of modelList) {
@@ -524,6 +550,7 @@ function renderModels(payload) {
     const cells = [
       `${card.run}${active ? ' ✓' : ''}`,
       card.engine || 'mlp',
+      card.advanced ? `advanced (${(card.entity_vocabulary || []).length}e/${(card.item_vocabulary || []).length}i)` : 'basic',
       card.step ?? 0,
       card.params ?? 0,
       metrics.val_loss === null || metrics.val_loss === undefined ? '—' : Number(metrics.val_loss).toFixed(4),
@@ -566,6 +593,9 @@ async function startTraining(extra = {}) {
       batch_size: Number($('train-batch').value) || 64,
       lr: Number($('train-lr').value) || 0.003,
       checkpoint_every: Number($('train-checkpoint').value) || 200,
+      advanced: $('train-advanced').checked,
+      entity_slots: Number($('train-entity-slots').value) || undefined,
+      item_slots: Number($('train-item-slots').value) || undefined,
       ...extra,
     };
     const data = await api('/api/training/start', { method: 'POST', body: JSON.stringify(payload) });
