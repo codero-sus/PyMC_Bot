@@ -20,6 +20,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
@@ -50,6 +51,10 @@ public final class PlaytimeRecorder {
 
     /** Entities further away than this are never written to a sample. */
     private static final double NEARBY_RANGE = 16.0;
+    /** Armour slots, in the order the advanced recording writes them. */
+    private static final EquipmentSlot[] ARMOR_SLOTS = {
+        EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET,
+    };
     private static final DateTimeFormatter RUN_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT);
 
     private final Minecraft client;
@@ -465,9 +470,11 @@ public final class PlaytimeRecorder {
         return out;
     }
 
+    /** The four armour slots, read one by one (stable vanilla API). */
     private static List<String> armor(LocalPlayer player) {
         List<String> out = new ArrayList<>(4);
-        for (ItemStack stack : player.getArmorSlots()) {
+        for (EquipmentSlot slot : ARMOR_SLOTS) {
+            ItemStack stack = player.getItemBySlot(slot);
             if (!stack.isEmpty()) {
                 out.add(itemName(stack));
             }

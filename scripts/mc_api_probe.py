@@ -43,6 +43,12 @@ LOOKUPS: list[tuple[str, str]] = [
     ("net.minecraft.client.player.LocalPlayer", r"."),
     ("net.minecraft.resources.Identifier", r"fromNamespaceAndPath|getNamespace|getPath|withDefaultNamespace"),
     ("net.minecraft.client.Minecraft", r"options|getInstance|level|player"),
+    ("net.minecraft.world.entity.EquipmentSlot", r"HEAD|CHEST|LEGS|FEET"),
+    ("net.minecraft.world.entity.LivingEntity", r"getItemBySlot|getMainHandItem|getArmorSlots|getHealth"),
+    ("net.minecraft.world.entity.player.Inventory", r"getItem|getSelected|armor"),
+    ("net.minecraft.world.entity.item.ItemEntity", r"getItem"),
+    ("net.minecraft.world.item.ItemStack", r"isEmpty|getCount|getItem"),
+    ("net.minecraft.core.registries.BuiltInRegistries", r"ITEM|BLOCK|ENTITY_TYPE"),
 ]
 
 # Renames we are not sure about: report which of these exist.
@@ -56,21 +62,25 @@ EXISTENCE = [
 ]
 
 
-def find_minecraft_jar(cache: Path) -> Path | None:
+def find_minecraft_jar(cache: Path) -> tuple[Path | None, list[Path]]:
+    """The newest jar that really contains the mapped classes, plus everything tried."""
     candidates: list[Path] = []
     for path in cache.rglob("*.jar"):
         name = path.name.lower()
         if "source" in name or "sources" in name:
             continue
-        if "minecraft" not in name and "mojang" not in name and "merged" not in name:
-            continue
         candidates.append(path)
-    # Newest first: the last build that resolved the jar is the interesting one.
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    tried: list[Path] = []
     for path in candidates:
-        if javap(path, "net.minecraft.client.Options"):
-            return path
-    return None
+        # A jar counts as "the game" when the classes we call are really in it: Loom
+        # caches both the mapped game and small helper jars with similar names.
+        if javap(path, "net.minecraft.client.Options") and javap(path, "net.minecraft.world.entity.Entity"):
+            return path, tried
+        tried.append(path)
+        if len(tried) >= 60:
+            break
+    return None, tried
 
 
 def javap(jar: Path, class_name: str) -> str:
@@ -100,12 +110,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     out: list[str] = []
-    jar = Path(args.jar) if args.jar else find_minecraft_jar(Path(args.cache))
+    tried: list[Path] = []
+    if args.jar:
+        jar: Path | None = Path(args.jar)
+    else:
+        jar, tried = find_minecraft_jar(Path(args.cache))
     if jar is None:
-        out.append("could not find a mapped Minecraft jar in the Gradle cache")
-        jars = sorted({str(p) for p in Path(args.cache).rglob("*.jar")})[:40]
-        out.append("first jars seen:")
-        out.extend(jars)
+        out.append(
+            f"could not find a mapped Minecraft jar (checked {len(tried)} jar(s) in "
+            f"{args.cache}); the classes may be named differently in this version"
+        )
+        out.append("newest jars seen:")
+        out.extend(str(path) for path in tried[:40])
     else:
         out.append(f"minecraft jar: {jar}")
         out.append("")
