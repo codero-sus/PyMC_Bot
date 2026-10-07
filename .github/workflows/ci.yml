@@ -57,7 +57,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
       - name: Run the test suite
-        run: pytest -q
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee pytest.log
+      - name: Publish test failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_diagnostics.py pytest.log --title "pytest failed (python ${{ matrix.python-version }})"
       - name: CLI smoke test
         run: |
           python -m pymc_bot --version
@@ -82,7 +89,14 @@ jobs:
           pip install -r requirements-dev.txt
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Transformer engine tests
-        run: pytest tests/test_train.py tests/test_local_model.py -q
+        run: |
+          set -o pipefail
+          pytest tests/test_train.py tests/test_local_model.py -q 2>&1 | tee pytest.log
+      - name: Publish test failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
 
   mod:
     name: mod (fabric, java 21)
@@ -97,8 +111,14 @@ jobs:
       - name: Build the Fabric mod (downloads Minecraft + Fabric API)
         working-directory: mod
         run: |
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew build --no-daemon --stacktrace
+          ./gradlew build --no-daemon --stacktrace 2>&1 | tee gradle.log
+      - name: Publish mod build diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_diagnostics.py mod/gradle.log --title "Gradle build failed" --limit 20000
       - name: Show the built jar
         working-directory: mod
         run: ls -la build/libs/
