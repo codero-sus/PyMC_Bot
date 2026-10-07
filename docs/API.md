@@ -23,7 +23,7 @@ Errors use the usual FastAPI shape and these status codes:
 | `GET` | `/` | the control panel (HTML) |
 | `GET` | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
 | `GET` | `/api/status` | everything the panel shows: selected bot snapshot, AI status, stats, **fleet**, backends, Ollama health |
-| `GET` | `/api/contract` | action list, bridge command list, auth/AI modes, WebSocket frame types |
+| `GET` | `/api/contract` | action list, bridge command list, auth/AI modes, brains, training engines, recorded player actions, WebSocket frame types |
 
 `GET /api/status` shape (truncated):
 
@@ -155,6 +155,56 @@ and the whole panel follow the selected player. The default is the main bot.
 | `POST` | `/api/ai/start` | start the decision loop (409 if the bot is not connected) |
 | `POST` | `/api/ai/stop` | stop the loop (aborts the current action) |
 | `POST` | `/api/ai/step` | decide and execute exactly one action now |
+
+### Training a player model on playtime
+
+The Fabric mod in [`../mod`](../mod/README.md) records the player's playtime into
+`pymc-playtime/dataset.jsonl`; these endpoints train on it, list the checkpoints and switch the bot over to
+the trained brain. Training runs in a background thread and checkpoint itself every
+`training.checkpoint_every` steps.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/training/status` | training progress + settings + dataset statistics + current brain |
+| `GET` | `/api/training/dataset?dataset=...` | samples/episodes/action histogram of a playtime dataset (cached by mtime) |
+| `POST` | `/api/training/start` | start (or resume) a run — see the body below |
+| `POST` | `/api/training/stop` | ask the run to stop; it writes a checkpoint first (`409` when idle) |
+| `GET` | `/api/models` | every run in `training.models_dir` with its `model.json` card, newest first |
+| `GET` | `/api/models/{run}` | one card |
+| `POST` | `/api/models/activate` | `{"run":"playtime-dataset"}` → `agent.mode="trained"`, reloads the AI loop |
+| `POST` | `/api/models/deactivate` | back to `agent.mode="auto"` |
+| `POST` | `/api/models/export-ollama` | `{"run":"...","name":"pymc-playtime"}` → create an Ollama model from the learned habits |
+| `GET` | `/api/policy/preview` | what the active model would do right now, given the live bot snapshot |
+
+`POST /api/training/start` body (all fields optional; missing ones come from the config):
+
+```json
+{
+  "dataset": "pymc-playtime/dataset.jsonl",
+  "run_name": "playtime-dataset",
+  "engine": "mlp",
+  "steps": 2000, "batch_size": 64, "lr": 0.003,
+  "checkpoint_every": 200, "max_seconds": 0,
+  "hidden": [128, 64], "include_blocks": true,
+  "resume": false,
+  "simulate_minutes": 0
+}
+```
+
+`simulate_minutes > 0` first generates that much synthetic playtime (handy for demos and CI). Errors:
+`400` when the dataset does not exist, `409` when a run is already in progress, `502` when exporting to an
+Ollama endpoint that is not reachable.
+
+```bash
+curl -X POST localhost:8000/api/training/start -H 'content-type: application/json' \
+  -d '{"simulate_minutes":5,"steps":400,"run_name":"demo"}'
+curl localhost:8000/api/training/status
+curl -X POST localhost:8000/api/models/activate -H 'content-type: application/json' -d '{"run":"demo"}'
+curl localhost:8000/api/policy/preview
+```
+
+`/api/status` gains a `training` block (`running`, `step`, `run`, `active_run`, `brain`, `models`), and
+`/api/contract` lists the brains, the training engines and the recorded player actions.
 
 ### Ollama
 

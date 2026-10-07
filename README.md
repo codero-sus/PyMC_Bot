@@ -36,6 +36,9 @@ Minecraft versions), and it is driven purely by JSON from Python.
 * **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
   head in smooth, randomised bursts, so servers do not kick them for standing still. It never fights the AI
   or your manual commands, and it scales to the whole fleet from one thread.
+* **Trains on *your* playtime** – a Fabric mod ([`./mod`](mod/README.md)) records how you play, `pymc_bot train`
+  turns that into a checkpointed player model, and `think trained` runs the bot with it. No Ollama, no GPU,
+  no cloud: the model learns your movements, your turns and your habits and reproduces them in game.
 
 ---
 
@@ -155,6 +158,63 @@ player table shows each bot's idle time and how many anti-AFK bursts it has done
 
 ---
 
+## Train a player model on your own playtime
+
+The bot can learn **how you play** and then play like that itself. Three steps:
+
+**1. Record** – build the Fabric mod in [`./mod`](mod/README.md) (it started from the official
+`fabric-example-mod` template: download the zip, extract, edit), drop it in `.minecraft/mods/` with
+[Fabric API](https://modrinth.com/mod/fabric-api), then in game:
+
+```text
+/pymc record start      # play normally for 10-60 minutes
+/pymc record stop
+/pymc export            # -> <gameDir>/pymc-playtime/dataset.jsonl
+```
+
+The mod samples your playtime 20×/s — position, velocity, view, posture, hotbar, health/food, the 3×3×3
+block neighbourhood, nearby entities, and the action you were performing
+(`forward`, `back`, `left`, `right`, `jump`, `sneak`, `look`, `attack`, `use`, `hold`, `move`, `none`).
+
+**2. Train** – *checkpointing itself as it goes*:
+
+```bash
+python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --steps 2000
+python -m pymc_bot train --resume --run-name playtime-dataset        # continue where it left off
+python -m pymc_bot models                                            # list checkpoints + metrics
+```
+
+```
+models/playtime-dataset/
+├── latest.npz            weights (+ optimiser state) - or latest.pt for --engine transformer
+├── checkpoints/step-0000200.npz
+├── model.json            the card the panel lists (metrics, dataset digest, action vocabulary)
+├── trainer_state.json    step/epoch/RNG/best-val -> exactly resumable
+└── metrics.jsonl, metrics.csv
+```
+
+No recording yet? `python -m pymc_bot train --simulate 10` fabricates a believable session so you can try
+the whole pipeline (and the panel's **Demo: simulate 5 min** button) without launching Minecraft.
+
+**3. Run it** – either from the shell or the panel:
+
+```bash
+python -m pymc_bot run --think trained --run-name playtime-dataset --backend simulated
+```
+
+```jsonc
+{ "agent": { "mode": "trained" }, "training": { "active_run": "playtime-dataset" } }
+```
+
+The policy predicts a burst of play (default 0.4 s) and applies the same low-level controls the mod
+recorded, including the predicted head turn — so the bot walks, strafes, hops and looks around the way you
+did, and the anti-AFK keeper treats it as activity. Keep Ollama for chat and high-level planning; the
+trained brain is a separate, local, dependency-light model (`--engine mlp` needs nothing but NumPy;
+`--engine transformer` adds a small attention model). Full details, metrics and troubleshooting:
+[docs/TRAINING.md](docs/TRAINING.md).
+
+---
+
 ## The Ollama brain
 
 ```bash
@@ -194,7 +254,9 @@ never mistaken for a real model.
 | Command | What it does |
 | --- | --- |
 | `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent]` | run the web config panel (Uvicorn) |
-| `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL]` | headless bot: connect and play (optionally populate the server), logs to stdout |
+| `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|trained]` | headless bot: connect and play (optionally populate the server), logs to stdout |
+| `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable) |
+| `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Ollama, config, server settings) |
 | `python -m pymc_bot stub [--port 11434]` | the Ollama-compatible demo stub |
@@ -228,7 +290,21 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "request_timeout": 60.0,
     "system_prompt": "You are PyMC_Bot, an AI player ..."
   },
+  "training": {
+    "models_dir": "models",             // where checkpoints + model.json cards live
+    "dataset": "pymc-playtime/dataset.jsonl",  // written by the mod's /pymc export
+    "active_run": "",                   // "" = newest trained run
+    "engine": "mlp",                    // "mlp" (NumPy) | "transformer" (needs torch)
+    "steps": 1000, "batch_size": 64, "lr": 0.003, "checkpoint_every": 200,
+    "hidden": [128, 64],                // MLP layers
+    "include_blocks": true,             // feed the 3x3x3 block neighbourhood
+    "val_split": 0.1,
+    "temperature": 0.2,                 // 0 = deterministic, >0 samples among similar actions
+    "step_seconds": 0.4,                // how long one predicted action is held
+    "auto_retrain_samples": 0           // reserved for automatic retraining
+  },
   "agent": {
+    "mode": "auto",                    // "auto" | "heuristic" | "ollama" | "trained"
     "allow_movement": true, "allow_chat": true, "allow_mining": true,
     "allow_attacking": false,          // keep this off unless you mean it
     "greet_players": true, "max_chat_length": 200,
@@ -288,7 +364,8 @@ curl -sX POST localhost:8000/api/ai/start
 
 `WS /ws` pushes `event` frames (the same coloured log you see in the panel) and a `status` frame at least
 every 1.5s. Full endpoint list: [docs/API.md](docs/API.md). The Python↔Node bridge contract is documented in
-[docs/BRIDGE.md](docs/BRIDGE.md).
+[docs/BRIDGE.md](docs/BRIDGE.md), the playtime-recording mod in [mod/README.md](mod/README.md), and training
+plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 
 ---
 
@@ -297,7 +374,7 @@ every 1.5s. Full endpoint list: [docs/API.md](docs/API.md). The Python↔Node br
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 163 tests, no Minecraft server, no LLM required
+pytest -q                       # 234 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -307,22 +384,32 @@ PYMC_TEST_SERVER=127.0.0.1:25565 pytest tests/test_node_live.py -v
 
 The suite runs the bot against the simulated world, exercises the whole FastAPI surface (including the
 WebSocket), tests the Node adapter against a fake bridge process (`tests/fixtures/fake_bridge.js`) and runs
-the AI loop against the Ollama stub. CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12.
+the AI loop against the Ollama stub. The training stack is covered end to end as well: the encoder layout is
+pinned in `tests/test_features.py`, `tests/test_train.py` covers checkpoints/resume/metrics, and
+`tests/test_local_model.py` lets a real trained model drive a simulated bot.
+CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12, the transformer engine with PyTorch,
+and **builds the Fabric mod with JDK 21** (uploading the jar as an artifact).
 
 ```
 pymc_bot/
-├── __main__.py      CLI (serve / run / action / doctor / stub)
+├── __main__.py      CLI (serve / run / train / models / action / doctor / stub)
 ├── config.py        pydantic settings + atomic JSON persistence
 ├── backends.py      simulated world + Node/mineflayer adapter
 ├── bot.py           player controller: steering, pathfinding, mining, chat, stats
 ├── fleet.py         one or many players: spawn/populate, premium accounts, roster, chatter
 ├── antiafk.py       anti-AFK keeper: human-like walking, looking, jumping, crouching, swinging
 ├── agent.py         decision loop, action validation, permissions, heuristics
+├── features.py      observation -> 215-float feature vector (mod & live bot share it)
+├── playtime.py      reads the mod's NDJSON, exports datasets, synthesises demo playtime
+├── models.py        numpy MLP (default engine) + optional tiny transformer
+├── train.py         self-checkpointing trainer, metrics, resumable state, service
+├── local_model.py   runs a checkpoint: predictions -> real low-level bot controls
 ├── ollama.py        tiny Ollama HTTP client
 ├── ollama_stub.py   Ollama-compatible demo stub (not an LLM)
 ├── server.py        FastAPI app + WebSocket + static UI
 ├── web/             index.html, styles.css, app.js (no build step)
 └── node/            minecraft_bridge.js  (the only JavaScript)
+mod/                 Fabric mod: records your playtime into a training dataset
 tests/               pytest suite + fake bridge fixture
 scripts/dev.sh       small helper for common tasks
 ```
@@ -343,6 +430,11 @@ scripts/dev.sh       small helper for common tasks
 | Bots wander off while you are not looking | set a smaller `antiafk.max_walk_distance`, or disable `walk` (look/swing/jump already defeat most AFK plugins) |
 | Panel shows `demo brain (stub)` | you are pointing Ollama at `python -m pymc_bot stub`, not a real model |
 | Bot stands still | AI off (press **Start AI**), or movement permission disabled, or the server is unreachable |
+| `no playtime samples found` | record with the mod first (`/pymc record start`, `/pymc export`), or try `python -m pymc_bot train --simulate 5` |
+| Trained model only walks forward | play/train more, or lower `training.temperature`; check `val_balanced_accuracy` in the model card |
+| `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
+| Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |
+| `./gradlew build` fails in `mod/` | needs JDK 21; the mod builds in CI on every push, so compare with the `mod` job there |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |
 
 ## License
