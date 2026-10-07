@@ -145,3 +145,37 @@ def test_synthetic_profiles_differ(tmp_path: Path):
     fighter = synthesize_playtime(tmp_path / "fighter.jsonl", minutes=0.3, profiles=["fighter"], seed=3)
     assert explorer["actions"].get("forward", 0) > fighter["actions"].get("forward", 0)
     assert fighter["actions"].get("attack", 0) > explorer["actions"].get("attack", 0)
+
+
+def test_synthetic_neighbours_match_the_mood(tmp_path: Path):
+    """Who is around has to agree with what the player was doing.
+
+    Otherwise the trainer learns "something is nearby -> swing" and the bot attacks
+    every player that walks past it.
+    """
+    dataset = tmp_path / "dataset.jsonl"
+    synthesize_playtime(dataset, minutes=12.0, seed=3)
+    samples = [json.loads(line)["input"] for line in dataset.read_text().splitlines()]
+    assert samples
+    fought = 0
+    greeted = 0
+    for sample in samples:
+        nearby = sample["nearby"]
+        assert len(nearby) <= 3
+        for entry in nearby:
+            assert 0.0 < entry["dist"] <= 18.0
+        if not nearby:
+            continue
+        nearest = min(nearby, key=lambda entry: entry["dist"])
+        if nearest["dist"] > 5.0:
+            continue
+        if nearest["hostile"]:
+            # fighting reach: only combat answers happen this close to a mob
+            assert sample["activity"] in {"attack", "use", "jump"}, sample
+            fought += 1
+        else:
+            # somebody standing right next to the player: a social moment, not a fight
+            assert nearest["type"] == "minecraft:player"
+            assert sample["activity"] in {"look", "none"}, sample
+            greeted += 1
+    assert fought > 0 and greeted > 0  # both situations really occur
