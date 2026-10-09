@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# checks: write lets the failure steps publish the log tail as a check summary.
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff>=0.4"
+      - run: ruff check .
+
+  javascript:
+    name: javascript syntax + deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Syntax check the bridge, the panel JS and the test fixture
+        run: |
+          node --check pymc_bot/node/minecraft_bridge.js
+          node --check pymc_bot/web/app.js
+          node --check tests/fixtures/fake_bridge.js
+          node scripts/check_ui.mjs
+      - name: Verify package.json resolves (mineflayer + pathfinder)
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+  test:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"   # the bridge protocol tests need node
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run the test suite
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee pytest.log
+      - name: Publish test failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_diagnostics.py pytest.log --title "pytest failed (python ${{ matrix.python-version }})"
+      - name: CLI smoke test
+        run: |
+          python -m pymc_bot --version
+          python -m pymc_bot doctor
+          python -m pymc_bot run --backend simulated --no-ai --seconds 3 --quiet --config /tmp/ci.json
+      - name: Train a player model on synthetic playtime, then run it
+        run: |
+          python -m pymc_bot train --simulate 3 --simulate-out /tmp/ci-playtime.jsonl --models-dir /tmp/ci-models --run-name ci --steps 60 --checkpoint-every 30 --quiet
+          python -m pymc_bot models --models-dir /tmp/ci-models
+          python -m pymc_bot run --backend simulated --think trained --models-dir /tmp/ci-models --run-name ci --no-ai --seconds 1 --quiet --config /tmp/ci-train.json
+
+  training-transformer:
+    name: training (transformer engine, torch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (CPU torch)
+        run: |
+          pip install -r requirements-dev.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Transformer engine tests
+        run: |
+          set -o pipefail
+          pytest tests/test_train.py tests/test_local_model.py -q 2>&1 | tee pytest.log
+      - name: Publish test failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
+
+  mod:
+    name: mod (fabric, java 25 build / java 21 target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          # Loom 1.18 (the 1.21.11 template) resolves only on a Java 25 runtime; the mod
+          # itself is still compiled with --release 21 so it runs on any Java 21 game.
+          distribution: temurin
+          java-version: "25"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the Fabric mod (downloads Minecraft + Fabric API)
+        working-directory: mod
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew build --no-daemon --stacktrace 2>&1 | tee gradle.log
+      - name: Extract the gradle errors
+        if: failure()
+        run: |
+          grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt
+          wc -l mod/errors.txt
+      - name: Probe the Minecraft API signatures
+        if: always()
+        run: python3 scripts/mc_api_probe.py | tee mod/api-probe.log
+      - name: Publish mod build diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci_diagnostics.py mod/errors.txt --title "Gradle errors (extracted)" --limit 12000
+          python scripts/ci_diagnostics.py mod/api-probe.log --title "Minecraft API probe" --limit 24000
+          python scripts/ci_diagnostics.py mod/gradle.log --title "Gradle log tail" --limit 12000
+      - name: Show the built jar
+        working-directory: mod
+        run: ls -la build/libs/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pymcplaytime-jar
+          path: mod/build/libs/*.jar
+          if-no-files-found: warn

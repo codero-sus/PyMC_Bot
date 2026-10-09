@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymc-bot"
+version = "0.1.0"
+description = "A Python-controlled Minecraft player bot (cracked / offline-mode servers) with a Uvicorn config page and an optional Ollama brain."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "codero-sus" }]
+keywords = ["minecraft", "bot", "mineflayer", "ollama", "fastapi", "uvicorn", "fabric", "imitation-learning"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Games/Entertainment",
+]
+
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.6",
+  "httpx>=0.27",
+  "jinja2>=3.1",
+  "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=4.1",
+  "ruff>=0.4",
+]
+
+# Optional: the tiny transformer training engine (--engine transformer).
+# The default --engine mlp needs nothing beyond NumPy.
+train = [
+  "torch>=2.2",
+]
+
+[project.scripts]
+pymc-bot = "pymc_bot.__main__:main"
+
+[tool.setuptools]
+packages = ["pymc_bot"]
+
+[tool.setuptools.package-data]
+pymc_bot = ["web/*.html", "node/*.js", "node/package.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Make `pytest` (not only `python -m pytest`) import the local package, so the
+# suite runs the same way in CI as on a developer machine.
+pythonpath = ["."]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
