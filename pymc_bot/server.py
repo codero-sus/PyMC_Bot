@@ -21,6 +21,7 @@ from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
 from pymc_bot.backends import BackendError, available_backends, node_available
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore, default_config_path
+from pymc_bot.cortex import CortexError, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.fleet import AI_MODES, BotFleet, FleetError
 from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
@@ -37,7 +38,7 @@ BRIDGE_COMMANDS = [
 ]
 
 AuthMode = Literal["offline", "microsoft"]
-AiMode = Literal["off", "heuristic", "ollama"]
+AiMode = Literal["off", "heuristic", "ollama", "cortex", "trained"]
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +254,32 @@ def create_app(
         health_cache.update({"ts": now, "ok": ok, "detail": detail})
         return {"ok": ok, "detail": detail, "checked_at": now}
 
+    cortex_cache: dict[str, Any] = {"ts": 0.0, "ok": None, "detail": "", "key": None}
+
+    def cortex_health(force: bool = False) -> dict[str, Any]:
+        """Cached Cortex reachability (same TTL as Ollama); never exposes the key."""
+        settings = store.settings.cortex
+        now = time.time()
+        # Re-check immediately when the endpoint/model/key settings change.
+        key = (settings.base_url, settings.api_path, settings.model, settings.api_key_env, settings.key_present())
+        fresh = now - cortex_cache["ts"] < OLLAMA_HEALTH_TTL and cortex_cache["key"] == key
+        if force or cortex_cache["ok"] is None or not fresh:
+            try:
+                client = client_from_settings(settings, timeout=5.0)
+                ok, detail = client.ping()
+                client.close()
+            except Exception as exc:  # pragma: no cover - defensive
+                ok, detail = False, str(exc)
+            cortex_cache.update({"ts": now, "ok": ok, "detail": detail, "key": key})
+        return {
+            "ok": cortex_cache["ok"],
+            "detail": cortex_cache["detail"],
+            "checked_at": cortex_cache["ts"],
+            "enabled": settings.enabled,
+            "key_env": settings.api_key_env,
+            "key_set": settings.key_present(),
+        }
+
     def status_payload() -> dict[str, Any]:
         controller = selected_bot()
         snapshot = controller.snapshot()
@@ -286,6 +313,7 @@ def create_app(
             },
             "backends": available_backends(),
             "ollama": {**ollama_health(), "settings": store.settings.ollama.model_dump()},
+            "cortex": {**cortex_health(), "settings": store.settings.cortex.model_dump()},
         }
 
     # ------------------------------------------------------------------ lifecycle
@@ -364,7 +392,7 @@ def create_app(
             "auth_modes": ["offline", "microsoft"],
             "ai_modes": list(AI_MODES),
             "antiafk_habits": ["look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"],
-            "brains": ["auto", "heuristic", "ollama", "trained"],
+            "brains": ["auto", "heuristic", "ollama", "cortex", "trained"],
             "training_engines": ["mlp", "transformer"],
             "training_modes": ["basic", "advanced"],
             "advanced_signals": ["entities", "items", "held_item", "armor", "ground_items"],
@@ -385,7 +413,7 @@ def create_app(
         try:
             settings = store.update(patch)
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+            raise HTTPException(status_code=422, detail=exc.errors(include_url=False, include_context=False)) from exc
         event_log.add("Configuration updated from the web panel.", "info", "app")
         return {"config": settings.public_dict(), "path": str(store.path)}
 
@@ -678,6 +706,34 @@ def create_app(
 
         threading.Thread(target=_poke_all, name="antiafk-poke-all", daemon=True).start()
         return {"ok": True, "queued": len(bots), "results": []}
+
+    # ------------------------------------------------------------------ cortex
+    @app.get("/api/cortex/health")
+    def cortex_health_endpoint(force: bool = False) -> dict[str, Any]:
+        return cortex_health(force=force)
+
+    @app.get("/api/cortex/models")
+    def cortex_models() -> dict[str, Any]:
+        """Models configured in Cortex LLMHoster, with their declared capabilities."""
+        client = client_from_settings(store.settings.cortex, timeout=10.0)
+        try:
+            models = client.list_models()
+        except CortexError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            client.close()
+        return {
+            "models": [str(entry.get("id")) for entry in models],
+            "details": [
+                {
+                    "id": entry.get("id"),
+                    "runtime": entry.get("runtime"),
+                    "capabilities": entry.get("capabilities") or [],
+                    "chat": not entry.get("capabilities") or "text_generation" in (entry.get("capabilities") or []),
+                }
+                for entry in models
+            ],
+        }
 
     # ------------------------------------------------------------------ ollama
     @app.get("/api/ollama/health")

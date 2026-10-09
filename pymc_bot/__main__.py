@@ -57,8 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--premium", action="append", default=[], metavar="EMAIL",
                      help="add a premium (Microsoft) player; the device code is printed here (repeatable)")
     run.add_argument("--quiet", action="store_true", help="only print warnings and errors")
-    run.add_argument("--think", choices=["auto", "heuristic", "ollama", "trained"], default=None,
+    run.add_argument("--think", choices=["auto", "heuristic", "ollama", "cortex", "trained"], default=None,
                      help="which brain drives this run ('trained' = the model trained on playtime)")
+    run.add_argument("--cortex-url", default=None, metavar="URL",
+                     help="Cortex LLMHoster address for --think cortex (default http://127.0.0.1:8624)")
+    run.add_argument("--cortex-model", default=None, metavar="ID",
+                     help="Cortex model id (blank = the model Cortex marks as default)")
     run.add_argument("--run-name", default=None, help="activate this trained model (with --think trained)")
     run.add_argument("--models-dir", default=None, help="where trained models live")
 
@@ -107,10 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     action.add_argument("payload", help='action JSON, e.g. \'{"action":"wander"}\' or {"action":"goto","x":10,"z":4}')
     action.add_argument("--url", default="http://127.0.0.1:8000", help="panel base URL")
 
-    doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, config)")
+    doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, cortex, config)")
     _add_config_arg(doctor)
 
-    stub = sub.add_parser("stub", help="run the Ollama-compatible demo stub (rule-based, NOT a real LLM)")
+    stub = sub.add_parser("stub", help="run the Ollama/OpenAI-compatible demo stub (rule-based, NOT a real LLM)")
     stub.add_argument("--host", default="127.0.0.1")
     stub.add_argument("--port", type=int, default=11434)
     stub.add_argument("--quiet", action="store_true", help="do not log every request")
@@ -156,6 +160,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             patch.setdefault("minecraft", {})["host"] = args.server
     if args.think:
         patch.setdefault("agent", {})["mode"] = args.think
+    if getattr(args, "cortex_url", None):
+        patch.setdefault("cortex", {})["base_url"] = args.cortex_url
+    if getattr(args, "cortex_model", None) is not None:
+        patch.setdefault("cortex", {})["model"] = args.cortex_model
     if getattr(args, "run_name", None):
         patch.setdefault("training", {})["active_run"] = args.run_name
     if getattr(args, "models_dir", None):
@@ -182,6 +190,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         except PolicyError as exc:
             print(f"Could not load the trained model ({run}): {exc}", file=sys.stderr)
             return 2
+
+    if args.think == "cortex":
+        from pymc_bot.cortex import client_from_settings
+
+        client = client_from_settings(settings.cortex, timeout=5.0)
+        ok, detail = client.ping()
+        client.close()
+        if ok:
+            print(f"Thinking with Cortex LLMHoster at {settings.cortex.base_url}: {detail}")
+        else:
+            # Not fatal: every failed decision falls back to the built-in behaviour.
+            print(f"Cortex LLMHoster is not usable yet ({detail}); the bot plays on its "
+                  "built-in behaviour until it is.", file=sys.stderr)
 
     log = EventLog()
     fleet = BotFleet(store, log)
@@ -409,7 +430,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"server      : {settings.minecraft.host}:{settings.minecraft.port} "
           f"as {settings.minecraft.username} (auth={settings.minecraft.auth}, backend={settings.minecraft.backend})")
     print(f"web panel   : http://{settings.server.host}:{settings.server.port}")
-    print(f"ai brain    : {'ollama ' + settings.ollama.model if settings.ollama.enabled else 'built-in heuristics (ollama disabled)'}")
+    from pymc_bot.fleet import primary_brain
+
+    brain = primary_brain(settings)
+    brain_detail = {
+        "ollama": f"ollama ({settings.ollama.model})",
+        "cortex": f"cortex llmhoster ({settings.cortex.model or 'its default model'})",
+        "heuristic": "built-in heuristics (no LLM enabled)",
+        "trained": f"trained playtime model ({settings.training.active_run or 'newest run'})",
+    }.get(brain, brain)
+    print(f"ai brain    : {brain_detail}  [agent.mode={settings.agent.mode}]")
 
     if settings.ollama.enabled or True:
         client = OllamaClient(
@@ -420,6 +450,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ok, detail = client.ping()
         client.close()
         print(f"ollama      : {settings.ollama.base_url} -> {'OK' if ok else 'unreachable'} ({detail})")
+
+    from pymc_bot.cortex import client_from_settings
+
+    cortex_cfg = settings.cortex
+    client = client_from_settings(cortex_cfg, timeout=5.0)
+    ok, detail = client.ping()
+    client.close()
+    key_note = (
+        f"key from ${cortex_cfg.api_key_env}" if cortex_cfg.key_present()
+        else f"${cortex_cfg.api_key_env or '-'} not set (fine if Cortex runs without a key)"
+    )
+    print(f"cortex      : {cortex_cfg.base_url}{cortex_cfg.api_path} -> {'OK' if ok else 'unavailable'} ({detail}; {key_note})")
 
     if not node_available()[0]:
         print("\nTip: install the Minecraft bridge with  npm install  in the project root.")

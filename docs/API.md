@@ -226,6 +226,16 @@ next to it, an `advanced` overview:
 brains, the training engines, the training modes (`basic`, `advanced`), the advanced signals
 (`entities`, `items`, `held_item`, `armor`, `ground_items`) and the recorded player actions.
 
+### Cortex LLMHoster
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/cortex/health?force=true` | cached (15s, re-checked when the Cortex settings change) probe: `{"ok", "detail", "enabled", "key_env", "key_set"}` – the key value is never returned |
+| `GET` | `/api/cortex/models` | `{"models": [...ids], "details": [{"id", "runtime", "capabilities", "chat"}]}` from Cortex's `/v1/models` (502 when unreachable) |
+
+`/api/status` carries the same probe under `"cortex"` plus its settings, and `agent.resolved_brain`
+tells what `auto` resolved to (`ollama`, `cortex` or `heuristic`). See [CORTEX.md](CORTEX.md).
+
 ### Ollama
 
 | Method | Path | Description |

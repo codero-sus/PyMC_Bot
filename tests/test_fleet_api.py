@@ -175,7 +175,7 @@ def test_status_payload_includes_the_fleet(client: TestClient):
 def test_contract_lists_auth_and_ai_modes(client: TestClient):
     contract = client.get("/api/contract").json()
     assert contract["auth_modes"] == ["offline", "microsoft"]
-    assert set(contract["ai_modes"]) == {"off", "heuristic", "ollama", "trained"}
+    assert set(contract["ai_modes"]) == {"off", "heuristic", "ollama", "cortex", "trained"}
 
 
 def test_all_bots_stop_when_the_panel_shuts_down(tmp_path: Path):
