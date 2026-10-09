@@ -95,6 +95,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   box-shadow: 0 18px 40px -30px #000;
 }
 .card > header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+.pills { display: inline-flex; gap: 0.35rem; flex-wrap: wrap; }
 .card.span-2 { grid-column: span 2; }
 @media (max-width: 900px) { .card.span-2 { grid-column: span 1; } }
 

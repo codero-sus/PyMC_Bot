@@ -2,7 +2,8 @@
 
 A **Python-controlled Minecraft player bot** it joins a (cracked / offline-mode) server as a normal
 player, you configure and steer it from a **web control panel served by Uvicorn**, and it can hand the
-wheel to a **local Ollama model** that decides how it plays (walking, mining, following players, chatting).
+wheel to a **local LLM** – an Ollama model, or any model hosted by
+[Cortex LLMHoster](docs/CORTEX.md) – that decides how it plays (walking, mining, following players, chatting).
 
 **Premium accounts and whole crowds are first-class:** add a player with a Microsoft account
 (device-code login, token cached per account), or fill the server with up to 200 bots at once.
@@ -17,7 +18,7 @@ Minecraft versions), and it is driven purely by JSON from Python.
 │  Browser (config page)       │        │  Python  (pymc_bot/)                      │
 │  HTML/CSS/vanilla JS, no     │◄──────►│  FastAPI + Uvicorn      server.py         │
 │  build step                  │  REST  │  MinecraftBot           bot.py            │
-│  REST + WebSocket /ws        │   WS   │  AgentLoop (Ollama)     agent.py          │
+│  REST + WebSocket /ws        │   WS   │  AgentLoop (LLM/trained) agent.py         │
 └──────────────────────────────┘        │  Backends: simulated    backends.py       │
                                         └───────────────┬───────────────────────────┘
                                                         │ newline-delimited JSON (stdin/stdout)
@@ -29,8 +30,10 @@ Minecraft versions), and it is driven purely by JSON from Python.
 
 * **Works without Minecraft** – a built-in simulated world (`backend: simulated`, reporting players, a mob, an animal, a dropped
   stack and a starter inventory, so trained models have entity and item inputs) lets you try the whole panel, movement and AI loop on any machine, and it is what the test suite runs against.
-* **Works without an LLM** – if Ollama is disabled or unreachable the bot keeps playing with a small
+* **Works without an LLM** – if Ollama/Cortex is disabled or unreachable the bot keeps playing with a small
   built-in heuristic policy, so it never just stands there.
+* **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, llama.cpp
+  GGUF and other local engines, optional bearer key read from the environment and never saved).
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
   players one email at a time, and can keep the crowd alive (rejoin on kick, optional idle chatter).
 * **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
@@ -266,7 +269,8 @@ heuristic policy instead of crashing the loop.
 ### Demo brain (no GPU, no download)
 
 For demos, tests and CI there is an **Ollama-compatible stub** – clearly *not* a language model, just a
-rule-based responder that answers the same `/api/chat`, `/api/generate` and `/api/tags` endpoints:
+rule-based responder that answers the same `/api/chat`, `/api/generate` and `/api/tags` endpoints (and the
+OpenAI-style `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/health`, so Cortex can host it):
 
 ```bash
 python -m pymc_bot stub            # listens on http://127.0.0.1:11434
@@ -275,6 +279,25 @@ python -m pymc_bot stub            # listens on http://127.0.0.1:11434
 The panel shows a `demo brain (stub)` badge whenever the endpoint identifies itself as the stub, so it is
 never mistaken for a real model.
 
+## Cortex LLMHoster brain
+
+[Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) serves local models through an
+OpenAI-compatible API on `http://127.0.0.1:8624`. Select **cortex** as the brain (or enable it so `auto`
+uses it when Ollama is off), export the same `CORTEX_API_KEY` Cortex was started with, and the bot sends
+its world state to `POST /v1/chat/completions` every `cortex.decision_interval` seconds:
+
+```bash
+export CORTEX_API_KEY=...            # read from the environment, never written to the config
+python -m pymc_bot doctor            # cortex : http://127.0.0.1:8624/v1 -> OK (1 model(s): qwen-local; ...)
+python -m pymc_bot run --think cortex --cortex-model qwen-local
+```
+
+In the panel: **AI brain → Cortex LLMHoster → Check Cortex → Use Cortex as brain**. Fleet bots can use
+`cortex` too. Same action contract, same permission gates and the same heuristic fallback as Ollama.
+Setup, a weight-free end-to-end demo (Cortex supervising the stub) and troubleshooting:
+[docs/CORTEX.md](docs/CORTEX.md). Cortex is a separate program under its own personal, non-commercial
+license; PyMC_Bot only talks to it over HTTP.
+
 ---
 
 ## Command line
@@ -282,12 +305,12 @@ never mistaken for a real model.
 | Command | What it does |
 | --- | --- |
 | `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent]` | run the web config panel (Uvicorn) |
-| `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|trained]` | headless bot: connect and play (optionally populate the server), logs to stdout |
+| `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|cortex\|trained] [--cortex-url URL] [--cortex-model ID]` | headless bot: connect and play (optionally populate the server), logs to stdout |
 | `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
-| `python -m pymc_bot doctor` | environment check (Node, mineflayer, Ollama, config, server settings) |
-| `python -m pymc_bot stub [--port 11434]` | the Ollama-compatible demo stub |
+| `python -m pymc_bot doctor` | environment check (Node, mineflayer, Ollama, Cortex, config, server settings) |
+| `python -m pymc_bot stub [--port 11434]` | the Ollama/OpenAI-compatible demo stub |
 
 Everything is also configurable through `pymc_bot_config.json` (created next to where you run the bot, or
 `--config path.json` / `PYMC_BOT_CONFIG`). The entire file can be edited in the panel under **Advanced**.
@@ -318,6 +341,19 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "request_timeout": 60.0,
     "system_prompt": "You are PyMC_Bot, an AI player ..."
   },
+  "cortex": {                         // Cortex LLMHoster (OpenAI-compatible), see docs/CORTEX.md
+    "enabled": false,
+    "base_url": "http://127.0.0.1:8624",
+    "api_path": "/v1",
+    "model": "",                      // blank = Cortex's default model
+    "api_key_env": "CORTEX_API_KEY",  // env var NAME; the key itself is never stored
+    "temperature": 0.4,
+    "max_tokens": 256,
+    "json_mode": true,
+    "decision_interval": 6.0,
+    "request_timeout": 120.0,
+    "system_prompt": "You are PyMC_Bot, an AI player ..."
+  },
   "training": {
     "models_dir": "models",             // where checkpoints + model.json cards live
     "dataset": "pymc-playtime/dataset.jsonl",  // written by the mod's /pymc export
@@ -334,7 +370,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "auto_retrain_samples": 0           // reserved for automatic retraining
   },
   "agent": {
-    "mode": "auto",                    // "auto" | "heuristic" | "ollama" | "trained"
+    "mode": "auto",                    // "auto" | "heuristic" | "ollama" | "cortex" | "trained"
     "allow_movement": true, "allow_chat": true, "allow_mining": true,
     "allow_attacking": false,          // keep this off unless you mean it
     "greet_players": true, "max_chat_length": 200,
@@ -346,7 +382,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "count": 5,                        // default for "Add players"
     "name_pattern": "PyMC_Bot_{n}",
     "auth": "offline",                 // "offline" | "microsoft"
-    "ai_mode": "heuristic",            // "off" | "heuristic" | "ollama"
+    "ai_mode": "heuristic",            // "off" | "heuristic" | "ollama" | "cortex" | "trained"
     "stagger_seconds": 1.5,            // gap between joins
     "chatter": false, "chatter_interval": 45.0,
     "chatter_lines": ["hey everyone!", "..."],
@@ -436,7 +472,8 @@ pymc_bot/
 ├── train.py         self-checkpointing trainer, metrics, resumable state, service
 ├── local_model.py   runs a checkpoint: predictions -> real low-level bot controls
 ├── ollama.py        tiny Ollama HTTP client
-├── ollama_stub.py   Ollama-compatible demo stub (not an LLM)
+├── cortex.py        Cortex LLMHoster client (OpenAI-compatible, bearer key from the environment)
+├── ollama_stub.py   Ollama/OpenAI-compatible demo stub (not an LLM)
 ├── server.py        FastAPI app + WebSocket + static UI
 ├── web/             index.html, styles.css, app.js (no build step)
 └── node/            minecraft_bridge.js  (the only JavaScript)
@@ -460,6 +497,7 @@ scripts/dev.sh       small helper for common tasks
 | Still kicked for AFK | lower `antiafk.interval_min`/`interval_max` (some servers use 60 s windows), keep *walk* and *swing* enabled, or turn on `verbose` to confirm bursts happen |
 | Bots wander off while you are not looking | set a smaller `antiafk.max_walk_distance`, or disable `walk` (look/swing/jump already defeat most AFK plugins) |
 | Panel shows `demo brain (stub)` | you are pointing Ollama at `python -m pymc_bot stub`, not a real model |
+| Panel pill says `cortex offline` | hover it for the reason; usually `CORTEX_API_KEY` not exported where PyMC_Bot runs, or the Cortex model is not started – see [docs/CORTEX.md](docs/CORTEX.md#troubleshooting) |
 | Bot stands still | AI off (press **Start AI**), or movement permission disabled, or the server is unreachable |
 | `no playtime samples found` | record with the mod first (`/pymc record start`, `/pymc export`), or try `python -m pymc_bot train --simulate 5` |
 | advanced training looks like basic training | `train --inspect` shows an empty vocabulary: the recording was made before `/pymc advanced on`, so there is nothing extra to learn. Record again with it on. |

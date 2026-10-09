@@ -124,20 +124,75 @@ class OllamaSettings(BaseModel):
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
 
+class CortexSettings(BaseModel):
+    """Cortex LLMHoster: a local, OpenAI-compatible model host (llama.cpp GGUF etc.).
+
+    Disabled by default, like Ollama. ``model`` may stay blank to use the model Cortex
+    marks as default. The bearer key is never stored here - only the name of the
+    environment variable that holds it (Cortex's ``CORTEX_API_KEY`` by default).
+    """
+
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:8624"
+    api_path: str = "/v1"
+    model: str = ""
+    api_key_env: str = "CORTEX_API_KEY"
+    temperature: float = Field(default=0.4, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=256, ge=16, le=4096)
+    json_mode: bool = True
+    decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
+    request_timeout: float = Field(default=120.0, gt=0, le=900)
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    @field_validator("base_url")
+    @classmethod
+    def _check_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not re.match(r"^https?://[^\s/]+", value):
+            raise ValueError("base_url must look like http://127.0.0.1:8624")
+        return value
+
+    @field_validator("api_path")
+    @classmethod
+    def _check_path(cls, value: str) -> str:
+        value = value.strip().strip("/")
+        return f"/{value}" if value else ""
+
+    @field_validator("model")
+    @classmethod
+    def _strip_model(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _check_env_name(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("api_key_env is the NAME of an environment variable, e.g. CORTEX_API_KEY")
+        return value
+
+    def key_present(self) -> bool:
+        """Whether the key variable is set (the value itself is never exposed)."""
+        return bool(self.api_key_env and os.environ.get(self.api_key_env, "").strip())
+
+
 class AgentSettings(BaseModel):
     """What the AI player is allowed to do.
 
     ``mode`` chooses the brain:
 
-    * ``auto``        - Ollama when it is enabled and reachable, else the heuristic.
+    * ``auto``        - Ollama when it is enabled, else Cortex when it is enabled,
+      else the heuristic.
     * ``heuristic``   - always the built-in deterministic behaviour.
     * ``ollama``      - always the local LLM (falls back to the heuristic on errors).
+    * ``cortex``      - always the model hosted by Cortex LLMHoster (OpenAI-compatible,
+      falls back to the heuristic on errors).
     * ``trained``     - the player model trained on recorded playtime
       (:mod:`pymc_bot.local_model`), either the run named in ``training.active_run``
       or the newest one in ``training.models_dir``. No Ollama needed.
     """
 
-    mode: Literal["auto", "heuristic", "ollama", "trained"] = "auto"
+    mode: Literal["auto", "heuristic", "ollama", "cortex", "trained"] = "auto"
     allow_movement: bool = True
     allow_chat: bool = True
     allow_mining: bool = True
@@ -153,7 +208,7 @@ class FleetBotSpec(BaseModel):
 
     username: str = Field(min_length=1, max_length=254)
     auth: Literal["offline", "microsoft"] = "offline"
-    ai: Literal["off", "heuristic", "ollama", "trained"] = "heuristic"
+    ai: Literal["off", "heuristic", "ollama", "cortex", "trained"] = "heuristic"
 
     @field_validator("username")
     @classmethod
@@ -173,7 +228,7 @@ class FleetSettings(BaseModel):
     count: int = Field(default=5, ge=1, le=200)
     name_pattern: str = "PyMC_Bot_{n}"
     auth: Literal["offline", "microsoft"] = "offline"
-    ai_mode: Literal["off", "heuristic", "ollama", "trained"] = "heuristic"
+    ai_mode: Literal["off", "heuristic", "ollama", "cortex", "trained"] = "heuristic"
     stagger_seconds: float = Field(default=1.5, ge=0.0, le=60.0)
     chatter: bool = False
     chatter_interval: float = Field(default=45.0, ge=1.0, le=3600.0)
@@ -291,6 +346,7 @@ class AppSettings(BaseModel):
 
     minecraft: MinecraftSettings = Field(default_factory=MinecraftSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    cortex: CortexSettings = Field(default_factory=CortexSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     antiafk: AntiAfkSettings = Field(default_factory=AntiAfkSettings)
     training: TrainingSettings = Field(default_factory=TrainingSettings)

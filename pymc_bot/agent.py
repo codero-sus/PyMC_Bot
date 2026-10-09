@@ -21,6 +21,7 @@ from typing import Any
 
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
+from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.train import list_models
@@ -143,6 +144,7 @@ class AgentLoop:
         log: EventLog | None = None,
         ollama: OllamaClient | None = None,
         heuristic: HeuristicPolicy | None = None,
+        cortex: CortexClient | None = None,
         prefer_ollama: bool = True,
         brain: str | None = None,
     ) -> None:
@@ -157,6 +159,7 @@ class AgentLoop:
         self._trained: Any | None = None
         self._trained_key: tuple[Any, ...] | None = None
         self._ollama = ollama
+        self._cortex = cortex
         self._heuristic = heuristic or HeuristicPolicy()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -286,10 +289,27 @@ class AgentLoop:
             return self._heuristic.decide(state, self.bot.recent_chat())
         if brain == "ollama":
             return self._ask_ollama(settings, state)
-        # auto: Ollama when it is switched on, otherwise the built-in behaviour.
-        if settings.ollama.enabled and self.prefer_ollama:
+        if brain == "cortex":
+            return self._ask_cortex(settings, state)
+        # auto: the first enabled LLM (Ollama, then Cortex), otherwise the built-in behaviour.
+        resolved = self.resolved_brain(settings)
+        if resolved == "ollama":
             return self._ask_ollama(settings, state)
+        if resolved == "cortex":
+            return self._ask_cortex(settings, state)
         return self._heuristic.decide(state, self.bot.recent_chat())
+
+    def resolved_brain(self, settings: AppSettings | None = None) -> str:
+        """The brain that really decides: ``auto`` resolved to ollama/cortex/heuristic."""
+        settings = settings or self._settings()
+        brain = self.brain(settings)
+        if brain != "auto":
+            return brain
+        if self.prefer_ollama and settings.ollama.enabled:
+            return "ollama"
+        if self.prefer_ollama and settings.cortex.enabled:
+            return "cortex"
+        return "heuristic"
 
     # ----------------------------------------------------------------- stats
     @property
@@ -303,6 +323,7 @@ class AgentLoop:
             "last_error": self._last_error,
             "last_decision": self._last_decision,
             "brain": self.brain(),
+            "resolved_brain": self.resolved_brain(),
             "trained": trained.describe() if trained is not None else None,
         }
 
@@ -324,18 +345,38 @@ class AgentLoop:
         self._ollama.timeout = settings.ollama.request_timeout
         return self._ollama
 
+    def _cortex_client(self, settings: AppSettings) -> CortexClient:
+        cfg = settings.cortex
+        if self._cortex is None:
+            self._cortex = client_from_settings(cfg)
+        # Follow live config edits from the panel without rebuilding the HTTP client.
+        self._cortex.base_url = cfg.base_url.rstrip("/")
+        self._cortex.api_path = cfg.api_path
+        self._cortex.model = cfg.model
+        self._cortex.api_key_env = cfg.api_key_env
+        self._cortex.temperature = cfg.temperature
+        self._cortex.max_tokens = cfg.max_tokens
+        self._cortex.json_mode = cfg.json_mode
+        self._cortex.timeout = cfg.request_timeout
+        return self._cortex
+
+    def decision_interval(self, settings: AppSettings | None = None) -> float:
+        """Seconds between decisions for the brain in charge."""
+        settings = settings or self._settings()
+        brain = self.resolved_brain(settings)
+        # The trained policy plays at the recording cadence (a few bursts a second),
+        # the high level brains think once per decision_interval.
+        if brain == "trained":
+            return max(0.15, settings.training.step_seconds)
+        if brain == "cortex":
+            return settings.cortex.decision_interval
+        return settings.ollama.decision_interval
+
     def _run(self) -> None:
         failures = 0
         while not self._stop_event.is_set():
             settings = self._settings()
-            brain = self.brain(settings)
-            # The trained policy plays at the recording cadence (a few bursts a second),
-            # the high level brains think once per decision_interval.
-            interval = (
-                max(0.15, settings.training.step_seconds)
-                if brain == "trained"
-                else settings.ollama.decision_interval
-            )
+            interval = self.decision_interval(settings)
             if not self.bot.connected:
                 if self._wait(1.0):
                     break
@@ -380,6 +421,14 @@ class AgentLoop:
             # Some models/servers only implement /api/generate.
             reply = client.generate(prompt, system=settings.ollama.system_prompt)
         return parse_decision(reply, source=f"ollama:{settings.ollama.model}")
+
+    def _ask_cortex(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
+        """One decision from the model hosted by Cortex LLMHoster."""
+        client = self._cortex_client(settings)
+        prompt = self._build_prompt(settings, state)
+        reply = client.decide(prompt, system=settings.cortex.system_prompt)
+        model = client.last_model or settings.cortex.model or "default"
+        return parse_decision(reply, source=f"cortex:{model}")
 
     def _build_prompt(self, settings: AppSettings, state: dict[str, Any]) -> str:
         compact = {
@@ -466,7 +515,7 @@ class AgentLoop:
             player = str(params.get("player") or params.get("name") or "")
             if not player:
                 return False, "follow needs a player name"
-            ok = self.bot.follow(player, seconds=min(30.0, max(6.0, settings.ollama.decision_interval * 3)))
+            ok = self.bot.follow(player, seconds=min(30.0, max(6.0, self.decision_interval(settings) * 3)))
             return ok, f"{'followed' if ok else 'could not follow'} {player}"
 
         if action in ("wander", "explore"):
@@ -519,6 +568,9 @@ class AgentLoop:
         try:
             decision = self._decide(settings, state)
         except Exception as exc:
+            # Same bookkeeping as the loop, so the panel can show why the brain failed.
+            self._errors += 1
+            self._last_error = str(exc)
             self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
             decision = self._heuristic.decide(state, self.bot.recent_chat())
         self._decisions += 1

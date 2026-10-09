@@ -105,6 +105,7 @@
             <option value="heuristic">heuristic (cheap)</option>
             <option value="off">off (just stand there)</option>
             <option value="ollama">ollama (uses the model)</option>
+            <option value="cortex">cortex (Cortex LLMHoster model)</option>
             <option value="trained">trained (model from playtime)</option>
           </select>
         </label>
@@ -123,6 +124,7 @@
         <select id="premium-ai">
           <option value="heuristic">heuristic</option>
           <option value="ollama">ollama</option>
+          <option value="cortex">cortex</option>
           <option value="trained">trained</option>
           <option value="off">off</option>
         </select>
@@ -164,14 +166,18 @@
     <!-- --------------------------------------------------------------- brain -->
     <section class="card" id="card-brain">
       <header>
-        <h2>AI brain <span class="tag">ollama</span></h2>
-        <span id="ollama-health" class="pill pill-unknown">checking…</span>
+        <h2>AI brain <span class="tag">ollama · cortex</span></h2>
+        <span class="pills">
+          <span id="ollama-health" class="pill pill-unknown">checking…</span>
+          <span id="cortex-health" class="pill pill-unknown" title="Cortex LLMHoster">cortex…</span>
+        </span>
       </header>
       <label>Brain
         <select id="cfg-agent-mode" title="Who decides the bot's actions">
-          <option value="auto">auto — Ollama when enabled, else heuristic</option>
+          <option value="auto">auto — Ollama, then Cortex when enabled, else heuristic</option>
           <option value="heuristic">heuristic — built-in, no model</option>
           <option value="ollama">ollama — the local LLM</option>
+          <option value="cortex">cortex — a model hosted by Cortex LLMHoster</option>
           <option value="trained">trained — the model trained on playtime</option>
         </select>
       </label>
@@ -196,6 +202,33 @@
         <button id="btn-refresh-models" class="btn ghost">Refresh models</button>
         <button id="btn-pull" class="btn ghost">Pull model</button>
       </div>
+
+      <details id="cortex-box">
+        <summary>Cortex LLMHoster <span class="hint" id="cortex-summary">— local OpenAI-compatible host (llama.cpp GGUF, …)</span></summary>
+        <label class="switch">
+          <input id="cfg-cortex-enabled" type="checkbox" />
+          <span>Let Cortex decide the bot's actions (brain = auto, when Ollama is off)</span>
+        </label>
+        <div class="fields two">
+          <label>Cortex URL <input id="cfg-cortex-url" type="text" placeholder="http://127.0.0.1:8624" /></label>
+          <label>API path <input id="cfg-cortex-path" type="text" placeholder="/v1" /></label>
+          <label>Model
+            <input id="cfg-cortex-model" type="text" list="cortex-models" placeholder="(blank = Cortex default)" />
+            <datalist id="cortex-models"></datalist>
+          </label>
+          <label>Key variable <input id="cfg-cortex-key-env" type="text" placeholder="CORTEX_API_KEY" title="NAME of the environment variable holding the Cortex bearer key - the key itself is never saved" /></label>
+          <label>Decision interval (s) <input id="cfg-cortex-interval" type="number" min="0.5" max="300" step="0.5" /></label>
+          <label>Temperature <input id="cfg-cortex-temp" type="number" min="0" max="2" step="0.05" /></label>
+          <label>Max tokens <input id="cfg-cortex-max-tokens" type="number" min="16" max="4096" step="16" /></label>
+          <label class="check"><input id="cfg-cortex-json" type="checkbox" /> ask for JSON (response_format)</label>
+        </div>
+        <p id="cortex-note" class="note">Start Cortex on this machine, then <em>Check Cortex</em>. The bearer key is read from the
+          environment variable named above when PyMC_Bot starts, never stored in the config.</p>
+        <div class="actions">
+          <button id="btn-cortex-check" class="btn ghost">Check Cortex</button>
+          <button id="btn-cortex-use" class="btn ghost" title="Save and switch the brain to cortex">Use Cortex as brain</button>
+        </div>
+      </details>
       <div class="permissions">
         <strong>AI permissions</strong>
         <label class="check"><input id="cfg-allow-movement" type="checkbox" /> move</label>

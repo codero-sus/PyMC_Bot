@@ -1,13 +1,17 @@
-"""An Ollama-compatible stub server.
+"""An Ollama- and OpenAI-compatible stub server.
 
 This is **not** a language model.  It answers ``/api/tags``, ``/api/chat`` and
-``/api/generate`` with canned, rule-based JSON decisions so that the full
-AI loop can be demonstrated and unit-tested without installing Ollama.
+``/api/generate`` (Ollama) plus ``/health``, ``/v1/models``,
+``/v1/chat/completions`` and ``/v1/completions`` (OpenAI wire format) with canned,
+rule-based JSON decisions so that the full AI loop can be demonstrated and
+unit-tested without installing Ollama or downloading model weights.
 
     python -m pymc_bot.ollama_stub --port 11434
 
 Point ``ollama.base_url`` at it (that is the default port anyway) and the bot
-will "think" with the built-in rules instead of the real model.
+will "think" with the built-in rules instead of the real model. The OpenAI routes
+let Cortex LLMHoster supervise it through its ``command`` runtime, which is how
+the Cortex integration is demonstrated end to end (see docs/CORTEX.md).
 """
 
 from __future__ import annotations
@@ -78,6 +82,18 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
+def _last_user_message(messages: Any) -> str:
+    """Text of the newest user message (string or OpenAI content parts)."""
+    for message in reversed(messages if isinstance(messages, list) else []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            return "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        return str(content or "")
+    return ""
+
+
 def _extract_state(prompt: str) -> dict[str, Any]:
     start, end = prompt.find("{"), prompt.rfind("}")
     if start == -1 or end <= start:
@@ -130,6 +146,15 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
             self._send({"models": models})
+        elif path == "/health":
+            self._send({"status": "ok", "stub": True})
+        elif path == "/v1/models":
+            self._send(
+                {
+                    "object": "list",
+                    "data": [{"id": STUB_MODEL, "object": "model", "created": 0, "owned_by": "pymc-stub"}],
+                }
+            )
         elif path == "/api/version":
             self._send({"version": "0.0.0-pymc-stub"})
         elif path == "/":
@@ -141,14 +166,33 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
         payload = self._read_json()
         model = str(payload.get("model") or STUB_MODEL)
-        if path == "/api/chat":
-            messages = payload.get("messages") or []
-            prompt = ""
-            for message in reversed(messages):
-                if message.get("role") == "user":
-                    prompt = str(message.get("content") or "")
-                    break
-            content = self.brain.decide(prompt)
+        if path == "/v1/chat/completions":
+            content = self.brain.decide(_last_user_message(payload.get("messages")))
+            self._send(
+                {
+                    "id": "chatcmpl-pymc-stub",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": model,
+                    "choices": [
+                        {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+                    ],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                }
+            )
+        elif path == "/v1/completions":
+            content = self.brain.decide(str(payload.get("prompt") or ""))
+            self._send(
+                {
+                    "id": "cmpl-pymc-stub",
+                    "object": "text_completion",
+                    "created": 0,
+                    "model": model,
+                    "choices": [{"index": 0, "text": content, "finish_reason": "stop"}],
+                }
+            )
+        elif path == "/api/chat":
+            content = self.brain.decide(_last_user_message(payload.get("messages")))
             self._send(
                 {
                     "model": model,
@@ -195,7 +239,9 @@ def serve(host: str = "127.0.0.1", port: int = 11434) -> ThreadingHTTPServer:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ollama-compatible stub server for PyMC_Bot demos/tests.")
+    parser = argparse.ArgumentParser(
+        description="Ollama/OpenAI-compatible stub server for PyMC_Bot demos/tests (NOT a real LLM)."
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=11434)
     parser.add_argument("--quiet", action="store_true", help="silence request logging")

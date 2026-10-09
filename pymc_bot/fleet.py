@@ -35,8 +35,23 @@ from pymc_bot.config import (
 )
 from pymc_bot.events import EventLog
 
-AI_MODES = ("off", "heuristic", "ollama", "trained")
+AI_MODES = ("off", "heuristic", "ollama", "cortex", "trained")
+# Brains backed by a hosted language model (each decision is an HTTP round trip).
+LLM_MODES = ("ollama", "cortex")
 SPONSORS = ("primary", "populate", "premium", "custom")
+
+
+
+def primary_brain(settings: AppSettings) -> str:
+    """What the primary bot's brain resolves to (``auto`` picks the first enabled LLM)."""
+    mode = settings.agent.mode
+    if mode != "auto":
+        return mode
+    if settings.ollama.enabled:
+        return "ollama"
+    if settings.cortex.enabled:
+        return "cortex"
+    return "heuristic"
 
 
 class FleetError(RuntimeError):
@@ -202,7 +217,7 @@ class BotFleet:
                 if member.bot is bot:
                     if member.agent is None:
                         member.agent = AgentLoop(
-                            bot, self.store, self.log, prefer_ollama=(member.ai == "ollama"), brain=member.ai
+                            bot, self.store, self.log, prefer_ollama=(member.ai in LLM_MODES), brain=member.ai
                         )
                     return member.agent
         return AgentLoop(bot, self.store, self.log)
@@ -302,7 +317,7 @@ class BotFleet:
                 rejoin_seconds=settings.minecraft.rejoin_seconds,
             )
             member.agent = AgentLoop(
-                member.bot, self.store, self.log, prefer_ollama=(ai == "ollama"), brain=ai
+                member.bot, self.store, self.log, prefer_ollama=(ai in LLM_MODES), brain=ai
             )
             self._members[member.key] = member
 
@@ -621,7 +636,7 @@ class BotFleet:
             "username": primary.username,
             "configured_username": settings.minecraft.username,
             "auth": settings.minecraft.auth,
-            "ai": "ollama" if settings.ollama.enabled else "heuristic",
+            "ai": primary_brain(settings),
             "ai_running": False,
             "sponsor": "primary",
             "state": primary.state,

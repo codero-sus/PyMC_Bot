@@ -159,9 +159,11 @@ function renderStatus(status) {
   // ai status
   const agent = status.agent || {};
   const last = agent.last_decision;
-  $('ai-status').textContent = agent.running
-    ? `running · ${agent.decisions} decisions` + (last ? ` · last: ${last.action} ${JSON.stringify(last.params || {})}` : '')
-    : `idle · ${agent.decisions} decisions` + (agent.last_error ? ` · last error: ${agent.last_error}` : '');
+  const thinker = agent.resolved_brain && agent.resolved_brain !== agent.brain
+    ? `${agent.brain} → ${agent.resolved_brain}` : (agent.brain || 'auto');
+  $('ai-status').textContent = `brain: ${thinker} · ` + (agent.running
+    ? `running · ${agent.decisions} decisions` + (last ? ` · last: ${last.action} ${JSON.stringify(last.params || {})}${last.source ? ` (${last.source})` : ''}` : '')
+    : `idle · ${agent.decisions} decisions` + (agent.last_error ? ` · last error: ${agent.last_error}` : ''));
   $('btn-ai-start').disabled = agent.running || state !== 'connected';
   $('btn-ai-stop').disabled = !agent.running;
   $('btn-ai-step').disabled = state !== 'connected';
@@ -242,7 +244,7 @@ function renderMinimap(bot) {
 
 /* ------------------------------------------------------------------- config */
 function fillForm(cfg) {
-  const mc = cfg.minecraft || {}, ol = cfg.ollama || {}, ag = cfg.agent || {};
+  const mc = cfg.minecraft || {}, ol = cfg.ollama || {}, ag = cfg.agent || {}, cx = cfg.cortex || {};
   const set = (id, value) => { const el = $(id); if (el && document.activeElement !== el) el.value = value; };
   const check = (id, value) => { const el = $(id); if (el && document.activeElement !== el) el.checked = Boolean(value); };
 
@@ -260,6 +262,16 @@ function fillForm(cfg) {
   set('cfg-ollama-model', ol.model || 'llama3.2');
   set('cfg-ollama-interval', ol.decision_interval || 6);
   set('cfg-ollama-temp', ol.temperature ?? 0.4);
+
+  check('cfg-cortex-enabled', cx.enabled);
+  set('cfg-cortex-url', cx.base_url || 'http://127.0.0.1:8624');
+  set('cfg-cortex-path', cx.api_path ?? '/v1');
+  set('cfg-cortex-model', cx.model || '');
+  set('cfg-cortex-key-env', cx.api_key_env ?? 'CORTEX_API_KEY');
+  set('cfg-cortex-interval', cx.decision_interval || 6);
+  set('cfg-cortex-temp', cx.temperature ?? 0.4);
+  set('cfg-cortex-max-tokens', cx.max_tokens || 256);
+  check('cfg-cortex-json', cx.json_mode ?? true);
 
   set('cfg-agent-mode', ag.mode || 'auto');
   check('cfg-allow-movement', ag.allow_movement);
@@ -336,6 +348,17 @@ function collectForm() {
       model: $('cfg-ollama-model').value.trim() || 'llama3.2',
       decision_interval: Number($('cfg-ollama-interval').value) || 6,
       temperature: Number($('cfg-ollama-temp').value ?? 0.4),
+    },
+    cortex: {
+      enabled: $('cfg-cortex-enabled').checked,
+      base_url: $('cfg-cortex-url').value.trim() || 'http://127.0.0.1:8624',
+      api_path: $('cfg-cortex-path').value.trim(),
+      model: $('cfg-cortex-model').value.trim(),
+      api_key_env: $('cfg-cortex-key-env').value.trim(),
+      decision_interval: Number($('cfg-cortex-interval').value) || 6,
+      temperature: Number($('cfg-cortex-temp').value ?? 0.4),
+      max_tokens: Number($('cfg-cortex-max-tokens').value) || 256,
+      json_mode: $('cfg-cortex-json').checked,
     },
     agent: {
       mode: $('cfg-agent-mode').value,
@@ -443,6 +466,7 @@ function connectSocket() {
       renderFleet(frame.data);
       renderAntiAfk(frame.data.antiafk);
       if (frame.data.ollama) updateOllamaPill(frame.data.ollama);
+      if (frame.data.cortex) updateCortexPill(frame.data.cortex);
       if (frame.data.training) refreshTraining();
     }
   };
@@ -469,6 +493,55 @@ function updateOllamaPill(health) {
     pill.textContent = 'checking…';
     pill.className = 'pill pill-unknown';
   }
+}
+
+function updateCortexPill(health) {
+  const pill = $('cortex-health');
+  const detail = String(health.detail || '');
+  pill.title = `Cortex LLMHoster: ${detail || 'not checked yet'}`;
+  if (health.ok) {
+    pill.textContent = 'cortex up';
+    pill.className = 'pill pill-on';
+  } else if (health.ok === false) {
+    // Only shout when the user actually turned Cortex on; otherwise just say it is off.
+    pill.textContent = health.enabled ? 'cortex offline' : 'cortex off';
+    pill.className = health.enabled ? 'pill pill-error' : 'pill pill-unknown';
+  } else {
+    pill.textContent = 'cortex…';
+    pill.className = 'pill pill-unknown';
+  }
+  const keyNote = health.key_env
+    ? (health.key_set ? `key from $${health.key_env}` : `$${health.key_env} not set (fine if Cortex has no key)`)
+    : 'no key variable';
+  $('cortex-summary').textContent = `— ${health.ok ? 'ready' : 'unavailable'}: ${detail || '…'} · ${keyNote}`;
+}
+
+async function checkCortex() {
+  try {
+    await saveConfig(true);
+    const health = await api('/api/cortex/health?force=true');
+    updateCortexPill(health);
+    appendLog({ level: health.ok ? 'success' : 'warn', source: 'panel', time: nowTime(), message: `Cortex: ${health.detail}` });
+    if (!health.ok) return;
+    const data = await api('/api/cortex/models');
+    const datalist = $('cortex-models');
+    datalist.innerHTML = '';
+    for (const entry of data.details || []) {
+      const option = document.createElement('option');
+      option.value = entry.id;
+      option.label = `${entry.runtime || ''} ${entry.chat ? '' : '(no text_generation)'}`.trim();
+      datalist.appendChild(option);
+    }
+  } catch (err) { reportError(err); }
+}
+
+async function useCortex() {
+  $('cfg-agent-mode').value = 'cortex';
+  try {
+    await saveConfig(true);
+    appendLog({ level: 'success', source: 'panel', time: nowTime(), message: 'Brain switched to Cortex LLMHoster.' });
+    await checkCortex();
+  } catch (err) { reportError(err); }
 }
 
 /* -------------------------------------------------------------------- fleet */
@@ -757,6 +830,8 @@ function wire() {
   $('btn-models-refresh').addEventListener('click', refreshTrainedModels);
   $('btn-policy-preview').addEventListener('click', previewPolicy);
   $('btn-pull').addEventListener('click', pullModel);
+  $('btn-cortex-check').addEventListener('click', checkCortex);
+  $('btn-cortex-use').addEventListener('click', useCortex);
 
   $('cfg-auth').addEventListener('change', applyAuthLabels);
 
@@ -943,6 +1018,7 @@ async function boot() {
     renderAntiAfk(status.antiafk);
   } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
+  try { updateCortexPill(await api('/api/cortex/health')); } catch (err) { /* ignore */ }
   refreshModels();
   await refreshFleet();
   await refreshTrainedModels();
