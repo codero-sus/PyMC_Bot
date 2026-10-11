@@ -116,3 +116,21 @@ def test_every_panel_asset_is_packaged():
     referenced = set(re.findall(r'/static/([\w.-]+)', (web / "index.html").read_text()))
     assert referenced, "index.html should reference static assets"
     assert referenced <= packaged, f"not packaged: {sorted(referenced - packaged)}"
+
+
+def test_cortex_links_point_at_the_repository_root():
+    """Cortex is referenced by its repository only, never by a ref, path or clone flag."""
+    pattern = re.compile(
+        r"Cortex_LLMHoster(?:\.git)?(?:/(?:tree|blob|commit|commits|compare|archive)\b|\?ref=|#|@)"
+        r"|git clone[^\n]*\s(?:-b|--branch)[\s=][^\n]*Cortex_LLMHoster",
+        re.IGNORECASE,
+    )
+    offenders = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or any(part in {".git", ".venv", "node_modules", "build"} for part in path.parts):
+            continue
+        if path.suffix not in {".md", ".py", ".js", ".html", ".css", ".json", ".toml", ".yml", ".yaml", ".java", ".txt"}:
+            continue
+        text = path.read_text(errors="ignore")
+        offenders += [f"{path.relative_to(ROOT)}: {m.group(0)}" for m in pattern.finditer(text)]
+    assert not offenders, offenders

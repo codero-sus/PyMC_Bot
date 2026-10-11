@@ -1,7 +1,7 @@
 """A small client for Cortex LLMHoster (https://github.com/codero-sus/Cortex_LLMHoster).
 
-Cortex hosts local models (llama.cpp GGUF, or any local engine through its command
-runtime) behind an **OpenAI-compatible** API, by default on ``http://127.0.0.1:8624``:
+Cortex hosts local models behind an **OpenAI-compatible** API, by default on
+``http://127.0.0.1:8624``:
 
 * ``GET  /health``              - liveness, never needs a key
 * ``GET  /ready``               - 200 once the default local model is running, else 503

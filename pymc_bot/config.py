@@ -125,7 +125,7 @@ class OllamaSettings(BaseModel):
 
 
 class CortexSettings(BaseModel):
-    """Cortex LLMHoster: a local, OpenAI-compatible model host (llama.cpp GGUF etc.).
+    """Cortex LLMHoster: a local, OpenAI-compatible model host.
 
     Disabled by default, like Ollama. ``model`` may stay blank to use the model Cortex
     marks as default. The bearer key is never stored here - only the name of the

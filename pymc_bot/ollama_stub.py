@@ -10,8 +10,8 @@ unit-tested without installing Ollama or downloading model weights.
 
 Point ``ollama.base_url`` at it (that is the default port anyway) and the bot
 will "think" with the built-in rules instead of the real model. The OpenAI routes
-let Cortex LLMHoster supervise it through its ``command`` runtime, which is how
-the Cortex integration is demonstrated end to end (see docs/CORTEX.md).
+let it stand in for Cortex LLMHoster, so the ``cortex`` brain can be tried without
+model weights (see docs/CORTEX.md).
 """
 
 from __future__ import annotations
