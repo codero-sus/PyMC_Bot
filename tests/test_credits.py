@@ -105,3 +105,14 @@ def test_project_files_credit_the_author():
     readme = (ROOT / "README.md").read_text()
     assert "Made with" in readme and GITHUB in readme and WEBSITE in readme
     assert re.search(r"Copyright \(c\) \d{4} codero-sus", (ROOT / "LICENSE").read_text())
+
+
+def test_every_panel_asset_is_packaged():
+    """A pip-installed PyMC_Bot must ship the scripts, styles and icon the page loads."""
+    tomllib = pytest.importorskip("tomllib")
+    patterns = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["pymc_bot"]
+    web = ROOT / "pymc_bot" / "web"
+    packaged = {path.name for pattern in patterns for path in (ROOT / "pymc_bot").glob(pattern)}
+    referenced = set(re.findall(r'/static/([\w.-]+)', (web / "index.html").read_text()))
+    assert referenced, "index.html should reference static assets"
+    assert referenced <= packaged, f"not packaged: {sorted(referenced - packaged)}"

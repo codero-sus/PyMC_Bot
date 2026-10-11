@@ -55,7 +55,7 @@ pymc-bot = "pymc_bot.__main__:main"
 packages = ["pymc_bot"]
 
 [tool.setuptools.package-data]
-pymc_bot = ["web/*.html", "node/*.js", "node/package.json"]
+pymc_bot = ["web/*.html", "web/*.js", "web/*.css", "web/*.svg", "node/*.js", "node/package.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
