@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import Request
 
-from pymc_bot import __version__
+from pymc_bot import __author__, __author_url__, __license__, __version__, __website__, about
 from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
 from pymc_bot.backends import BackendError, available_backends, node_available
 from pymc_bot.bot import MinecraftBot
@@ -347,7 +347,12 @@ def create_app(
     app = FastAPI(
         title="PyMC_Bot",
         version=__version__,
-        description="Control panel for a Python Minecraft player bot fleet (cracked/offline mode friendly).",
+        description=(
+            "Control panel for a Python Minecraft player bot fleet (cracked/offline mode friendly).\n\n"
+            f"Made with \u2764\ufe0f by [{__author__}]({__author_url__}) \u00b7 [{__website__}]({__website__})"
+        ),
+        contact={"name": __author__, "url": __author_url__},
+        license_info={"name": __license__},
         lifespan=_lifespan,
     )
     app.state.store = store
@@ -365,7 +370,7 @@ def create_app(
     def index(request: Request):
         if templates is None:  # pragma: no cover - package without web assets
             return JSONResponse({"detail": "web assets missing", "api": "/api/status"}, status_code=500)
-        return templates.TemplateResponse(request, "index.html", {"version": __version__})
+        return templates.TemplateResponse(request, "index.html", {"version": __version__, "about": about()})
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Any:
@@ -377,6 +382,11 @@ def create_app(
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, Any]:
         return {"ok": True, "version": __version__}
+
+    @app.get("/api/about")
+    def api_about() -> dict[str, Any]:
+        """Author, links and credits (the panel's About dialog reads this)."""
+        return about()
 
     # ------------------------------------------------------------------ status
     @app.get("/api/status")

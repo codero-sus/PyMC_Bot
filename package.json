@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Node-side Minecraft protocol adapter used by the Python PyMC_Bot controller.",
+  "author": {
+    "name": "codero-sus",
+    "url": "https://github.com/codero-sus"
+  },
+  "homepage": "https://the-codero.web.app/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codero-sus/PyMC_Bot.git"
+  },
+  "license": "MIT",
   "main": "pymc_bot/node/minecraft_bridge.js",
   "scripts": {
     "bridge": "node pymc_bot/node/minecraft_bridge.js"

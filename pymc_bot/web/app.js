@@ -5,6 +5,45 @@
 const MAX_LOG_LINES = 500;
 const $ = (id) => document.getElementById(id);
 
+/* Effects live in fx.js (themes, toasts, confetti, palette...). If it failed to
+ * load the panel still works: every call below degrades to a no-op. */
+const ui = window.FX || {
+  toast() {}, confetti() {}, hit() {}, pulse() {}, busy: (b, w) => w, motionOn: () => false,
+  cssVar: (name, fallback) => fallback,
+  flashText(el, text) { const node = typeof el === 'string' ? $(el) : el; if (node) node.textContent = String(text); },
+  countTo(el, value, options = {}) {
+    const node = typeof el === 'string' ? $(el) : el;
+    if (node) node.textContent = `${Number(value).toFixed(options.digits ?? 0)}${options.suffix ?? ''}`;
+  },
+};
+
+/** Escape text for innerHTML: names, items and kick messages come from the Minecraft server. */
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* A button whose click starts a slow request shows a spinner until it finishes. */
+let clickedButton = null;
+let clickedAt = 0;
+const busyCount = new WeakMap();
+document.addEventListener('click', (event) => {
+  const button = event.target.closest && event.target.closest('button.btn');
+  if (button) { clickedButton = button; clickedAt = performance.now(); }
+}, true);
+function trackBusy() {
+  const button = clickedButton && performance.now() - clickedAt < 400 ? clickedButton : null;
+  if (!button) return () => {};
+  busyCount.set(button, (busyCount.get(button) || 0) + 1);
+  const timer = setTimeout(() => { if (busyCount.get(button)) button.classList.add('busy'); }, 150);
+  return () => {
+    clearTimeout(timer);
+    const left = (busyCount.get(button) || 1) - 1;
+    busyCount.set(button, left);
+    clickedAt = performance.now(); // chained calls from the same click keep the spinner
+    if (!left) button.classList.remove('busy');
+  };
+}
+
 let config = null;
 let lastStatus = null;
 let socket = null;
@@ -17,6 +56,15 @@ let fleetStatus = null;
 
 /* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
+  const done = trackBusy();
+  try {
+    return await request(path, options);
+  } finally {
+    done();
+  }
+}
+
+async function request(path, options) {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
@@ -70,6 +118,11 @@ function appendLog(entry) {
   while (log.childElementCount > MAX_LOG_LINES) log.removeChild(log.firstChild);
   applyLogFilter();
   if ($('log-autoscroll').checked) log.scrollTop = log.scrollHeight;
+  $('log-count').textContent = `${log.childElementCount} event${log.childElementCount === 1 ? '' : 's'}`;
+  // feedback for what *you* did in the panel also pops up as a toast
+  if (entry.source === 'panel' && ['success', 'warn', 'error'].includes(entry.level)) {
+    ui.toast(entry.message, entry.level);
+  }
 }
 
 function applyLogFilter() {
@@ -84,10 +137,63 @@ function applyLogFilter() {
 }
 
 /* ------------------------------------------------------------------ render */
+let previousState = null;
+let previousHealth = null;
+
+function announceState(state, bot) {
+  if (previousState === null) { previousState = state; return; }
+  if (state === previousState) return;
+  const where = bot.server && bot.server.host ? `${bot.server.host}:${bot.server.port}` : 'the server';
+  if (state === 'connected') {
+    ui.toast(`${bot.username || bot.server?.username || 'The bot'} joined ${where}`, 'success', { icon: '🟢', title: 'Connected' });
+    ui.confetti($('status-pill'), undefined, { count: 70, power: 7 });
+  } else if (state === 'error') {
+    ui.toast(bot.error || bot.last_error || `Could not stay on ${where}`, 'error', { title: 'Connection error' });
+    ui.hit($('status-pill'));
+  } else if (previousState === 'connected' && (state === 'disconnected' || state === 'stopped')) {
+    ui.toast(`Left ${where}`, 'warn', { icon: '⏏', title: 'Disconnected' });
+  }
+  previousState = state;
+}
+
+function renderHero(status) {
+  const bot = status.bot || {};
+  const agent = status.agent || {};
+  const stats = status.stats || {};
+  const state = bot.state || 'disconnected';
+  ui.flashText('hero-state', state);
+  $('hero-state').style.color = state === 'connected' ? 'var(--accent)' : state === 'error' ? 'var(--error)'
+    : state === 'connecting' ? 'var(--warn)' : '';
+  $('hero-server').textContent = bot.server && bot.server.host
+    ? `${bot.server.host}:${bot.server.port} · ${bot.backend || 'auto'}` : 'not connected';
+  const brain = agent.resolved_brain || agent.brain || 'auto';
+  ui.flashText('hero-brain', brain);
+  $('hero-brain-sub').textContent = agent.running ? 'AI loop running' : 'AI loop idle';
+  ui.countTo('hero-decisions', agent.decisions || 0);
+  const last = agent.last_decision;
+  $('hero-last').textContent = last ? `last: ${last.action}${last.source ? ` (${last.source})` : ''}` : 'no decision yet';
+  ui.countTo('hero-walked', stats.distance_walked || 0, { suffix: ' m' });
+  $('hero-mined').textContent = `${stats.blocks_mined || 0} blocks mined · ${stats.chats_sent || 0} chats`;
+  const fleet = status.fleet;
+  if (fleet) {
+    ui.countTo('hero-fleet', fleet.connected || 0);
+    $('hero-fleet-sub').textContent = `of ${fleet.size} bot(s) · max ${fleet.max_bots}`;
+  }
+  const training = status.training || {};
+  if (training.active_run !== undefined || training.running !== undefined) {
+    ui.flashText('hero-model', training.running ? 'training…' : (training.active_run || '—'));
+    $('hero-model-sub').textContent = training.running
+      ? `step ${training.step ?? '?'}${training.total_steps ? ` / ${training.total_steps}` : ''}`
+      : `${training.models ?? 0} checkpoint(s) · brain ${training.brain || 'auto'}`;
+  }
+}
+
 function renderStatus(status) {
   lastStatus = status;
   const bot = status.bot || {};
   const state = bot.state || 'disconnected';
+  announceState(state, bot);
+  renderHero(status);
 
   const pill = $('status-pill');
   pill.textContent = state;
@@ -112,20 +218,25 @@ function renderStatus(status) {
   $('bar-food').style.width = food === null ? '0%' : `${Math.max(0, Math.min(100, (food / 20) * 100))}%`;
   $('val-health').textContent = health === null ? '–' : `${health.toFixed(1)} / 20`;
   $('val-food').textContent = food === null ? '–' : `${food.toFixed(1)} / 20`;
+  const healthBar = $('bar-health').parentElement;
+  if (health !== null && previousHealth !== null && health < previousHealth - 0.01) ui.hit(healthBar);
+  healthBar.classList.toggle('low', health !== null && health <= 6);
+  $('bar-food').parentElement.classList.toggle('low', food !== null && food <= 4);
+  previousHealth = health;
 
   const pos = bot.position;
   $('val-pos').textContent = pos ? `${num(pos.x)} ${num(pos.y)} ${num(pos.z)}` : '–';
   const yawDeg = typeof bot.yaw === 'number' ? (bot.yaw * 180 / Math.PI).toFixed(0) : '–';
   const pitchDeg = typeof bot.pitch === 'number' ? (bot.pitch * 180 / Math.PI).toFixed(0) : '–';
   $('val-yaw').textContent = `${yawDeg}° / ${pitchDeg}°`;
-  $('val-dim').textContent = fmt(bot.dimension);
+  ui.flashText('val-dim', fmt(bot.dimension));
   $('val-time').textContent = fmt(bot.time_of_day);
   $('val-uptime').textContent = fmtUptime(bot.uptime);
 
   const stats = status.stats || {};
-  $('val-mined').textContent = fmt(stats.blocks_mined ?? 0);
-  $('val-walked').textContent = `${num(stats.distance_walked ?? 0, 0)} m`;
-  $('val-chats').textContent = fmt(stats.chats_sent ?? 0);
+  ui.countTo('val-mined', stats.blocks_mined ?? 0);
+  ui.countTo('val-walked', stats.distance_walked ?? 0, { suffix: ' m' });
+  ui.countTo('val-chats', stats.chats_sent ?? 0);
 
   // players
   const list = $('player-list');
@@ -136,7 +247,7 @@ function renderStatus(status) {
   } else {
     for (const player of players) {
       const li = document.createElement('li');
-      li.innerHTML = `<span>${player.name}</span><span>${num(player.distance)} m &middot; ${num(player.x, 0)},${num(player.z, 0)}</span>`;
+      li.innerHTML = `<span>👤 ${esc(player.name)}</span><span>${num(player.distance)} m &middot; ${num(player.x, 0)},${num(player.z, 0)}</span>`;
       list.appendChild(li);
     }
   }
@@ -151,7 +262,7 @@ function renderStatus(status) {
     for (const item of items) {
       const chip = document.createElement('span');
       chip.className = 'chip';
-      chip.innerHTML = `${item.name} <b>×${item.count}</b>`;
+      chip.innerHTML = `${esc(item.name)} <b>×${esc(item.count)}</b>`;
       inv.appendChild(chip);
     }
   }
@@ -175,69 +286,158 @@ function renderStatus(status) {
     ? `mineflayer bridge ready (node ${backends.node_version || '?'}).`
     : `${node.reason || 'Node bridge unavailable'} — the simulated world will be used.`;
 
-  renderMinimap(bot);
+  setMinimapTarget(bot);
 }
 
-function renderMinimap(bot) {
+/* The minimap eases between status frames (positions arrive every ~1 s) and
+ * draws a radar sweep plus a pulse around the bot. Colours follow the theme. */
+const minimap = { target: null, view: null, raf: 0, last: 0, colors: null };
+
+function mapColors() {
+  return {
+    bg: ui.cssVar('--map-bg', '#080c11'),
+    grid: ui.cssVar('--map-grid', '#16202b'),
+    faint: ui.cssVar('--faint', '#3b4a5c'),
+    muted: ui.cssVar('--muted', '#64748b'),
+    accent: ui.cssVar('--accent', '#34d399'),
+    chat: ui.cssVar('--chat', '#60a5fa'),
+    error: ui.cssVar('--error', '#f87171'),
+  };
+}
+window.addEventListener('fx:theme', () => { minimap.colors = null; drawMinimap(performance.now()); });
+window.addEventListener('fx:motion', () => scheduleMinimap());
+
+function lerpAngle(from, to, k) {
+  let delta = (to - from) % (Math.PI * 2);
+  if (delta > Math.PI) delta -= Math.PI * 2;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  return from + delta * k;
+}
+
+function setMinimapTarget(bot) {
+  minimap.target = bot;
+  const pos = bot.position;
+  if (!pos) { minimap.view = null; }
+  else if (!minimap.view || !ui.motionOn()) {
+    minimap.view = { x: pos.x, z: pos.z, yaw: bot.yaw || 0 };
+  }
+  scheduleMinimap();
+}
+
+function scheduleMinimap() {
+  if (minimap.raf) return;
+  if (!ui.motionOn()) { drawMinimap(performance.now()); return; }
+  const loop = (now) => {
+    minimap.raf = 0;
+    if (document.hidden || !ui.motionOn()) return;
+    if (now - minimap.last >= 33) { minimap.last = now; drawMinimap(now); }
+    minimap.raf = requestAnimationFrame(loop);
+  };
+  minimap.raf = requestAnimationFrame(loop);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleMinimap(); });
+
+function drawMinimap(now) {
   const canvas = $('minimap');
+  const bot = minimap.target || {};
+  const colors = minimap.colors || (minimap.colors = mapColors());
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || 640;
-  const height = canvas.clientHeight || 220;
-  if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
+  const height = canvas.clientHeight || 240;
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
   const cx = width / 2, cy = height / 2;
   const scale = Math.min(width, height) / 80; // ~80 blocks across
-
-  ctx.strokeStyle = '#16202b';
-  ctx.lineWidth = 1;
-  for (let g = -40; g <= 40; g += 8) {
-    ctx.beginPath(); ctx.moveTo(cx + g * scale, 0); ctx.lineTo(cx + g * scale, height); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, cy + g * scale); ctx.lineTo(width, cy + g * scale); ctx.stroke();
+  const pos = bot.position;
+  const view = minimap.view;
+  if (pos && view && ui.motionOn()) {
+    view.x += (pos.x - view.x) * 0.18;
+    view.z += (pos.z - view.z) * 0.18;
+    view.yaw = lerpAngle(view.yaw, typeof bot.yaw === 'number' ? bot.yaw : view.yaw, 0.2);
   }
+  const ox = view ? view.x : 0, oz = view ? view.z : 0;
 
-  ctx.fillStyle = '#3b4a5c';
+  // world grid scrolls with the bot
+  ctx.strokeStyle = colors.grid;
+  ctx.lineWidth = 1;
+  const step = 8 * scale;
+  const shiftX = ((-ox * scale) % step + step) % step;
+  const shiftY = ((oz * scale) % step + step) % step;
+  for (let x = shiftX + (cx % step); x < width; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
+  for (let y = shiftY + (cy % step); y < height; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+
+  // range rings
+  ctx.strokeStyle = colors.grid;
+  for (const r of [16, 32]) { ctx.beginPath(); ctx.arc(cx, cy, r * scale, 0, Math.PI * 2); ctx.stroke(); }
+
+  ctx.fillStyle = colors.faint;
   ctx.font = '11px ui-monospace, monospace';
   ctx.fillText('+X', width - 26, cy - 6);
   ctx.fillText('+Z', cx + 6, 14);
 
-  const pos = bot.position;
-  if (!pos) {
-    ctx.fillStyle = '#64748b';
+  if (!pos || !view) {
+    ctx.fillStyle = colors.muted;
     ctx.font = '12px system-ui, sans-serif';
     ctx.fillText('not connected — no world data', 12, 20);
     return;
   }
 
-  const toScreen = (x, z) => [cx + (x - pos.x) * scale, cy - (z - pos.z) * scale];
+  // radar sweep
+  if (ui.motionOn()) {
+    const angle = (now / 1600) % (Math.PI * 2);
+    const radius = Math.hypot(width, height) / 2;
+    if (ctx.createConicGradient) {
+      const sweep = ctx.createConicGradient(angle, cx, cy);
+      sweep.addColorStop(0, `${colors.accent}55`);
+      sweep.addColorStop(0.08, `${colors.accent}10`);
+      sweep.addColorStop(0.2, 'transparent');
+      sweep.addColorStop(1, 'transparent');
+      ctx.fillStyle = sweep;
+      ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill();
+    }
+  }
 
+  const toScreen = (x, z) => [cx + (x - ox) * scale, cy - (z - oz) * scale];
   for (const player of bot.players || []) {
     const [px, py] = toScreen(player.x, player.z);
-    ctx.fillStyle = '#60a5fa';
+    ctx.fillStyle = colors.chat;
+    ctx.shadowColor = colors.chat; ctx.shadowBlur = 8;
     ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#93c5fd';
+    ctx.shadowBlur = 0;
     ctx.font = '11px system-ui, sans-serif';
-    ctx.fillText(player.name, px + 7, py + 4);
+    ctx.fillText(String(player.name || ''), px + 7, py + 4);
+  }
+
+  // pulse ring around the bot
+  if (ui.motionOn()) {
+    const phase = (now % 1800) / 1800;
+    ctx.strokeStyle = colors.accent;
+    ctx.globalAlpha = 1 - phase;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, 6 + phase * 22, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1;
   }
 
   // the bot: triangle pointing along yaw (yaw 0 => +Z, which is up on screen)
-  const yaw = typeof bot.yaw === 'number' ? bot.yaw : 0;
+  const yaw = view.yaw;
   const heading = [-Math.sin(yaw), Math.cos(yaw)];
-  const [bx, by] = [cx, cy];
   ctx.save();
-  ctx.translate(bx, by);
+  ctx.translate(cx, cy);
   ctx.rotate(Math.atan2(heading[0], heading[1]));
-  ctx.fillStyle = '#34d399';
+  ctx.fillStyle = colors.accent;
+  ctx.shadowColor = colors.accent; ctx.shadowBlur = 12;
   ctx.beginPath();
-  ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 3); ctx.lineTo(-6, 7);
+  ctx.moveTo(0, -10); ctx.lineTo(7, 8); ctx.lineTo(0, 3); ctx.lineTo(-7, 8);
   ctx.closePath(); ctx.fill();
   ctx.restore();
-  ctx.fillStyle = '#64748b';
+  ctx.fillStyle = colors.muted;
   ctx.font = '11px ui-monospace, monospace';
   ctx.fillText(`${num(pos.x, 0)}, ${num(pos.z, 0)}`, 10, height - 10);
 }
@@ -554,6 +754,8 @@ const STATE_CLASS = {
   queued: 'pill-unknown',
 };
 
+let trainingWasRunning = false;
+
 function renderTraining(training) {
   if (!training) return;
   const status = training.status || {};
@@ -565,6 +767,19 @@ function renderTraining(training) {
   const bar = $('train-progress-bar');
   const progress = status.progress ?? (status.total_steps ? (status.step || 0) / status.total_steps : 0);
   bar.style.width = `${Math.round(Math.min(1, Math.max(0, progress || 0)) * 100)}%`;
+  $('train-progress').classList.toggle('running', running);
+  if (trainingWasRunning && !running) {
+    if (status.error) ui.toast(`Training stopped: ${status.error}`, 'error', { title: 'Training' });
+    else {
+      ui.toast(`Run '${status.run || training.active_run || 'model'}' finished${status.val_acc ? ` · val acc ${status.val_acc}` : ''}`,
+        'success', { icon: '🎓', title: 'Training complete' });
+      ui.confetti($('train-progress'), undefined, { count: 120 });
+    }
+    refreshTrainedModels();
+  }
+  trainingWasRunning = running;
+  ui.flashText('hero-model', running ? 'training…' : (training.active_run || status.run || '—'));
+  if (running) $('hero-model-sub').textContent = `step ${status.step || 0} / ${status.total_steps || '?'}`;
 
   const bits = [];
   if (dataset.exists) {
@@ -705,8 +920,8 @@ async function previewPolicy() {
     const prediction = data.prediction || {};
     const top = Object.entries(prediction.probs || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
       .map(([name, value]) => `${name} ${(value * 100).toFixed(0)}%`).join(' · ');
-    $('policy-preview').textContent =
-      `model '${data.run}' would do: ${prediction.action} (${top}) — turn ${prediction.motion?.dyaw ?? 0}°, step ${prediction.motion?.forward ?? 0} blocks`;
+    ui.flashText('policy-preview',
+      `🔮 model '${data.run}' would do: ${prediction.action} (${top}) — turn ${prediction.motion?.dyaw ?? 0}°, step ${prediction.motion?.forward ?? 0} blocks`);
   } catch (err) { reportError(err); }
 }
 
@@ -754,11 +969,11 @@ function renderFleet(status) {
         (bot.antiafk_pokes ? `<div class="mini">afk ×${bot.antiafk_pokes}</div>` : '')
       : '–';
     row.innerHTML = `
-      <td><span class="who">${bot.username}</span>${bot.sponsor === 'primary' ? ' <span class="mini">main</span>' : ''}
-        ${bot.error ? `<div class="mini error-text">${bot.error}</div>` : ''}</td>
+      <td><span class="who">${esc(bot.username)}</span>${bot.sponsor === 'primary' ? ' <span class="mini">main</span>' : ''}
+        ${bot.error ? `<div class="mini error-text">${esc(bot.error)}</div>` : ''}</td>
       <td>${premium ? '<span class="mini premium">premium</span>' : '<span class="mini">offline</span>'}</td>
-      <td><span class="pill ${STATE_CLASS[bot.state] || 'pill-unknown'}">${bot.state}</span></td>
-      <td>${bot.ai}${bot.ai_running ? ' ●' : ''}</td>
+      <td><span class="pill ${STATE_CLASS[bot.state] || 'pill-unknown'}">${esc(bot.state)}</span></td>
+      <td>${esc(bot.ai)}${bot.ai_running ? ' <span class="ai-dot" title="AI running">●</span>' : ''}</td>
       <td class="idle-cell">${idle}</td>
       <td>${pos}</td>
       <td class="row-actions"></td>`;
@@ -781,7 +996,7 @@ function renderFleet(status) {
     body.appendChild(row);
   }
   if (!fleet.bots.length) {
-    body.innerHTML = '<tr><td colspan="6" class="empty">no players yet</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty">no players yet</td></tr>';
   }
 }
 
@@ -817,7 +1032,7 @@ function wire() {
   });
   $('btn-ai-stop').addEventListener('click', () => api('/api/ai/stop', { method: 'POST' }).catch(reportError));
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));
-  $('btn-refresh-models').addEventListener('click', refreshModels);
+  $('btn-refresh-models').addEventListener('click', () => refreshModels());
   $('btn-train-start').addEventListener('click', () => startTraining());
   $('btn-train-stop').addEventListener('click', () =>
     api('/api/training/stop', { method: 'POST' })
@@ -889,7 +1104,12 @@ function wire() {
 
   $('btn-fleet-start').addEventListener('click', () => fleetCall('/api/fleet/start', {}).catch(reportError));
   $('btn-fleet-stop').addEventListener('click', () => fleetCall('/api/fleet/stop', {}).catch(reportError));
-  $('btn-fleet-remove-all').addEventListener('click', () => fleetCall('/api/fleet/stop', { remove: true }).catch(reportError));
+  $('btn-fleet-remove-all').addEventListener('click', () => {
+    if (!window.confirm('Disconnect and forget every extra player?')) return;
+    fleetCall('/api/fleet/stop', { remove: true })
+      .then(() => appendLog({ level: 'success', source: 'panel', message: 'Removed all extra players.', time: nowTime() }))
+      .catch(reportError);
+  });
   $('btn-fleet-select').addEventListener('click', () => selectBot($('fleet-select').value).catch(reportError));
   $('topbar-select').addEventListener('change', (event) => selectBot(event.target.value).catch(reportError));
   $('btn-fleet-broadcast').addEventListener('click', async () => {
@@ -923,6 +1143,7 @@ function wire() {
   $('btn-clear-logs').addEventListener('click', async () => {
     try { await api('/api/logs/clear', { method: 'POST' }); } catch (err) { /* ignore */ }
     $('log').innerHTML = '';
+    $('log-count').textContent = '0 events';
   });
 
   $('btn-raw-save').addEventListener('click', async () => {
@@ -932,12 +1153,15 @@ function wire() {
       config = data.config;
       fillForm(config);
       $('raw-config-status').textContent = 'Saved.';
+      ui.toast('Raw config saved', 'success');
     } catch (err) {
       $('raw-config-status').textContent = `Not saved: ${err.message}`;
+      ui.toast(`Raw config not saved: ${err.message}`, 'error');
     }
   });
   $('btn-raw-reload').addEventListener('click', () => loadConfig().catch(reportError));
   $('btn-reset').addEventListener('click', async () => {
+    if (!window.confirm('Reset every setting to its default? Your current config file is overwritten.')) return;
     try {
       const data = await api('/api/config/reset', { method: 'POST' });
       config = data.config;
@@ -978,7 +1202,7 @@ async function refreshFleet() {
   try { renderFleet(await api('/api/fleet/status')); } catch (err) { /* ignore */ }
 }
 
-async function refreshModels() {
+async function refreshModels(quiet = false) {
   try {
     const data = await api('/api/ollama/models');
     const datalist = $('models');
@@ -990,7 +1214,11 @@ async function refreshModels() {
     }
     if ((data.models || []).some((name) => /stub/i.test(name))) $('stub-banner').classList.remove('hidden');
     appendLog({ level: 'info', source: 'panel', message: `Ollama models: ${(data.models || []).join(', ') || '(none)'}`, time: nowTime() });
-  } catch (err) { reportError(err); }
+  } catch (err) {
+    // at boot an absent Ollama is normal (the pill already says so); only clicks report it loudly
+    if (quiet) appendLog({ level: 'debug', source: 'ollama', message: err.message, time: nowTime() });
+    else reportError(err);
+  }
 }
 
 async function pullModel() {
@@ -1019,7 +1247,7 @@ async function boot() {
   } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   try { updateCortexPill(await api('/api/cortex/health')); } catch (err) { /* ignore */ }
-  refreshModels();
+  refreshModels(true);
   await refreshFleet();
   await refreshTrainedModels();
   await refreshTraining();

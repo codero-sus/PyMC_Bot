@@ -123,3 +123,7 @@ Swap the `command` model for a real `llama.cpp` GGUF model and nothing on the Py
 | `does not declare text_generation` | that model is e.g. a transcription model; pick a text model |
 | Decisions are slow | lower `max_tokens`, use a smaller/quantised GGUF, or raise `cortex.decision_interval` |
 | `Could not reach Cortex` from another machine | Cortex binds to `127.0.0.1` by default; run PyMC_Bot on the same host or set Cortex's host deliberately |
+
+---
+
+<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app/)</sub>

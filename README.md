@@ -1,5 +1,11 @@
 # PyMC_Bot
 
+[![Author: codero-sus](https://img.shields.io/badge/author-codero--sus-22c55e?logo=github)](https://github.com/codero-sus)
+[![Website](https://img.shields.io/badge/website-the--codero.web.app-0ea5e9)](https://the-codero.web.app/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-a78bfa)](LICENSE)
+
+> **Made with ❤️ by [codero-sus](https://github.com/codero-sus)** · [the-codero.web.app](https://the-codero.web.app/)
+
 A **Python-controlled Minecraft player bot** it joins a (cracked / offline-mode) server as a normal
 player, you configure and steer it from a **web control panel served by Uvicorn**, and it can hand the
 wheel to a **local LLM** – an Ollama model, or any model hosted by
@@ -39,6 +45,11 @@ Minecraft versions), and it is driven purely by JSON from Python.
 * **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
   head in smooth, randomised bursts, so servers do not kick them for standing still. It never fights the AI
   or your manual commands, and it scales to the whole fleet from one thread.
+* **A panel that is nice to live in** – four themes (midnight, daylight, nether, end), a command palette
+  (<kbd>Ctrl</kbd>+<kbd>K</kbd>), an at-a-glance overview strip, a section bar that follows your scroll,
+  collapsible cards, toasts for everything you do, an animated minimap with radar sweep, and a little
+  confetti when the bot joins or a training run finishes. Every animation can be switched off (✨ / <kbd>Alt</kbd>+<kbd>M</kbd>,
+  and the OS "reduce motion" setting is honoured).
 * **Trains on *your* playtime** – a Fabric mod ([`./mod`](mod/README.md)) records how you play, `pymc_bot train`
   turns that into a checkpointed player model, and `think trained` runs the bot with it. No Ollama, no GPU,
   no cloud: the model learns your movements, your turns and your habits and reproduces them in game.
@@ -300,6 +311,24 @@ license; PyMC_Bot only talks to it over HTTP.
 
 ---
 
+## The control panel
+
+`python -m pymc_bot serve` → <http://127.0.0.1:8000>. Besides the cards for the server, players, brain,
+player model, live view, manual control, events and raw config, the panel has:
+
+| | |
+| --- | --- |
+| **Overview strip** | connection, brain, players online, decisions, distance walked and the active player model, with live counters |
+| **Command palette** | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> (or <kbd>/</kbd>): jump to any card, connect, start the AI, train, poke the fleet, switch theme, open the docs |
+| **Themes** | 🎨 or <kbd>Alt</kbd>+<kbd>T</kbd>: midnight · daylight · nether · end, remembered per browser |
+| **Motion** | ✨ or <kbd>Alt</kbd>+<kbd>M</kbd> turns every animation and the floating-block background off; "reduce motion" in the OS is respected by default |
+| **Cards** | collapse with ▾ or a double-click on the title (remembered), cursor spotlight, staggered entrance |
+| **Feedback** | toasts for every panel action and connection change, spinners on buttons while a request runs, a damage flash and low-health pulse on the meters, confirmation before destructive actions |
+| **Live view** | the minimap eases between status frames, scrolls its grid with the bot and draws a radar sweep |
+| **About** | ⓘ opens the credits (also `GET /api/about`) |
+
+---
+
 ## Command line
 
 | Command | What it does |
@@ -311,6 +340,7 @@ license; PyMC_Bot only talks to it over HTTP.
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Ollama, Cortex, config, server settings) |
 | `python -m pymc_bot stub [--port 11434]` | the Ollama/OpenAI-compatible demo stub |
+| `python -m pymc_bot about [--json]` / `--version` | author, links and credits |
 
 Everything is also configurable through `pymc_bot_config.json` (created next to where you run the bot, or
 `--config path.json` / `PYMC_BOT_CONFIG`). The entire file can be edited in the panel under **Advanced**.
@@ -507,6 +537,21 @@ scripts/dev.sh       small helper for common tasks
 | `./gradlew build` fails in `mod/` | needs **JDK 25** to run Gradle (Loom 1.18 rejects older runtimes with "requires at least JVM runtime version 25"); the mod builds in CI on every push, so compare with the `mod` job there |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |
 
+## Credits
+
+| | |
+| --- | --- |
+| **Author** | [codero-sus](https://github.com/codero-sus) |
+| **Website** | [the-codero.web.app](https://the-codero.web.app/) |
+| **Source** | [github.com/codero-sus/PyMC_Bot](https://github.com/codero-sus/PyMC_Bot) |
+| **Also by codero-sus** | [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) – the optional self-hosted LLM brain |
+| **Built with** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/), [mineflayer](https://github.com/PrismarineJS/mineflayer), [Fabric](https://fabricmc.net/), [Ollama](https://ollama.com/), NumPy / PyTorch |
+
+The same credits are in the panel (footer and ⓘ *About*), at `GET /api/about`, in `python -m pymc_bot about`,
+in the OpenAPI docs (`/docs`) and in the Fabric mod (`/pymc about`, `fabric.mod.json`).
+
 ## License
 
-MIT – see [LICENSE](LICENSE).
+MIT © 2026 [codero-sus](https://github.com/codero-sus) – see [LICENSE](LICENSE).
+
+<p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>
