@@ -76,6 +76,7 @@ Install by dropping the jar plus [Fabric API](https://modrinth.com/mod/fabric-ap
 | `/pymc drops <n>` | How many dropped item stacks to write per sample (default 8). |
 | `/pymc param` | Show the current recorder configuration. |
 | `/pymc train` | Print the exact Python command to train on this dataset. |
+| `/pymc about` | Author, links and credits (made by codero-sus). |
 
 ## What is recorded
 
@@ -170,3 +171,7 @@ mod/
 ## Licensing
 
 Same MIT license as PyMC_Bot; the Fabric template files it was bootstrapped from are CC0.
+
+---
+
+<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app/)</sub>

@@ -3,13 +3,20 @@
 	"id": "pymcplaytime",
 	"version": "${version}",
 	"name": "PyMC Playtime Recorder",
-	"description": "Records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player LLM on. Use /pymc record start, play, then /pymc export.",
+	"description": "Records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player LLM on. Use /pymc record start, play, then /pymc export. Made with \u2764\ufe0f by codero-sus.",
 	"authors": [
-		"PyMC Bot"
+		{
+			"name": "codero-sus",
+			"contact": {
+				"homepage": "https://the-codero.web.app/",
+				"github": "https://github.com/codero-sus"
+			}
+		}
 	],
 	"contact": {
-		"homepage": "https://github.com/codero-sus/PyMC_Bot",
-		"sources": "https://github.com/codero-sus/PyMC_Bot"
+		"homepage": "https://the-codero.web.app/",
+		"sources": "https://github.com/codero-sus/PyMC_Bot",
+		"issues": "https://github.com/codero-sus/PyMC_Bot/issues"
 	},
 	"license": "MIT",
 	"icon": "assets/pymcplaytime/icon.png",

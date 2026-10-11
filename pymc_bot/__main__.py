@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pymc_bot import __version__
+from pymc_bot import __version__, about, credit_line
 from pymc_bot.backends import BackendError, available_backends, node_available
 from pymc_bot.config import ConfigStore, default_config_path
 from pymc_bot.events import EventLog
@@ -28,13 +28,26 @@ def _add_config_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+class _TopFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    """Defaults in the help, and the credit epilog kept on one line."""
+
+
+class _VersionAction(argparse.Action):
+    """``--version`` printed verbatim (argparse's own action re-wraps long lines)."""
+
+    def __call__(self, parser, namespace, values, option_string=None):  # noqa: ANN001
+        print(credit_line())
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pymc-bot",
         description="PyMC_Bot - a Python-controlled Minecraft player bot with an Ollama brain and a web config page.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_TopFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"PyMC_Bot {__version__}")
+    parser.epilog = "Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://the-codero.web.app/"
+    parser.add_argument("--version", action=_VersionAction, nargs=0, help="show the version and author, then exit")
     sub = parser.add_subparsers(dest="command")
 
     serve = sub.add_parser("serve", help="run the web config panel (Uvicorn)")
@@ -114,6 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, cortex, config)")
     _add_config_arg(doctor)
 
+    about_cmd = sub.add_parser("about", help="author, links and credits")
+    about_cmd.add_argument("--json", action="store_true", help="print the credits as JSON")
+
     stub = sub.add_parser("stub", help="run the Ollama/OpenAI-compatible demo stub (rule-based, NOT a real LLM)")
     stub.add_argument("--host", default="127.0.0.1")
     stub.add_argument("--port", type=int, default=11434)
@@ -140,6 +156,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         auto_agent=args.auto_agent,
     )
     print(f"PyMC_Bot {__version__} control panel: http://{host}:{port}  (config: {store.path})")
+    print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://the-codero.web.app/")
     uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
     return 0
 
@@ -418,7 +435,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     store.load()
     settings = store.settings
 
-    print(f"PyMC_Bot {__version__}")
+    print(credit_line())
     print(f"python      : {sys.version.split()[0]}")
     backends = available_backends()
     node = backends["node"]
@@ -469,6 +486,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 # ----------------------------------------------------------------------- stub
+# ---------------------------------------------------------------------- about
+def cmd_about(args: argparse.Namespace) -> int:
+    info = about()
+    if getattr(args, "json", False):
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{info['name']} {info['version']}  \u2014  {info['made_with']}")
+    print(f"author      : {info['author']}  ({info['author_github']})")
+    print(f"website     : {info['website']}")
+    print(f"repository  : {info['repository']}")
+    print(f"license     : {info['license']}")
+    print("credits     :")
+    for credit in info["credits"]:
+        print(f"  - {credit['name']} by {credit['by']} \u2014 {credit['role']} ({credit['url']})")
+    print("built with  : " + ", ".join(item["name"] for item in info["built_with"]))
+    return 0
+
+
 def cmd_stub(args: argparse.Namespace) -> int:
     from pymc_bot.ollama_stub import main as stub_main
 
@@ -486,6 +521,7 @@ DISPATCH = {
     "action": cmd_action,
     "doctor": cmd_doctor,
     "stub": cmd_stub,
+    "about": cmd_about,
 }
 
 

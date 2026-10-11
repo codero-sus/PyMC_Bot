@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "codero-sus" }]
+maintainers = [{ name = "codero-sus" }]
 keywords = ["minecraft", "bot", "mineflayer", "ollama", "fastapi", "uvicorn", "fabric", "imitation-learning"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -27,6 +28,12 @@ dependencies = [
   "jinja2>=3.1",
   "numpy>=1.24",
 ]
+
+[project.urls]
+Homepage = "https://the-codero.web.app/"
+Author = "https://github.com/codero-sus"
+Source = "https://github.com/codero-sus/PyMC_Bot"
+Issues = "https://github.com/codero-sus/PyMC_Bot/issues"
 
 [project.optional-dependencies]
 dev = [

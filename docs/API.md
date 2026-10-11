@@ -304,3 +304,18 @@ Connect once and the panel stays live. Frames:
 const ws = new WebSocket(`ws://${location.host}/ws`);
 ws.onmessage = (m) => { const frame = JSON.parse(m.data); if (frame.type === 'event') console.log(frame.data.message); };
 ```
+
+## About
+
+`GET /api/about` → author, links and credits, the same data the panel's ⓘ *About* dialog shows:
+
+```json
+{"name": "PyMC_Bot", "version": "0.1.0", "author": "codero-sus",
+ "author_github": "https://github.com/codero-sus", "website": "https://the-codero.web.app/",
+ "repository": "https://github.com/codero-sus/PyMC_Bot", "license": "MIT",
+ "made_with": "Made with ❤️ by codero-sus", "credits": [...], "built_with": [...]}
+```
+
+---
+
+<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app/)</sub>

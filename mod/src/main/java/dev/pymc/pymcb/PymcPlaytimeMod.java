@@ -16,7 +16,7 @@ public class PymcPlaytimeMod implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        LOGGER.info("PyMC Playtime Recorder loaded (client entrypoint does the recording)");
+        LOGGER.info("PyMC Playtime Recorder loaded (client entrypoint does the recording) - made by codero-sus, https://github.com/codero-sus");
     }
 
     public static Identifier id(String path) {

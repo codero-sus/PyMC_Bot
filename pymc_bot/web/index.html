@@ -4,19 +4,57 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PyMC_Bot — control panel</title>
+  <meta name="description" content="PyMC_Bot: a Python Minecraft player bot with a Uvicorn control panel, fleets, anti-AFK, Ollama/Cortex brains and a model trained on your own playtime." />
+  <meta name="author" content="codero-sus" />
+  <meta name="creator" content="codero-sus — https://github.com/codero-sus" />
+  <meta name="theme-color" content="#070b10" />
+  <meta property="og:title" content="PyMC_Bot — control panel" />
+  <meta property="og:description" content="Made with ❤️ by codero-sus · https://the-codero.web.app/" />
+  <meta property="og:url" content="https://github.com/codero-sus/PyMC_Bot" />
+  <link rel="author" href="https://github.com/codero-sus" />
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    /* apply the saved theme before first paint (no flash of the wrong theme) */
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem('pymc.theme') || 'midnight';
+      const motion = localStorage.getItem('pymc.motion');
+      if (motion) document.documentElement.dataset.motion = motion;
+    } catch (err) { /* storage blocked: defaults */ }
+  </script>
 </head>
 <body>
+  <!-- made with ❤️ by codero-sus · https://github.com/codero-sus · https://the-codero.web.app/ -->
+  <div class="fx-backdrop" aria-hidden="true">
+    <div class="aurora"><span></span><span></span><span></span></div>
+    <div class="grid-overlay"></div>
+    <canvas id="fx-canvas"></canvas>
+  </div>
+  <canvas id="confetti-canvas" aria-hidden="true"></canvas>
+  <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
+
   <header class="topbar">
     <div class="brand">
-      <span class="logo" aria-hidden="true"></span>
+      <span class="logo" id="brand-logo" title="PyMC_Bot by codero-sus" role="img" aria-label="PyMC_Bot logo">
+        <svg viewBox="0 0 16 16" aria-hidden="true" shape-rendering="crispEdges">
+          <rect x="3" y="4" width="3" height="3" fill="#06281d" class="eye"/>
+          <rect x="10" y="4" width="3" height="3" fill="#06281d" class="eye"/>
+          <rect x="6" y="8" width="4" height="2" fill="#06281d"/>
+          <rect x="5" y="10" width="2" height="3" fill="#06281d"/>
+          <rect x="9" y="10" width="2" height="3" fill="#06281d"/>
+        </svg>
+      </span>
       <div>
         <h1>PyMC_Bot</h1>
-        <p class="tagline">Python Minecraft player bot &middot; v{{ version }}</p>
+        <p class="tagline">v{{ version }} &middot; <span id="tagline-rotator" class="rotator">Minecraft player bot</span>
+          &middot; by <a href="https://github.com/codero-sus" target="_blank" rel="noopener" title="codero-sus on GitHub">codero-sus</a></p>
       </div>
     </div>
     <div class="topbar-right">
+      <button id="btn-palette" class="btn ghost palette-hint" title="Command palette (Ctrl+K)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg> <span>Search</span> <span class="kbd">Ctrl K</span></button>
+      <button id="btn-theme" class="btn ghost icon-btn" title="Theme: midnight / daylight / nether / end (Alt+T)" aria-label="Change theme"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" class="fill"/></svg></button>
+      <button id="btn-motion" class="btn ghost icon-btn" title="Animations on/off (Alt+M)" aria-label="Toggle animations"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></button>
+      <button id="btn-about" class="btn ghost icon-btn" title="About &amp; credits" aria-label="About and credits"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg></button>
       <select id="topbar-select" title="Player the panel is controlling" class="topbar-select"></select>
       <span id="stub-banner" class="badge warn hidden" title="The Ollama endpoint looks like the demo stub, not a real model.">demo brain (stub)</span>
       <span id="status-pill" class="pill pill-off">disconnected</span>
@@ -26,11 +64,31 @@
     </div>
   </header>
 
+  <nav class="section-nav" id="section-nav" aria-label="Sections">
+    <a href="#card-server" data-target="card-server">🌐 Server</a>
+    <a href="#card-fleet" data-target="card-fleet">👥 Players</a>
+    <a href="#card-brain" data-target="card-brain">🧠 AI brain</a>
+    <a href="#card-training" data-target="card-training">🎓 Player model</a>
+    <a href="#card-world" data-target="card-world">🗺️ Live view</a>
+    <a href="#card-controls" data-target="card-controls">🎮 Controls</a>
+    <a href="#card-logs" data-target="card-logs">📜 Events</a>
+    <a href="#card-advanced" data-target="card-advanced">⚙️ Advanced</a>
+  </nav>
+
+  <section class="hero" id="hero" aria-label="Overview">
+    <div class="hero-tile"><span class="label">● connection</span><span class="value" id="hero-state">—</span><span class="sub" id="hero-server">not connected</span></div>
+    <div class="hero-tile"><span class="label">🧠 brain</span><span class="value" id="hero-brain">auto</span><span class="sub" id="hero-brain-sub">idle</span></div>
+    <div class="hero-tile"><span class="label">👥 players online</span><span class="value" id="hero-fleet">0</span><span class="sub" id="hero-fleet-sub">of 0 bots</span></div>
+    <div class="hero-tile"><span class="label">⚡ decisions</span><span class="value" id="hero-decisions">0</span><span class="sub" id="hero-last">no decision yet</span></div>
+    <div class="hero-tile"><span class="label">👣 walked</span><span class="value" id="hero-walked">0 m</span><span class="sub" id="hero-mined">0 blocks mined</span></div>
+    <div class="hero-tile"><span class="label">🎓 player model</span><span class="value" id="hero-model">—</span><span class="sub" id="hero-model-sub">nothing trained yet</span></div>
+  </section>
+
   <main class="grid">
     <!-- ------------------------------------------------------------ server -->
     <section class="card" id="card-server">
       <header>
-        <h2>Minecraft server</h2>
+        <h2><span class="icon" aria-hidden="true">🌐</span>Minecraft server</h2>
         <span class="hint">cracked / offline-mode friendly</span>
       </header>
       <div class="fields two">
@@ -80,7 +138,7 @@
     <!-- -------------------------------------------------------------- fleet -->
     <section class="card" id="card-fleet">
       <header>
-        <h2>Players <span class="tag">fleet</span></h2>
+        <h2><span class="icon" aria-hidden="true">👥</span>Players <span class="tag">fleet</span></h2>
         <span id="fleet-count" class="pill pill-unknown">0 / 25</span>
       </header>
       <p class="note">Fill the server with players. Offline bots use any name; <strong>premium</strong> bots each
@@ -166,7 +224,7 @@
     <!-- --------------------------------------------------------------- brain -->
     <section class="card" id="card-brain">
       <header>
-        <h2>AI brain <span class="tag">ollama · cortex</span></h2>
+        <h2><span class="icon" aria-hidden="true">🧠</span>AI brain <span class="tag">ollama · cortex</span></h2>
         <span class="pills">
           <span id="ollama-health" class="pill pill-unknown">checking…</span>
           <span id="cortex-health" class="pill pill-unknown" title="Cortex LLMHoster">cortex…</span>
@@ -244,7 +302,7 @@
     <!-- ----------------------------------------------------------- training -->
     <section class="card span-2" id="card-training">
       <header>
-        <h2>Player model <span class="tag">train on playtime</span></h2>
+        <h2><span class="icon" aria-hidden="true">🎓</span>Player model <span class="tag">train on playtime</span></h2>
         <span id="train-state" class="pill pill-unknown">idle</span>
       </header>
       <p class="note">The Fabric mod in <code>./mod</code> records your own playtime (position, look direction,
@@ -289,7 +347,7 @@
         <button id="btn-policy-preview" class="btn ghost" title="Ask the active model what it would do right now">Preview next action</button>
       </div>
 
-      <div class="progress"><div id="train-progress-bar" class="progress-bar" style="width:0%"></div></div>
+      <div class="progress" id="train-progress"><div id="train-progress-bar" class="progress-bar" style="width:0%"></div></div>
       <p id="train-status" class="note">No dataset loaded yet.</p>
       <p id="policy-preview" class="note mono"></p>
 
@@ -310,7 +368,7 @@
     <!-- --------------------------------------------------------------- world -->
     <section class="card" id="card-world">
       <header>
-        <h2>Live view <span id="world-player" class="tag">—</span></h2>
+        <h2><span class="icon" aria-hidden="true">🗺️</span>Live view <span id="world-player" class="tag">—</span></h2>
         <span id="world-backend" class="hint"></span>
       </header>
       <div class="meters">
@@ -343,7 +401,7 @@
     <!-- ------------------------------------------------------------ controls -->
     <section class="card" id="card-controls">
       <header>
-        <h2>Manual control</h2>
+        <h2><span class="icon" aria-hidden="true">🎮</span>Manual control</h2>
         <span class="hint">humans override the AI</span>
       </header>
       <div class="inline">
@@ -375,7 +433,7 @@
     <!-- ---------------------------------------------------------------- logs -->
     <section class="card span-2" id="card-logs">
       <header>
-        <h2>Event stream</h2>
+        <h2><span class="icon" aria-hidden="true">📜</span>Event stream <span id="log-count" class="log-count">0 events</span></h2>
         <div class="inline tight">
           <label class="check"><input id="log-autoscroll" type="checkbox" checked /> autoscroll</label>
           <select id="log-filter">
@@ -393,7 +451,7 @@
     <!-- -------------------------------------------------------------- config -->
     <section class="card span-2" id="card-advanced">
       <header>
-        <h2>Advanced</h2>
+        <h2><span class="icon" aria-hidden="true">⚙️</span>Advanced</h2>
         <span id="config-path" class="hint"></span>
       </header>
       <details>
@@ -421,11 +479,73 @@
     </section>
   </main>
 
-  <footer class="footer">
-    <span>PyMC_Bot runs a real Minecraft client through mineflayer (Node) and is driven from Python.</span>
-    <span id="footer-conn" class="hint"></span>
+  <footer class="footer" id="credits">
+    <span class="made-with">Made with <span class="heart" id="heart" role="img" aria-label="❤️ love" title="thanks for using PyMC_Bot!"><svg class="heart-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 5.4 3.2 1.8-2 3.3-3.2 5.4-3.2 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z"/></svg></span> by
+      <a href="https://github.com/codero-sus" target="_blank" rel="noopener author">codero-sus</a></span>
+    <nav class="footer-links" aria-label="Credits">
+      <a href="https://github.com/codero-sus" target="_blank" rel="noopener author"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> codero-sus</a>
+      <a href="https://the-codero.web.app/" target="_blank" rel="noopener">🌍 the-codero.web.app</a>
+      <a href="https://github.com/codero-sus/PyMC_Bot" target="_blank" rel="noopener">📦 Source</a>
+      <a href="https://github.com/codero-sus/Cortex_LLMHoster" target="_blank" rel="noopener" title="Cortex LLMHoster, also by codero-sus">🧠 Cortex LLMHoster</a>
+      <button id="btn-about-footer" class="btn ghost small"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg> About &amp; credits</button>
+    </nav>
+    <div class="footer-meta">
+      <span>PyMC_Bot v{{ version }} &middot; MIT &copy; 2026 codero-sus &middot; runs a real Minecraft client through mineflayer (Node), driven from Python.</span>
+      <span id="footer-conn" class="hint"></span>
+    </div>
   </footer>
 
+  <!-- ------------------------------------------------------------- about -->
+  <dialog id="about-dialog" class="modal" aria-labelledby="about-title">
+    <button class="btn ghost icon-btn modal-close" data-close aria-label="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    <div class="modal-head">
+      <h2 id="about-title">PyMC_Bot <span class="tag">v{{ version }}</span></h2>
+      <p class="note">A Python Minecraft player bot: cracked &amp; premium players, fleets, human-like anti-AFK,
+        Ollama / Cortex brains and a model trained on your own playtime.</p>
+    </div>
+    <div class="modal-body">
+      <div class="credit-card">
+        <span class="avatar" aria-hidden="true">C</span>
+        <div>
+          <div class="who">{{ about.author }}</div>
+          <div class="hint">author &amp; maintainer &middot; Made with <span class="heart small" role="img" aria-label="❤️ love"><svg class="heart-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 5.4 3.2 1.8-2 3.3-3.2 5.4-3.2 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z"/></svg></span> by {{ about.author }}</div>
+          <div class="link-row" style="margin-top:0.5rem">
+            <a class="btn small" href="{{ about.author_github }}" target="_blank" rel="noopener author"><svg width="13" height="13" style="fill:currentColor;vertical-align:-2px" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> GitHub</a>
+            <a class="btn small" href="{{ about.website }}" target="_blank" rel="noopener">🌍 Website</a>
+            <a class="btn small" href="{{ about.repository }}" target="_blank" rel="noopener">📦 Repository</a>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-top:0">Credits</h3>
+        <ul class="credit-list">
+          {% for credit in about.credits %}
+          <li><a href="{{ credit.url }}" target="_blank" rel="noopener">{{ credit.name }}</a><span>{{ credit.role }} &middot; by {{ credit.by }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-top:0">Built with</h3>
+        <div class="chips">
+          {% for item in about.built_with %}<a class="chip" href="{{ item.url }}" target="_blank" rel="noopener">{{ item.name }}</a>{% endfor %}
+        </div>
+      </div>
+      <p class="note">Licensed under {{ about.license }}. Minecraft is a trademark of Mojang/Microsoft; PyMC_Bot is not affiliated with them.</p>
+    </div>
+  </dialog>
+
+  <!-- ----------------------------------------------------- command palette -->
+  <dialog id="palette" class="modal palette" aria-label="Command palette">
+    <input id="palette-input" class="palette-input" type="text" placeholder="Type a command or jump to a section…" autocomplete="off" spellcheck="false" />
+    <ul id="palette-list" class="palette-list" role="listbox"></ul>
+    <div class="palette-foot"><span><span class="kbd">↑</span> <span class="kbd">↓</span> navigate</span><span><span class="kbd">Enter</span> run</span>
+      <span><span class="kbd">Esc</span> close</span><span><span class="kbd">Alt T</span> theme</span><span><span class="kbd">Alt M</span> motion</span></div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <button id="btn-to-top" class="btn to-top" title="Back to top" aria-label="Back to top"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+
+  <script src="/static/fx.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

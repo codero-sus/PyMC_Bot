@@ -225,3 +225,7 @@ HTTP API end to end. Transformer tests are skipped when PyTorch is not installed
 | Val accuracy looks low but play looks right | Compare `val_balanced_accuracy` too: rare actions are weighted up on purpose. |
 | Advanced model behaves like a basic one | `--inspect` shows an empty vocabulary: the recording was made before `/pymc advanced on`, so there is no entity/item data to learn from. |
 | An advanced checkpoint refuses to load | The vocabulary in `model.json` and in the checkpoint must match the build; retrain (a basic model cannot be upgraded in place). |
+
+---
+
+<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app/)</sub>

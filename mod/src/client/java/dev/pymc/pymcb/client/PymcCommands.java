@@ -23,9 +23,19 @@ import net.minecraft.network.chat.Component;
  * /pymc drops &lt;n&gt;               how many dropped item stacks to record (advanced)
  * /pymc status                  where the dataset lives, how big it is
  * /pymc train                   print the exact command to train on this dataset
+ * /pymc about                   author, links and credits
  * </pre>
+ *
+ * <p>Made with ❤ by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/</p>
  */
 public final class PymcCommands {
+    /** Shown by {@code /pymc about}. */
+    static final String ABOUT = "PyMC Playtime Recorder - part of PyMC_Bot\n"
+            + "Made with \u2764 by codero-sus\n"
+            + "GitHub:  https://github.com/codero-sus\n"
+            + "Website: https://the-codero.web.app/\n"
+            + "Source:  https://github.com/codero-sus/PyMC_Bot (MIT)";
+
     private final PlaytimeRecorder recorder;
 
     public PymcCommands(PlaytimeRecorder recorder) {
@@ -88,7 +98,8 @@ public final class PymcCommands {
                     .then(literal("param").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())))
                     .then(literal("status").executes(ctx -> feedback(ctx.getSource(), recorder.status())))
                     .then(literal("export").executes(ctx -> feedback(ctx.getSource(), recorder.export())))
-                    .then(literal("train").executes(ctx -> feedback(ctx.getSource(), trainHint()))));
+                    .then(literal("train").executes(ctx -> feedback(ctx.getSource(), trainHint())))
+                    .then(literal("about").executes(ctx -> feedback(ctx.getSource(), ABOUT))));
         });
     }
 
