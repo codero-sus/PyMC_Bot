@@ -1,8 +1,7 @@
 # Using Cortex LLMHoster as the AI brain
 
 [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) hosts models **on your own machine**
-(llama.cpp GGUF files, or any local engine through its `command` runtime) behind an
-**OpenAI-compatible API**. PyMC_Bot can use it as the brain instead of, or alongside, Ollama:
+behind an **OpenAI-compatible API**. PyMC_Bot can use it as the brain instead of, or alongside, Ollama:
 
 | Brain (`agent.mode`) | Who decides |
 | --- | --- |
@@ -18,18 +17,14 @@ Fleet bots can use it as well: pick **cortex** as *Fleet AI* / premium AI, or se
 
 ## 1. Run Cortex
 
-Follow Cortex's own installation guide. In short (Python 3.11+, plus `llama-server` and a GGUF model):
+Install and start Cortex LLMHoster on the same machine as PyMC_Bot, following Cortex's own documentation,
+and load a text model in it. PyMC_Bot only needs two things from it:
 
-```bash
-git clone https://github.com/codero-sus/Cortex_LLMHoster && cd Cortex_LLMHoster
-python3.11 -m venv .venv && . .venv/bin/activate && pip install .
-cp cortex.example.toml cortex.toml          # set model_path to your .gguf
-export CORTEX_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python -m cortex_llmhoster                   # -> http://127.0.0.1:8624
-```
+* its **URL** – `http://127.0.0.1:8624` by default, with the OpenAI-compatible API under `/v1`;
+* the **bearer key** Cortex was started with, if it uses one.
 
-A small instruct model (for example a 1.5B–8B Qwen or Llama Q4_K_M GGUF) is enough: the bot asks for one
-short JSON action every few seconds. CPU-only works (`gpu_layers = 0`).
+A small instruct model (roughly 1.5B–8B parameters, quantised) is enough: the bot asks for one short JSON
+action every few seconds, and CPU-only works.
 
 ## 2. Point PyMC_Bot at it
 
@@ -51,7 +46,7 @@ If Cortex runs without a key, leave the variable unset.
 "cortex": {
   "enabled": false,                 // let `auto` use Cortex (Ollama keeps priority when both are on)
   "base_url": "http://127.0.0.1:8624",
-  "api_path": "/v1",                // Cortex's api.json `base_path`
+  "api_path": "/v1",                // the base path of Cortex's OpenAI-compatible API
   "model": "",                      // blank = the model Cortex marks as default
   "api_key_env": "CORTEX_API_KEY",  // NAME of the env var holding the key - never the key itself
   "temperature": 0.4,
@@ -66,7 +61,7 @@ If Cortex runs without a key, leave the variable unset.
 ## How the brain talks to Cortex
 
 * **Health** – `GET /v1/models` (with the key) checks the configured model exists and declares
-  `text_generation`; `GET /ready` checks that the default local model is actually running. The panel's
+  `text_generation`, and a readiness check confirms the model is actually running. The panel's
   `cortex` pill and `GET /api/cortex/health` show the exact reason when something is missing
   (no key, unknown model, model not started, Cortex not running).
 * **Decisions** – `POST /v1/chat/completions` with the system prompt and the compact world state, the
@@ -77,40 +72,21 @@ If Cortex runs without a key, leave the variable unset.
   retried: that decision falls back to the heuristic, the error shows in the panel, and the next decision
   tries Cortex again.
 
-## Try the chain without model weights
+## Try the brain without model weights
 
 The demo stub (`python -m pymc_bot stub`, rule-based, **not** a language model) also speaks the OpenAI
-dialect (`/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`), so Cortex can supervise it
-through its `command` runtime. This is how the integration was tested end to end:
-
-```toml
-# cortex.toml
-[server]
-host = "127.0.0.1"
-port = 8624
-api_key_env = "CORTEX_API_KEY"
-default_model = "pymc-demo"
-
-[[models]]
-id = "pymc-demo"
-runtime = "command"
-api_base_path = "/v1"
-health_path = "/health"
-capabilities = ["text_generation"]
-default = true
-runtime_command = ["/path/to/PyMC_Bot/.venv/bin/python", "-m", "pymc_bot", "stub",
-                   "--host", "{host}", "--port", "{port}", "--quiet"]
-```
+dialect (`/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`), so it can stand in for Cortex
+and exercise the whole `cortex` brain path on any machine:
 
 ```bash
-CORTEX_CONFIG=cortex.toml CORTEX_API_KEY=demo python -m cortex_llmhoster &
-CORTEX_API_KEY=demo python -m pymc_bot run --backend simulated --think cortex --seconds 15
-# Thinking with Cortex LLMHoster at http://127.0.0.1:8624: 1 model(s): pymc-demo
+python -m pymc_bot stub --port 8624 &
+python -m pymc_bot run --backend simulated --think cortex --cortex-url http://127.0.0.1:8624 --seconds 15
+# Thinking with Cortex LLMHoster at http://127.0.0.1:8624: 1 model(s): pymc-stub:latest
 # [ai] agent: AI chose: mine {'block': 'oak_log'}
 # [info] agent: ✓ mined oak_log
 ```
 
-Swap the `command` model for a real `llama.cpp` GGUF model and nothing on the PyMC_Bot side changes.
+Stop the stub and start Cortex with a real model on the same address: nothing on the PyMC_Bot side changes.
 
 ## Troubleshooting
 
@@ -118,10 +94,10 @@ Swap the `command` model for a real `llama.cpp` GGUF model and nothing on the Py
 | --- | --- |
 | `Cortex needs a bearer key: set CORTEX_API_KEY ...` | export the key in the shell that starts PyMC_Bot (or change `cortex.api_key_env`) |
 | `the key in CORTEX_API_KEY was rejected` | the value differs from the one Cortex was started with |
-| `not ready: default_local_model_not_running` | start the model in the Cortex dashboard, or check its runtime log (bad `model_path`, missing `llama-server`) |
+| `not ready: ...` | the model is not running in Cortex yet – start it there and check Cortex's own log |
 | `model 'x' is not configured in Cortex` | use an id from `GET /api/cortex/models`, or leave `cortex.model` blank for Cortex's default |
 | `does not declare text_generation` | that model is e.g. a transcription model; pick a text model |
-| Decisions are slow | lower `max_tokens`, use a smaller/quantised GGUF, or raise `cortex.decision_interval` |
+| Decisions are slow | lower `max_tokens`, use a smaller/quantised model, or raise `cortex.decision_interval` |
 | `Could not reach Cortex` from another machine | Cortex binds to `127.0.0.1` by default; run PyMC_Bot on the same host or set Cortex's host deliberately |
 
 ---

@@ -38,8 +38,8 @@ Minecraft versions), and it is driven purely by JSON from Python.
   stack and a starter inventory, so trained models have entity and item inputs) lets you try the whole panel, movement and AI loop on any machine, and it is what the test suite runs against.
 * **Works without an LLM** – if Ollama/Cortex is disabled or unreachable the bot keeps playing with a small
   built-in heuristic policy, so it never just stands there.
-* **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, llama.cpp
-  GGUF and other local engines, optional bearer key read from the environment and never saved).
+* **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
+  bearer key read from the environment and never saved).
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
   players one email at a time, and can keep the crowd alive (rejoin on kick, optional idle chatter).
 * **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
@@ -281,7 +281,7 @@ heuristic policy instead of crashing the loop.
 
 For demos, tests and CI there is an **Ollama-compatible stub** – clearly *not* a language model, just a
 rule-based responder that answers the same `/api/chat`, `/api/generate` and `/api/tags` endpoints (and the
-OpenAI-style `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/health`, so Cortex can host it):
+OpenAI-style `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/health`, so it can also stand in for Cortex):
 
 ```bash
 python -m pymc_bot stub            # listens on http://127.0.0.1:11434
@@ -305,7 +305,7 @@ python -m pymc_bot run --think cortex --cortex-model qwen-local
 
 In the panel: **AI brain → Cortex LLMHoster → Check Cortex → Use Cortex as brain**. Fleet bots can use
 `cortex` too. Same action contract, same permission gates and the same heuristic fallback as Ollama.
-Setup, a weight-free end-to-end demo (Cortex supervising the stub) and troubleshooting:
+Setup, a weight-free demo (the stub standing in for Cortex) and troubleshooting:
 [docs/CORTEX.md](docs/CORTEX.md). Cortex is a separate program under its own personal, non-commercial
 license; PyMC_Bot only talks to it over HTTP.
 
