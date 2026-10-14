@@ -38,6 +38,8 @@ VERSION_SPECIFIC = [
     r"sendSystemMessage\(",
     r"InputConstants",
     r"\.attended\(\)",
+    r"client\.screen\b",
+    r"gui\.screen\(\)",
 ]
 
 
@@ -107,6 +109,8 @@ def test_compat_eras_match_the_api_changes():
     for era in ("v26_1", "v26_2"):
         assert "ClientCommands." in files[era] and "KeyMappingHelper.registerKeyMapping" in files[era]
     assert "source.attended()" in files["v26_2"]
+    assert "client.gui.screen() != null" in files["v26_2"]
+    assert all("client.screen != null" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
     assert all("return true;" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
 
 

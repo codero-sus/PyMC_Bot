@@ -250,7 +250,7 @@ public final class PlaytimeRecorder {
             return;
         }
         PlaytimeConfig cfg = PlaytimeConfig.get();
-        boolean inMenu = cfg.pauseInMenus && client.screen != null;
+        boolean inMenu = cfg.pauseInMenus && Mc.screenOpen(client);
         if (paused || inMenu) {
             // Nothing the player does in a menu (or while paused) is a game action the bot can
             // copy; drop it so the next sample starts clean.

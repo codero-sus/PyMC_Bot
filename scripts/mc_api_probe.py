@@ -79,12 +79,21 @@ EXISTENCE = [
 def find_minecraft_jar(cache: Path) -> tuple[Path | None, list[Path]]:
     """The newest jar that really contains the mapped classes, plus everything tried."""
     candidates: list[Path] = []
-    for path in cache.rglob("*.jar"):
-        name = path.name.lower()
-        if "source" in name or "sources" in name:
+    # Remapped 1.21.x builds keep the game under ~/.gradle; unobfuscated 26.x builds keep it in
+    # the project's own .gradle/loom-cache, so look there too.
+    roots = [cache, Path("mod/.gradle"), Path("mod/build"), Path(".gradle")]
+    seen: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
             continue
-        candidates.append(path)
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in root.rglob("*.jar"):
+            name = path.name.lower()
+            if "source" in name or "sources" in name or path in seen:
+                continue
+            seen.add(path)
+            candidates.append(path)
+    # Jars that look like the game first (then newest first): the cache is full of libraries.
+    candidates.sort(key=lambda p: ("minecraft" not in str(p).lower(), -p.stat().st_mtime))
     tried: list[Path] = []
     for path in candidates:
         # A jar counts as "the game" when the classes we call are really in it: Loom

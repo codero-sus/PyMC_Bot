@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -68,6 +69,11 @@ public final class Mc {
      */
     public static KeyMapping registerKey(String translationKey) {
         return KeyBindingHelper.registerKeyBinding(new KeyMapping(translationKey, InputConstants.UNKNOWN.getValue(), CATEGORY));
+    }
+
+    /** Whether a screen (inventory, chat, pause menu...) is open. */
+    public static boolean screenOpen(Minecraft client) {
+        return client.screen != null;
     }
 
     /** Shows a line in the chat for the local player only. */
