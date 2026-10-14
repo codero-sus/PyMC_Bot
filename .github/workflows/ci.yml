@@ -103,45 +103,87 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
 
-  mod:
-    name: mod (fabric, java 25 build / java 21 target)
+  mod-versions:
+    name: mod (version list)
     runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read mod/versions.json
+        id: list
+        run: |
+          list=$(jq -c '[.versions[].minecraft]' mod/versions.json)
+          echo "Building the recorder for: $list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  mod:
+    name: mod (fabric ${{ matrix.mc }})
+    needs: mod-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mc: ${{ fromJson(needs.mod-versions.outputs.list) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
         with:
-          # Loom 1.18 (the 1.21.11 template) resolves only on a Java 25 runtime; the mod
-          # itself is still compiled with --release 21 so it runs on any Java 21 game.
+          # Loom 1.18 resolves only on a Java 25 runtime. The bytecode level follows the
+          # game (Java 21 for 1.21.x, Java 25 for 26.x) - see mod/versions.json.
           distribution: temurin
           java-version: "25"
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build the Fabric mod (downloads Minecraft + Fabric API)
+      - name: Build the Fabric mod for Minecraft ${{ matrix.mc }}
         working-directory: mod
         run: |
           set -o pipefail
           chmod +x gradlew
-          ./gradlew build --no-daemon --stacktrace 2>&1 | tee gradle.log
+          ./gradlew build -Pmc=${{ matrix.mc }} --no-daemon --stacktrace 2>&1 | tee gradle.log
+      - name: Check the jar targets the right game version
+        working-directory: mod
+        run: |
+          jar=$(ls build/libs/pymcplaytime-*+${{ matrix.mc }}.jar)
+          echo "built $jar"
+          unzip -p "$jar" fabric.mod.json | tee fabric.mod.json.out
+          grep -q '"minecraft": "${{ matrix.mc }}"' fabric.mod.json.out
+          unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/compat/Mc.class"
       - name: Extract the gradle errors
         if: failure()
         run: |
           grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt
           wc -l mod/errors.txt
       - name: Probe the Minecraft API signatures
-        if: always()
+        if: failure()
         run: python3 scripts/mc_api_probe.py | tee mod/api-probe.log
       - name: Publish mod build diagnostics
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python scripts/ci_diagnostics.py mod/errors.txt --title "Gradle errors (extracted)" --limit 12000
-          python scripts/ci_diagnostics.py mod/api-probe.log --title "Minecraft API probe" --limit 24000
-          python scripts/ci_diagnostics.py mod/gradle.log --title "Gradle log tail" --limit 12000
-      - name: Show the built jar
-        working-directory: mod
-        run: ls -la build/libs/
+          python scripts/ci_diagnostics.py mod/errors.txt --title "mc ${{ matrix.mc }}: Gradle errors (extracted)" --limit 12000
+          python scripts/ci_diagnostics.py mod/api-probe.log --title "mc ${{ matrix.mc }}: Minecraft API probe" --limit 24000
+          python scripts/ci_diagnostics.py mod/gradle.log --title "mc ${{ matrix.mc }}: Gradle log tail" --limit 12000
       - uses: actions/upload-artifact@v4
         with:
-          name: pymcplaytime-jar
-          path: mod/build/libs/*.jar
-          if-no-files-found: warn
+          name: pymcplaytime-${{ matrix.mc }}
+          path: mod/build/libs/pymcplaytime-*+${{ matrix.mc }}.jar
+          if-no-files-found: error
+
+  mod-bundle:
+    name: mod (all versions bundle)
+    needs: mod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pymcplaytime-*
+          merge-multiple: true
+          path: dist
+      - name: List the jars
+        run: ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pymcplaytime-all-versions
+          path: dist/*.jar
+          if-no-files-found: error
