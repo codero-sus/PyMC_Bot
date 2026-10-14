@@ -50,7 +50,7 @@ Minecraft versions), and it is driven purely by JSON from Python.
   collapsible cards, toasts for everything you do, an animated minimap with radar sweep, and a little
   confetti when the bot joins or a training run finishes. Every animation can be switched off (✨ / <kbd>Alt</kbd>+<kbd>M</kbd>,
   and the OS "reduce motion" setting is honoured).
-* **Trains on *your* playtime** – a Fabric mod ([`./mod`](mod/README.md)) records how you play, `pymc_bot train`
+* **Trains on *your* playtime** – a Fabric mod ([`./mod`](mod/README.md), every Minecraft from **1.21.1 to 26.3**) records how you play, `pymc_bot train`
   turns that into a checkpointed player model, and `think trained` runs the bot with it. No Ollama, no GPU,
   no cloud: the model learns your movements, your turns and your habits and reproduces them in game.
 
@@ -176,12 +176,14 @@ player table shows each bot's idle time and how many anti-AFK bursts it has done
 
 The bot can learn **how you play** and then play like that itself. Three steps:
 
-**1. Record** – build the Fabric mod in [`./mod`](mod/README.md) (it started from the official
-`fabric-example-mod` template: download the zip, extract, edit), drop it in `.minecraft/mods/` with
+**1. Record** – build the Fabric mod in [`./mod`](mod/README.md) for your Minecraft version
+(**1.21.1 – 26.3**; with JDK 25 installed: `cd mod && ./gradlew build -Pmc=<your version>`, or grab
+the `pymcplaytime-all-versions` artifact from CI – full steps in
+[Compiling the mod](mod/README.md#compiling-the-mod)), drop it in `.minecraft/mods/` with
 [Fabric API](https://modrinth.com/mod/fabric-api), then in game:
 
 ```text
-/pymc record start      # play normally for 10-60 minutes
+/pymc record start      # or your hotkey; play normally for 10-60 minutes
 /pymc record stop
 /pymc export            # -> <gameDir>/pymc-playtime/dataset.jsonl
 ```
@@ -484,8 +486,9 @@ the AI loop against the Ollama stub. The training stack is covered end to end as
 pinned in `tests/test_features.py`, `tests/test_train.py` covers checkpoints/resume/metrics, and
 `tests/test_local_model.py` lets a real trained model drive a simulated bot.
 CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12, the transformer engine with PyTorch,
-and **builds the Fabric mod on JDK 25** (Loom 1.18 needs a Java 25 Gradle runtime; the
-mod targets Java 21) and uploads the jar as an artifact.
+and **builds the Fabric mod for all 16 Minecraft versions from 1.21.1 to 26.3** on JDK 25 (one matrix
+job per version from `mod/versions.json`; 1.21.x jars target Java 21, 26.x jars Java 25) and uploads
+each jar plus a `pymcplaytime-all-versions` bundle.
 
 ```
 pymc_bot/
@@ -507,7 +510,7 @@ pymc_bot/
 ├── server.py        FastAPI app + WebSocket + static UI
 ├── web/             index.html, styles.css, app.js (no build step)
 └── node/            minecraft_bridge.js  (the only JavaScript)
-mod/                 Fabric mod: records your playtime into a training dataset
+mod/                 Fabric mod (MC 1.21.1 – 26.3): records your playtime into a training dataset
 tests/               pytest suite + fake bridge fixture
 scripts/dev.sh       small helper for common tasks
 ```
@@ -534,7 +537,7 @@ scripts/dev.sh       small helper for common tasks
 | Trained model only walks forward | play/train more, or lower `training.temperature`; check `val_balanced_accuracy` in the model card |
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
 | Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |
-| `./gradlew build` fails in `mod/` | needs **JDK 25** to run Gradle (Loom 1.18 rejects older runtimes with "requires at least JVM runtime version 25"); the mod builds in CI on every push, so compare with the `mod` job there |
+| `./gradlew build` fails in `mod/` | needs **JDK 25** to run Gradle (Loom 1.18 rejects older runtimes with "requires at least JVM runtime version 25"); pick a version with `-Pmc=<version>` (`./gradlew printTargets` lists them). See [the build troubleshooting table](mod/README.md#troubleshooting-the-build); CI builds every version on each push, so compare with the `mod (fabric <version>)` job there |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |
 
 ## Credits

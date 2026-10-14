@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -20,7 +21,7 @@ import net.minecraft.resources.Identifier;
  * per API era under {@code mod/src/compat/<era>/}, and the build picks the right one from
  * {@code mod/versions.json} ({@code ./gradlew build -Pmc=<version>}).
  *
- * <p>What changed in this era: Fabric API 0.152 added attended client commands. 26.3 replaced GLFW with SDL3; the hotkey is registered unbound through {@code InputConstants.UNKNOWN}, so no raw key codes are involved.
+ * <p>What changed in this era: the open screen moved to {@code Minecraft.gui.screen()}. Fabric API 0.152 added attended client commands. 26.3 replaced GLFW with SDL3; the hotkey is registered unbound through {@code InputConstants.UNKNOWN}, so no raw key codes are involved.
  */
 public final class Mc {
     /** The Minecraft versions this copy is compiled for (shown by {@code /pymc version}). */
@@ -68,6 +69,11 @@ public final class Mc {
      */
     public static KeyMapping registerKey(String translationKey) {
         return KeyMappingHelper.registerKeyMapping(new KeyMapping(translationKey, InputConstants.UNKNOWN.getValue(), CATEGORY));
+    }
+
+    /** Whether a screen (inventory, chat, pause menu...) is open. Since 26.2 the open screen lives on {@code Minecraft.gui}. */
+    public static boolean screenOpen(Minecraft client) {
+        return client.gui.screen() != null;
     }
 
     /** Shows a line in the chat for the local player only. */
