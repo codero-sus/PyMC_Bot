@@ -49,6 +49,17 @@ LOOKUPS: list[tuple[str, str]] = [
     ("net.minecraft.world.entity.item.ItemEntity", r"getItem"),
     ("net.minecraft.world.item.ItemStack", r"isEmpty|getCount|getItem"),
     ("net.minecraft.core.registries.BuiltInRegistries", r"ITEM|BLOCK|ENTITY_TYPE"),
+    # Members the version bridge (mod/src/compat/*/Mc.java) relies on.
+    ("net.minecraft.client.KeyMapping", r"KeyMapping\(|Category|consumeClick"),
+    ("net.minecraft.client.KeyMapping$Category", r"."),
+    ("com.mojang.blaze3d.platform.InputConstants", r"UNKNOWN|Type"),
+    ("com.mojang.blaze3d.platform.InputConstants$Key", r"getValue"),
+    ("net.minecraft.client.Minecraft", r"screen"),
+    ("net.minecraft.client.player.LocalPlayer", r"displayClientMessage|sendSystemMessage"),
+    ("net.minecraft.world.entity.EntityType", r"getCategory"),
+    ("net.minecraft.world.entity.MobCategory", r"MONSTER"),
+    ("net.minecraft.resources.ResourceKey", r"location|identifier"),
+    ("net.minecraft.world.food.FoodData", r"getFoodLevel"),
 ]
 
 # Renames we are not sure about: report which of these exist.
@@ -59,6 +70,9 @@ EXISTENCE = [
     "net.minecraft.world.entity.monster.Monster",
     "net.minecraft.world.entity.animal.Animal",
     "net.minecraft.world.menu.QuickCraftButton",
+    "net.minecraft.world.entity.item.ItemEntity",
+    "net.minecraft.world.entity.MobCategory",
+    "net.minecraft.client.KeyMapping$Category",
 ]
 
 

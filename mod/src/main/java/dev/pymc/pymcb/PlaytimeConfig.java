@@ -39,6 +39,19 @@ public final class PlaytimeConfig {
     /** Maximum dropped item stacks written per sample in advanced mode. */
     public int maxGroundItems = 8;
 
+    // ---------------------------------------------------------------- dataset quality
+    /** Skip samples while a screen (inventory, chat, pause menu...) is open. */
+    public boolean pauseInMenus = true;
+    /**
+     * Stop writing samples after this many seconds without any input or movement, so AFK time
+     * does not flood the dataset with "none". Recording resumes on the next action. 0 = never.
+     */
+    public int idleSkipSeconds = 15;
+    /** Start recording automatically when joining a world or server. */
+    public boolean autoRecord = false;
+    /** Show a chat line when the hotkey or auto-record changes the recorder state. */
+    public boolean notifications = true;
+
     public static PlaytimeConfig get() {
         return INSTANCE;
     }
@@ -59,6 +72,10 @@ public final class PlaytimeConfig {
                 cfg.maxEntities = intProp(props, "maxEntities", cfg.maxEntities, 0, 128);
                 cfg.entityRange = doubleProp(props, "entityRange", cfg.entityRange, 4.0, 128.0);
                 cfg.maxGroundItems = intProp(props, "maxGroundItems", cfg.maxGroundItems, 0, 64);
+                cfg.pauseInMenus = boolProp(props, "pauseInMenus", cfg.pauseInMenus);
+                cfg.idleSkipSeconds = intProp(props, "idleSkipSeconds", cfg.idleSkipSeconds, 0, 3600);
+                cfg.autoRecord = boolProp(props, "autoRecord", cfg.autoRecord);
+                cfg.notifications = boolProp(props, "notifications", cfg.notifications);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
             }
@@ -81,6 +98,10 @@ public final class PlaytimeConfig {
         props.setProperty("maxEntities", Integer.toString(maxEntities));
         props.setProperty("entityRange", Double.toString(entityRange));
         props.setProperty("maxGroundItems", Integer.toString(maxGroundItems));
+        props.setProperty("pauseInMenus", Boolean.toString(pauseInMenus));
+        props.setProperty("idleSkipSeconds", Integer.toString(idleSkipSeconds));
+        props.setProperty("autoRecord", Boolean.toString(autoRecord));
+        props.setProperty("notifications", Boolean.toString(notifications));
         props.setProperty("_comment", "PyMC Playtime Recorder - sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());
@@ -113,13 +134,36 @@ public final class PlaytimeConfig {
         save();
     }
 
+    public void setPauseInMenus(boolean enabled) {
+        pauseInMenus = enabled;
+        save();
+    }
+
+    public void setIdleSkipSeconds(int seconds) {
+        idleSkipSeconds = Math.max(0, Math.min(3600, seconds));
+        save();
+    }
+
+    public void setAutoRecord(boolean enabled) {
+        autoRecord = enabled;
+        save();
+    }
+
+    public void setNotifications(boolean enabled) {
+        notifications = enabled;
+        save();
+    }
+
     public String describe() {
         return String.format(Locale.ROOT,
                 "sample every %d tick(s) (~%d ms), moveEpsilon=%.3f, turnDegrees=%.1f, maxNearby=%d, includeBlocks=%s",
                 sampleTicks, sampleTicks * 50, moveEpsilon, turnDegrees, maxNearby, includeBlocks)
                 + String.format(Locale.ROOT,
                 "\nadvanced=%s (entities<=%d within %.0f blocks, ground items<=%d)",
-                advanced, maxEntities, entityRange, maxGroundItems);
+                advanced, maxEntities, entityRange, maxGroundItems)
+                + String.format(Locale.ROOT,
+                "\npauseInMenus=%s, idleSkip=%s, autoRecord=%s, notifications=%s",
+                pauseInMenus, idleSkipSeconds == 0 ? "off" : idleSkipSeconds + "s", autoRecord, notifications);
     }
 
     private static Path path() {

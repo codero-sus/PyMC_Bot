@@ -14,16 +14,19 @@ import java.util.Locale;
 
 import dev.pymc.pymcb.Json;
 import dev.pymc.pymcb.PlaytimeConfig;
+import dev.pymc.pymcb.PymcPlaytimeMod;
+import dev.pymc.pymcb.client.compat.Mc;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.network.chat.Component;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
@@ -42,6 +45,11 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>Everything is written under the Minecraft game directory, which is also where PyMC Bot
  * looks by default, so the Python side never has to talk to the game.
+ *
+ * <p>Dataset quality: samples are skipped while a screen is open ({@code pauseInMenus}), while
+ * the recorder is paused, and after {@code idleSkipSeconds} without any action, so AFK time and
+ * inventory juggling do not drown out real play. Every Minecraft-version-specific call goes
+ * through {@link Mc}.
  */
 public final class PlaytimeRecorder {
     public static final String DIR_NAME = "pymc-playtime";
@@ -87,6 +95,18 @@ public final class PlaytimeRecorder {
     // Sticky input flags: true if the key/button was pressed at any point since the last sample.
     private boolean forward, back, left, right, jump, sneak, attack, use;
 
+    /** Manually paused with /pymc pause or the pause hotkey (the episode file stays open). */
+    private boolean paused;
+    /** Set when a world was joined with autoRecord on; the start happens on the first tick with a player. */
+    private boolean pendingAutoStart;
+    /** Consecutive samples labelled "none". */
+    private int idleRun;
+    /** Ticks skipped because a screen was open / the recorder was paused, this run. */
+    private long menuTicks;
+    private long pausedTicks;
+    /** Samples not written because the player was idle, this run. */
+    private long idleSkipped;
+
     public PlaytimeRecorder(Minecraft client) {
         this.client = client;
     }
@@ -123,6 +143,11 @@ public final class PlaytimeRecorder {
         hasPrevSlot = false;
         movedSinceSample = 0.0;
         turnedSinceSample = 0.0f;
+        paused = false;
+        idleRun = 0;
+        menuTicks = 0;
+        pausedTicks = 0;
+        idleSkipped = 0;
         resetInputs();
         writeMeta();
         return "recording -> " + episodesDir.resolve(runName + ".ndjsonl")
@@ -136,10 +161,12 @@ public final class PlaytimeRecorder {
         }
         closeWriter();
         active = false;
+        paused = false;
         writeMeta();
         return String.format(Locale.ROOT,
                 "stopped '%s': %d sample(s), about %.1f minute(s) of playtime",
-                runName, totalSamples, totalSamples * PlaytimeConfig.get().sampleTicks * 50.0 / 60000.0);
+                runName, totalSamples, totalSamples * PlaytimeConfig.get().sampleTicks * 50.0 / 60000.0)
+                + skippedSummary();
     }
 
     /** Called when the game shuts down so the file handle is not leaked. */
@@ -206,6 +233,13 @@ public final class PlaytimeRecorder {
         if (player == null || client.level == null) {
             return;
         }
+        if (pendingAutoStart) {
+            pendingAutoStart = false;
+            if (!active) {
+                String result = start();
+                tell(player, active ? "auto-record started (/pymc autorecord off to disable)" : result);
+            }
+        }
         tick++;
         sampleInputs();
         trackView(player);
@@ -215,11 +249,118 @@ public final class PlaytimeRecorder {
             prime(player);
             return;
         }
-        if (tick - lastSampleTick >= Math.max(1, PlaytimeConfig.get().sampleTicks)) {
-            writeSample(player);
+        PlaytimeConfig cfg = PlaytimeConfig.get();
+        boolean inMenu = cfg.pauseInMenus && client.screen != null;
+        if (paused || inMenu) {
+            // Nothing the player does in a menu (or while paused) is a game action the bot can
+            // copy; drop it so the next sample starts clean.
+            if (paused) {
+                pausedTicks++;
+            } else {
+                menuTicks++;
+            }
+            lastSampleTick = tick;
+            prime(player);
+            return;
+        }
+        if (tick - lastSampleTick >= Math.max(1, cfg.sampleTicks)) {
+            String activity = action(player);
+            idleRun = "none".equals(activity) ? idleRun + 1 : 0;
+            if (idleLimitReached(cfg)) {
+                idleSkipped++;
+            } else {
+                writeSample(player, activity);
+            }
             lastSampleTick = tick;
             prime(player);
         }
+    }
+
+    /** True once the player has been idle for longer than {@code idleSkipSeconds}. */
+    private boolean idleLimitReached(PlaytimeConfig cfg) {
+        if (cfg.idleSkipSeconds <= 0) {
+            return false;
+        }
+        long limit = Math.max(1L, cfg.idleSkipSeconds * 20L / Math.max(1, cfg.sampleTicks));
+        return idleRun > limit;
+    }
+
+    // ------------------------------------------------------------------ pause / connection
+
+    /** Pauses sampling without closing the episode (no-op when not recording). */
+    public synchronized String pause() {
+        if (!active) {
+            return "not recording - start one with /pymc record start";
+        }
+        if (paused) {
+            return "already paused - /pymc resume continues";
+        }
+        paused = true;
+        flushQuietly();
+        writeMeta();
+        return "paused '" + runName + "' at " + totalSamples + " sample(s) - /pymc resume continues";
+    }
+
+    public synchronized String resume() {
+        if (!active) {
+            return "not recording - start one with /pymc record start";
+        }
+        if (!paused) {
+            return "not paused";
+        }
+        paused = false;
+        writeMeta();
+        return "resumed '" + runName + "'";
+    }
+
+    public synchronized String togglePause() {
+        return paused ? resume() : pause();
+    }
+
+    /** A world or server was joined: arm auto-record if it is enabled. */
+    public synchronized void onJoin() {
+        pendingAutoStart = PlaytimeConfig.get().autoRecord;
+    }
+
+    /**
+     * The connection closed: stop and flush so an episode never spans two worlds and nothing is
+     * lost if the game is closed from the title screen.
+     */
+    public synchronized void onDisconnect() {
+        pendingAutoStart = false;
+        if (active) {
+            String result = stop();
+            PymcPlaytimeMod.LOGGER.info("[pymc] disconnected - {}", result.replace('\n', ' '));
+        }
+        lastPos = null;
+        hasPrevView = false;
+        hasPrevSlot = false;
+    }
+
+    private void flushQuietly() {
+        if (writer != null) {
+            try {
+                writer.flush();
+            } catch (IOException ignored) {
+                // Best effort.
+            }
+        }
+    }
+
+    /** Sends a chat line to the local player when notifications are on. */
+    static void tell(LocalPlayer player, String message) {
+        if (player != null && PlaytimeConfig.get().notifications) {
+            Mc.message(player, Component.literal("[pymc] " + message.split("\n", 2)[0]));
+        }
+    }
+
+    private String skippedSummary() {
+        if (menuTicks == 0 && pausedTicks == 0 && idleSkipped == 0) {
+            return "";
+        }
+        return String.format(Locale.ROOT,
+                "\nskipped: %.0fs in menus, %.0fs paused, %d idle sample(s)",
+                menuTicks / 20.0, pausedTicks / 20.0, idleSkipped);
     }
 
     /** Reads the vanilla key mappings (mouse buttons drive keyAttack/keyUse) into sticky flags. */
@@ -313,14 +454,14 @@ public final class PlaytimeRecorder {
     }
 
     private static int selectedSlot(LocalPlayer player) {
-        return player.getInventory().getSelectedSlot();
+        return Mc.selectedSlot(player);
     }
 
-    private Sample writeSample(LocalPlayer player) {
+    private Sample writeSample(LocalPlayer player, String activity) {
         Sample sample = new Sample();
         sample.tick = tick - episodeStartTick;
         sample.episode = runName;
-        sample.activity = action(player);
+        sample.activity = activity;
 
         Vec3 pos = player.position();
         Vec3 vel = player.getDeltaMovement();
@@ -368,8 +509,17 @@ public final class PlaytimeRecorder {
     }
 
     private static String dimensionName(LocalPlayer player) {
-        var id = player.level().dimension().identifier();
-        return id.getNamespace().equals("minecraft") ? id.getPath() : id.toString();
+        String id = Mc.dimensionId(player);
+        return id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : id;
+    }
+
+    /**
+     * Hostile = the entity type spawns in the MONSTER category. Unlike checking for the Monster
+     * base class this also covers slimes, magma cubes, ghasts and phantoms, and it does not depend
+     * on which package a Minecraft version keeps its monster classes in.
+     */
+    private static boolean hostile(Entity entity) {
+        return entity.getType().getCategory() == MobCategory.MONSTER;
     }
 
     private static List<BlockHit> blockNeighbourhood(LocalPlayer player) {
@@ -400,7 +550,7 @@ public final class PlaytimeRecorder {
             hit.dy = diff.y;
             hit.dz = diff.z;
             hit.dist = diff.length();
-            hit.hostile = entity instanceof Monster;
+            hit.hostile = hostile(entity);
             hit.health = entity instanceof LivingEntity living ? living.getHealth() : 0.0f;
             hits.add(hit);
         }
@@ -424,7 +574,7 @@ public final class PlaytimeRecorder {
             hit.dy = diff.y;
             hit.dz = diff.z;
             hit.dist = diff.length();
-            hit.hostile = entity instanceof Monster;
+            hit.hostile = hostile(entity);
             hit.player = entity instanceof Player;
             hit.health = entity instanceof LivingEntity living ? living.getHealth() : 0.0f;
             hit.onGround = entity.onGround();
@@ -622,6 +772,13 @@ public final class PlaytimeRecorder {
         StringBuilder sb = new StringBuilder("{\n");
         sb.append("  \"mod\": \"pymcplaytime\",\n");
         sb.append("  \"mode\": \"live\",\n");
+        sb.append("  \"mod_version\": \"").append(Json.escape(PymcPlaytimeMod.modVersion())).append("\",\n");
+        sb.append("  \"minecraft_version\": \"").append(Json.escape(PymcPlaytimeMod.minecraftVersion())).append("\",\n");
+        sb.append("  \"compat\": \"").append(Json.escape(Mc.ERA)).append("\",\n");
+        sb.append("  \"paused\": ").append(paused).append(",\n");
+        sb.append("  \"skipped_menu_ticks\": ").append(menuTicks).append(",\n");
+        sb.append("  \"skipped_paused_ticks\": ").append(pausedTicks).append(",\n");
+        sb.append("  \"skipped_idle_samples\": ").append(idleSkipped).append(",\n");
         sb.append("  \"active\": ").append(active).append(",\n");
         sb.append("  \"run\": \"").append(Json.escape(runName)).append("\",\n");
         sb.append("  \"started_at\": ").append(startedAtMillis).append(",\n");
@@ -733,12 +890,15 @@ public final class PlaytimeRecorder {
         resolvePaths();
         StringBuilder sb = new StringBuilder();
         if (active) {
-            sb.append("RECORDING '").append(runName).append("' - ").append(totalSamples)
+            sb.append(paused ? "PAUSED '" : "RECORDING '").append(runName).append("' - ").append(totalSamples)
               .append(" sample(s), ").append(episodeSamples).append(" in episode ").append(episodeNumber)
               .append(" (~").append(String.format(Locale.ROOT, "%.1f", samplesToMinutes(totalSamples)))
               .append(" min)\n");
         } else {
             sb.append("not recording\n");
+        }
+        if (active && !skippedSummary().isEmpty()) {
+            sb.append(skippedSummary().substring(1)).append('\n');
         }
         sb.append("config: ").append(PlaytimeConfig.get().describe()).append('\n');
         sb.append("episodes: ").append(episodesDir).append('\n');
@@ -763,6 +923,10 @@ public final class PlaytimeRecorder {
 
     public synchronized boolean isActive() {
         return active;
+    }
+
+    public synchronized boolean isPaused() {
+        return paused;
     }
 
     public synchronized long totalSamples() {

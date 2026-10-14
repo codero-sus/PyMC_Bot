@@ -1,6 +1,41 @@
+import groovy.json.JsonSlurper
+
+// PyMC Playtime Recorder - one source tree, one jar per Minecraft version.
+//
+//   ./gradlew build                 -> the default version from versions.json (newest)
+//   ./gradlew build -Pmc=1.21.4     -> build/libs/pymcplaytime-<mod_version>+1.21.4.jar
+//   ./gradlew printTargets          -> every supported version
+//
+// 1.21.x is obfuscated, so it is built with the remapping Loom plugin and Mojang's
+// mappings; 26.1 and newer ship unobfuscated and use the plain Loom plugin (no
+// mappings, no remapJar, implementation instead of modImplementation). Both plugin ids
+// come from the same Loom release, so only one of them is applied per build.
 plugins {
-	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}" apply false
+	id 'net.fabricmc.fabric-loom' version "${loom_version}" apply false
 	id 'maven-publish'
+}
+
+def table = new JsonSlurper().parse(file('versions.json'))
+def supported = table.versions.collect { it.minecraft as String }
+def requested = providers.gradleProperty('mc').getOrElse(table.default as String)
+def target = table.versions.find { it.minecraft == requested }
+if (target == null) {
+	throw new GradleException("Unknown Minecraft version '${requested}'. Supported: ${supported.join(', ')}")
+}
+def mcVersion = target.minecraft as String
+def obfuscated = target.obfuscated as boolean
+def javaLevel = target.java as int
+def compatDir = "src/compat/${target.compat}/java"
+def loaderVersion = table.loader as String
+def fabricApiVersion = target.fabric_api as String
+
+apply plugin: obfuscated ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabric-loom'
+
+version = "${project.mod_version}+${mcVersion}"
+group = project.maven_group
+base {
+	archivesName = 'pymcplaytime'
 }
 
 repositories {
@@ -19,30 +54,42 @@ loom {
 	}
 }
 
-dependencies {
-	// To change the versions see the gradle.properties file
-	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	mappings loom.officialMojangMappings()
-	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+// The handful of calls that differ between Minecraft versions live in one small class,
+// dev.pymc.pymcb.client.compat.Mc, with one copy per API era under src/compat/.
+sourceSets.client.java.srcDir compatDir
 
-	// Fabric API is required by the mod: the /pymc client commands are registered
-	// through fabric-command-api-v2.
-	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+dependencies {
+	minecraft "com.mojang:minecraft:${mcVersion}"
+	if (obfuscated) {
+		mappings loom.officialMojangMappings()
+		modImplementation "net.fabricmc:fabric-loader:${loaderVersion}"
+		// Fabric API is required: /pymc is registered through fabric-command-api-v2, the
+		// hotkey through the key binding/mapping API and auto-record through networking.
+		modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
+	} else {
+		implementation "net.fabricmc:fabric-loader:${loaderVersion}"
+		implementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
+	}
 }
 
 processResources {
-	def version = project.version
-	inputs.property "version", version
+	def expansions = [
+		version  : project.version.toString(),
+		minecraft: mcVersion,
+		java     : javaLevel.toString(),
+		loader   : loaderVersion,
+	]
+	inputs.properties expansions
 
 	filesMatching("fabric.mod.json") {
-		expand "version": version
+		expand expansions
 	}
 }
 
 tasks.withType(JavaCompile).configureEach {
-	// Loom 1.18 itself needs a Java 25 Gradle JVM, but Minecraft 1.21.11 runs on Java 21,
-	// so the mod is always compiled to Java 21 bytecode.
-	it.options.release = 21
+	// Loom 1.18 needs a Java 25 Gradle JVM; the bytecode level follows the game:
+	// Java 21 for 1.21.x, Java 25 for 26.x.
+	it.options.release = javaLevel
 }
 
 java {
@@ -50,8 +97,8 @@ java {
 	// if it is present. If you remove this line, sources will not be generated.
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_21
-	targetCompatibility = JavaVersion.VERSION_21
+	sourceCompatibility = JavaVersion.toVersion(javaLevel)
+	targetCompatibility = JavaVersion.toVersion(javaLevel)
 }
 
 jar {
@@ -60,6 +107,20 @@ jar {
 
 	from("LICENSE") {
 		rename { "${it}_$projectName" }
+	}
+}
+
+tasks.register('printTargets') {
+	group = 'help'
+	description = 'Lists every Minecraft version this mod can be built for.'
+	def lines = table.versions.collect {
+		String.format('%-8s fabric-api %-18s java %-2s %s', it.minecraft, it.fabric_api, it.java,
+				it.obfuscated ? 'remapped (Mojang mappings)' : 'unobfuscated')
+	}
+	def current = mcVersion
+	doLast {
+		println "Building for: ${current}   (change with -Pmc=<version>)"
+		lines.each { println "  ${it}" }
 	}
 }
 

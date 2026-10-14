@@ -3,7 +3,7 @@
 	"id": "pymcplaytime",
 	"version": "${version}",
 	"name": "PyMC Playtime Recorder",
-	"description": "Records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player LLM on. Use /pymc record start, play, then /pymc export. Made with \u2764\ufe0f by codero-sus.",
+	"description": "Records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player LLM on. Use /pymc record start (or the Record hotkey), play, then /pymc export. One jar per Minecraft version, 1.21.1 to 26.3. Made with \u2764\ufe0f by codero-sus.",
 	"authors": [
 		{
 			"name": "codero-sus",
@@ -27,9 +27,9 @@
 		]
 	},
 	"depends": {
-		"fabricloader": ">=0.19.5",
-		"minecraft": "~1.21.11",
-		"java": ">=21",
+		"fabricloader": ">=${loader}",
+		"minecraft": "${minecraft}",
+		"java": ">=${java}",
 		"fabric-api": "*"
 	}
 }
