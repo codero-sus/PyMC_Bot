@@ -222,6 +222,9 @@ def test_ci_runs_the_in_game_test_and_publishes_a_release():
     assert "runProductionClientGameTest -Pmc=${{ matrix.mc }} -PgameTest" in ci
     assert "steps.gt.outputs.enabled == 'true'" in ci and ".gametest" in ci
     assert "xvfb" in ci and "mod/build/run/gametest/screenshots/" in ci
+    # SDL3 (26.3+) needs a 24-bit screen; the task must use CI's display instead of xvfb-run's 8-bit one.
+    assert "-screen 0 1920x1080x24" in ci and 'echo "DISPLAY=:99" >> "$GITHUB_ENV"' in ci
+    assert "useXVFB = providers.environmentVariable('DISPLAY').map { false }" in (MOD / "build.gradle").read_text()
     release = ci[ci.index("\n  release:"):]
     assert "needs: mod-bundle" in release and "contents: write" in release
     assert "gh release create" in release and "scripts/release_notes.py" in release

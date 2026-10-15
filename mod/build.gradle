@@ -145,6 +145,10 @@ if (gameTest) {
 		// Fabric's network synchronizer is known to be flaky on GitHub Actions runners.
 		jvmArgs.add('-Dfabric.client.gametest.disableNetworkSynchronizer=true')
 		runDir = layout.buildDirectory.dir('run/gametest')
+		// Use the existing display when there is one (a desktop, or the 24-bit Xvfb that CI starts -
+		// SDL3 in 26.3+ needs 24-bit colour). Without one, Loom wraps the game in xvfb-run on CI.
+		useXVFB = providers.environmentVariable('DISPLAY').map { false }
+				.orElse(providers.environmentVariable('CI').map { true }.orElse(false))
 		// Run the game on the Java it ships with (21 for 1.21.x, 25 for 26.x); override with -PgameTestJava=25.
 		javaLauncher = javaToolchains.launcherFor {
 			languageVersion = JavaLanguageVersion.of(gameTestJava)
