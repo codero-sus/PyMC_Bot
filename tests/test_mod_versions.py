@@ -230,6 +230,7 @@ def test_ci_runs_the_in_game_test_and_publishes_a_release():
     assert "gh release create" in release and "scripts/release_notes.py" in release
     assert "--prerelease" in release and "refs/heads/main" in release
     assert "contains game test code" in ci, "CI must check that release jars carry no test code"
+    assert "./gradlew downloadAssets" in ci and "for attempt in 1 2 3" in ci, "flaky asset downloads are retried"
 
 
 def test_hotkeys_have_translations():
