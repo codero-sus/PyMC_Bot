@@ -195,6 +195,16 @@ jobs:
           echo "DISPLAY=:99" >> "$GITHUB_ENV"
           sleep 2
           DISPLAY=:99 glxinfo -B | grep -E "OpenGL (renderer|version)|direct rendering" || true
+      - name: Download the game assets (retried - Mojang's CDN occasionally drops a file)
+        if: steps.gt.outputs.enabled == 'true'
+        working-directory: mod
+        run: |
+          for attempt in 1 2 3; do
+            ./gradlew downloadAssets -Pmc=${{ matrix.mc }} -PgameTest --no-daemon -q && exit 0
+            echo "::warning::asset download attempt $attempt failed, retrying in 20 s"
+            sleep 20
+          done
+          exit 1
       - name: Launch Minecraft ${{ matrix.mc }} and run the in-game test
         id: ingame
         if: steps.gt.outputs.enabled == 'true'
