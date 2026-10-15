@@ -149,6 +149,12 @@ jobs:
           unzip -p "$jar" fabric.mod.json | tee fabric.mod.json.out
           grep -q '"minecraft": "${{ matrix.mc }}"' fabric.mod.json.out
           unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/compat/Mc.class"
+          unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/RecorderHud.class"
+          unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/PymcSettingsScreen.class"
+          # Release jars never carry the in-game test (that is the separate -PgameTest jar).
+          if unzip -l "$jar" | grep -qi gametest || grep -q "fabric-client-gametest" fabric.mod.json.out; then
+            echo "::error::$jar contains game test code"; exit 1
+          fi
       - name: Extract the gradle errors
         if: failure() && steps.ingame.outcome != 'failure'
         run: |
@@ -193,7 +199,7 @@ jobs:
         id: ingame
         if: steps.gt.outputs.enabled == 'true'
         working-directory: mod
-        timeout-minutes: 25
+        timeout-minutes: 15
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
