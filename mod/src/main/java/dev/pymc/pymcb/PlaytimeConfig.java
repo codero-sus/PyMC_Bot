@@ -52,6 +52,14 @@ public final class PlaytimeConfig {
     /** Show a chat line when the hotkey or auto-record changes the recorder state. */
     public boolean notifications = true;
 
+    // ---------------------------------------------------------------- on-screen badge
+    /** Corners the HUD badge can sit in (cycled by the settings screen and /pymc hud corner). */
+    public static final String[] HUD_CORNERS = {"top_left", "top_right", "bottom_left", "bottom_right"};
+    /** Show the REC / PAUSED badge while a recording is running. */
+    public boolean showHud = true;
+    /** Where the badge is drawn: one of {@link #HUD_CORNERS}. */
+    public String hudCorner = "top_left";
+
     public static PlaytimeConfig get() {
         return INSTANCE;
     }
@@ -76,6 +84,8 @@ public final class PlaytimeConfig {
                 cfg.idleSkipSeconds = intProp(props, "idleSkipSeconds", cfg.idleSkipSeconds, 0, 3600);
                 cfg.autoRecord = boolProp(props, "autoRecord", cfg.autoRecord);
                 cfg.notifications = boolProp(props, "notifications", cfg.notifications);
+                cfg.showHud = boolProp(props, "showHud", cfg.showHud);
+                cfg.hudCorner = cornerProp(props.getProperty("hudCorner"), cfg.hudCorner);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
             }
@@ -102,6 +112,8 @@ public final class PlaytimeConfig {
         props.setProperty("idleSkipSeconds", Integer.toString(idleSkipSeconds));
         props.setProperty("autoRecord", Boolean.toString(autoRecord));
         props.setProperty("notifications", Boolean.toString(notifications));
+        props.setProperty("showHud", Boolean.toString(showHud));
+        props.setProperty("hudCorner", hudCorner);
         props.setProperty("_comment", "PyMC Playtime Recorder - sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());
@@ -154,6 +166,41 @@ public final class PlaytimeConfig {
         save();
     }
 
+    public void setShowHud(boolean enabled) {
+        showHud = enabled;
+        save();
+    }
+
+    /** Sets the badge corner; unknown names are ignored. Returns whether it was accepted. */
+    public boolean setHudCorner(String corner) {
+        String normalized = cornerProp(corner, null);
+        if (normalized == null) {
+            return false;
+        }
+        hudCorner = normalized;
+        save();
+        return true;
+    }
+
+    /** Moves the badge to the next corner (clockwise order of {@link #HUD_CORNERS}). */
+    public String cycleHudCorner() {
+        int index = 0;
+        for (int i = 0; i < HUD_CORNERS.length; i++) {
+            if (HUD_CORNERS[i].equals(hudCorner)) {
+                index = i;
+            }
+        }
+        hudCorner = HUD_CORNERS[(index + 1) % HUD_CORNERS.length];
+        save();
+        return hudCorner;
+    }
+
+    /** Human label for a corner id, e.g. top_left -> "Top left". */
+    public static String cornerLabel(String corner) {
+        String spaced = corner.replace('_', ' ');
+        return spaced.isEmpty() ? spaced : Character.toUpperCase(spaced.charAt(0)) + spaced.substring(1);
+    }
+
     public String describe() {
         return String.format(Locale.ROOT,
                 "sample every %d tick(s) (~%d ms), moveEpsilon=%.3f, turnDegrees=%.1f, maxNearby=%d, includeBlocks=%s",
@@ -162,8 +209,9 @@ public final class PlaytimeConfig {
                 "\nadvanced=%s (entities<=%d within %.0f blocks, ground items<=%d)",
                 advanced, maxEntities, entityRange, maxGroundItems)
                 + String.format(Locale.ROOT,
-                "\npauseInMenus=%s, idleSkip=%s, autoRecord=%s, notifications=%s",
-                pauseInMenus, idleSkipSeconds == 0 ? "off" : idleSkipSeconds + "s", autoRecord, notifications);
+                "\npauseInMenus=%s, idleSkip=%s, autoRecord=%s, notifications=%s, hud=%s (%s)",
+                pauseInMenus, idleSkipSeconds == 0 ? "off" : idleSkipSeconds + "s", autoRecord, notifications,
+                showHud ? "on" : "off", hudCorner);
     }
 
     private static Path path() {
@@ -186,6 +234,19 @@ public final class PlaytimeConfig {
         } catch (NumberFormatException e) {
             return fallback;
         }
+    }
+
+    private static String cornerProp(String raw, String fallback) {
+        if (raw == null) {
+            return fallback;
+        }
+        String wanted = raw.trim().toLowerCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
+        for (String corner : HUD_CORNERS) {
+            if (corner.equals(wanted)) {
+                return corner;
+            }
+        }
+        return fallback;
     }
 
     private static boolean boolProp(Properties props, String key, boolean fallback) {

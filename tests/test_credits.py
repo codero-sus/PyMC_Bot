@@ -98,7 +98,7 @@ def test_project_files_credit_the_author():
     package = json.loads((ROOT / "package.json").read_text())
     assert package["author"]["name"] == "codero-sus" and package["homepage"] == WEBSITE
 
-    mod = json.loads((ROOT / "mod/src/main/resources/fabric.mod.json").read_text().replace("${version}", "0"))
+    mod = json.loads((ROOT / "mod/src/main/resources/fabric.mod.json").read_text().replace("${version}", "0").replace("${gametest_entrypoint}", ""))
     assert mod["authors"][0]["name"] == "codero-sus"
     assert mod["contact"]["homepage"] == WEBSITE
 

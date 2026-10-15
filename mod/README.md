@@ -7,6 +7,14 @@ blocks + nearby entities) and **which key you pressed** at that moment.
 **Works on every Fabric release from Minecraft 1.21.1 to 26.3** – one small jar per version,
 all built from the same source (see [Supported versions](#supported-versions)).
 
+**Download:** every jar is attached to the GitHub release
+[`pymcplaytime-v0.5.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcplaytime-v0.5.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
+account needed. Or [compile it yourself](#compiling-the-mod).
+
+While recording, a small **REC** badge in the corner of the screen shows the run clock and the
+sample count, and `/pymc settings` opens a settings screen with buttons for every option (see
+[On-screen badge and settings](#on-screen-badge-and-settings)).
+
 ```
 /pymc record start     # or press your "Start / stop recording" hotkey; play normally
 /pymc record stop
@@ -45,26 +53,28 @@ client tick event, so it cannot break on other mods' code.
 
 ## Supported versions
 
-| Minecraft | Jar to install | Fabric API it was built with | Java to play |
-| --- | --- | --- | --- |
-| 1.21.1 | `pymcplaytime-0.4.0+1.21.1.jar` | 0.116.17+1.21.1 or newer | 21 |
-| 1.21.2 | `pymcplaytime-0.4.0+1.21.2.jar` | 0.106.1+1.21.2 or newer | 21 |
-| 1.21.3 | `pymcplaytime-0.4.0+1.21.3.jar` | 0.114.1+1.21.3 or newer | 21 |
-| 1.21.4 | `pymcplaytime-0.4.0+1.21.4.jar` | 0.119.4+1.21.4 or newer | 21 |
-| 1.21.5 | `pymcplaytime-0.4.0+1.21.5.jar` | 0.128.2+1.21.5 or newer | 21 |
-| 1.21.6 | `pymcplaytime-0.4.0+1.21.6.jar` | 0.128.2+1.21.6 or newer | 21 |
-| 1.21.7 | `pymcplaytime-0.4.0+1.21.7.jar` | 0.129.0+1.21.7 or newer | 21 |
-| 1.21.8 | `pymcplaytime-0.4.0+1.21.8.jar` | 0.136.1+1.21.8 or newer | 21 |
-| 1.21.9 | `pymcplaytime-0.4.0+1.21.9.jar` | 0.134.1+1.21.9 or newer | 21 |
-| 1.21.10 | `pymcplaytime-0.4.0+1.21.10.jar` | 0.138.4+1.21.10 or newer | 21 |
-| 1.21.11 | `pymcplaytime-0.4.0+1.21.11.jar` | 0.141.6+1.21.11 or newer | 21 |
-| 26.1 | `pymcplaytime-0.4.0+26.1.jar` | 0.145.1+26.1 or newer | 25 |
-| 26.1.1 | `pymcplaytime-0.4.0+26.1.1.jar` | 0.145.4+26.1.1 or newer | 25 |
-| 26.1.2 | `pymcplaytime-0.4.0+26.1.2.jar` | 0.155.3+26.1.2 or newer | 25 |
-| 26.2 | `pymcplaytime-0.4.0+26.2.jar` | 0.161.0+26.2 or newer | 25 |
-| 26.3 | `pymcplaytime-0.4.0+26.3.jar` | 0.162.0+26.3 or newer | 25 |
+| Minecraft | Jar to install | Fabric API it was built with | Java to play | CI |
+| --- | --- | --- | --- | --- |
+| 1.21.1 | `pymcplaytime-0.5.0+1.21.1.jar` | 0.116.17+1.21.1 or newer | 21 | compiled |
+| 1.21.2 | `pymcplaytime-0.5.0+1.21.2.jar` | 0.106.1+1.21.2 or newer | 21 | compiled |
+| 1.21.3 | `pymcplaytime-0.5.0+1.21.3.jar` | 0.114.1+1.21.3 or newer | 21 | compiled |
+| 1.21.4 | `pymcplaytime-0.5.0+1.21.4.jar` | 0.119.4+1.21.4 or newer | 21 | compiled + launched in game |
+| 1.21.5 | `pymcplaytime-0.5.0+1.21.5.jar` | 0.128.2+1.21.5 or newer | 21 | compiled + launched in game |
+| 1.21.6 | `pymcplaytime-0.5.0+1.21.6.jar` | 0.128.2+1.21.6 or newer | 21 | compiled + launched in game |
+| 1.21.7 | `pymcplaytime-0.5.0+1.21.7.jar` | 0.129.0+1.21.7 or newer | 21 | compiled + launched in game |
+| 1.21.8 | `pymcplaytime-0.5.0+1.21.8.jar` | 0.136.1+1.21.8 or newer | 21 | compiled + launched in game |
+| 1.21.9 | `pymcplaytime-0.5.0+1.21.9.jar` | 0.134.1+1.21.9 or newer | 21 | compiled + launched in game |
+| 1.21.10 | `pymcplaytime-0.5.0+1.21.10.jar` | 0.138.4+1.21.10 or newer | 21 | compiled + launched in game |
+| 1.21.11 | `pymcplaytime-0.5.0+1.21.11.jar` | 0.141.6+1.21.11 or newer | 21 | compiled + launched in game |
+| 26.1 | `pymcplaytime-0.5.0+26.1.jar` | 0.145.1+26.1 or newer | 25 | compiled + launched in game |
+| 26.1.1 | `pymcplaytime-0.5.0+26.1.1.jar` | 0.145.4+26.1.1 or newer | 25 | compiled + launched in game |
+| 26.1.2 | `pymcplaytime-0.5.0+26.1.2.jar` | 0.155.3+26.1.2 or newer | 25 | compiled + launched in game |
+| 26.2 | `pymcplaytime-0.5.0+26.2.jar` | 0.161.0+26.2 or newer | 25 | compiled + launched in game |
+| 26.3 | `pymcplaytime-0.5.0+26.3.jar` | 0.162.0+26.3 or newer | 25 | compiled + launched in game |
 
-That is every stable release from 1.21.1 to 26.3, 16 jars in total. Each jar declares exactly the
+That is every stable release from 1.21.1 to 26.3, 16 jars in total. *compiled + launched in game*
+means CI also starts that Minecraft version with the jar and runs the [in-game test](#6-run-the-in-game-test-optional)
+(Fabric's client game test API exists from 1.21.4; 1.21.1 – 1.21.3 are compile-checked). Each jar declares exactly the
 Minecraft version it was compiled for, so Fabric Loader refuses a mismatched one instead of
 crashing mid-game – **pick the jar whose name ends in your game version**. The exact pins
 (Fabric API build, Java level, loom flavour) are in [`versions.json`](versions.json) and come
@@ -122,7 +132,7 @@ cd PyMC_Bot/mod
 .\gradlew.bat build -Pmc=1.21.4
 ```
 
-The jar is **`build/libs/pymcplaytime-0.4.0+1.21.4.jar`** (ignore the `-sources.jar` next to it).
+The jar is **`build/libs/pymcplaytime-0.5.0+1.21.4.jar`** (ignore the `-sources.jar` next to it).
 Leave out `-Pmc` to build the newest version (26.3). `./gradlew printTargets` lists every
 version you can pass. The first build of a version takes a few minutes (it downloads and
 prepares that Minecraft); later builds take seconds.
@@ -148,18 +158,39 @@ A version that fails does not stop the others; the summary at the end names it.
 ./gradlew runClient -Pmc=26.3     # starts Minecraft 26.3 with the mod loaded
 ```
 
-### No JDK? Download the CI build
+### 6. Run the in-game test (optional)
 
-Every push builds all 16 versions on GitHub Actions. Open the repository's **Actions** tab →
-the latest green **ci** run → *Artifacts* → **`pymcplaytime-all-versions`** (or
-`pymcplaytime-<version>` for a single jar).
+```bash
+./gradlew runProductionClientGameTest -Pmc=1.21.4 -PgameTest     # any version from 1.21.4 up
+```
+
+This launches the real game (a production Fabric launch with Fabric API) and runs
+[`PymcClientGameTest`](src/gametest/java/dev/pymc/pymcb/gametest/PymcClientGameTest.java): it
+creates a singleplayer world, starts recording, walks, jumps, strafes and turns, checks the HUD
+badge state, opens the settings screen (and checks that sampling holds while it is open), pauses,
+stops, exports and asserts that the dataset contains the walk. Results land in
+`build/run/gametest/`: `screenshots/` (badge, settings screen, paused badge), `pymc-gametest.txt`
+and the recorded `pymc-playtime/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
+(Gradle needs both JDKs installed; override with `-PgameTestJava=25`). On a Linux machine without
+a display, install `xvfb` and set `CI=true`.
+
+`-PgameTest` builds a separate `pymcplaytime-gametest-…` jar – the normal jar never contains test
+code. CI runs this for every version from 1.21.4 on and uploads the screenshots as the
+`gametest-<version>` artifact.
+
+### No JDK? Download the release
+
+Every jar is on the [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) – CI publishes it automatically once all 16 versions
+have compiled and every in-game test has passed. Bleeding-edge builds of any push are under the
+repository's **Actions** tab → the latest green **ci** run → *Artifacts* →
+**`pymcplaytime-all-versions`** (or `pymcplaytime-<version>` for a single jar).
 
 ### Install
 
 1. Install [Fabric Loader](https://fabricmc.net/use/installer/) **0.19.5 or newer** for your
    Minecraft version.
 2. Put the matching **[Fabric API](https://modrinth.com/mod/fabric-api)** jar and
-   `pymcplaytime-0.4.0+<your version>.jar` into `.minecraft/mods/`.
+   `pymcplaytime-0.5.0+<your version>.jar` into `.minecraft/mods/`.
 3. Start the Fabric profile and type `/pymc version` – it prints the mod, game and compat
    layer versions.
 
@@ -196,16 +227,20 @@ mod/
 
 | Era folder | Minecraft | What changed |
 | --- | --- | --- |
-| `v1_21_1` | 1.21.1 – 1.21.4 | baseline: `Inventory.selected` field, string key categories, `ResourceLocation` |
+| `v1_21_1` | 1.21.1 – 1.21.4 | baseline: `Inventory.selected` field, string key categories, `ResourceLocation`; HUD through `HudRenderCallback`, drawing with `GuiGraphics.drawString` |
 | `v1_21_5` | 1.21.5 – 1.21.8 | `Inventory.getSelectedSlot()` |
-| `v1_21_9` | 1.21.9 – 1.21.10 | `KeyMapping.Category` objects |
+| `v1_21_9` | 1.21.9 – 1.21.10 | `KeyMapping.Category` objects; HUD through Fabric's `HudElementRegistry` (added in 1.21.6) |
 | `v1_21_11` | 1.21.11 | `ResourceLocation` → `Identifier`, `ResourceKey.location()` → `identifier()` |
-| `v26_1` | 26.1 – 26.1.2 | unobfuscated; Fabric API renames `ClientCommandManager` → `ClientCommands`, `KeyBindingHelper` → `KeyMappingHelper`; `sendSystemMessage` for chat lines |
-| `v26_2` | 26.2 – 26.3 | the open screen moved to `Minecraft.gui.screen()`; attended client commands; 26.3 switched GLFW → SDL3 (the hotkeys are registered unbound, so no raw key codes are involved) |
+| `v26_1` | 26.1 – 26.1.2 | unobfuscated; Fabric API renames `ClientCommandManager` → `ClientCommands`, `KeyBindingHelper` → `KeyMappingHelper`; `sendSystemMessage` for chat lines; `GuiGraphics` → `GuiGraphicsExtractor` (`drawString` → `text`, `Screen.render` → `extractRenderState`), `HudRenderCallback` removed |
+| `v26_2` | 26.2 – 26.3 | the open screen moved to `Minecraft.gui` (`gui.screen()`, `gui.setScreen(...)`); attended client commands; 26.3 switched GLFW → SDL3 (the hotkeys are registered unbound, so no raw key codes are involved) |
 
 * `tests/test_mod_versions.py` (run with the Python test suite) checks that the table covers
   every release, that each entry is consistent, that all `Mc.java` copies expose the same API and
-  that no version-specific call leaks outside `src/compat/`. CI then compiles every version.
+  that no version-specific call leaks outside `src/compat/`. CI then compiles every version and
+  launches every version from 1.21.4 on.
+* The badge and the settings screen draw through a tiny `HudCanvas` interface (`fill`, `text`,
+  `textWidth`) that each `Mc.java` implements on top of that era's drawing class, so the drawing
+  code itself is shared.
 
 **Adding a new Minecraft version:** add an entry to `versions.json` with the pins from
 [fabricmc.net/develop](https://fabricmc.net/develop) (the `fabric-example-mod` branch for that
@@ -221,9 +256,38 @@ Options → Controls → Key Binds → **PyMC Playtime**:
 | --- | --- | --- |
 | Start / stop recording | unbound | same as `/pymc record toggle` |
 | Pause / resume recording | unbound | same as `/pymc pause` / `/pymc resume` |
+| Open recorder settings | unbound | same as `/pymc settings` |
 
 They start unbound so they can never steal a key from the game or another mod – assign whatever
 you like. With notifications on, a chat line confirms each change.
+
+## On-screen badge and settings
+
+While a recording runs, a badge sits in the top-left corner of the screen:
+
+| Badge | Meaning |
+| --- | --- |
+| 🔴 **REC** `3:42  4,410 samples` (blinking dot) | recording – clock since the run started, samples written |
+| 🟡 **PAUSED** | paused with `/pymc pause` or the hotkey; nothing is written |
+| 🔵 **MENU** | a screen is open and `/pymc menus` is on, so sampling holds |
+| ⚪ **IDLE** | no input for longer than `/pymc idle` seconds – AFK samples are skipped until you move |
+
+It hides with F1 and when nothing is being recorded. `/pymc hud off` turns it off,
+`/pymc hud corner top_right` (or `top_left`, `bottom_left`, `bottom_right`) moves it.
+
+**Settings screen** – `/pymc settings` or the *Open recorder settings* hotkey:
+
+| Button | Same as |
+| --- | --- |
+| Start / Stop recording, Pause / Resume | `/pymc record toggle`, `/pymc pause` / `resume` |
+| HUD badge ON/OFF, Badge corner | `/pymc hud on\|off`, `/pymc hud corner …` |
+| Pause in menus, Skip AFK after (never / 5 / 15 / 30 / 60 / 120 / 300 s) | `/pymc menus`, `/pymc idle` |
+| Entities + items, Sample rate (20 / 10 / 5 / 2 / 1 per second) | `/pymc advanced`, `/pymc sample` |
+| Auto-record on join, Chat notices | `/pymc autorecord`, `/pymc notify` |
+| Export dataset | `/pymc export` |
+
+The live status (state, clock, samples, run name) and the result of the last action are shown
+above and below the buttons. Every change is saved to `config/pymcplaytime.properties` at once.
 
 ## Commands
 
@@ -245,6 +309,9 @@ you like. With notifications on, a chat line confirms each change.
 | `/pymc menus on\|off` | Skip samples while a screen (inventory, chat, pause menu) is open – default on. |
 | `/pymc idle <seconds>` | Stop writing samples after this long without any input, resume on the next action (default 15, 0 = never). |
 | `/pymc notify on\|off` | Chat lines when a hotkey or auto-record changes the state. |
+| `/pymc hud on\|off\|status` | The REC / PAUSED badge in a corner of the screen (default on). |
+| `/pymc hud corner <corner>` | Move the badge: `top_left` (default), `top_right`, `bottom_left`, `bottom_right`. |
+| `/pymc settings` | Open the settings screen. |
 | `/pymc param` | Show the current recorder configuration. |
 | `/pymc train` | Print the exact Python command to train on this dataset. |
 | `/pymc version` | Mod version, Minecraft version and compat layer. |
@@ -252,10 +319,11 @@ you like. With notifications on, a chat line confirms each change.
 
 On Minecraft 26.2+ every command that changes the recorder needs an *attended* run (you typed it),
 so a server cannot start a recording through a clickable chat message; read-only commands
-(`status`, `param`, `train`, `version`, `about`) always work.
+(`status`, `param`, `train`, `version`, `about`, `hud status`) always work.
 
 All settings persist in `config/pymcplaytime.properties` (`sampleTicks`, `advanced`,
-`maxEntities`, `pauseInMenus`, `idleSkipSeconds`, `autoRecord`, `notifications`, ...).
+`maxEntities`, `pauseInMenus`, `idleSkipSeconds`, `autoRecord`, `notifications`, `showHud`,
+`hudCorner`, ...).
 
 **Dataset quality.** Time spent in menus, paused, or idle beyond `idleSkipSeconds` is not
 written, so AFK minutes do not drown your real play in `none` samples; `/pymc status` and
@@ -351,8 +419,12 @@ mod/
     ├── client/java/dev/pymc/pymcb/client/             # client-only code (same for every version)
     │   ├── PymcPlaytimeClient.java                    # tick hook, hotkeys, join/disconnect, entrypoint
     │   ├── PlaytimeRecorder.java                      # sampling + dataset export
-    │   └── PymcCommands.java                          # /pymc ...
+    │   ├── PymcCommands.java                          # /pymc ...
+    │   ├── RecorderHud.java                           # the REC / PAUSED / IDLE / MENU badge
+    │   ├── PymcSettingsScreen.java                    # /pymc settings
+    │   └── HudCanvas.java                             # drawing calls the badge and screen use
     ├── compat/<era>/java/.../client/compat/Mc.java    # the version-specific calls, one copy per era
+    ├── gametest/java/dev/pymc/pymcb/gametest/         # in-game test, only built with -PgameTest
     └── main/resources/fabric.mod.json, assets/...     # mod metadata (filled per version), icon, lang
 ```
 
