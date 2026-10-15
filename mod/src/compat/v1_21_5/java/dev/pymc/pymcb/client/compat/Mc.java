@@ -93,6 +93,11 @@ public final class Mc {
         client.setScreen(screen);
     }
 
+    /** Whether the HUD is hidden (F1). */
+    public static boolean hudHidden(Minecraft client) {
+        return client.options.hideGui;
+    }
+
     /** Draws {@code painter} on the HUD every frame, through Fabric API's {@code HudRenderCallback} (the HUD element registry arrives in 1.21.6). */
     public static void registerHud(Consumer<HudCanvas> painter) {
         HudRenderCallback.EVENT.register((graphics, deltaTracker) -> painter.accept(canvas(graphics)));

@@ -3,6 +3,7 @@ package dev.pymc.pymcb.client;
 import java.util.Locale;
 
 import dev.pymc.pymcb.PlaytimeConfig;
+import dev.pymc.pymcb.client.compat.Mc;
 import net.minecraft.client.Minecraft;
 
 /**
@@ -33,7 +34,7 @@ public final class RecorderHud {
         PlaytimeRecorder recorder = PymcPlaytimeClient.recorder();
         PlaytimeConfig cfg = PlaytimeConfig.get();
         Minecraft mc = Minecraft.getInstance();
-        if (recorder == null || !cfg.showHud || mc.options.hideGui || mc.player == null) {
+        if (recorder == null || !cfg.showHud || mc.player == null || Mc.hudHidden(mc)) {
             return;
         }
         PlaytimeRecorder.HudState state = recorder.hudState();

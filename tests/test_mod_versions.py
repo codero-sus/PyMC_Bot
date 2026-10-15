@@ -50,6 +50,9 @@ VERSION_SPECIFIC = [
     # Opening a screen: Minecraft.setScreen until 26.1, Minecraft.gui.setScreen from 26.2.
     r"(?:client|mc|minecraft|getInstance\(\))\.setScreen\(",
     r"gui\.setScreen\(",
+    # F1 state: Options.hideGui until 26.1, Minecraft.gui.hud.isHidden() from 26.2.
+    r"\bhideGui\b",
+    r"hud\.isHidden\(\)",
 ]
 
 COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
@@ -190,6 +193,8 @@ def test_gui_bridge_matches_each_era():
         assert "public void extractRenderState(GuiGraphicsExtractor graphics" in files[era]
         assert "HudRenderCallback" not in files[era], "removed in 26.1"
     assert "client.gui.setScreen(screen)" in files["v26_2"]
+    assert "client.gui.hud.isHidden()" in files["v26_2"]
+    assert all("client.options.hideGui" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
     assert all("client.setScreen(screen)" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
     assert "ResourceLocation.fromNamespaceAndPath(\"pymcplaytime\", \"recorder_badge\")" in files["v1_21_9"]
     for era, text in files.items():
