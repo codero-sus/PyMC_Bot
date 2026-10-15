@@ -11,7 +11,7 @@ import net.minecraft.client.Minecraft;
 
 /**
  * Client entrypoint: wires the recorder into the client tick loop, registers {@code /pymc}, the
- * two hotkeys and the join/disconnect hooks.
+ * three hotkeys, the HUD recording badge and the join/disconnect hooks.
  *
  * <p>The recorder samples the local player only - it never talks to the server, so it works on
  * the same offline-mode (cracked) servers PyMC Bot plays on.
@@ -20,6 +20,9 @@ public class PymcPlaytimeClient implements ClientModInitializer {
     private static PlaytimeRecorder recorder;
     private static KeyMapping toggleKey;
     private static KeyMapping pauseKey;
+    private static KeyMapping settingsKey;
+    /** Set by /pymc settings; the screen opens on the next tick, after the chat screen has closed. */
+    private static volatile boolean openSettingsNextTick;
 
     @Override
     public void onInitializeClient() {
@@ -30,12 +33,20 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         // never steal a key from the game or another mod.
         toggleKey = Mc.registerKey("key.pymcplaytime.toggle");
         pauseKey = Mc.registerKey("key.pymcplaytime.pause");
+        settingsKey = Mc.registerKey("key.pymcplaytime.settings");
+
+        // REC / PAUSED badge in a corner of the HUD while recording (/pymc hud off hides it).
+        Mc.registerHud(RecorderHud::paint);
 
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             if (recorder == null) {
                 return;
             }
             handleKeys(mc);
+            if (openSettingsNextTick) {
+                openSettingsNextTick = false;
+                Mc.openScreen(mc, new PymcSettingsScreen(null));
+            }
             recorder.onClientTick();
         });
         ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) -> {
@@ -70,6 +81,14 @@ public class PymcPlaytimeClient implements ClientModInitializer {
                 PlaytimeRecorder.tell(mc.player, recorder.togglePause());
             }
         }
+        while (settingsKey.consumeClick()) {
+            openSettingsNextTick = true;
+        }
+    }
+
+    /** Opens the settings screen on the next client tick (safe to call from a chat command). */
+    public static void openSettings() {
+        openSettingsNextTick = true;
     }
 
     public static PlaytimeRecorder recorder() {

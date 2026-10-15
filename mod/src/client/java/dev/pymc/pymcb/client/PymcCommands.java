@@ -1,5 +1,7 @@
 package dev.pymc.pymcb.client;
 
+import java.util.Locale;
+
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.pymc.pymcb.PlaytimeConfig;
@@ -25,6 +27,9 @@ import net.minecraft.network.chat.Component;
  * /pymc menus on|off             skip samples while a screen is open (default on)
  * /pymc idle &lt;seconds&gt;          stop writing after this long without input (0 = never)
  * /pymc notify on|off            chat lines for hotkey / auto-record changes
+ * /pymc hud on|off|status        the REC / PAUSED badge in a corner of the screen
+ * /pymc hud corner &lt;corner&gt;      top_left, top_right, bottom_left or bottom_right
+ * /pymc settings                open the settings screen (buttons for all of the above)
  * /pymc status                  where the dataset lives, how big it is
  * /pymc train                   print the exact command to train on this dataset
  * /pymc version                 mod, Minecraft and compatibility layer versions
@@ -147,6 +152,27 @@ public final class PymcCommands {
                         return feedback(ctx.getSource(), "chat notifications off");
                     }));
 
+            LiteralArgumentBuilder<FabricClientCommandSource> corner = guarded("corner");
+            for (String name : PlaytimeConfig.HUD_CORNERS) {
+                corner.then(literal(name).executes(ctx -> {
+                    PlaytimeConfig.get().setHudCorner(name);
+                    return feedback(ctx.getSource(), "HUD badge moved to the " + PlaytimeConfig.cornerLabel(name).toLowerCase(Locale.ROOT) + " corner");
+                }));
+            }
+            LiteralArgumentBuilder<FabricClientCommandSource> hud = literal("hud")
+                    .then(guarded("on").executes(ctx -> {
+                        PlaytimeConfig.get().setShowHud(true);
+                        return feedback(ctx.getSource(), "HUD badge on - shows REC / PAUSED / IDLE / MENU while recording");
+                    }))
+                    .then(guarded("off").executes(ctx -> {
+                        PlaytimeConfig.get().setShowHud(false);
+                        return feedback(ctx.getSource(), "HUD badge off");
+                    }))
+                    .then(corner)
+                    .then(literal("status").executes(ctx -> feedback(ctx.getSource(),
+                            "HUD badge " + (PlaytimeConfig.get().showHud ? "on" : "off") + ", "
+                                    + PlaytimeConfig.cornerLabel(PlaytimeConfig.get().hudCorner).toLowerCase(Locale.ROOT) + " corner")));
+
             dispatcher.register(literal("pymc")
                     .then(record)
                     .then(guarded("pause").executes(ctx -> feedback(ctx.getSource(), recorder.pause())))
@@ -159,6 +185,11 @@ public final class PymcCommands {
                     .then(menus)
                     .then(idle)
                     .then(notify)
+                    .then(hud)
+                    .then(guarded("settings").executes(ctx -> {
+                        PymcPlaytimeClient.openSettings();
+                        return 1;
+                    }))
                     .then(literal("param").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())))
                     .then(literal("status").executes(ctx -> feedback(ctx.getSource(), recorder.status())))
                     .then(guarded("export").executes(ctx -> feedback(ctx.getSource(), recorder.export())))

@@ -5,6 +5,8 @@ import groovy.json.JsonSlurper
 //   ./gradlew build                 -> the default version from versions.json (newest)
 //   ./gradlew build -Pmc=1.21.4     -> build/libs/pymcplaytime-<mod_version>+1.21.4.jar
 //   ./gradlew printTargets          -> every supported version
+//   ./gradlew runProductionClientGameTest -Pmc=1.21.4 -PgameTest
+//                                   -> launches the real game and runs the in-game test (1.21.4+)
 //
 // 1.21.x is obfuscated, so it is built with the remapping Loom plugin and Mojang's
 // mappings; 26.1 and newer ship unobfuscated and use the plain Loom plugin (no
@@ -30,12 +32,21 @@ def compatDir = "src/compat/${target.compat}/java"
 def loaderVersion = table.loader as String
 def fabricApiVersion = target.fabric_api as String
 
+// -PgameTest adds the in-game test (src/gametest/java) and its fabric-client-gametest entrypoint to
+// a separately named jar, so release jars never contain test code. Fabric's client game test API
+// exists from Minecraft 1.21.4 on ("gametest": true in versions.json).
+def gameTest = providers.gradleProperty('gameTest').isPresent()
+if (gameTest && !(target.gametest as boolean)) {
+	def testable = table.versions.findAll { it.gametest }.collect { it.minecraft }
+	throw new GradleException("Minecraft ${mcVersion} has no client game test API. In-game tests run on: ${testable.join(', ')}")
+}
+
 apply plugin: obfuscated ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabric-loom'
 
 version = "${project.mod_version}+${mcVersion}"
 group = project.maven_group
 base {
-	archivesName = 'pymcplaytime'
+	archivesName = gameTest ? 'pymcplaytime-gametest' : 'pymcplaytime'
 }
 
 repositories {
@@ -57,6 +68,9 @@ loom {
 // The handful of calls that differ between Minecraft versions live in one small class,
 // dev.pymc.pymcb.client.compat.Mc, with one copy per API era under src/compat/.
 sourceSets.client.java.srcDir compatDir
+if (gameTest) {
+	sourceSets.client.java.srcDir 'src/gametest/java'
+}
 
 dependencies {
 	minecraft "com.mojang:minecraft:${mcVersion}"
@@ -78,6 +92,9 @@ processResources {
 		minecraft: mcVersion,
 		java     : javaLevel.toString(),
 		loader   : loaderVersion,
+		gametest_entrypoint: gameTest
+				? ',\n\t\t"fabric-client-gametest": [\n\t\t\t"dev.pymc.pymcb.gametest.PymcClientGameTest"\n\t\t]'
+				: '',
 	]
 	inputs.properties expansions
 
@@ -110,12 +127,37 @@ jar {
 	}
 }
 
+if (gameTest) {
+	dependencies {
+		// The game test runs the built jar in a real (production) Fabric launch next to Fabric API.
+		productionRuntimeMods "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
+	}
+
+	// Launches Minecraft with the mod and runs PymcClientGameTest: it creates a singleplayer world,
+	// records a few seconds of scripted play, takes screenshots and checks the exported dataset.
+	// On Linux CI the game runs in a virtual display (apt install xvfb). Results end up in
+	// build/run/gametest/ (screenshots/, pymc-playtime/, pymc-gametest.txt, logs/).
+	def gameTestJava = providers.gradleProperty('gameTestJava').map { it as int }.getOrElse(javaLevel)
+	tasks.register('runProductionClientGameTest', net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+		group = 'verification'
+		description = "Runs the PyMC in-game test on Minecraft ${mcVersion}."
+		jvmArgs.add('-Dfabric.client.gametest')
+		// Fabric's network synchronizer is known to be flaky on GitHub Actions runners.
+		jvmArgs.add('-Dfabric.client.gametest.disableNetworkSynchronizer=true')
+		runDir = layout.buildDirectory.dir('run/gametest')
+		// Run the game on the Java it ships with (21 for 1.21.x, 25 for 26.x); override with -PgameTestJava=25.
+		javaLauncher = javaToolchains.launcherFor {
+			languageVersion = JavaLanguageVersion.of(gameTestJava)
+		}
+	}
+}
+
 tasks.register('printTargets') {
 	group = 'help'
 	description = 'Lists every Minecraft version this mod can be built for.'
 	def lines = table.versions.collect {
-		String.format('%-8s fabric-api %-18s java %-2s %s', it.minecraft, it.fabric_api, it.java,
-				it.obfuscated ? 'remapped (Mojang mappings)' : 'unobfuscated')
+		String.format('%-8s fabric-api %-18s java %-2s %-27s%s', it.minecraft, it.fabric_api, it.java,
+				it.obfuscated ? 'remapped (Mojang mappings)' : 'unobfuscated', it.gametest ? 'in-game test' : 'compile only')
 	}
 	def current = mcVersion
 	doLast {

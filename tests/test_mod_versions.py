@@ -40,7 +40,24 @@ VERSION_SPECIFIC = [
     r"\.attended\(\)",
     r"client\.screen\b",
     r"gui\.screen\(\)",
+    # GUI drawing: GuiGraphics.drawString (1.21.x) became GuiGraphicsExtractor.text (26.x).
+    r"\bGuiGraphics\b",
+    r"\bGuiGraphicsExtractor\b",
+    r"drawString\(",
+    r"extractRenderState",
+    r"\bHudRenderCallback\b",
+    r"\bHudElementRegistry\b",
+    # Opening a screen: Minecraft.setScreen until 26.1, Minecraft.gui.setScreen from 26.2.
+    r"(?:client|mc|minecraft|getInstance\(\))\.setScreen\(",
+    r"gui\.setScreen\(",
 ]
+
+COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+
+def code_only(text: str) -> str:
+    """Java source without comments, so Javadoc may name the APIs it explains."""
+    return COMMENTS.sub("", text)
 
 
 def versions() -> list[dict]:
@@ -88,7 +105,7 @@ def test_version_specific_calls_stay_in_the_compat_layer():
     for path in MOD.glob("src/**/*.java"):
         if "compat" in path.parts:
             continue
-        text = path.read_text()
+        text = code_only(path.read_text())
         for pattern in VERSION_SPECIFIC:
             if re.search(pattern, text):
                 offenders.append(f"{path.relative_to(MOD)}: {pattern}")
@@ -118,8 +135,65 @@ def test_fabric_mod_json_is_filled_per_version():
     text = (MOD / "src/main/resources/fabric.mod.json").read_text()
     for placeholder in ("${version}", "${minecraft}", "${java}", "${loader}"):
         assert placeholder in text
-    expanded = json.loads(re.sub(r"\$\{(\w+)\}", "1", text))
-    assert expanded["depends"]["fabric-api"] == "*"
+    release = json.loads(re.sub(r"\$\{(\w+)\}", "1", text.replace("${gametest_entrypoint}", "")))
+    assert release["depends"]["fabric-api"] == "*"
+    assert list(release["entrypoints"]) == ["client"], "release jars carry no test entrypoint"
+
+
+def gametest_expansion() -> str:
+    """The value build.gradle substitutes for ${gametest_entrypoint} under -PgameTest."""
+    gradle = (MOD / "build.gradle").read_text()
+    match = re.search(r"gametest_entrypoint: gameTest\s*\?\s*'([^']*)'\s*:\s*''", gradle)
+    assert match, "build.gradle must expand ${gametest_entrypoint} only for -PgameTest"
+    return match.group(1).encode().decode("unicode_escape")
+
+
+def test_game_test_builds_add_the_client_gametest_entrypoint():
+    text = (MOD / "src/main/resources/fabric.mod.json").read_text()
+    expanded = json.loads(re.sub(r"\$\{(\w+)\}", "1", text.replace("${gametest_entrypoint}", gametest_expansion())))
+    (entry,) = expanded["entrypoints"]["fabric-client-gametest"]
+    source = MOD / "src/gametest/java" / (entry.replace(".", "/") + ".java")
+    assert source.is_file(), f"{entry} has no source file"
+    body = source.read_text()
+    assert "implements FabricClientGameTest" in body and "runTest(ClientGameTestContext" in body
+    assert "takeScreenshot(" in body and "recorder().start()" in body and "recorder().export()" in body
+
+
+def test_game_test_code_never_reaches_release_jars():
+    gradle = (MOD / "build.gradle").read_text()
+    assert "providers.gradleProperty('gameTest')" in gradle
+    assert "archivesName = gameTest ? 'pymcplaytime-gametest' : 'pymcplaytime'" in gradle
+    block = gradle[gradle.index("if (gameTest) {"):]
+    assert block.index("srcDir 'src/gametest/java'") < block.index("}"), "test sources only under -PgameTest"
+    assert "ClientProductionRunTask" in gradle and "runProductionClientGameTest" in gradle
+    assert "-Dfabric.client.gametest" in gradle and "productionRuntimeMods" in gradle
+    assert not list((MOD / "src/client").rglob("*GameTest*.java")), "tests belong in src/gametest"
+
+
+@pytest.mark.parametrize("entry", versions(), ids=lambda v: v["minecraft"])
+def test_in_game_tests_run_where_fabric_has_the_api(entry):
+    parts = [int(x) for x in entry["minecraft"].split(".")]
+    assert entry["gametest"] is (parts >= [1, 21, 4]), "Fabric's client game test API starts at 1.21.4"
+
+
+def test_gui_bridge_matches_each_era():
+    files = {era: code_only(path.read_text()) for era, path in compat_files().items()}
+    for era in ("v1_21_1", "v1_21_5"):
+        assert "HudRenderCallback.EVENT.register" in files[era], era
+    for era in ("v1_21_9", "v1_21_11", "v26_1", "v26_2"):
+        assert "HudElementRegistry.addLast" in files[era], era
+    for era in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11"):
+        assert "GuiGraphics graphics" in files[era] and "graphics.drawString(font" in files[era]
+        assert "public void render(GuiGraphics graphics" in files[era]
+    for era in ("v26_1", "v26_2"):
+        assert "GuiGraphicsExtractor graphics" in files[era] and "graphics.text(font" in files[era]
+        assert "public void extractRenderState(GuiGraphicsExtractor graphics" in files[era]
+        assert "HudRenderCallback" not in files[era], "removed in 26.1"
+    assert "client.gui.setScreen(screen)" in files["v26_2"]
+    assert all("client.setScreen(screen)" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
+    assert "ResourceLocation.fromNamespaceAndPath(\"pymcplaytime\", \"recorder_badge\")" in files["v1_21_9"]
+    for era, text in files.items():
+        assert "abstract static class PaintedScreen extends Screen" in text, era
 
 
 def test_build_script_reads_the_version_table():
@@ -138,12 +212,45 @@ def test_ci_builds_every_version_from_the_table():
     assert "pymcplaytime-all-versions" in ci
 
 
+def test_ci_runs_the_in_game_test_and_publishes_a_release():
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "runProductionClientGameTest -Pmc=${{ matrix.mc }} -PgameTest" in ci
+    assert "steps.gt.outputs.enabled == 'true'" in ci and ".gametest" in ci
+    assert "xvfb" in ci and "mod/build/run/gametest/screenshots/" in ci
+    release = ci[ci.index("\n  release:"):]
+    assert "needs: mod-bundle" in release and "contents: write" in release
+    assert "gh release create" in release and "scripts/release_notes.py" in release
+    assert "--prerelease" in release and "refs/heads/main" in release
+
+
 def test_hotkeys_have_translations():
     lang = json.loads((MOD / "src/main/resources/assets/pymcplaytime/lang/en_us.json").read_text())
     client = (MOD / "src/client/java/dev/pymc/pymcb/client/PymcPlaytimeClient.java").read_text()
     for key in re.findall(r'registerKey\("([^"]+)"\)', client):
         assert key in lang
     assert "key.categories.pymcplaytime" in lang and "key.category.pymcplaytime.recorder" in lang
+    assert "key.pymcplaytime.settings" in lang
+
+
+def test_settings_screen_and_hud_are_wired_up():
+    client_dir = MOD / "src/client/java/dev/pymc/pymcb/client"
+    client = (client_dir / "PymcPlaytimeClient.java").read_text()
+    assert "Mc.registerHud(RecorderHud::paint)" in client
+    assert "new PymcSettingsScreen(null)" in client and "openSettingsNextTick" in client
+    commands = (client_dir / "PymcCommands.java").read_text()
+    assert 'guarded("settings")' in commands and 'literal("hud")' in commands
+    screen = (client_dir / "PymcSettingsScreen.java").read_text()
+    assert "extends Mc.PaintedScreen" in screen and "Mc.openScreen(" in screen
+    assert "Made with \\u2764 by codero-sus" in screen
+    config = (MOD / "src/main/java/dev/pymc/pymcb/PlaytimeConfig.java").read_text()
+    for key in ("showHud", "hudCorner"):
+        assert f'props.setProperty("{key}"' in config and f'"{key}"' in config
+    hud = (client_dir / "RecorderHud.java").read_text()
+    # 1.21.6+ draws 0x00RRGGBB as fully transparent: every colour constant needs its alpha byte.
+    colours = re.findall(r"static final int [A-Z_]+ = 0x([0-9A-Fa-f]{8});", hud)
+    assert len(colours) >= 5
+    for colour in colours:
+        assert not colour.startswith("00"), colour
 
 
 def test_build_all_scripts_cover_both_shells():

@@ -176,9 +176,9 @@ player table shows each bot's idle time and how many anti-AFK bursts it has done
 
 The bot can learn **how you play** and then play like that itself. Three steps:
 
-**1. Record** – build the Fabric mod in [`./mod`](mod/README.md) for your Minecraft version
-(**1.21.1 – 26.3**; with JDK 25 installed: `cd mod && ./gradlew build -Pmc=<your version>`, or grab
-the `pymcplaytime-all-versions` artifact from CI – full steps in
+**1. Record** – download the Fabric mod jar for your Minecraft version (**1.21.1 – 26.3**) from the
+[GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) (or build it from [`./mod`](mod/README.md): with JDK 25 installed,
+`cd mod && ./gradlew build -Pmc=<your version>` – full steps in
 [Compiling the mod](mod/README.md#compiling-the-mod)), drop it in `.minecraft/mods/` with
 [Fabric API](https://modrinth.com/mod/fabric-api), then in game:
 
@@ -187,6 +187,9 @@ the `pymcplaytime-all-versions` artifact from CI – full steps in
 /pymc record stop
 /pymc export            # -> <gameDir>/pymc-playtime/dataset.jsonl
 ```
+
+A **REC** badge in the corner shows the run clock and sample count while you record, and
+`/pymc settings` opens a settings screen with buttons for every recorder option.
 
 The mod samples your playtime 20×/s — position, velocity, view, posture, hotbar, health/food, the 3×3×3
 block neighbourhood, nearby entities, and the action you were performing
@@ -487,8 +490,11 @@ pinned in `tests/test_features.py`, `tests/test_train.py` covers checkpoints/res
 `tests/test_local_model.py` lets a real trained model drive a simulated bot.
 CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12, the transformer engine with PyTorch,
 and **builds the Fabric mod for all 16 Minecraft versions from 1.21.1 to 26.3** on JDK 25 (one matrix
-job per version from `mod/versions.json`; 1.21.x jars target Java 21, 26.x jars Java 25) and uploads
-each jar plus a `pymcplaytime-all-versions` bundle.
+job per version from `mod/versions.json`; 1.21.x jars target Java 21, 26.x jars Java 25), **launches
+the game with the mod on every version from 1.21.4 on** (Fabric's client game test in a virtual
+display: it records a few seconds of scripted play, checks the dataset and uploads screenshots) and
+uploads each jar plus a `pymcplaytime-all-versions` bundle. When everything is green, the `release`
+job attaches all 16 jars to the GitHub release `pymcplaytime-v<mod_version>`.
 
 ```
 pymc_bot/

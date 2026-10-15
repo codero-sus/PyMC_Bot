@@ -1,14 +1,21 @@
 package dev.pymc.pymcb.client.compat;
 
+import java.util.function.Consumer;
+
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
+import dev.pymc.pymcb.client.HudCanvas;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -79,5 +86,73 @@ public final class Mc {
     /** Shows a line in the chat for the local player only. */
     public static void message(LocalPlayer player, Component text) {
         player.displayClientMessage(text, false);
+    }
+
+    // ------------------------------------------------------------------ GUI
+
+    /** Opens {@code screen}, or returns to the game when it is null. Screens are managed by {@code Minecraft} in this era. */
+    public static void openScreen(Minecraft client, Screen screen) {
+        client.setScreen(screen);
+    }
+
+    /** Draws {@code painter} on the HUD every frame, through Fabric API's {@code HudElementRegistry}, drawn after every vanilla HUD element. */
+    public static void registerHud(Consumer<HudCanvas> painter) {
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("pymcplaytime", "recorder_badge"),
+                (graphics, deltaTracker) -> painter.accept(canvas(graphics)));
+    }
+
+    /** Wraps this era's GUI drawing class ({@code GuiGraphics}) for the shared drawing code. */
+    private static HudCanvas canvas(GuiGraphics graphics) {
+        Font font = Minecraft.getInstance().font;
+        return new HudCanvas() {
+            @Override
+            public int width() {
+                return graphics.guiWidth();
+            }
+
+            @Override
+            public int height() {
+                return graphics.guiHeight();
+            }
+
+            @Override
+            public void fill(int x1, int y1, int x2, int y2, int argb) {
+                graphics.fill(x1, y1, x2, y2, argb);
+            }
+
+            @Override
+            public void text(String text, int x, int y, int argb) {
+                graphics.drawString(font, text, x, y, argb);
+            }
+
+            @Override
+            public int textWidth(String text) {
+                return font.width(text);
+            }
+
+            @Override
+            public int lineHeight() {
+                return font.lineHeight;
+            }
+        };
+    }
+
+    /**
+     * A screen that draws extra text through {@link HudCanvas} on top of its widgets. In this era
+     * screens draw in {@code render(GuiGraphics, int, int, float)}.
+     */
+    public abstract static class PaintedScreen extends Screen {
+        protected PaintedScreen(Component title) {
+            super(title);
+        }
+
+        @Override
+        public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+            super.render(graphics, mouseX, mouseY, partialTick);
+            paint(canvas(graphics));
+        }
+
+        /** Draws the screen's text; called every frame after the widgets. */
+        protected abstract void paint(HudCanvas canvas);
     }
 }

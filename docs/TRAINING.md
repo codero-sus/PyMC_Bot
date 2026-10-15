@@ -23,7 +23,8 @@ Everything runs locally: no cloud, no GPU, no Ollama required for the trained br
 ```
 
 That writes `<gameDir>/pymc-playtime/dataset.jsonl`. The mod runs on every Fabric release from
-Minecraft 1.21.1 to 26.3 (one jar per version). See [`mod/README.md`](../mod/README.md) for
+Minecraft 1.21.1 to 26.3 (one jar per version, all on the [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases)). The REC badge
+shows that recording is running; `/pymc settings` has buttons for every option. See [`mod/README.md`](../mod/README.md) for
 [how to compile it](../mod/README.md#compiling-the-mod), the exact sample format, the sampling
 rate (`/pymc sample <ticks>`), the hotkeys and the dataset-quality options (menus, idle skipping,
 auto-record). Copy that file next to the bot (or point `--dataset` at it).

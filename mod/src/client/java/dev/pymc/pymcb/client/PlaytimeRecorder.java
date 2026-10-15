@@ -106,6 +106,10 @@ public final class PlaytimeRecorder {
     private long pausedTicks;
     /** Samples not written because the player was idle, this run. */
     private long idleSkipped;
+    /** Wall-clock start of the run (unlike startedAtMillis it survives /pymc record episode). */
+    private long runStartedMillis;
+    /** True while samples are being skipped because the player is AFK (shown on the HUD badge). */
+    private boolean idleSkipping;
 
     public PlaytimeRecorder(Minecraft client) {
         this.client = client;
@@ -132,6 +136,8 @@ public final class PlaytimeRecorder {
         }
         active = true;
         startedAtMillis = System.currentTimeMillis();
+        runStartedMillis = startedAtMillis;
+        idleSkipping = false;
         tick = 0;
         episodeStartTick = 0;
         episodeSamples = 0;
@@ -266,7 +272,8 @@ public final class PlaytimeRecorder {
         if (tick - lastSampleTick >= Math.max(1, cfg.sampleTicks)) {
             String activity = action(player);
             idleRun = "none".equals(activity) ? idleRun + 1 : 0;
-            if (idleLimitReached(cfg)) {
+            idleSkipping = idleLimitReached(cfg);
+            if (idleSkipping) {
                 idleSkipped++;
             } else {
                 writeSample(player, activity);
@@ -944,6 +951,41 @@ public final class PlaytimeRecorder {
 
     public String toggle() {
         return isActive() ? stop() : start();
+    }
+
+    /** Everything the on-screen badge needs, read under one lock so a frame never sees a half-updated state. */
+    public synchronized HudState hudState() {
+        boolean inMenu = active && PlaytimeConfig.get().pauseInMenus && Mc.screenOpen(client);
+        return new HudState(active, paused, active && idleSkipping, inMenu, totalSamples,
+                active ? System.currentTimeMillis() - runStartedMillis : 0L, runName);
+    }
+
+    /** Snapshot of the recorder for the HUD badge and the settings screen. */
+    public record HudState(boolean active, boolean paused, boolean idle, boolean inMenu, long samples,
+                           long elapsedMillis, String runName) {
+        /** Short state label: REC, PAUSED, IDLE (AFK samples skipped), MENU (screen open) or OFF. */
+        public String label() {
+            if (!active) {
+                return "OFF";
+            }
+            if (paused) {
+                return "PAUSED";
+            }
+            if (inMenu) {
+                return "MENU";
+            }
+            return idle ? "IDLE" : "REC";
+        }
+
+        /** Elapsed run time as m:ss or h:mm:ss. */
+        public String clock() {
+            long secs = elapsedMillis / 1000L;
+            long h = secs / 3600L;
+            long m = (secs % 3600L) / 60L;
+            long sec = secs % 60L;
+            return h > 0 ? String.format(Locale.ROOT, "%d:%02d:%02d", h, m, sec)
+                    : String.format(Locale.ROOT, "%d:%02d", m, sec);
+        }
     }
 
     // ------------------------------------------------------------------ records

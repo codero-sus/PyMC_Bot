@@ -135,6 +135,7 @@ jobs:
           java-version: "25"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build the Fabric mod for Minecraft ${{ matrix.mc }}
+        id: build
         working-directory: mod
         run: |
           set -o pipefail
@@ -149,15 +150,15 @@ jobs:
           grep -q '"minecraft": "${{ matrix.mc }}"' fabric.mod.json.out
           unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/compat/Mc.class"
       - name: Extract the gradle errors
-        if: failure()
+        if: failure() && steps.ingame.outcome != 'failure'
         run: |
           grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt
           wc -l mod/errors.txt
       - name: Probe the Minecraft API signatures
-        if: failure()
+        if: failure() && steps.ingame.outcome != 'failure'
         run: python3 scripts/mc_api_probe.py | tee mod/api-probe.log
       - name: Publish mod build diagnostics
-        if: failure()
+        if: failure() && steps.ingame.outcome != 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -169,6 +170,57 @@ jobs:
           name: pymcplaytime-${{ matrix.mc }}
           path: mod/build/libs/pymcplaytime-*+${{ matrix.mc }}.jar
           if-no-files-found: error
+
+      # ---- in-game test: launch the real game with the mod (1.21.4+, "gametest" in versions.json)
+      - name: Is there an in-game test for ${{ matrix.mc }}?
+        id: gt
+        run: |
+          enabled=$(jq -r --arg mc "${{ matrix.mc }}" '.versions[] | select(.minecraft == $mc) | .gametest' mod/versions.json)
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "in-game test for ${{ matrix.mc }}: $enabled"
+      - name: Install a virtual display and software OpenGL
+        if: steps.gt.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libgl1-mesa-dri libglx-mesa0 libegl1 mesa-utils
+      - name: Launch Minecraft ${{ matrix.mc }} and run the in-game test
+        id: ingame
+        if: steps.gt.outputs.enabled == 'true'
+        working-directory: mod
+        timeout-minutes: 25
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -o pipefail
+          # -PgameTest builds a separate pymcplaytime-gametest jar with the test entrypoint;
+          # the release jar uploaded above is untouched.
+          # The game runs on its own Java (21 for 1.21.x, preinstalled on the runner; 25 for 26.x).
+          ./gradlew runProductionClientGameTest -Pmc=${{ matrix.mc }} -PgameTest --no-daemon --stacktrace \
+            -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_25_X64 2>&1 | tee gametest.log
+      - name: In-game test report
+        if: always() && steps.gt.outputs.enabled == 'true'
+        run: |
+          cat mod/build/run/gametest/pymc-gametest.txt 2>/dev/null || echo "(no report - the game did not reach the test)"
+          ls -la mod/build/run/gametest/screenshots 2>/dev/null || true
+      - name: Publish in-game test diagnostics
+        if: failure() && steps.ingame.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grep -n -E "pymc gametest|AssertionError|Exception|Caused by|ERROR|FATAL|What went wrong|xvfb|GLFW|SDL|OpenGL" mod/gametest.log mod/build/run/gametest/logs/latest.log 2>/dev/null | head -250 > mod/gametest-errors.txt || true
+          python scripts/ci_diagnostics.py mod/gametest-errors.txt --title "mc ${{ matrix.mc }}: in-game test errors (extracted)" --limit 16000
+          python scripts/ci_diagnostics.py mod/gametest.log --title "mc ${{ matrix.mc }}: in-game test log tail" --limit 16000
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.gt.outputs.enabled == 'true'
+        with:
+          name: gametest-${{ matrix.mc }}
+          path: |
+            mod/build/run/gametest/screenshots/
+            mod/build/run/gametest/pymc-gametest.txt
+            mod/build/run/gametest/pymc-playtime/meta.json
+            mod/build/run/gametest/logs/latest.log
+            mod/gametest.log
+          if-no-files-found: warn
 
   mod-bundle:
     name: mod (all versions bundle)
@@ -187,3 +239,46 @@ jobs:
           name: pymcplaytime-all-versions
           path: dist/*.jar
           if-no-files-found: error
+
+  # Publishes every jar on a GitHub release (no login needed to download). Runs only after every
+  # version built and every in-game test passed. Pushes to main make the stable release
+  # pymcplaytime-v<mod_version>; other branches make/refresh it as a pre-release but never
+  # replace a stable one. Bump mod_version in mod/gradle.properties for a new release.
+  release:
+    name: mod (GitHub release)
+    needs: mod-bundle
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: pymcplaytime-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pymcplaytime-all-versions
+          path: dist
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(python3 scripts/release_notes.py --tag)
+          python3 scripts/release_notes.py -o notes.md
+          count=$(ls dist/*.jar | wc -l)
+          expected=$(jq '.versions | length' mod/versions.json)
+          echo "$count jar(s) for $expected version(s)"
+          test "$count" -eq "$expected"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then pre=""; else pre="--prerelease"; fi
+          if gh release view "$tag" > /dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)" = "false" ] && [ -n "$pre" ]; then
+              echo "$tag is already a stable release - branch builds do not replace it"
+              exit 0
+            fi
+            gh release delete "$tag" --cleanup-tag --yes
+          fi
+          gh release create "$tag" dist/*.jar --target "$GITHUB_SHA" \
+            --title "PyMC Playtime Recorder ${tag#pymcplaytime-v}" --notes-file notes.md $pre
+          echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"

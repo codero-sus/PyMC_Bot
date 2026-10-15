@@ -24,7 +24,7 @@
 	"entrypoints": {
 		"client": [
 			"dev.pymc.pymcb.client.PymcPlaytimeClient"
-		]
+		]${gametest_entrypoint}
 	},
 	"depends": {
 		"fabricloader": ">=${loader}",
