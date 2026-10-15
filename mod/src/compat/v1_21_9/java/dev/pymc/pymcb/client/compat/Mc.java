@@ -95,6 +95,11 @@ public final class Mc {
         client.setScreen(screen);
     }
 
+    /** Whether the HUD is hidden (F1). */
+    public static boolean hudHidden(Minecraft client) {
+        return client.options.hideGui;
+    }
+
     /** Draws {@code painter} on the HUD every frame, through Fabric API's {@code HudElementRegistry}, drawn after every vanilla HUD element. */
     public static void registerHud(Consumer<HudCanvas> painter) {
         HudElementRegistry.addLast(ResourceLocation.fromNamespaceAndPath("pymcplaytime", "recorder_badge"),
