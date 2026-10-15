@@ -171,8 +171,13 @@ badge state, opens the settings screen (and checks that sampling holds while it 
 stops, exports and asserts that the dataset contains the walk. Results land in
 `build/run/gametest/`: `screenshots/` (badge, settings screen, paused badge), `pymc-gametest.txt`
 and the recorded `pymc-playtime/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
-(Gradle needs both JDKs installed; override with `-PgameTestJava=25`). On a Linux machine without
-a display, install `xvfb` and set `CI=true`.
+(Gradle needs both JDKs installed; override with `-PgameTestJava=25`). The game opens on your
+`DISPLAY`. On a Linux machine without one, start a 24-bit virtual display first – 26.3+ (SDL3)
+finds no OpenGL visual on Xvfb's default 8-bit screen:
+
+```bash
+Xvfb :99 -screen 0 1920x1080x24 &  export DISPLAY=:99
+```
 
 `-PgameTest` builds a separate `pymcplaytime-gametest-…` jar – the normal jar never contains test
 code. CI runs this for every version from 1.21.4 on and uploads the screenshots as the

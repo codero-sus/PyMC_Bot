@@ -178,11 +178,17 @@ jobs:
           enabled=$(jq -r --arg mc "${{ matrix.mc }}" '.versions[] | select(.minecraft == $mc) | .gametest' mod/versions.json)
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "in-game test for ${{ matrix.mc }}: $enabled"
-      - name: Install a virtual display and software OpenGL
+      - name: Start a virtual display with software OpenGL
         if: steps.gt.outputs.enabled == 'true'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q xvfb libgl1-mesa-dri libglx-mesa0 libegl1 mesa-utils
+          sudo apt-get install -y -q xvfb libgl1-mesa-dri libglx-mesa0 libegl1 mesa-utils mesa-vulkan-drivers
+          # 24-bit colour: Minecraft 26.3+ opens its window through SDL3, which finds no GLX visual
+          # on xvfb-run's default 8-bit screen. With DISPLAY set, the Gradle task uses this display.
+          Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          sleep 2
+          DISPLAY=:99 glxinfo -B | grep -E "OpenGL (renderer|version)|direct rendering" || true
       - name: Launch Minecraft ${{ matrix.mc }} and run the in-game test
         id: ingame
         if: steps.gt.outputs.enabled == 'true'
