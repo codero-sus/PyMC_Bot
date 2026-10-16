@@ -16,7 +16,7 @@ import random
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -28,6 +28,7 @@ STATE_DISCONNECTED = "disconnected"
 STATE_CONNECTING = "connecting"
 STATE_CONNECTED = "connected"
 STATE_ERROR = "error"
+STATE_WAITING = "waiting"  # the server is asleep (free host) and the bot waits for someone to start it
 
 STEER_INTERVAL = 0.05
 STUCK_WINDOW = 1.2
@@ -90,6 +91,10 @@ class MinecraftBot:
         self._active_actions = 0
         self._current_action: str | None = None
         self._last_activity = time.time()
+        self._wait_deadline: float | None = None
+        self.wait_poll_seconds = 15.0
+        # Called after a delayed join (wait-for-server) succeeds; the fleet uses it to start the AI.
+        self.on_connected: Callable[[], Any] | None = None
 
     # -------------------------------------------------------------- activity
     @contextmanager
@@ -201,7 +206,7 @@ class MinecraftBot:
     def start(self, settings: AppSettings | None = None) -> None:
         settings = settings or self.store.settings
         with self._lock:
-            if self._state in (STATE_CONNECTING, STATE_CONNECTED):
+            if self._state in (STATE_CONNECTING, STATE_CONNECTED, STATE_WAITING):
                 return
             self._state = STATE_CONNECTING
             self._stop_requested = False
@@ -215,8 +220,13 @@ class MinecraftBot:
         try:
             self._connect(settings)
         except Exception as exc:
+            asleep = getattr(self._backend, "server_asleep", None) if isinstance(exc, BackendError) else None
+            if asleep and settings.minecraft.wait_for_server and not self._stop_requested:
+                self._begin_waiting(settings, str(exc))
+                return
             with self._lock:
                 self._state = STATE_ERROR
+                self._wait_deadline = None
             self.log.add(f"Could not start the bot: {exc}", "error", "bot")
             raise
         if not self._wait_for_backend(timeout=min(20.0, settings.minecraft.connect_timeout)):
@@ -232,8 +242,62 @@ class MinecraftBot:
             self._state = STATE_CONNECTED
             self._stats["started_at"] = time.time()
             self._reconnects = 0
+            self._wait_deadline = None
         self._start_monitor()
         self.log.add("Bot is connected and ready.", "success", "bot")
+
+    # ------------------------------------------------------- wait for server
+    def _begin_waiting(self, settings: AppSettings, reason: str) -> None:
+        """The free host's server is asleep: poll its ping and join once someone has started it."""
+        with self._lock:
+            self._state = STATE_WAITING
+            if self._wait_deadline is None:
+                self._wait_deadline = time.monotonic() + settings.minecraft.wait_minutes * 60.0
+            remaining = max(0.0, self._wait_deadline - time.monotonic())
+        self.log.add(
+            f"{reason} Waiting up to {remaining / 60:.0f} min for it to come online "
+            f"(checking every {self.wait_poll_seconds:.0f} s; PyMC_Bot never starts the server itself).",
+            "info",
+            "bot",
+        )
+        threading.Thread(target=self._wait_loop, args=(settings,), name="wait-for-server", daemon=True).start()
+
+    def _wait_loop(self, settings: AppSettings) -> None:
+        from pymc_bot.hosting import probe_server
+
+        while True:
+            deadline = self._wait_deadline
+            if deadline is None or time.monotonic() >= deadline:
+                break
+            for _ in range(max(1, int(self.wait_poll_seconds * 10))):
+                if self._stop_requested or self._state != STATE_WAITING:
+                    return
+                time.sleep(0.1)
+            result = probe_server(settings.minecraft.host, settings.minecraft.port)
+            if result.get("ok") and result.get("online"):
+                self.log.add("The server is online now - joining.", "success", "bot")
+                with self._lock:
+                    if self._state != STATE_WAITING or self._stop_requested:
+                        return
+                    self._state = STATE_DISCONNECTED
+                try:
+                    self.start(settings)
+                except Exception:
+                    return  # start() already logged why
+                if self.connected and self.on_connected is not None:
+                    self.on_connected()
+                return
+        with self._lock:
+            if self._state != STATE_WAITING:
+                return
+            self._state = STATE_ERROR
+            self._wait_deadline = None
+        self.log.add(
+            f"Gave up waiting for {settings.minecraft.host}:{settings.minecraft.port} to start "
+            f"({settings.minecraft.wait_minutes:g} min). Start the server, then press Connect.",
+            "error",
+            "bot",
+        )
 
     def _wait_for_backend(self, timeout: float = 10.0) -> bool:
         """Block until the backend reports a live connection."""
@@ -275,6 +339,7 @@ class MinecraftBot:
             self._stop_requested = True
             backend = self._backend
             self._state = STATE_DISCONNECTED
+            self._wait_deadline = None
         if backend is not None:
             try:
                 backend.stop()

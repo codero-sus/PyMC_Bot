@@ -34,6 +34,7 @@ from pymc_bot.config import (
     FleetBotSpec,
 )
 from pymc_bot.events import EventLog
+from pymc_bot.hosting import AloneWatcher
 
 AI_MODES = ("off", "heuristic", "ollama", "cortex", "trained")
 # Brains backed by a hosted language model (each decision is an HTTP round trip).
@@ -156,6 +157,9 @@ class BotFleet:
         self._batch_thread: threading.Thread | None = None
         self.antiafk = AntiAfkKeeper(self.all_bots, self.store, self.log)
         self.antiafk.start()
+        # Aternos & co: leave when no real player is online (their rules forbid idling bots).
+        self.alone_watcher = AloneWatcher(self.all_bots, self.store, self.log, leave=self.leave_everyone)
+        self.alone_watcher.start()
 
     # ------------------------------------------------------------- primary bot
     @property
@@ -339,12 +343,19 @@ class BotFleet:
         member.error = None
         try:
             assert member.bot is not None
+            member.bot.on_connected = lambda: self._member_joined(member)
             member.bot.start(self._spawn_settings(member))
         except (BackendError, Exception) as exc:  # noqa: B014 - any failure is a spawn failure
             member.state = "error"
             member.error = str(exc)
             self.log.add(f"Player '{member.username}' could not join: {exc}", "error", "fleet")
             return
+        if member.bot is not None and member.bot.state == "waiting":
+            member.state = "waiting"  # sleeping free-host server; the bot joins when it is up
+            return
+        self._member_joined(member)
+
+    def _member_joined(self, member: FleetMember) -> None:
         member.state = "connected"
         if member.bot is not None:
             member.bot.touch_activity()
@@ -514,9 +525,21 @@ class BotFleet:
                 started += 1
         return started
 
+    def leave_everyone(self) -> None:
+        """Every bot (fleet + main bot) leaves the server; nothing re-joins on its own."""
+        for member in self.members:
+            if member.bot is not None and member.bot.connected:
+                self._stop_member(member)
+        agent = self._primary_agent
+        if agent is not None:
+            agent.stop(wait=False)
+        if self._primary is not None and self._primary.state != "disconnected":
+            self._primary.stop()
+
     def shutdown(self) -> None:
         """Stop everything (used when the panel shuts down)."""
         self._stopping.set()
+        self.alone_watcher.stop()
         for member in self.members:
             self._stop_member(member)
         with self._lock:

@@ -127,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, cortex, config)")
     _add_config_arg(doctor)
 
+    probe = sub.add_parser("probe", help="ping a server without joining (Aternos & co: shows if it is asleep)")
+    probe.add_argument("address", nargs="?", help="host or host:port (default: the configured server)")
+    probe.add_argument("--port", type=int, default=None, help="port when not part of the address")
+    probe.add_argument("--json", action="store_true", help="print the raw result as JSON")
+    _add_config_arg(probe)
+
     about_cmd = sub.add_parser("about", help="author, links and credits")
     about_cmd.add_argument("--json", action="store_true", help="print the credits as JSON")
 
@@ -487,9 +493,39 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print("cortex      : not running (optional: only needed for the Cortex brain)")
 
+    from pymc_bot.hosting import describe_probe, host_tips, probe_server
+
+    if node_available()[0]:
+        result = probe_server(settings.minecraft.host, settings.minecraft.port, timeout=6.0)
+        print(f"server ping : {describe_probe(result)}")
+    for tip in host_tips(settings.minecraft.host, settings.minecraft.auth):
+        print(f"hosting     : {tip}")
+
     if not node_available()[0]:
         print("\nTip: install the Minecraft bridge with  npm install  in the project root.")
     return 0
+
+
+# ---------------------------------------------------------------------- probe
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Server list ping: online/asleep, version, players, and tips for free hosts."""
+    from pymc_bot.hosting import describe_probe, host_tips, probe_server
+
+    store = ConfigStore(args.config)
+    store.load()
+    minecraft = store.settings.minecraft
+    address = args.address or minecraft.host
+    port = args.port or (minecraft.port if not args.address else 25565)
+    result = probe_server(address, port)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(describe_probe(result))
+        for tip in host_tips(result["host"], minecraft.auth)[1:]:
+            print(f"  - {tip}")
+    if not result.get("ok"):
+        return 1
+    return 3 if result.get("asleep") else 0
 
 
 # ----------------------------------------------------------------------- stub
@@ -527,6 +563,7 @@ DISPATCH = {
     "models": cmd_models,
     "action": cmd_action,
     "doctor": cmd_doctor,
+    "probe": cmd_probe,
     "stub": cmd_stub,
     "about": cmd_about,
 }

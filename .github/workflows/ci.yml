@@ -38,15 +38,18 @@ jobs:
       - name: Syntax check the bridge, the panel JS and the test fixture
         run: |
           node --check pymc_bot/node/minecraft_bridge.js
+          node --check pymc_bot/node/probe.js
           node --check pymc_bot/web/app.js
           node --check tests/fixtures/fake_bridge.js
           node scripts/check_ui.mjs
       - name: Verify package.json resolves (mineflayer + pathfinder)
         run: npm install --no-audit --no-fund --ignore-scripts
-      - name: Bridge joins a server that is newer than mineflayer (version fallback)
+      - name: Bridge joins a server that is newer than mineflayer, and spots sleeping Aternos-style servers
         run: |
           node scripts/check_version_fallback.mjs
           PYMC_ADVERTISE=26.3:777 node scripts/check_version_fallback.mjs
+          PYMC_EXPECT=asleep node scripts/check_version_fallback.mjs
+          node pymc_bot/node/probe.js 127.0.0.1 1 3000 | grep -q '"ok":false'
 
   test:
     name: tests (python ${{ matrix.python-version }})

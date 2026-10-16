@@ -77,6 +77,27 @@ class MinecraftSettings(BaseModel):
     # Keep re-joining after a disconnect (handy when populating a server).
     auto_rejoin: bool = True
     rejoin_seconds: float = Field(default=10.0, ge=1.0, le=600.0)
+    # Free hosts (Aternos, exaroton, Minehut...) put servers to sleep. When the ping shows a sleeping
+    # server, wait up to ``wait_minutes`` for someone to start it, then join (PyMC_Bot never starts it).
+    wait_for_server: bool = False
+    wait_minutes: float = Field(default=10.0, ge=1.0, le=60.0)
+    # Leave when no real player is online: "auto" = only on hosts whose rules require it (Aternos),
+    # "always" = on every server.
+    leave_when_alone: Literal["auto", "always"] = "auto"
+    alone_minutes: float = Field(default=5.0, ge=1.0, le=60.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _split_host_port(cls, data: Any) -> Any:
+        """``host = "name.aternos.me:12345"`` (as copied from a hosting panel) also sets ``port``."""
+        if isinstance(data, dict) and isinstance(data.get("host"), str):
+            from pymc_bot.hosting import split_address
+
+            host, port = split_address(data["host"])
+            data = {**data, "host": host}
+            if port is not None:
+                data["port"] = port
+        return data
 
     @field_validator("host")
     @classmethod

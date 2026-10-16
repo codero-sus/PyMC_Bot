@@ -13,7 +13,8 @@
  *   stdout  {"event": "state", "state": {...}}          // unsolicited events
  *           events: ready, log, state, chat, spawn, end, kicked, error, exit,
  *                   msa_code (premium login: user code + verification URL),
- *                   version_fallback (server is newer than mineflayer supports)
+ *                   version_fallback (server is newer than mineflayer supports),
+ *                   server_asleep (a free host's sleeping/starting placeholder answered the ping)
  */
 
 'use strict';
@@ -25,6 +26,7 @@ let minecraftData = null;     // the version database mineflayer reads (comes wi
 let minecraftProtocol = null; // used to ping the server for its version before joining
 let mineflayerVersions = null; // { testedVersions, latestSupportedVersion, oldestSupportedVersion }
 let pathfinder = null;   // optional, enables real A* pathfinding
+const { probe } = require('./probe');
 let goals = null;
 let bot = null;
 let stateTimer = null;
@@ -110,30 +112,6 @@ function hasData(version) {
   }
 }
 
-/** Server list ping: resolves the server's { version: { name, protocol } }, or null. */
-function pingServer(host, port, timeoutMs) {
-  return new Promise((resolve) => {
-    if (!minecraftProtocol || typeof minecraftProtocol.ping !== 'function') {
-      resolve(null);
-      return;
-    }
-    let finished = false;
-    const finish = (value) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    try {
-      const maybe = minecraftProtocol.ping({ host, port, closeTimeout: timeoutMs }, (err, res) => finish(err ? null : res));
-      if (maybe && typeof maybe.catch === 'function') maybe.catch(() => finish(null));
-    } catch (err) {
-      finish(null);
-    }
-  });
-}
-
 /**
  * Picks the version to join with. A version mineflayer knows is used as-is. When the server runs a
  * newer Minecraft than the installed mineflayer supports (e.g. 26.3 while mineflayer stops at 26.1),
@@ -141,22 +119,22 @@ function pingServer(host, port, timeoutMs) {
  * version 26.3" - servers with ViaVersion + ViaBackwards accept that, others kick with a clear
  * "outdated client" message that the Python side explains.
  */
-async function resolveVersion(requested, host, port) {
+function resolveVersion(requested, ping) {
   if (requested && hasData(requested)) return { version: requested };
   const support = versionSupport();
   if (!support || !hasData(support.latest)) return requested ? { version: requested } : {};
 
   let serverName = requested || null;
   let serverProtocol = null;
-  const res = await pingServer(host, port, 8000);
-  if (res && res.version) {
-    serverName = String(res.version.name || serverName || '');
-    serverProtocol = Number(res.version.protocol);
+  if (ping && ping.ok && ping.online) {
+    serverName = String(ping.version || serverName || '');
+    serverProtocol = Number(ping.protocol);
     if (!requested) {
       // Same lookup as minecraft-protocol's auto-version, but only versions that have data.
       const byProtocol = (minecraftData.postNettyVersionsByProtocolVersion.pc[serverProtocol] || [])
         .map((info) => info.minecraftVersion);
-      const byName = [serverName].concat(serverName.match(/\d+(?:\.\d+)+/g) || []);
+      // proxies advertise ranges like "Waterfall 1.8.x-1.21.x": prefer the newest number
+      const byName = [serverName].concat((serverName.match(/\d+(?:\.\d+)+/g) || []).reverse());
       const usable = byProtocol.concat(byName).find(hasData);
       if (usable) return { version: usable, server: serverName, protocol: serverProtocol };
     }
@@ -253,6 +231,8 @@ function buildState() {
     dimension: bot.game && bot.game.dimension ? bot.game.dimension : 'overworld',
     time_of_day: timeOfDay < 13000 ? 'day' : 'night',
     players,
+    // everyone on the tab list (also players too far away to be tracked as entities)
+    online_players: Object.keys(bot.players).filter((name) => name !== bot.username),
     inventory,
     held_item: heldItem,
     entities,
@@ -322,7 +302,23 @@ async function cmdConnect(params) {
     checkTimeoutInterval: premium ? 120000 : 60000,
   };
   const requested = params.version ? String(params.version) : null;
-  const resolved = await resolveVersion(requested, options.host, options.port);
+  // Ping first (follows SRV records, e.g. name.aternos.me): a sleeping free-host server answers
+  // with a placeholder, and joining it would only produce a confusing kick.
+  const ping = minecraftProtocol ? await probe(options.host, options.port, 8000, minecraftProtocol) : null;
+  if (ping && ping.ok && ping.asleep) {
+    send({
+      event: 'server_asleep',
+      state: ping.state,
+      motd: ping.motd,
+      version_name: ping.version,
+      resolved: ping.resolved,
+    });
+    throw new Error(`The server is ${ping.state}: ${ping.motd || ping.version}`);
+  }
+  if (ping && ping.ok && ping.resolved) {
+    log('info', `${options.host} points to ${ping.resolved.host}:${ping.resolved.port} (SRV record).`);
+  }
+  const resolved = resolveVersion(requested, ping);
   if (resolved.version) options.version = resolved.version;
   if (resolved.fallback) {
     const support = versionSupport();

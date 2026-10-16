@@ -22,7 +22,7 @@ Errors use the usual FastAPI shape and these status codes:
 | --- | --- | --- |
 | `GET` | `/` | the control panel (HTML) |
 | `GET` | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
-| `GET` | `/api/status` | everything the panel shows: selected bot snapshot, AI status, stats, **fleet**, backends, Ollama health |
+| `GET` | `/api/status` | everything the panel shows: selected bot snapshot, AI status, stats, **fleet**, backends (incl. the supported Minecraft range), Ollama / Cortex health, **hosting** (detected free host, tips, leave-when-alone countdown) |
 | `GET` | `/api/contract` | action list, bridge command list, auth/AI modes, brains, training engines, recorded player actions, WebSocket frame types |
 
 `GET /api/status` shape (truncated):
@@ -135,7 +135,8 @@ curl -sX POST localhost:8000/api/antiafk/poke -H 'content-type: application/json
 
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
-| `POST` | `/api/bot/start` | – | connect using the saved config (blocks until spawned, or 502) |
+| `POST` | `/api/bot/start` | – | connect using the saved config (blocks until spawned, or 502). A sleeping free-host server with `wait_for_server` on returns `{"state": "waiting"}` and the bot joins later |
+| `GET` | `/api/server/probe?host=&port=` | – | server list ping without joining (defaults to the configured server; `host` may be `host:port`): `{"ok", "online", "asleep", "state", "version", "protocol", "players": {"online","max","sample"}, "motd", "latency", "resolved", "host", "port", "hosting", "summary", "tips"}` |
 | `POST` | `/api/bot/stop` | – | stop the AI loop and disconnect |
 | `POST` | `/api/bot/reconnect` | – | stop + start |
 | `GET` | `/api/bot/snapshot` | – | world snapshot only |
@@ -230,7 +231,7 @@ brains, the training engines, the training modes (`basic`, `advanced`), the adva
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/cortex/health?force=true` | cached (15s, re-checked when the Cortex settings change) probe: `{"ok", "detail", "enabled", "key_env", "key_set"}` – the key value is never returned |
+| `GET` | `/api/cortex/health?force=true` | cached (15s, re-checked when the Cortex settings change) probe: `{"ok", "detail", "enabled", "in_use", "key_env", "key_set"}` – the key value is never returned |
 | `GET` | `/api/cortex/models` | `{"models": [...ids], "details": [{"id", "runtime", "capabilities", "chat"}]}` from Cortex's `/v1/models` (502 when unreachable) |
 
 `/api/status` carries the same probe under `"cortex"` plus its settings, and `agent.resolved_brain`
