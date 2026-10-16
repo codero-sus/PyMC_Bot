@@ -118,10 +118,19 @@ def test_chat_is_logged_and_greets_new_players(live_bot: MinecraftBot, log: Even
     assert backend is not None
     assert live_bot.say("hello world") is True
     backend._emit_chat("Steve", "hey bot")
-    time.sleep(0.2)
+    # the greeting follows a short human "typing" pause and is one of several casual lines
+    prefix = f"<{live_bot.username}>"
+    deadline = time.monotonic() + 6
+    greeted = False
+    while time.monotonic() < deadline and not greeted:
+        time.sleep(0.1)
+        greeted = any(
+            event["message"].startswith(prefix) and ("steve" in event["message"].lower() or "hii" in event["message"])
+            for event in log.tail(50)
+        )
     messages = [event["message"] for event in log.tail(50)]
     assert any("hello world" in message for message in messages)
-    assert any("Hi Steve" in message for message in messages)
+    assert greeted, messages
     backend._emit_chat("Steve", "are you there?")
     time.sleep(0.2)
     assert len(live_bot.chat_history) == 2

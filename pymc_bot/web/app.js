@@ -274,6 +274,7 @@ function renderStatus(status) {
     ? `${agent.brain} → ${agent.resolved_brain}` : (agent.brain || 'auto');
   $('ai-status').textContent = `brain: ${thinker} · ` + (agent.running
     ? `running · ${agent.decisions} decisions` + (last ? ` · last: ${last.action} ${JSON.stringify(last.params || {})}${last.source ? ` (${last.source})` : ''}` : '')
+      + (last && last.thought ? ` · thinks: “${last.thought}”` : '') + (agent.memory && agent.memory.goal ? ` · goal: ${agent.memory.goal}` : '')
     : `idle · ${agent.decisions} decisions` + (agent.last_error ? ` · last error: ${agent.last_error}` : ''));
   $('btn-ai-start').disabled = agent.running || state !== 'connected';
   $('btn-ai-stop').disabled = !agent.running;
@@ -497,7 +498,7 @@ function fillForm(cfg) {
   set('cfg-ollama-url', ol.base_url || 'http://127.0.0.1:11434');
   set('cfg-ollama-model', ol.model || 'llama3.2');
   set('cfg-ollama-interval', ol.decision_interval || 6);
-  set('cfg-ollama-temp', ol.temperature ?? 0.4);
+  set('cfg-ollama-temp', ol.temperature ?? 0.7);
 
   check('cfg-cortex-enabled', cx.enabled);
   set('cfg-cortex-url', cx.base_url || 'http://127.0.0.1:8624');
@@ -505,8 +506,8 @@ function fillForm(cfg) {
   set('cfg-cortex-model', cx.model || '');
   set('cfg-cortex-key-env', cx.api_key_env ?? 'CORTEX_API_KEY');
   set('cfg-cortex-interval', cx.decision_interval || 6);
-  set('cfg-cortex-temp', cx.temperature ?? 0.4);
-  set('cfg-cortex-max-tokens', cx.max_tokens || 256);
+  set('cfg-cortex-temp', cx.temperature ?? 0.7);
+  set('cfg-cortex-max-tokens', cx.max_tokens || 320);
   check('cfg-cortex-json', cx.json_mode ?? true);
 
   set('cfg-agent-mode', ag.mode || 'auto');
@@ -515,6 +516,12 @@ function fillForm(cfg) {
   check('cfg-allow-mining', ag.allow_mining);
   check('cfg-allow-attack', ag.allow_attacking);
   check('cfg-greet', ag.greet_players);
+  set('cfg-persona', ag.persona || 'friendly');
+  set('cfg-persona-notes', ag.persona_notes || '');
+  check('cfg-human-chat', ag.human_chat ?? true);
+  set('cfg-chat-cooldown', ag.chat_cooldown ?? 6);
+  set('cfg-memory-turns', ag.memory_turns ?? 8);
+  set('cfg-system-prompt', ol.system_prompt || cx.system_prompt || '');
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
@@ -531,7 +538,7 @@ function fillForm(cfg) {
   check('antiafk-swing', afk.swing !== false);
 
   const tr = cfg.training || {};
-  set('train-dataset', tr.dataset || 'pymc-playtime/dataset.jsonl');
+  set('train-dataset', tr.dataset || 'pymcbot/dataset.jsonl');
   set('train-engine', tr.engine || 'mlp');
   set('train-steps', tr.steps ?? 1000);
   set('train-batch', tr.batch_size ?? 64);
@@ -587,7 +594,8 @@ function collectForm() {
       base_url: $('cfg-ollama-url').value.trim(),
       model: $('cfg-ollama-model').value.trim() || 'llama3.2',
       decision_interval: Number($('cfg-ollama-interval').value) || 6,
-      temperature: Number($('cfg-ollama-temp').value ?? 0.4),
+      temperature: Number($('cfg-ollama-temp').value ?? 0.7),
+      system_prompt: $('cfg-system-prompt').value.trim() ? $('cfg-system-prompt').value : '',
     },
     cortex: {
       enabled: $('cfg-cortex-enabled').checked,
@@ -596,8 +604,9 @@ function collectForm() {
       model: $('cfg-cortex-model').value.trim(),
       api_key_env: $('cfg-cortex-key-env').value.trim(),
       decision_interval: Number($('cfg-cortex-interval').value) || 6,
-      temperature: Number($('cfg-cortex-temp').value ?? 0.4),
-      max_tokens: Number($('cfg-cortex-max-tokens').value) || 256,
+      temperature: Number($('cfg-cortex-temp').value ?? 0.7),
+      system_prompt: $('cfg-system-prompt').value.trim() ? $('cfg-system-prompt').value : '',
+      max_tokens: Number($('cfg-cortex-max-tokens').value) || 320,
       json_mode: $('cfg-cortex-json').checked,
     },
     agent: {
@@ -607,6 +616,11 @@ function collectForm() {
       allow_mining: $('cfg-allow-mining').checked,
       allow_attacking: $('cfg-allow-attack').checked,
       greet_players: $('cfg-greet').checked,
+      persona: $('cfg-persona').value || 'friendly',
+      persona_notes: $('cfg-persona-notes').value.slice(0, 600),
+      human_chat: $('cfg-human-chat').checked,
+      chat_cooldown: Math.max(0, Number($('cfg-chat-cooldown').value) || 0),
+      memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
     },
     antiafk: {
       enabled: $('antiafk-enabled').checked,
@@ -620,7 +634,7 @@ function collectForm() {
       swing: $('antiafk-swing').checked,
     },
     training: {
-      dataset: $('train-dataset').value.trim() || 'pymc-playtime/dataset.jsonl',
+      dataset: $('train-dataset').value.trim() || 'pymcbot/dataset.jsonl',
       engine: $('train-engine').value,
       steps: Number($('train-steps').value) || 1000,
       batch_size: Number($('train-batch').value) || 64,
@@ -762,6 +776,18 @@ function updateCortexPill(health) {
   $('cortex-summary').textContent = `— ${health.ok ? 'ready' : 'unavailable'}: ${detail || '…'} · ${keyNote}`;
 }
 
+async function previewPrompt() {
+  try {
+    await saveConfig(true);
+    const data = await api('/api/ai/prompt');
+    $('prompt-system').value = data.system || '';
+    $('prompt-turn').value = data.turn || '';
+    $('prompt-preview').hidden = false;
+    $('mind-summary').textContent = `— ${data.custom ? 'custom' : 'built-in'} prompt · brain ${data.brain}`
+      + (data.connected ? '' : ' · bot offline, so the turn shows an empty world');
+  } catch (err) { reportError(err); }
+}
+
 async function checkCortex() {
   try {
     await saveConfig(true);
@@ -833,7 +859,7 @@ function renderTraining(training) {
     const top = Object.entries(dataset.actions || {}).slice(0, 4).map(([name, count]) => `${name} ${count}`);
     if (top.length) bits.push(`mostly ${top.join(', ')}`);
   } else {
-    bits.push(`no dataset at ${dataset.dataset || training.settings?.dataset || 'pymc-playtime/dataset.jsonl'}`);
+    bits.push(`no dataset at ${dataset.dataset || training.settings?.dataset || 'pymcbot/dataset.jsonl'}`);
   }
   if (running || status.summary) {
     bits.push(`loss ${status.loss ?? '—'} · val ${status.val_loss ?? '—'} · acc ${status.val_acc ?? '—'}`);
@@ -1093,6 +1119,7 @@ function wire() {
   $('btn-policy-preview').addEventListener('click', previewPolicy);
   $('btn-pull').addEventListener('click', pullModel);
   $('btn-cortex-check').addEventListener('click', checkCortex);
+  $('btn-prompt-preview').addEventListener('click', previewPrompt);
   $('btn-cortex-use').addEventListener('click', useCortex);
 
   $('cfg-auth').addEventListener('change', applyAuthLabels);

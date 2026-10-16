@@ -62,7 +62,7 @@ def test_load_examples_reads_datasets_and_episode_dirs(tmp_path: Path):
     assert from_dataset
 
     # episode files (raw mod output) are understood too
-    episodes = tmp_path / "pymc-playtime" / "episodes"
+    episodes = tmp_path / "pymcbot" / "episodes"
     episodes.mkdir(parents=True)
     (episodes / "run-a.ndjsonl").write_text(
         "\n".join(json.dumps({**SAMPLE, "tick": tick}) for tick in range(3)) + "\n",
@@ -72,7 +72,7 @@ def test_load_examples_reads_datasets_and_episode_dirs(tmp_path: Path):
     assert [action for _, action in from_episodes] == ["forward", "forward", "forward"]
 
     # a game directory is searched for both
-    both = load_examples(tmp_path / "pymc-playtime")
+    both = load_examples(tmp_path / "pymcbot")
     assert len(both) == 3
     # unknown actions are ignored rather than taught
     (episodes / "run-b.ndjsonl").write_text(json.dumps({**SAMPLE, "activity": "teleport"}) + "\n", encoding="utf-8")
@@ -90,7 +90,7 @@ def test_load_examples_survives_corrupt_lines(tmp_path: Path):
 
 
 def test_write_and_export_dataset_round_trip(tmp_path: Path):
-    target = tmp_path / "pymc-playtime" / "dataset.jsonl"
+    target = tmp_path / "pymcbot" / "dataset.jsonl"
     written = write_dataset(target, [(SAMPLE, "sneak"), (SAMPLE, "look")])
     assert written == 2
     examples = load_examples(target)
@@ -102,8 +102,26 @@ def test_write_and_export_dataset_round_trip(tmp_path: Path):
 
     bare = tmp_path / "game" / "playtime.jsonl"
     write_dataset(bare, [(SAMPLE, "jump")])
-    export_dataset(bare)  # defaults to <dir>/pymc-playtime/dataset.jsonl
-    assert (tmp_path / "game" / "pymc-playtime" / "dataset.jsonl").is_file()
+    export_dataset(bare)  # defaults to <dir>/pymcbot/dataset.jsonl
+    assert (tmp_path / "game" / "pymcbot" / "dataset.jsonl").is_file()
+
+
+def test_old_pymc_playtime_folder_is_still_found(tmp_path: Path):
+    from pymc_bot.playtime import data_dir, resolve_dataset_path
+
+    game = tmp_path / "game"
+    legacy = game / "pymc-playtime" / "dataset.jsonl"
+    write_dataset(legacy, [(SAMPLE, "jump")])
+    # configs now default to pymcbot/..., recordings from older mod versions are still read
+    assert resolve_dataset_path(game / "pymcbot" / "dataset.jsonl") == legacy
+    assert [action for _, action in load_examples(game / "pymcbot" / "dataset.jsonl")] == ["jump"]
+    assert data_dir(game) == game / "pymc-playtime"
+    # once the mod moved the folder, old configs pointing at pymc-playtime/ keep working
+    moved = game / "pymcbot"
+    legacy.parent.rename(moved)
+    assert resolve_dataset_path(game / "pymc-playtime" / "dataset.jsonl") == moved / "dataset.jsonl"
+    assert data_dir(game) == moved
+    assert resolve_dataset_path(tmp_path / "nothing.jsonl") == tmp_path / "nothing.jsonl"
 
 
 def test_pair_transitions_uses_the_next_sample_as_the_motion_target(tmp_path: Path):

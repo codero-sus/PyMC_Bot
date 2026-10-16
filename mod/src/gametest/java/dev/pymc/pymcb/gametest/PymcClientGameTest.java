@@ -27,7 +27,7 @@ import net.fabricmc.loader.api.FabricLoader;
  * <p>Only compiled into the jar when building with {@code -PgameTest} (release jars never contain
  * it). Run it locally with {@code ./gradlew runProductionClientGameTest -Pmc=<version> -PgameTest}.
  * Screenshots land in {@code build/run/gametest/screenshots/}, the recorded dataset in
- * {@code build/run/gametest/pymc-playtime/}.
+ * {@code build/run/gametest/pymcbot/}.
  *
  * <p>Only API calls that are identical from 1.21.4 to 26.3 are used, so this one file serves every
  * version (no chunk-wait helper: it was renamed in 26.1 and removed in 26.3).

@@ -17,7 +17,7 @@ from pymc_bot.train import list_models
 def panel(tmp_path: Path):
     config_path = tmp_path / "config.json"
     models_dir = tmp_path / "models"
-    dataset = tmp_path / "pymc-playtime" / "dataset.jsonl"
+    dataset = tmp_path / "pymcbot" / "dataset.jsonl"
     config_path.write_text(
         json.dumps(
             {

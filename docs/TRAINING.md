@@ -22,7 +22,7 @@ Everything runs locally: no cloud, no GPU, no Ollama required for the trained br
 /pymcbot export
 ```
 
-That writes `<gameDir>/pymc-playtime/dataset.jsonl`. The mod runs on every Fabric release from
+That writes `<gameDir>/pymcbot/dataset.jsonl`. The mod runs on every Fabric release from
 Minecraft 1.21.1 to 26.3 (one jar per version, all on the [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases)). The REC badge
 shows that recording is running; the PyMC Bot settings page (`/pymcbot settings`, a hotkey or Mod Menu) has a button for every option. See [`mod/README.md`](../mod/README.md) for
 [how to compile it](../mod/README.md#compiling-the-mod), the exact sample format, the sampling
@@ -35,7 +35,7 @@ also carry entities and items — see [advanced training](#advanced-training-ent
 No Minecraft handy? You can still exercise the whole pipeline with a synthetic session:
 
 ```bash
-python -m pymc_bot train --simulate 10 --simulate-out pymc-playtime/dataset.jsonl
+python -m pymc_bot train --simulate 10 --simulate-out pymcbot/dataset.jsonl
 ```
 
 This fabricates a believable player (exploring / mining / fighting profiles) with exactly
@@ -44,7 +44,7 @@ the mod's schema — handy for smoke tests and demos, not a substitute for your 
 ## 2. Train (self-checkpointing)
 
 ```bash
-python -m pymc_bot train --dataset pymc-playtime/dataset.jsonl --steps 2000
+python -m pymc_bot train --dataset pymcbot/dataset.jsonl --steps 2000
 ```
 
 * **Engine** — `--engine mlp` (default) is a two-hidden-layer numpy network that trains in
@@ -89,7 +89,7 @@ Metrics therefore report both plain accuracy and **balanced accuracy** (mean per
 recall), which is the number to watch when you care about rare actions.
 
 ```bash
-python -m pymc_bot train --dataset pymc-playtime/dataset.jsonl --steps 4000 --engine transformer
+python -m pymc_bot train --dataset pymcbot/dataset.jsonl --steps 4000 --engine transformer
 ```
 
 ### Training from the panel
@@ -137,7 +137,7 @@ swing", which is what makes a basic model punch every player that walks past it.
 **Train it.** Either tick *Advanced mode (entities + items)* in the panel or pass the flag:
 
 ```bash
-python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --advanced --steps 5000
+python -m pymc_bot train --dataset "<gameDir>/pymcbot/dataset.jsonl" --advanced --steps 5000
 python -m pymc_bot train --dataset ... --advanced --entity-slots 32 --item-slots 48   # bigger vocabularies
 python -m pymc_bot train --dataset ... --inspect   # shows the vocabulary and its coverage before you train
 ```
@@ -197,7 +197,7 @@ trained brain counts as activity, so the two never fight.
 
 ### Ollama, optionally
 
-`python -m pymc_bot train ... --ollama-model pymc-playtime` (or the panel's
+`python -m pymc_bot train ... --ollama-model pymc-bot` (or the panel's
 **Export to Ollama**) writes a Modelfile next to the checkpoint and creates an Ollama model
 whose system prompt describes the learned habits, so you can pick it in the config page
 like any other model. The native policy above is the faithful one — it reproduces your

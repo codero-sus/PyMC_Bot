@@ -146,7 +146,7 @@ if (gameTest) {
 	// Launches Minecraft with the mod and runs PymcClientGameTest: it creates a singleplayer world,
 	// records a few seconds of scripted play, takes screenshots and checks the exported dataset.
 	// On Linux CI the game runs in a virtual display (apt install xvfb). Results end up in
-	// build/run/gametest/ (screenshots/, pymc-playtime/, pymc-gametest.txt, logs/).
+	// build/run/gametest/ (screenshots/, pymcbot/, pymc-gametest.txt, logs/).
 	def gameTestJava = providers.gradleProperty('gameTestJava').map { it as int }.getOrElse(javaLevel)
 	tasks.register('runProductionClientGameTest', net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 		group = 'verification'

@@ -95,6 +95,8 @@ class MinecraftBot:
         self.wait_poll_seconds = 15.0
         # Called after a delayed join (wait-for-server) succeeds; the fleet uses it to start the AI.
         self.on_connected: Callable[[], Any] | None = None
+        # True while an LLM brain runs this bot: it answers chat itself, so no canned replies.
+        self.llm_chat = False
 
     # -------------------------------------------------------------- activity
     @contextmanager
@@ -452,11 +454,16 @@ class MinecraftBot:
         if not self.connected:
             return
         settings = self.store.settings
-        if settings.agent.greet_players and username and username not in self._greeted:
+        if not username or username.lower() == self.username.lower():
+            return  # our own message echoed back by the server
+        if self.llm_chat:
+            return  # the LLM brain sees the chat and answers like a person
+        if settings.agent.greet_players and username not in self._greeted:
             self._greeted.add(username)
-            self.say(f"Hi {username}! I'm {self.username}, an AI player. Ask me anything.")
-        elif message.strip().lower().endswith(("pymc_bot", "bot?")) or "pymc_bot" in message.lower():
-            self.say("Yes? I'm listening.")
+            greeting = random.choice(["hey {name}", "hi {name}!", "yo {name}", "hey {name}, what's up", "hii"])
+            self._say_later(greeting.format(name=username))
+        elif message.strip().lower().endswith(("pymc_bot", "bot?")) or self.username.lower() in message.lower():
+            self._say_later(random.choice(["yeah?", "hm?", "what's up", "yes?"]))
 
     def say(self, text: str) -> bool:
         backend = self.backend
@@ -473,6 +480,15 @@ class MinecraftBot:
                 self._stats["actions"] += 1
         self.log.add(f"<{self.username}> {text}", "bot", "bot")
         return True
+
+    def _say_later(self, text: str) -> None:
+        """Reply after a short, human-looking pause (reading + typing) without blocking chat handling."""
+        from pymc_bot.mind import typing_delay
+
+        delay = typing_delay(text) if self.store.settings.agent.human_chat else 0.0
+        timer = threading.Timer(delay, lambda: self.say(text))
+        timer.daemon = True
+        timer.start()
 
     def command(self, text: str) -> bool:
         backend = self.backend

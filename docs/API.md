@@ -152,7 +152,8 @@ and the whole panel follow the selected player. The default is the main bot.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/ai/status` | running flag, decision/error counters, last decision |
+| `GET` | `/api/ai/status` | running flag, decision/error counters, last decision (with the model's `thought` and `goal`), `persona`, `memory` (goal, recent actions, last thought) |
+| `GET` | `/api/ai/prompt` | `{brain, custom, system, turn}` – the exact system prompt and this turn's prompt the LLM brain would get right now |
 | `POST` | `/api/ai/start` | start the decision loop (409 if the bot is not connected) |
 | `POST` | `/api/ai/stop` | stop the loop (aborts the current action) |
 | `POST` | `/api/ai/step` | decide and execute exactly one action now |
@@ -160,7 +161,7 @@ and the whole panel follow the selected player. The default is the main bot.
 ### Training a player model on playtime
 
 The Fabric mod in [`../mod`](../mod/README.md) records the player's playtime into
-`pymc-playtime/dataset.jsonl`; these endpoints train on it, list the checkpoints and switch the bot over to
+`pymcbot/dataset.jsonl`; these endpoints train on it, list the checkpoints and switch the bot over to
 the trained brain. Training runs in a background thread and checkpoint itself every
 `training.checkpoint_every` steps.
 
@@ -174,14 +175,14 @@ the trained brain. Training runs in a background thread and checkpoint itself ev
 | `GET` | `/api/models/{run}` | one card |
 | `POST` | `/api/models/activate` | `{"run":"playtime-dataset"}` → `agent.mode="trained"`, reloads the AI loop |
 | `POST` | `/api/models/deactivate` | back to `agent.mode="auto"` |
-| `POST` | `/api/models/export-ollama` | `{"run":"...","name":"pymc-playtime"}` → create an Ollama model from the learned habits |
+| `POST` | `/api/models/export-ollama` | `{"run":"...","name":"pymc-bot"}` → create an Ollama model from the learned habits |
 | `GET` | `/api/policy/preview` | what the active model would do right now, given the live bot snapshot |
 
 `POST /api/training/start` body (all fields optional; missing ones come from the config):
 
 ```json
 {
-  "dataset": "pymc-playtime/dataset.jsonl",
+  "dataset": "pymcbot/dataset.jsonl",
   "run_name": "playtime-dataset",
   "engine": "mlp",
   "steps": 2000, "batch_size": 64, "lr": 0.003,
@@ -280,6 +281,12 @@ Aliases accepted from models: `walk`/`move` → `goto`, `follow_player` → `fol
 The executor also tolerates real-world LLM noise: ```` ```json ```` fences, prose before/after the object,
 `name`/`cmd`/`command` instead of `action`, a namespaced `minecraft:mine`, nested `params`, and non-finite
 coordinates (clamped to ±30000).
+
+LLM replies may also carry `"thought"` (a private one-sentence thought; aliases `thinking`, `reason`,
+`reasoning`) and `"goal"` (what the model is working on). Neither is an action parameter: the thought is
+logged as `💭 ...`, the goal is remembered and shown back to the model on the next turns, and both appear
+in `last_decision`. LLM chat is cleaned before sending (no name prefix, quotes, markdown, emoji, leading
+`/`), repeats are skipped and, with `agent.human_chat`, unprompted messages respect `agent.chat_cooldown`.
 
 Manual requests (`POST /api/bot/action`) bypass the movement/chat/mining permissions because a human asked
 for it explicitly; `attack` stays gated.

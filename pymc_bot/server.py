@@ -34,7 +34,12 @@ from pymc_bot.events import EventLog
 from pymc_bot.fleet import AI_MODES, BotFleet, FleetError, primary_brain
 from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
 from pymc_bot.ollama import OllamaClient, OllamaError
-from pymc_bot.playtime import dataset_summary, load_examples, synthesize_playtime
+from pymc_bot.playtime import (
+    dataset_summary,
+    load_examples,
+    resolve_dataset_path,
+    synthesize_playtime,
+)
 from pymc_bot.train import TrainConfig, TrainingService, default_run_name, list_models, read_card
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -184,7 +189,7 @@ def create_app(
 
     def dataset_overview(path: str | None = None) -> dict[str, Any]:
         """Cached statistics for the training dataset (kept fresh, cheap to poll)."""
-        target = Path(path or store.settings.training.dataset).expanduser()
+        target = resolve_dataset_path(path or store.settings.training.dataset)
         mtime = 0.0
         if target.is_file():
             mtime = target.stat().st_mtime
@@ -681,6 +686,11 @@ def create_app(
     def ai_status() -> dict[str, Any]:
         return selected_agent().status
 
+    @app.get("/api/ai/prompt")
+    def ai_prompt() -> dict[str, Any]:
+        """The exact system prompt and this turn's prompt the LLM brain would get right now."""
+        return selected_agent().preview_prompts()
+
     @app.post("/api/ai/start")
     def ai_start() -> dict[str, Any]:
         controller = selected_bot()
@@ -823,6 +833,8 @@ def create_app(
             raise HTTPException(status_code=409, detail="training is already running")
         settings = store.settings.training
         dataset = (request.dataset or settings.dataset).strip()
+        if not request.simulate_minutes:
+            dataset = str(resolve_dataset_path(dataset))
         advanced = settings.advanced if request.advanced is None else bool(request.advanced)
 
         if request.simulate_minutes and request.simulate_minutes > 0:

@@ -306,6 +306,41 @@
           <button id="btn-cortex-use" class="btn ghost" title="Save and switch the brain to cortex">Use Cortex as brain</button>
         </div>
       </details>
+      <details id="mind-box">
+        <summary>Personality &amp; thinking <span class="hint" id="mind-summary">— how the Ollama / Cortex brain plays and talks</span></summary>
+        <p class="note">The LLM gets a detailed prompt that makes it play like a real person: it reads the
+          situation, keeps a goal for several turns, remembers what just worked or failed, answers people
+          first and chats casually (short lowercase lines, no spam). It never claims to be human when
+          someone sincerely asks.</p>
+        <div class="fields two">
+          <label>Personality
+            <select id="cfg-persona">
+              <option value="friendly">friendly — social, helpful</option>
+              <option value="chill">chill — laid-back, few words</option>
+              <option value="builder">builder — gathers &amp; builds</option>
+              <option value="explorer">explorer — roams, curious</option>
+              <option value="miner">miner — ores &amp; caves</option>
+              <option value="quiet">quiet — rarely talks</option>
+            </select>
+          </label>
+          <label>Memory (recent actions) <input id="cfg-memory-turns" type="number" min="1" max="30" step="1" /></label>
+          <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
+          <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
+        </div>
+        <label class="block">About the character <span class="hint">(optional, max 600 chars)</span>
+          <textarea id="cfg-persona-notes" rows="2" maxlength="600" placeholder="e.g. from Delhi, mixes Hindi and English, loves building bridges"></textarea>
+        </label>
+        <label class="block">Custom system prompt <span class="hint">(optional — empty uses the built-in human-player prompt)</span>
+          <textarea id="cfg-system-prompt" rows="3" placeholder="Leave empty for the built-in prompt (recommended)"></textarea>
+        </label>
+        <div class="actions">
+          <button id="btn-prompt-preview" class="btn ghost" title="Show exactly what the LLM is sent right now">Show the prompt</button>
+        </div>
+        <div id="prompt-preview" hidden>
+          <label class="block">System prompt <textarea id="prompt-system" rows="10" readonly></textarea></label>
+          <label class="block">This turn <textarea id="prompt-turn" rows="10" readonly></textarea></label>
+        </div>
+      </details>
       <div class="permissions">
         <strong>AI permissions</strong>
         <label class="check"><input id="cfg-allow-movement" type="checkbox" /> move</label>
@@ -326,11 +361,11 @@
       </header>
       <p class="note">The Fabric mod in <code>./mod</code> records your own playtime (position, look direction,
         block neighbourhood, nearby entities and every key you pressed) into
-        <code>pymc-playtime/dataset.jsonl</code>. Train a model on it here — it checkpoints itself
+        <code>pymcbot/dataset.jsonl</code>. Train a model on it here — it checkpoints itself
         as it goes and can then play the bot (<strong>brain = trained</strong>).</p>
 
       <div class="fields three">
-        <label>Dataset <input id="train-dataset" type="text" placeholder="pymc-playtime/dataset.jsonl" /></label>
+        <label>Dataset <input id="train-dataset" type="text" placeholder="pymcbot/dataset.jsonl" /></label>
         <label>Steps <input id="train-steps" type="number" min="1" max="2000000" step="50" /></label>
         <label>Checkpoint every <input id="train-checkpoint" type="number" min="1" max="100000" step="10" /></label>
         <label>Engine
