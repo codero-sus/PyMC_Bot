@@ -134,7 +134,8 @@ jobs:
           set -x
           copy="$RUNNER_TEMP/zipcopy"
           mkdir -p "$copy"
-          git archive HEAD | tar -x -C "$copy"
+          git archive --format=zip -o "$RUNNER_TEMP/source.zip" HEAD
+          python -m zipfile -e "$RUNNER_TEMP/source.zip" "$copy"   # tar mangles D:\ paths on Windows
           echo '{"host": "keep-me"}' > "$copy/pymc_bot_config.json"
           echo "local edit" >> "$copy/README.md"
           cd "$copy"
