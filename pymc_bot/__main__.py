@@ -441,6 +441,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     node = backends["node"]
     print(f"node        : {backends.get('node_version') or 'NOT FOUND'}")
     print(f"mineflayer  : {'ready' if node['available'] else node['reason']}")
+    mc_range = backends.get("minecraft_versions")
+    if mc_range:
+        print(f"minecraft   : {mc_range['oldest']} - {mc_range['latest']} (newer servers need ViaVersion + ViaBackwards "
+              "until mineflayer adds them; then run the updater or `npm update`)")
     print(f"config      : {store.path} {'(exists)' if store.path.exists() else '(will be created)'}")
     if store.load_error:
         print(f"config note : {store.load_error}")
@@ -478,7 +482,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         f"key from ${cortex_cfg.api_key_env}" if cortex_cfg.key_present()
         else f"${cortex_cfg.api_key_env or '-'} not set (fine if Cortex runs without a key)"
     )
-    print(f"cortex      : {cortex_cfg.base_url}{cortex_cfg.api_path} -> {'OK' if ok else 'unavailable'} ({detail}; {key_note})")
+    if ok or cortex_cfg.enabled or brain == "cortex":
+        print(f"cortex      : {cortex_cfg.base_url}{cortex_cfg.api_path} -> {'OK' if ok else 'unavailable'} ({detail}; {key_note})")
+    else:
+        print("cortex      : not running (optional: only needed for the Cortex brain)")
 
     if not node_available()[0]:
         print("\nTip: install the Minecraft bridge with  npm install  in the project root.")

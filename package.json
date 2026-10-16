@@ -18,10 +18,12 @@
     "bridge": "node pymc_bot/node/minecraft_bridge.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "dependencies": {
-    "mineflayer": "^4.20.0",
+    "minecraft-data": "^3.117.0",
+    "minecraft-protocol": "^1.68.0",
+    "mineflayer": "^4.39.0",
     "mineflayer-pathfinder": "^2.4.5"
   }
 }

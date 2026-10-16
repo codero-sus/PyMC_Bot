@@ -13,7 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from pymc_bot.backends import BackendError, NodeBridgeBackend, create_backend, node_available
+from pymc_bot import backends as backends_module
+from pymc_bot.backends import (
+    BackendError,
+    NodeBridgeBackend,
+    create_backend,
+    explain_connection_error,
+    mineflayer_versions,
+    node_available,
+)
 from pymc_bot.config import AppSettings, ConfigStore  # noqa: F401
 from pymc_bot.events import EventLog
 
@@ -184,3 +192,66 @@ def test_backend_factory_errors_for_missing_mineflayer(tmp_path: Path, log: Even
     with pytest.raises(BackendError) as excinfo:
         create_backend(store.settings, log)
     assert "mineflayer" in str(excinfo.value)
+
+
+# ------------------------------------------------------- Minecraft versions
+def test_ready_reports_the_supported_minecraft_range(bridge: NodeBridgeBackend, log: EventLog):
+    assert bridge.capabilities["minecraft"]["latest"] == "26.1"
+    assert any("Supports Minecraft 1.8.8 - 26.1" in entry["message"] for entry in log.tail(20))
+
+
+def test_too_new_server_error_is_explained(bridge: NodeBridgeBackend):
+    with pytest.raises(BackendError) as excinfo:
+        bridge.connect(_settings(host="nodata"))
+    message = str(excinfo.value)
+    assert "No data available" not in message
+    assert "26.3" in message and "up to 26.1" in message and "ViaBackwards" in message
+    assert bridge.snapshot()["last_error"] == message
+
+
+def test_outdated_client_kick_after_fallback_is_explained(bridge: NodeBridgeBackend, log: EventLog):
+    with pytest.raises(BackendError) as excinfo:
+        bridge.connect(_settings(host="newserver"))
+    message = str(excinfo.value)
+    assert "runs 26.3" in message and "as Minecraft 26.1" in message and "ViaBackwards" in message
+    snapshot = bridge.snapshot()
+    # the trailing 'end' must not hide the real reason
+    assert snapshot["status"] == "error" and snapshot["last_error"] == message
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("No data available for version 26.3", ["Minecraft 26.3", "up to 26.1", "ViaVersion + ViaBackwards"]),
+        (
+            "Unsupported protocol version '777' (attempted to use '775' data); try updating your packages",
+            ["protocol 777", "up to 26.1"],
+        ),
+        ("connect ECONNREFUSED 127.0.0.1:25565", ["Nothing is accepting connections at mc.local:25565"]),
+        ("getaddrinfo ENOTFOUND mc.local", ["Could not find the host 'mc.local'"]),
+        ("connect ETIMEDOUT 10.0.0.1:25565", ["did not answer in time"]),
+        ('{"text":"Outdated client! Please use 26.3"}', ["refused the bot", "ViaBackwards", "Outdated client"]),
+    ],
+)
+def test_explain_connection_error(raw: str, expected: list[str]):
+    message = explain_connection_error(raw, host="mc.local", port=25565, latest="26.1")
+    for fragment in expected:
+        assert fragment in message
+
+
+def test_explain_connection_error_keeps_unknown_messages():
+    assert explain_connection_error("You are banned", latest="26.1") == "You are banned"
+
+
+def test_mineflayer_versions_reads_the_installed_package(tmp_path: Path, monkeypatch):
+    lib = tmp_path / "node_modules" / "mineflayer" / "lib"
+    lib.mkdir(parents=True)
+    (lib / "version.js").write_text(
+        "const testedVersions = ['1.8.8', '1.21.11', '26.1']\nmodule.exports = { testedVersions }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(backends_module, "NODE_DIR", tmp_path / "nowhere")
+    monkeypatch.chdir(tmp_path)
+    assert mineflayer_versions() == {"oldest": "1.8.8", "latest": "26.1", "tested": ["1.8.8", "1.21.11", "26.1"]}
+    monkeypatch.chdir(tmp_path / "node_modules")
+    assert mineflayer_versions() is None

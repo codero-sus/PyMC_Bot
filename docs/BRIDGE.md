@@ -27,7 +27,7 @@ Every request must carry an `id`; the bridge answers exactly once with the same 
 
 | `cmd` | `params` | `result` | Notes |
 | --- | --- | --- | --- |
-| `connect` | `host`, `port`, `username`, `version` (null = sniff), `auth` (`offline`/`microsoft`), `view_distance`, `profiles_folder` | `{"connecting": true}` | replies immediately; the bot spawns later as an event. For `microsoft`, `username` is the account **email** and `profiles_folder` is the token cache (Python gives every account its own sub-folder) |
+| `connect` | `host`, `port`, `username`, `version` (null = ping the server and use its version when mineflayer supports it, else the newest supported one + a `version_fallback` event), `auth` (`offline`/`microsoft`), `view_distance`, `profiles_folder` | `{"connecting": true}` | replies after a quick server ping; the bot spawns later as an event. For `microsoft`, `username` is the account **email** and `profiles_folder` is the token cache (Python gives every account its own sub-folder) |
 | `say` | `text` | `{"sent": true}` | chat message |
 | `command` | `text` | `{"sent": true}` | server command (`/` added if missing) |
 | `control` | `name` ∈ `forward back left right jump sneak sprint`, `state` | `{"control": ...}` | held keys |
@@ -48,10 +48,11 @@ Every request must carry an `id`; the bridge answers exactly once with the same 
 
 | `event` | Payload | Meaning |
 | --- | --- | --- |
-| `ready` | `caps: {"pathfinder": bool, "mineflayer": bool, "auth": ["offline","microsoft"], "multiple_bots": "..."}`, `node` | sent once at startup; `start()` waits for it |
+| `ready` | `caps: {"pathfinder": bool, "mineflayer": bool, "auth": ["offline","microsoft"], "multiple_bots": "...", "minecraft": {"oldest": "1.8.8", "latest": "26.1", "tested": [...]}}`, `node` | sent once at startup; `start()` waits for it. `minecraft` is the Minecraft range of the installed mineflayer |
 | `log` | `level`, `message` | bridge log line, forwarded into the event stream |
 | `state` | `state` | world snapshot, pushed every 250 ms while connected |
 | `chat` | `username`, `message` | someone talked; Python logs it, greets new players |
+| `version_fallback` | `server_version`, `server_protocol`, `using`, `latest`, `oldest` | the server runs a Minecraft version the installed mineflayer has no data for (e.g. 26.3), so the bot joins as `using` (the newest supported one). Works when the server has ViaVersion + ViaBackwards; otherwise the server kicks with "outdated client" and Python explains that |
 | `msa_code` | `user_code`, `verification_uri`, `expires_in`, `message` | **premium login**: the device code the user must enter (Python logs it at level `auth` and keeps it in the event data) |
 | `login` | `username` | authenticated and logged in (for premium this is the real in-game name) |
 | `spawn` | – | the bot is in the world → `connect()` returns |

@@ -43,6 +43,20 @@ const COMMANDS = {
     const premium = params.auth === 'microsoft';
     // offline servers use the given name; premium accounts keep their own
     bot.ingameName = premium ? 'PremiumPlayer' : params.username;
+    if (params.host === 'nodata') {
+      // what minecraft-protocol throws for a server newer than its data (e.g. 26.3)
+      setTimeout(() => send({ event: 'error', message: 'No data available for version 26.3' }), 20);
+      return { connecting: true, connect_timeout_ms: 1000 };
+    }
+    if (params.host === 'newserver') {
+      // joined as the newest supported version; a server without ViaBackwards refuses it
+      send({ event: 'version_fallback', server_version: '26.3', server_protocol: 777, using: '26.1', latest: '26.1', oldest: '1.8.8' });
+      setTimeout(() => {
+        send({ event: 'kicked', reason: '{"translate":"multiplayer.disconnect.outdated_client","with":["26.3"]}' });
+        send({ event: 'end', reason: 'socketClosed' });
+      }, 20);
+      return { connecting: true, connect_timeout_ms: 1000 };
+    }
     if (params.host === 'badhost' || (premium && params.username === 'bad@example.com')) {
       const error = premium
         ? 'Failed to obtain profile data for bad@example.com, does the account own minecraft?'
@@ -100,5 +114,9 @@ rl.on('line', (line) => {
 
 rl.on('close', () => process.exit(0));
 
-send({ event: 'ready', caps: { pathfinder: false, mineflayer: false }, node: process.version });
+send({
+  event: 'ready',
+  caps: { pathfinder: false, mineflayer: false, minecraft: { oldest: '1.8.8', latest: '26.1', tested: ['1.8.8', '1.21.11', '26.1'] } },
+  node: process.version,
+});
 send({ event: 'log', level: 'info', message: 'fake bridge ready' });

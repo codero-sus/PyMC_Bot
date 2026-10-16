@@ -348,6 +348,11 @@ def test_api_reports_cortex(api: TestClient, monkeypatch):
     health = api.get("/api/cortex/health?force=true").json()
     assert health["ok"] is False and health["enabled"] is False
     assert health["key_env"] == "CORTEX_API_KEY" and health["key_set"] is False
+    # optional and unused: the panel shows a calm "not running" instead of the connection error
+    assert health["in_use"] is False
+    assert "nothing is listening there" in health["detail"]
+    api.put("/api/config", json={"agent": {"mode": "cortex"}})
+    assert api.get("/api/cortex/health?force=true").json()["in_use"] is True
     status = api.get("/api/status").json()
     assert status["cortex"]["settings"]["base_url"] == "http://127.0.0.1:1"
     assert "cortex" in api.get("/api/contract").json()["brains"]
