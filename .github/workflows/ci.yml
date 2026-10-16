@@ -130,6 +130,8 @@ jobs:
       - name: Live update of a downloaded (non-git) copy
         shell: bash
         run: |
+          exec > >(tee -a "$GITHUB_WORKSPACE/updater-live.log") 2>&1
+          set -x
           copy="$RUNNER_TEMP/zipcopy"
           mkdir -p "$copy"
           git archive HEAD | tar -x -C "$copy"
@@ -140,6 +142,12 @@ jobs:
           grep -q keep-me pymc_bot_config.json
           ls .pymc_backup/*/README.md
           python updater.py --check --branch "${{ github.head_ref || github.ref_name }}" | grep -q "up to date"
+      - name: Publish live update diagnostics
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_diagnostics.py updater-live.log --title "updater live check failed (${{ matrix.os }})"
 
   training-transformer:
     name: training (transformer engine, torch)
