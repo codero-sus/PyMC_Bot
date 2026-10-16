@@ -23,7 +23,7 @@ from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore, default_config_path
 from pymc_bot.cortex import CortexError, client_from_settings
 from pymc_bot.events import EventLog
-from pymc_bot.fleet import AI_MODES, BotFleet, FleetError
+from pymc_bot.fleet import AI_MODES, BotFleet, FleetError, primary_brain
 from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.playtime import dataset_summary, load_examples, synthesize_playtime
@@ -276,6 +276,8 @@ def create_app(
             "detail": cortex_cache["detail"],
             "checked_at": cortex_cache["ts"],
             "enabled": settings.enabled,
+            # Cortex is optional: only complain when something actually uses it.
+            "in_use": settings.enabled or primary_brain(store.settings) == "cortex",
             "key_env": settings.api_key_env,
             "key_set": settings.key_present(),
         }

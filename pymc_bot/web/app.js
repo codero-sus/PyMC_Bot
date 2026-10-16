@@ -282,11 +282,29 @@ function renderStatus(status) {
   // backend availability note
   const backends = status.backends || {};
   const node = backends.node || {};
+  const mcRange = backends.minecraft_versions;
   $('backend-note').textContent = node.available
-    ? `mineflayer bridge ready (node ${backends.node_version || '?'}).`
+    ? `mineflayer bridge ready (node ${backends.node_version || '?'})`
+      + (mcRange ? ` · joins Minecraft ${mcRange.oldest} – ${mcRange.latest}; newer servers need ViaBackwards.` : '.')
     : `${node.reason || 'Node bridge unavailable'} — the simulated world will be used.`;
+  fillVersionList(mcRange);
 
   setMinimapTarget(bot);
+}
+
+/* Version suggestions follow the installed mineflayer (newest first) instead of a fixed list. */
+let versionListKey = '';
+function fillVersionList(range) {
+  if (!range || !Array.isArray(range.tested) || !range.tested.length) return;
+  const key = range.tested.join(',');
+  if (key === versionListKey) return;
+  versionListKey = key;
+  const list = $('versions');
+  list.replaceChildren(...['auto', ...range.tested.slice().reverse()].map((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    return option;
+  }));
 }
 
 /* The minimap eases between status frames (positions arrive every ~1 s) and
@@ -698,14 +716,15 @@ function updateOllamaPill(health) {
 function updateCortexPill(health) {
   const pill = $('cortex-health');
   const detail = String(health.detail || '');
+  const inUse = health.in_use ?? health.enabled;
   pill.title = `Cortex LLMHoster: ${detail || 'not checked yet'}`;
   if (health.ok) {
     pill.textContent = 'cortex up';
     pill.className = 'pill pill-on';
   } else if (health.ok === false) {
     // Only shout when the user actually turned Cortex on; otherwise just say it is off.
-    pill.textContent = health.enabled ? 'cortex offline' : 'cortex off';
-    pill.className = health.enabled ? 'pill pill-error' : 'pill pill-unknown';
+    pill.textContent = inUse ? 'cortex offline' : 'cortex off';
+    pill.className = inUse ? 'pill pill-error' : 'pill pill-unknown';
   } else {
     pill.textContent = 'cortex…';
     pill.className = 'pill pill-unknown';
@@ -713,6 +732,11 @@ function updateCortexPill(health) {
   const keyNote = health.key_env
     ? (health.key_set ? `key from $${health.key_env}` : `$${health.key_env} not set (fine if Cortex has no key)`)
     : 'no key variable';
+  if (!health.ok && !inUse) {
+    // Optional service that is not selected: say so calmly instead of printing a connection error.
+    $('cortex-summary').textContent = '— not running (optional: only needed for the Cortex brain)';
+    return;
+  }
   $('cortex-summary').textContent = `— ${health.ok ? 'ready' : 'unavailable'}: ${detail || '…'} · ${keyNote}`;
 }
 

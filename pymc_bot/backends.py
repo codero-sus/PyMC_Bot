@@ -495,6 +495,91 @@ def node_available() -> tuple[bool, str]:
     return True, "ok"
 
 
+_TESTED_VERSIONS = re.compile(r"testedVersions\s*=\s*\[([^\]]*)\]")
+
+
+def mineflayer_versions() -> dict[str, Any] | None:
+    """Minecraft versions the installed mineflayer supports, read from ``mineflayer/lib/version.js``.
+
+    Returns ``{"oldest": "1.8.8", "latest": "26.1", "tested": [...]}`` or ``None`` when mineflayer is
+    not installed. Shown in the panel and ``doctor`` so a too-new server is obvious before joining.
+    """
+    for root in (NODE_DIR / "node_modules", Path.cwd() / "node_modules"):
+        path = root / "mineflayer" / "lib" / "version.js"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        match = _TESTED_VERSIONS.search(text)
+        if not match:
+            continue
+        tested = re.findall(r"['\"]([^'\"]+)['\"]", match.group(1))
+        if tested:
+            return {"oldest": tested[0], "latest": tested[-1], "tested": tested}
+    return None
+
+
+_NO_VERSION_DATA = re.compile(
+    r"No data available for version (?P<name>[^\s'\"]+)"
+    r"|Unsupported protocol version '?(?P<protocol>[\w.]+)'?"
+)
+_OUTDATED_CLIENT = re.compile(
+    r"outdated[_ ]client|incompatible[_ ]client|outdated client|client is outdated|please use|"
+    r"multiplayer\.disconnect\.(?:outdated|incompatible)",
+    re.IGNORECASE,
+)
+_VIA_HINT = "install ViaVersion + ViaBackwards on the server"
+
+
+def explain_connection_error(
+    message: str,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    latest: str | None = None,
+    fallback: dict[str, Any] | None = None,
+) -> str:
+    """Turn a raw mineflayer / Node error into a sentence that says what to do.
+
+    Unknown messages are returned unchanged. ``latest`` is the newest Minecraft version mineflayer
+    supports; ``fallback`` is the bridge's ``version_fallback`` event when the bot joined as an older
+    version because the server is newer than mineflayer.
+    """
+    text = str(message or "").strip()
+    where = f"{host}:{port}" if host and port else (host or "the server")
+    newest = latest or (fallback or {}).get("latest") or "an older version"
+
+    match = _NO_VERSION_DATA.search(text)
+    if match:
+        server = match.group("name") or (fallback or {}).get("server_version") or "this version"
+        if match.group("protocol") and not match.group("name"):
+            server = (fallback or {}).get("server_version") or f"protocol {match.group('protocol')}"
+        return (
+            f"The server runs Minecraft {server}, but the installed bot library (mineflayer) only supports up to "
+            f"{newest}. To join anyway, {_VIA_HINT} (or run the server on {newest}) and set Version to auto. "
+            f"Support for {server} arrives with a mineflayer update - run the updater or `npm update` later."
+        )
+    if _OUTDATED_CLIENT.search(text):
+        server = (fallback or {}).get("server_version")
+        using = (fallback or {}).get("using")
+        joined = f" as Minecraft {using}" if using else ""
+        runs = f"The server runs {server} and refused" if server else "The server refused"
+        return (
+            f"{runs} the bot because it joined{joined} - the installed mineflayer supports up to {newest}. "
+            f"Fix: {_VIA_HINT} so older clients can join, or run the server on {newest}. (Server said: {text})"
+        )
+    if "ECONNREFUSED" in text or "WinError 10061" in text:
+        return (
+            f"Nothing is accepting connections at {where} - is the Minecraft server running, "
+            "and are the host and port right?"
+        )
+    if "ENOTFOUND" in text or "EAI_AGAIN" in text:
+        return f"Could not find the host '{host or text.split()[-1]}' - check the Host field ({text})."
+    if "ETIMEDOUT" in text or "EHOSTUNREACH" in text:
+        return f"{where} did not answer in time - check the address, the firewall, and that the server is online."
+    return text
+
+
 class NodeBridgeBackend(BaseBackend):
     """Talks to ``minecraft_bridge.js`` over newline-delimited JSON."""
 
@@ -519,6 +604,7 @@ class NodeBridgeBackend(BaseBackend):
         self._ready = threading.Event()
         self._spawned = threading.Event()
         self._connect_error: str | None = None
+        self._fallback: dict[str, Any] | None = None  # last version_fallback event from the bridge
         self._host = ""
         self._port = 0
         self._version = ""
@@ -558,6 +644,7 @@ class NodeBridgeBackend(BaseBackend):
         version = None if settings.version in ("", "auto") else settings.version
         self._spawned.clear()
         self._connect_error = None
+        self._fallback = None
         response = self._request(
             "connect",
             {
@@ -572,7 +659,7 @@ class NodeBridgeBackend(BaseBackend):
             timeout=settings.connect_timeout + 5,
         )
         if not response.get("ok"):
-            message = response.get("error") or "unknown error"
+            message = self._explain(response.get("error") or "unknown error")
             self._connect_error = message
             self._snapshot["status"] = "error"
             self._snapshot["last_error"] = message
@@ -658,13 +745,21 @@ class NodeBridgeBackend(BaseBackend):
         event = payload.get("event")
         if event == "ready":
             self._caps = payload.get("caps", {})
+            minecraft = self._caps.get("minecraft") or {}
+            supports = (
+                f" Supports Minecraft {minecraft['oldest']} - {minecraft['latest']}."
+                if minecraft.get("oldest") and minecraft.get("latest") else ""
+            )
             self.log.add(
-                "Bridge ready (pathfinder available)." if self._caps.get("pathfinder")
-                else "Bridge ready (no pathfinder - Python steering will be used).",
+                ("Bridge ready (pathfinder available)." if self._caps.get("pathfinder")
+                 else "Bridge ready (no pathfinder - Python steering will be used).") + supports,
                 "info",
                 "node",
             )
             self._ready.set()
+        elif event == "version_fallback":
+            self._fallback = dict(payload)
+            # The bridge logs the details itself; remember them to explain a kick that may follow.
         elif event == "log":
             self.log.add(payload.get("message", ""), payload.get("level", "info"), "node")
         elif event == "state":
@@ -694,21 +789,41 @@ class NodeBridgeBackend(BaseBackend):
             self._spawned.set()
             self._emit_status()
         elif event in ("end", "kicked"):
-            reason = payload.get("reason") or event
+            raw = str(payload.get("reason") or event)
+            reason = self._explain(raw)
             self._connected = False
+            if event == "end" and self._snapshot.get("status") == "error" and self._snapshot.get("last_error"):
+                # mineflayer always ends with 'end' after an error/kick; keep the real cause visible.
+                self._spawned.set()
+                self.log.add(f"Connection closed ({raw}).", "debug", "node")
+                self._emit_status()
+                return
             self._snapshot["status"] = "disconnected" if event == "end" else "error"
-            self._snapshot["last_error"] = str(reason)
+            self._snapshot["last_error"] = reason
             self._spawned.set()
             self.log.add(f"Disconnected from server: {reason}", "warn", "node")
             self._emit_status()
         elif event == "error":
-            message = str(payload.get("message", "unknown error"))
+            raw = str(payload.get("message", "unknown error"))
+            message = self._explain(raw)
             self._connect_error = message
             self._snapshot["status"] = "error"
             self._snapshot["last_error"] = message
             self.log.add(f"Bridge error: {message}", "error", "node")
+            if message != raw:
+                self.log.add(f"Bridge error details: {raw}", "debug", "node")
             self._spawned.set()
             self._emit_status()
+
+    def _explain(self, message: str) -> str:
+        minecraft = (self._caps or {}).get("minecraft") or mineflayer_versions() or {}
+        return explain_connection_error(
+            message,
+            host=self._host,
+            port=self._port,
+            latest=minecraft.get("latest"),
+            fallback=self._fallback,
+        )
 
     def _apply_state(self, state: dict[str, Any]) -> None:
         snapshot = dict(self._snapshot)
@@ -845,6 +960,7 @@ def available_backends() -> dict[str, Any]:
         "node": {"available": ok, "reason": reason},
         "simulated": {"available": True, "reason": "always available"},
         "node_version": _node_version(),
+        "minecraft_versions": mineflayer_versions() if ok else None,
         "python": sys.version.split()[0],
     }
 

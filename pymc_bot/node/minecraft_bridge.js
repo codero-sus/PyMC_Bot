@@ -12,7 +12,8 @@
  *   stdout  {"id": 1, "ok": true, "result": {...}}      // command reply
  *   stdout  {"event": "state", "state": {...}}          // unsolicited events
  *           events: ready, log, state, chat, spawn, end, kicked, error, exit,
- *                   msa_code (premium login: user code + verification URL)
+ *                   msa_code (premium login: user code + verification URL),
+ *                   version_fallback (server is newer than mineflayer supports)
  */
 
 'use strict';
@@ -20,6 +21,9 @@
 const readline = require('readline');
 
 let mineflayer = null;
+let minecraftData = null;     // the version database mineflayer reads (comes with mineflayer)
+let minecraftProtocol = null; // used to ping the server for its version before joining
+let mineflayerVersions = null; // { testedVersions, latestSupportedVersion, oldestSupportedVersion }
 let pathfinder = null;   // optional, enables real A* pathfinding
 let goals = null;
 let bot = null;
@@ -67,12 +71,109 @@ try {
   process.exit(1);
 }
 try {
+  minecraftData = require('minecraft-data');
+  minecraftProtocol = require('minecraft-protocol');
+  mineflayerVersions = require('mineflayer/lib/version');
+} catch (err) {
+  log('warn', `Could not load the Minecraft version tables (${err.message}); the server version is not checked before joining.`);
+}
+try {
   pathfinder = require('mineflayer-pathfinder');
   goals = pathfinder.goals;
 } catch (err) {
   pathfinder = null;
   goals = null;
   log('warn', 'mineflayer-pathfinder not found; Python-side steering will be used.');
+}
+
+/* ------------------------------------------------------------ version check */
+/** Supported Minecraft range of the installed mineflayer, e.g. { oldest: '1.8.8', latest: '26.1' }. */
+function versionSupport() {
+  if (!mineflayerVersions) return null;
+  return {
+    oldest: mineflayerVersions.oldestSupportedVersion,
+    latest: mineflayerVersions.latestSupportedVersion,
+    tested: mineflayerVersions.testedVersions,
+  };
+}
+
+/** Whether minecraft-data has protocol data for `version` (what createBot needs to work). */
+function hasData(version) {
+  if (!minecraftData || !version) return false;
+  try {
+    const data = minecraftData(version);
+    if (!data || !data.protocol) return false;
+    const info = minecraftData.versionsByMinecraftVersion.pc[version];
+    return !info || info.version === data.version.version;
+  } catch (err) {
+    return false;
+  }
+}
+
+/** Server list ping: resolves the server's { version: { name, protocol } }, or null. */
+function pingServer(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!minecraftProtocol || typeof minecraftProtocol.ping !== 'function') {
+      resolve(null);
+      return;
+    }
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    try {
+      const maybe = minecraftProtocol.ping({ host, port, closeTimeout: timeoutMs }, (err, res) => finish(err ? null : res));
+      if (maybe && typeof maybe.catch === 'function') maybe.catch(() => finish(null));
+    } catch (err) {
+      finish(null);
+    }
+  });
+}
+
+/**
+ * Picks the version to join with. A version mineflayer knows is used as-is. When the server runs a
+ * newer Minecraft than the installed mineflayer supports (e.g. 26.3 while mineflayer stops at 26.1),
+ * the bot joins as the newest supported version instead of failing with "No data available for
+ * version 26.3" - servers with ViaVersion + ViaBackwards accept that, others kick with a clear
+ * "outdated client" message that the Python side explains.
+ */
+async function resolveVersion(requested, host, port) {
+  if (requested && hasData(requested)) return { version: requested };
+  const support = versionSupport();
+  if (!support || !hasData(support.latest)) return requested ? { version: requested } : {};
+
+  let serverName = requested || null;
+  let serverProtocol = null;
+  const res = await pingServer(host, port, 8000);
+  if (res && res.version) {
+    serverName = String(res.version.name || serverName || '');
+    serverProtocol = Number(res.version.protocol);
+    if (!requested) {
+      // Same lookup as minecraft-protocol's auto-version, but only versions that have data.
+      const byProtocol = (minecraftData.postNettyVersionsByProtocolVersion.pc[serverProtocol] || [])
+        .map((info) => info.minecraftVersion);
+      const byName = [serverName].concat(serverName.match(/\d+(?:\.\d+)+/g) || []);
+      const usable = byProtocol.concat(byName).find(hasData);
+      if (usable) return { version: usable, server: serverName, protocol: serverProtocol };
+    }
+  } else if (!requested) {
+    return {}; // server unreachable: let mineflayer report the connection error
+  }
+
+  const latestProtocol = minecraftData.versionsByMinecraftVersion.pc[support.latest].version;
+  const older = serverProtocol !== null && serverProtocol > 0 && serverProtocol < 47;
+  const using = older ? support.oldest : support.latest;
+  return {
+    version: using,
+    fallback: true,
+    server: serverName || 'unknown',
+    protocol: serverProtocol,
+    newer: serverProtocol === null || serverProtocol > latestProtocol,
+  };
 }
 
 /* ------------------------------------------------------------------- helpers */
@@ -220,7 +321,23 @@ async function cmdConnect(params) {
     hideErrors: true,
     checkTimeoutInterval: premium ? 120000 : 60000,
   };
-  if (params.version) options.version = String(params.version);
+  const requested = params.version ? String(params.version) : null;
+  const resolved = await resolveVersion(requested, options.host, options.port);
+  if (resolved.version) options.version = resolved.version;
+  if (resolved.fallback) {
+    const support = versionSupport();
+    send({
+      event: 'version_fallback',
+      server_version: resolved.server,
+      server_protocol: resolved.protocol,
+      using: resolved.version,
+      latest: support && support.latest,
+      oldest: support && support.oldest,
+    });
+    log('warn', `The server runs Minecraft ${resolved.server}, which the installed mineflayer does not support yet `
+      + `(it goes up to ${support && support.latest}). Joining as ${resolved.version} instead - this works when `
+      + 'the server has ViaVersion + ViaBackwards; otherwise the server will refuse the bot.');
+  }
   if (premium) {
     // Cache refresh tokens per account so only the first join needs a device code.
     options.profilesFolder = params.profiles_folder || '.pymc_profiles';
@@ -236,7 +353,7 @@ async function cmdConnect(params) {
   }
 
   log('info', `Connecting to ${options.host}:${options.port} as ${options.username} `
-    + `(auth: ${options.auth}, version: ${params.version || 'auto'}).`
+    + `(auth: ${options.auth}, version: ${options.version || 'auto'}${requested ? '' : ' (detected)'}).`
     + (premium ? ' First premium login shows a device code - watch the event stream.' : ''));
   bot = mineflayer.createBot(options);
 
@@ -487,6 +604,7 @@ send({
     mineflayer: Boolean(mineflayer),
     auth: ['offline', 'microsoft'],
     multiple_bots: 'one process per bot - spawn several to populate a server',
+    minecraft: versionSupport(),
   },
   node: process.version,
 });

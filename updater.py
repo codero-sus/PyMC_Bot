@@ -309,7 +309,7 @@ def update_dependencies(root: Path, before: dict, force: bool, check: bool) -> N
     if force or "package.json" in changed:
         npm = shutil.which("npm")
         if npm is None:
-            say("package.json changed but npm is not installed - real servers need Node 18+ and `npm install`")
+            say("package.json changed but npm is not installed - real servers need Node 22+ and `npm install`")
         else:
             say("npm install")
             if subprocess.run([npm, "install", "--no-audit", "--no-fund"], cwd=root).returncode != 0:

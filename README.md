@@ -65,7 +65,7 @@ cd PyMC_Bot
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-npm install            # mineflayer bridge (only for real servers, needs Node >= 18)
+npm install            # mineflayer bridge (only for real servers, needs Node >= 22)
 
 python -m pymc_bot serve          # or: python -m pymc_bot      (serve is the default)
 # -> http://localhost:8000
@@ -514,7 +514,7 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 388 tests, no Minecraft server, no LLM required (2 skip without torch)
+pytest -q                       # 399 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -565,9 +565,12 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 
 | Symptom | Fix |
 | --- | --- |
-| `mineflayer is not installed` | run `npm install` in the project root (Node ≥ 18) |
+| `mineflayer is not installed` | run `npm install` in the project root (Node ≥ 22) |
 | Bot connects then immediately leaves | check the event stream: wrong version? try an explicit `version` instead of `auto` |
 | `unsupported protocol version` | set the app's version to the server's (e.g. `1.20.4`) |
+| `No data available for version 26.3` / "server runs Minecraft 26.3, but … only supports up to 26.1" | the server is newer than the installed mineflayer (it currently stops at 26.1; 26.2/26.3 support is still being added upstream). The bot now joins as the newest supported version automatically, so either install **ViaVersion + ViaBackwards** on the server, or run the server on 26.1. Once mineflayer releases support, run the updater (or `npm update`) and set Version back to `auto` |
+| Kicked with `Outdated client` | same cause: the server only accepts its own version – add ViaVersion + ViaBackwards to it |
+| Connection error `ECONNREFUSED` | nothing listens at that host/port – start the Minecraft server or fix the address |
 | Microsoft login hangs | the device code is printed in the event stream – complete it in a browser |
 | `does the account own minecraft?` | that Microsoft account has no Java Edition – use one that owns the game |
 | Premium bot joins again after a restart with no prompt | that is the per-account token cache in `.pymc_profiles/` working as intended |
@@ -576,6 +579,7 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 | Still kicked for AFK | lower `antiafk.interval_min`/`interval_max` (some servers use 60 s windows), keep *walk* and *swing* enabled, or turn on `verbose` to confirm bursts happen |
 | Bots wander off while you are not looking | set a smaller `antiafk.max_walk_distance`, or disable `walk` (look/swing/jump already defeat most AFK plugins) |
 | Panel shows `demo brain (stub)` | you are pointing Ollama at `python -m pymc_bot stub`, not a real model |
+| Cortex section says `not running (optional…)` | nothing to fix: Cortex is only needed when the brain is set to Cortex |
 | Panel pill says `cortex offline` | hover it for the reason; usually `CORTEX_API_KEY` not exported where PyMC_Bot runs, or the Cortex model is not started – see [docs/CORTEX.md](docs/CORTEX.md#troubleshooting) |
 | Bot stands still | AI off (press **Start AI**), or movement permission disabled, or the server is unreachable |
 | `no playtime samples found` | record with the mod first (`/pymcbot record start`, `/pymcbot export`), or try `python -m pymc_bot train --simulate 5` |

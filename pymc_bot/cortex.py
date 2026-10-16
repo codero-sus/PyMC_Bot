@@ -139,6 +139,10 @@ class CortexClient:
                 headers=self._headers() if auth else None,
                 timeout=timeout or self.timeout,
             )
+        except httpx.ConnectError as exc:
+            raise CortexError(
+                f"Could not reach Cortex at {self.base_url}: nothing is listening there (is Cortex running?)"
+            ) from exc
         except httpx.HTTPError as exc:
             raise CortexError(f"Could not reach Cortex at {self.base_url}: {exc}") from exc
         if response.status_code == 401:
