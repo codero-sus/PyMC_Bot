@@ -373,6 +373,32 @@ player model, live view, manual control, events and raw config, the panel has:
 
 ---
 
+## Aternos & other free hosts
+
+PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and servers shared through
+**playit.gg, ngrok or e4mc** tunnels, as well as servers on your own PC.
+
+- **Address:** type `name.aternos.me` and leave the port at 25565. The address has an SRV record that
+  the bot follows like the real game does. You can also paste `host:port` (a Dyn IP or a tunnel
+  address) into **Host**, and the port fills itself in.
+- **Check server** (in the panel) or `python -m pymc_bot probe` pings the server without joining. It
+  shows online, asleep or starting, the version, the players and where the SRV record points.
+- **Sleeping servers:** free hosts stop empty servers, and while asleep the address answers with a
+  placeholder ("● Offline"). The bot now reports it plainly and tells you to start the server from the
+  host's dashboard. With **Server asleep? → wait for it to start** (`wait_for_server`), it checks every
+  15 s and joins once someone has started it. PyMC_Bot never starts a server itself.
+- **Cracked bots** need the host's cracked / online-mode-off setting. On Aternos that's
+  *Options → Cracked*. Otherwise the kick message says which switch to flip. Minehut only lets premium
+  (Microsoft) accounts in.
+- **Aternos rules:** Aternos does not allow bots to keep an empty server online. On Aternos the bots
+  therefore leave once no real player has been online for `alone_minutes` (5 by default), and they
+  don't re-join on their own; press Connect when people are back. The bots play while you and your
+  friends are on, which is what Aternos allows. Set `leave_when_alone: "always"` to use the same rule
+  on any server.
+- **New Minecraft versions:** if the server runs a version the bot library doesn't support yet
+  (currently anything newer than 26.1), see *Troubleshooting*. ViaVersion + ViaBackwards (Aternos
+  offers both as plugins) let the bot in.
+
 ## Command line
 
 | Command | What it does |
@@ -382,7 +408,8 @@ player model, live view, manual control, events and raw config, the panel has:
 | `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
-| `python -m pymc_bot doctor` | environment check (Node, mineflayer, Ollama, Cortex, config, server settings) |
+| `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |
+| `python -m pymc_bot probe [host[:port]] [--json]` | ping a server without joining: online / asleep / starting, version, players, SRV target, tips for Aternos & co (exit 0 online, 3 asleep, 1 unreachable) |
 | `python -m pymc_bot stub [--port 11434]` | the Ollama/OpenAI-compatible demo stub |
 | `python -m pymc_bot about [--json]` / `--version` | author, links and credits |
 
@@ -396,7 +423,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
 ```jsonc
 {
   "minecraft": {
-    "host": "127.0.0.1", "port": 25565,
+    "host": "127.0.0.1", "port": 25565, // "name.aternos.me" (SRV) or "host:port" also work
     "username": "PyMC_Bot",            // max 16 characters
     "version": "auto",                 // or "1.20.4", "1.12.2", ...
     "auth": "offline",                 // "offline" (cracked) | "microsoft"
@@ -404,7 +431,11 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "view_distance": "normal", "connect_timeout": 20.0,
     "profiles_folder": ".pymc_profiles", // Microsoft token cache, one sub-folder per account
     "auto_rejoin": true,               // keep re-joining after kicks/disconnects
-    "rejoin_seconds": 10.0             // base delay between rejoin attempts (backs off to 60s)
+    "rejoin_seconds": 10.0,            // base delay between rejoin attempts (backs off to 60s)
+    "wait_for_server": false,          // free host asleep? wait until someone starts it, then join
+    "wait_minutes": 10.0,
+    "leave_when_alone": "auto",        // "auto" (on for Aternos, whose rules require it) | "always"
+    "alone_minutes": 5.0               // ... leave after this long with no real player online
   },
   "ollama": {
     "enabled": false,
@@ -514,7 +545,7 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 399 tests, no Minecraft server, no LLM required (2 skip without torch)
+pytest -q                       # 435 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -570,6 +601,9 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 | `unsupported protocol version` | set the app's version to the server's (e.g. `1.20.4`) |
 | `No data available for version 26.3` / "server runs Minecraft 26.3, but … only supports up to 26.1" | the server is newer than the installed mineflayer (it currently stops at 26.1; 26.2/26.3 support is still being added upstream). The bot now joins as the newest supported version automatically, so either install **ViaVersion + ViaBackwards** on the server, or run the server on 26.1. Once mineflayer releases support, run the updater (or `npm update`) and set Version back to `auto` |
 | Kicked with `Outdated client` | same cause: the server only accepts its own version – add ViaVersion + ViaBackwards to it |
+| "… (Aternos) is offline" / "is starting" | the free host's server is asleep: start it from the dashboard, or set **Server asleep?** to *wait for it to start* |
+| "refused the offline-mode login" | the server is in online mode: turn on *Cracked* (Aternos: Options) / `online-mode=false`, or use a Microsoft account |
+| Bots left with "No real player has been online" | the leave-when-alone rule (always on for Aternos, whose rules forbid idling bots); press Connect when people are on |
 | Connection error `ECONNREFUSED` | nothing listens at that host/port – start the Minecraft server or fix the address |
 | Microsoft login hangs | the device code is printed in the event stream – complete it in a browser |
 | `does the account own minecraft?` | that Microsoft account has no Java Edition – use one that owns the game |

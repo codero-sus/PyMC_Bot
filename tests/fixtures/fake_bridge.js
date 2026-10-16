@@ -43,6 +43,18 @@ const COMMANDS = {
     const premium = params.auth === 'microsoft';
     // offline servers use the given name; premium accounts keep their own
     bot.ingameName = premium ? 'PremiumPlayer' : params.username;
+    if (params.host === 'sleepy.aternos.me') {
+      // a sleeping Aternos server: the ping answers with the placeholder, the bridge refuses to join
+      send({ event: 'server_asleep', state: 'offline', motd: 'This server is offline. Powered by aternos.org', version_name: '\u25cf Offline' });
+      throw new Error('The server is offline: This server is offline. Powered by aternos.org');
+    }
+    if (params.host === 'cracked.aternos.me') {
+      setTimeout(() => {
+        send({ event: 'kicked', reason: '{"translate":"multiplayer.disconnect.unverified_username"}' });
+        send({ event: 'end', reason: 'socketClosed' });
+      }, 20);
+      return { connecting: true, connect_timeout_ms: 1000 };
+    }
     if (params.host === 'nodata') {
       // what minecraft-protocol throws for a server newer than its data (e.g. 26.3)
       setTimeout(() => send({ event: 'error', message: 'No data available for version 26.3' }), 20);

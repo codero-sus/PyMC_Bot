@@ -163,7 +163,7 @@ function renderHero(status) {
   const state = bot.state || 'disconnected';
   ui.flashText('hero-state', state);
   $('hero-state').style.color = state === 'connected' ? 'var(--accent)' : state === 'error' ? 'var(--error)'
-    : state === 'connecting' ? 'var(--warn)' : '';
+    : state === 'connecting' || state === 'waiting' ? 'var(--warn)' : '';
   $('hero-server').textContent = bot.server && bot.server.host
     ? `${bot.server.host}:${bot.server.port} · ${bot.backend || 'auto'}` : 'not connected';
   const brain = agent.resolved_brain || agent.brain || 'auto';
@@ -199,11 +199,11 @@ function renderStatus(status) {
   pill.textContent = state;
   pill.className = 'pill ' + (
     state === 'connected' ? 'pill-on' :
-    state === 'connecting' ? 'pill-connecting' :
+    state === 'connecting' || state === 'waiting' ? 'pill-connecting' :
     state === 'error' ? 'pill-error' : 'pill-off'
   );
 
-  const busy = state === 'connected' || state === 'connecting';
+  const busy = state === 'connected' || state === 'connecting' || state === 'waiting';
   $('btn-connect').disabled = busy;
   $('btn-disconnect').disabled = !busy;
   $('btn-reconnect').disabled = false;
@@ -288,8 +288,22 @@ function renderStatus(status) {
       + (mcRange ? ` · joins Minecraft ${mcRange.oldest} – ${mcRange.latest}; newer servers need ViaBackwards.` : '.')
     : `${node.reason || 'Node bridge unavailable'} — the simulated world will be used.`;
   fillVersionList(mcRange);
+  renderHosting(status.hosting);
 
   setMinimapTarget(bot);
+}
+
+/* Tips for Aternos & co plus the leave-when-alone countdown. Text only changes when it differs. */
+function renderHosting(hosting) {
+  const note = $('hosting-note');
+  if (!hosting) return;
+  const parts = [...(hosting.tips || [])];
+  if (hosting.leave_when_alone && hosting.alone_for > 0) {
+    const left = Math.max(0, Math.round(hosting.alone_minutes * 60 - hosting.alone_for));
+    parts.push(`Nobody else is online - the bots leave in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}.`);
+  }
+  const text = parts.join(' ');
+  if (note.textContent !== text) note.textContent = text;
 }
 
 /* Version suggestions follow the installed mineflayer (newest first) instead of a fixed list. */
@@ -474,6 +488,10 @@ function fillForm(cfg) {
   set('cfg-backend', mc.backend || 'auto');
   set('cfg-view', mc.view_distance || 'normal');
   set('cfg-timeout', mc.connect_timeout || 20);
+  set('cfg-wait', mc.wait_for_server ? 'on' : 'off');
+  set('cfg-wait-min', mc.wait_minutes || 10);
+  set('cfg-leave', mc.leave_when_alone || 'auto');
+  set('cfg-alone-min', mc.alone_minutes || 5);
 
   check('cfg-ollama-enabled', ol.enabled);
   set('cfg-ollama-url', ol.base_url || 'http://127.0.0.1:11434');
@@ -559,6 +577,10 @@ function collectForm() {
       backend: $('cfg-backend').value,
       view_distance: $('cfg-view').value,
       connect_timeout: Number($('cfg-timeout').value) || 20,
+      wait_for_server: $('cfg-wait').value === 'on',
+      wait_minutes: Number($('cfg-wait-min').value) || 10,
+      leave_when_alone: $('cfg-leave').value,
+      alone_minutes: Number($('cfg-alone-min').value) || 5,
     },
     ollama: {
       enabled: $('cfg-ollama-enabled').checked,
@@ -1049,6 +1071,7 @@ function wire() {
   $('btn-disconnect').addEventListener('click', () => api('/api/bot/stop', { method: 'POST' }).catch(reportError));
   $('btn-reconnect').addEventListener('click', () => api('/api/bot/reconnect', { method: 'POST' }).catch(reportError));
   $('btn-save').addEventListener('click', () => saveConfig().catch(reportError));
+  $('btn-probe').addEventListener('click', () => probeServer().catch(reportError));
 
   $('btn-ai-start').addEventListener('click', async () => {
     try { await saveConfig(true); await api('/api/ai/start', { method: 'POST' }); }
@@ -1193,6 +1216,22 @@ function wire() {
       $('raw-config-status').textContent = 'Reset to defaults.';
     } catch (err) { reportError(err); }
   });
+}
+
+/* "Check server": a server list ping without joining (asleep Aternos servers, versions, players). */
+async function probeServer() {
+  const note = $('probe-note');
+  const host = $('cfg-host').value.trim();
+  if (!host) { note.textContent = 'Enter a host first.'; return; }
+  note.textContent = `Pinging ${host}…`;
+  note.dataset.state = 'busy';
+  const port = Number($('cfg-port').value) || 25565;
+  const result = await api(`/api/server/probe?host=${encodeURIComponent(host)}&port=${port}`);
+  const icon = !result.ok ? '🔴' : result.asleep ? '💤' : '🟢';
+  note.textContent = `${icon} ${result.summary}`;
+  note.dataset.state = !result.ok ? 'error' : result.asleep ? 'asleep' : 'online';
+  ui.toast(result.summary, !result.ok ? 'error' : result.asleep ? 'warn' : 'success',
+    { title: !result.ok ? 'Server unreachable' : result.asleep ? 'Server asleep' : 'Server online' });
 }
 
 function reportError(err) {

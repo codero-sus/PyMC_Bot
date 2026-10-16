@@ -16,7 +16,15 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import Request
 
-from pymc_bot import __author__, __author_url__, __license__, __version__, __website__, about
+from pymc_bot import (
+    __author__,
+    __author_url__,
+    __license__,
+    __version__,
+    __website__,
+    about,
+    hosting,
+)
 from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
 from pymc_bot.backends import BackendError, available_backends, node_available
 from pymc_bot.bot import MinecraftBot
@@ -316,6 +324,19 @@ def create_app(
             "backends": available_backends(),
             "ollama": {**ollama_health(), "settings": store.settings.ollama.model_dump()},
             "cortex": {**cortex_health(), "settings": store.settings.cortex.model_dump()},
+            "hosting": hosting_status(),
+        }
+
+    def hosting_status() -> dict[str, Any]:
+        minecraft = store.settings.minecraft
+        profile = hosting.detect_host(minecraft.host)
+        leave, _ = hosting.leave_rule_active(store.settings)
+        return {
+            "provider": profile.as_dict() if profile else None,
+            "tips": hosting.host_tips(minecraft.host, minecraft.auth),
+            "leave_when_alone": leave,
+            "alone_minutes": minecraft.alone_minutes,
+            "alone_for": round(bot_fleet.alone_watcher.alone_for, 1),
         }
 
     # ------------------------------------------------------------------ lifecycle
@@ -450,7 +471,7 @@ def create_app(
     def bot_start(bot: str | None = None) -> dict[str, Any]:
         controller = selected_bot()
         if controller is bot_fleet.primary:
-            if bot_fleet.primary.state in ("connected", "connecting"):
+            if bot_fleet.primary.state in ("connected", "connecting", "waiting"):
                 return {"ok": True, "state": bot_fleet.primary.state, "detail": "already running"}
             try:
                 bot_fleet.primary.start()
@@ -720,6 +741,15 @@ def create_app(
         return {"ok": True, "queued": len(bots), "results": []}
 
     # ------------------------------------------------------------------ cortex
+    @app.get("/api/server/probe")
+    def server_probe(host: str | None = None, port: int | None = None) -> dict[str, Any]:
+        """Ping a Minecraft server without joining: online/asleep, version, players, host tips."""
+        minecraft = store.settings.minecraft
+        result = hosting.probe_server(host or minecraft.host, port or (minecraft.port if not host else 25565))
+        result["summary"] = hosting.describe_probe(result)
+        result["tips"] = hosting.host_tips(result["host"], minecraft.auth)
+        return result
+
     @app.get("/api/cortex/health")
     def cortex_health_endpoint(force: bool = False) -> dict[str, Any]:
         return cortex_health(force=force)

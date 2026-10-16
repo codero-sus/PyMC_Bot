@@ -150,6 +150,10 @@ h3 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; colo
 .hidden { display: none !important; }
 .hint { color: var(--muted); font-size: 0.78rem; }
 .note { color: var(--muted); font-size: 0.78rem; margin: 0.5rem 0 0; line-height: 1.55; }
+.note[data-state="online"] { color: var(--accent); }
+.note[data-state="asleep"] { color: var(--warn); }
+.note[data-state="error"] { color: var(--error); }
+#hosting-note:empty, #probe-note:empty { display: none; }
 .tag {
   color: var(--ai); font-size: 0.68rem; font-weight: 600; border: 1px solid color-mix(in srgb, var(--ai) 40%, transparent);
   padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--ai) 8%, transparent);

@@ -58,10 +58,12 @@ Every request must carry an `id`; the bridge answers exactly once with the same 
 | `spawn` | – | the bot is in the world → `connect()` returns |
 | `end` | `reason` | clean disconnect / TCP close |
 | `kicked` | `reason` | server kicked the bot (whitelist, ban, …) |
+| `server_asleep` | `state`, `motd`, `version_name`, `resolved` | sent instead of joining when the ping answer is a free host's sleeping/starting placeholder (Aternos "● Offline" …); the `connect` request then fails. Python explains it and can wait for the server (`wait_for_server`) |
 | `error` | `message` | connection error, uncaught exception, unhandled rejection |
 
 The snapshot fields mirror the REST `bot` object: `status, username, position, yaw, pitch, health, food,
-dimension, time_of_day, players[], inventory[]`. For premium accounts `username` is the **in-game name**
+dimension, time_of_day, players[], online_players[], inventory[]` (`players` are the ones in view with positions,
+`online_players` every name on the tab list - used by the leave-when-alone rule). For premium accounts `username` is the **in-game name**
 owned by the account, which is not the email used to log in. Python merges each frame into its cached snapshot, so `GET
 /api/status` never blocks on the child process.
 

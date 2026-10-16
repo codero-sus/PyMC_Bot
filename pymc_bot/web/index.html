@@ -92,7 +92,8 @@
         <span class="hint">cracked / offline-mode friendly</span>
       </header>
       <div class="fields two">
-        <label>Host <input id="cfg-host" type="text" placeholder="127.0.0.1" /></label>
+        <label>Host <input id="cfg-host" type="text" placeholder="127.0.0.1 or name.aternos.me"
+          title="IP or address; host:port (e.g. from a hosting panel) also fills in the port" /></label>
         <label>Port <input id="cfg-port" type="number" min="1" max="65535" /></label>
         <label>Auth
           <select id="cfg-auth">
@@ -127,11 +128,28 @@
           </select>
         </label>
         <label>Connect timeout (s) <input id="cfg-timeout" type="number" min="1" max="180" step="1" /></label>
+        <label title="Free hosts put servers to sleep. The bot never starts a server; it only joins once someone has.">Server asleep?
+          <select id="cfg-wait">
+            <option value="off">report it and stop</option>
+            <option value="on">wait for it to start</option>
+          </select>
+        </label>
+        <label>Wait up to (min) <input id="cfg-wait-min" type="number" min="1" max="60" step="1" /></label>
+        <label title="Aternos does not allow bots to keep an empty server online, so there this is always on.">Leave when alone
+          <select id="cfg-leave">
+            <option value="auto">auto (hosts that require it, e.g. Aternos)</option>
+            <option value="always">always</option>
+          </select>
+        </label>
+        <label>…after (min) <input id="cfg-alone-min" type="number" min="1" max="60" step="1" /></label>
       </div>
       <div class="actions">
         <button id="btn-save-connect" class="btn primary">Save &amp; connect</button>
         <button id="btn-save" class="btn">Save settings</button>
+        <button id="btn-probe" class="btn" title="Ping the server without joining: online or asleep, version, players">Check server</button>
       </div>
+      <p id="probe-note" class="note" aria-live="polite"></p>
+      <p id="hosting-note" class="note"></p>
       <p id="auth-note" class="note"></p>
       <p id="backend-note" class="note"></p>
     </section>

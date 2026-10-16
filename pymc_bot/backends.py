@@ -61,6 +61,7 @@ def empty_snapshot(status: str = "disconnected", backend: str = "") -> dict[str,
         "dimension": "overworld",
         "time_of_day": "day",
         "players": [],
+        "online_players": [],
         "inventory": [],
         "server": {"host": "", "port": 0, "version": ""},
         "last_error": None,
@@ -381,6 +382,7 @@ class SimulatedBackend(BaseBackend):
         snap["health"] = round(self._health, 1)
         snap["food"] = round(self._food, 1)
         snap["players"] = self._player_list()
+        snap["online_players"] = list(self._players)
         snap["inventory"] = [
             {"name": name, "count": count} for name, count in sorted(self._inventory.items()) if count > 0
         ]
@@ -529,6 +531,19 @@ _OUTDATED_CLIENT = re.compile(
     re.IGNORECASE,
 )
 _VIA_HINT = "install ViaVersion + ViaBackwards on the server"
+_ASLEEP_KICK = re.compile(
+    r"server is (?:currently )?(offline|starting|sleeping|stopping|asleep)|server is not (?:running|online)",
+    re.IGNORECASE,
+)
+_ONLINE_MODE = re.compile(
+    r"failed to verify username|unverified_username|not authenticated with|invalid session|"
+    r"authservers? (?:are )?down|premium (?:account )?(?:is )?required|online[- ]mode",
+    re.IGNORECASE,
+)
+_WHITELIST = re.compile(r"not white-?listed|multiplayer\.disconnect\.not_whitelisted", re.IGNORECASE)
+_THROTTLE = re.compile(r"connection throttled|multiplayer\.disconnect\.throttled|logging in too fast", re.IGNORECASE)
+_DUPLICATE = re.compile(r"logged in from another location|multiplayer\.disconnect\.duplicate_login", re.IGNORECASE)
+_BANNED = re.compile(r"multiplayer\.disconnect\.banned|you are banned|banned from this server", re.IGNORECASE)
 
 
 def explain_connection_error(
@@ -538,6 +553,7 @@ def explain_connection_error(
     port: int | None = None,
     latest: str | None = None,
     fallback: dict[str, Any] | None = None,
+    asleep: dict[str, Any] | None = None,
 ) -> str:
     """Turn a raw mineflayer / Node error into a sentence that says what to do.
 
@@ -545,9 +561,46 @@ def explain_connection_error(
     supports; ``fallback`` is the bridge's ``version_fallback`` event when the bot joined as an older
     version because the server is newer than mineflayer.
     """
+    from pymc_bot.hosting import (
+        GENERIC_CRACKED_HINT,
+        GENERIC_START_HINT,
+        GENERIC_WHITELIST_HINT,
+        detect_host,
+    )
+
     text = str(message or "").strip()
     where = f"{host}:{port}" if host and port else (host or "the server")
     newest = latest or (fallback or {}).get("latest") or "an older version"
+    profile = detect_host(host or "", str((asleep or {}).get("motd") or text))
+    named = f" ({profile.name})" if profile else ""
+
+    if asleep or _ASLEEP_KICK.search(text):
+        state = (asleep or {}).get("state")
+        if not state:
+            found = _ASLEEP_KICK.search(text)
+            state = (found.group(1) if found and found.group(1) else "offline").lower()
+        motd = (asleep or {}).get("motd") or ""
+        shows = f' - it shows "{motd}"' if motd else ""
+        start = profile.start_hint if profile else GENERIC_START_HINT
+        return (
+            f"{where}{named} is {state}{shows}. {start} "
+            "Tip: turn on 'Wait for the server' and the bot joins as soon as it is up."
+        )
+    if _ONLINE_MODE.search(text):
+        hint = profile.cracked_hint if profile else GENERIC_CRACKED_HINT
+        return f"The server refused the offline-mode login. {hint} (Server said: {text})"
+    if _WHITELIST.search(text):
+        hint = (profile.whitelist_hint if profile and profile.whitelist_hint else GENERIC_WHITELIST_HINT)
+        return f"The bot is not on the whitelist. {hint}"
+    if _THROTTLE.search(text):
+        return (
+            "The server limits how fast players may (re)join. Wait a few seconds before connecting again; "
+            "when adding many bots raise 'Gap between joins' to 4 s or more."
+        )
+    if _DUPLICATE.search(text):
+        return "Someone else joined with the same name, so the server kicked this bot. Give every bot its own name."
+    if _BANNED.search(text):
+        return f"This bot name is banned on the server. (Server said: {text})"
 
     match = _NO_VERSION_DATA.search(text)
     if match:
@@ -605,6 +658,7 @@ class NodeBridgeBackend(BaseBackend):
         self._spawned = threading.Event()
         self._connect_error: str | None = None
         self._fallback: dict[str, Any] | None = None  # last version_fallback event from the bridge
+        self._asleep: dict[str, Any] | None = None  # last server_asleep event (free host placeholder)
         self._host = ""
         self._port = 0
         self._version = ""
@@ -645,6 +699,8 @@ class NodeBridgeBackend(BaseBackend):
         self._spawned.clear()
         self._connect_error = None
         self._fallback = None
+        self._asleep = None
+        self._snapshot.pop("server_state", None)
         response = self._request(
             "connect",
             {
@@ -757,6 +813,9 @@ class NodeBridgeBackend(BaseBackend):
                 "node",
             )
             self._ready.set()
+        elif event == "server_asleep":
+            self._asleep = dict(payload)
+            self._snapshot["server_state"] = str(payload.get("state") or "offline")
         elif event == "version_fallback":
             self._fallback = dict(payload)
             # The bridge logs the details itself; remember them to explain a kick that may follow.
@@ -823,7 +882,13 @@ class NodeBridgeBackend(BaseBackend):
             port=self._port,
             latest=minecraft.get("latest"),
             fallback=self._fallback,
+            asleep=self._asleep,
         )
+
+    @property
+    def server_asleep(self) -> dict[str, Any] | None:
+        """The ``server_asleep`` details when the last connect found a sleeping/starting server."""
+        return dict(self._asleep) if self._asleep else None
 
     def _apply_state(self, state: dict[str, Any]) -> None:
         snapshot = dict(self._snapshot)

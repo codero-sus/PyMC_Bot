@@ -240,7 +240,8 @@ def test_explain_connection_error(raw: str, expected: list[str]):
 
 
 def test_explain_connection_error_keeps_unknown_messages():
-    assert explain_connection_error("You are banned", latest="26.1") == "You are banned"
+    assert explain_connection_error("Kicked by an operator", latest="26.1") == "Kicked by an operator"
+    assert "banned" in explain_connection_error("You are banned from this server!")
 
 
 def test_mineflayer_versions_reads_the_installed_package(tmp_path: Path, monkeypatch):
