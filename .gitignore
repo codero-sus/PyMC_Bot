@@ -18,6 +18,8 @@ npm-debug.log*
 # Local runtime state
 pymc_bot_config.json
 .pymc_profiles/
+.pymc_backup/
+.pymc_update.json
 *.log
 
 # Editors / OS

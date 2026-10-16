@@ -199,6 +199,21 @@ repository's **Actions** tab → the latest green **ci** run → *Artifacts* →
 3. Start the Fabric profile and type `/pymc version` – it prints the mod, game and compat
    layer versions.
 
+### Update
+
+From the PyMC_Bot folder:
+
+```bash
+./updater.sh --mod-only                 # macOS / Linux  (updater.cmd --mod-only on Windows)
+./updater.sh --mod-only --mc 1.21.4     # first install for 1.21.4
+./updater.sh --mod-only --check         # just show whether a newer jar exists
+```
+
+It reads the `+<mc>` part of the installed jar's name, downloads the same Minecraft version from the
+newest release, checks the SHA-256 and `fabric.mod.json`, and renames the old jar to `*.jar.old`
+(Fabric ignores it). Use `--mods-dir <folder>` for launchers such as Prism or MultiMC, and close
+Minecraft first on Windows. See [Updating](../README.md#updating) for the rest.
+
 ### Troubleshooting the build
 
 | Problem | Fix |
