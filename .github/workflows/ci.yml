@@ -96,9 +96,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Unit tests (offline, with none of the bot's packages installed)
+        shell: bash
         run: |
+          set -o pipefail
           pip install pytest
-          python -m pytest tests/test_updater.py -q --noconftest
+          python -m pytest tests/test_updater.py -q --noconftest -rfE 2>&1 | tee updater-tests.log
+      - name: Publish test failure diagnostics
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_diagnostics.py updater-tests.log --title "updater tests failed (${{ matrix.os }})"
       - name: Windows wrapper (updater.cmd)
         if: runner.os == 'Windows'
         shell: cmd
