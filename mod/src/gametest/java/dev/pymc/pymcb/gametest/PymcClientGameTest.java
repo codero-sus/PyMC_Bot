@@ -8,10 +8,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import dev.pymc.pymcb.PlaytimeConfig;
 import dev.pymc.pymcb.PymcPlaytimeMod;
 import dev.pymc.pymcb.client.PlaytimeRecorder;
 import dev.pymc.pymcb.client.PymcPlaytimeClient;
-import dev.pymc.pymcb.client.PymcSettingsScreen;
+import dev.pymc.pymcb.client.PymcBotScreen;
 import dev.pymc.pymcb.client.compat.Mc;
 import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
@@ -46,9 +47,15 @@ public class PymcClientGameTest implements FabricClientGameTest {
     @Override
     public void runTest(ClientGameTestContext context) {
         StringBuilder report = new StringBuilder();
-        report.append("PyMC Playtime Recorder ").append(PymcPlaytimeMod.modVersion())
+        report.append(PymcPlaytimeMod.NAME).append(' ').append(PymcPlaytimeMod.modVersion())
               .append(" on Minecraft ").append(PymcPlaytimeMod.minecraftVersion())
               .append(" (compat ").append(Mc.ERA).append(")\n");
+
+        // The mod is PyMC Bot (id pymcbot); the pre-0.6 id still resolves through "provides".
+        check(FabricLoader.getInstance().isModLoaded("pymcbot"), "mod id pymcbot is not loaded");
+        check(FabricLoader.getInstance().isModLoaded("pymcplaytime"), "the old id pymcplaytime is not provided");
+        check(PlaytimeConfig.file().getFileName().toString().equals("pymcbot.properties"),
+                "config file should be pymcbot.properties, is " + PlaytimeConfig.file());
 
         try (TestSingleplayerContext singleplayer = context.worldBuilder().create()) {
             context.waitFor(client -> client.player != null && client.level != null);
@@ -74,22 +81,37 @@ public class PymcClientGameTest implements FabricClientGameTest {
             check("REC".equals(playing.label()), "HUD badge state should be REC, was " + playing.label());
             context.takeScreenshot("pymc-1-recording-hud");
 
-            // The settings screen opens, and sampling holds while it is open (pauseInMenus=true).
-            context.setScreen(() -> new PymcSettingsScreen(null));
+            // The PyMC Bot settings page opens, and sampling holds while it is open (pauseInMenus=true).
+            context.setScreen(() -> new PymcBotScreen(null, PymcBotScreen.Page.RECORDER));
             context.waitTicks(5);
             long before = context.computeOnClient(client -> recorder().totalSamples());
             context.waitTicks(20);
             long after = context.computeOnClient(client -> recorder().totalSamples());
-            check(context.computeOnClient(client -> Mc.screenOpen(client)), "settings screen did not open");
+            check(context.computeOnClient(client -> Mc.screenOpen(client)), "settings page did not open");
             check(before == after, "samples were written while a menu was open (" + before + " -> " + after + ")");
-            context.takeScreenshot("pymc-2-settings-screen");
+
+            // Every tab renders (one screenshot each), and a page reset restores the defaults.
+            int shot = 2;
+            for (PymcBotScreen.Page page : PymcBotScreen.Page.values()) {
+                context.setScreen(() -> new PymcBotScreen(null, page));
+                context.waitTicks(3);
+                context.takeScreenshot("pymc-" + shot++ + "-settings-" + page.name().toLowerCase(java.util.Locale.ROOT));
+            }
+            boolean blocksRestored = context.computeOnClient(client -> {
+                PlaytimeConfig.get().setIncludeBlocks(false);
+                PlaytimeConfig.get().setMaxNearby(64);
+                PlaytimeConfig.get().resetRecording();
+                return PlaytimeConfig.get().includeBlocks && PlaytimeConfig.get().maxNearby == 12;
+            });
+            check(blocksRestored, "Reset page did not restore the Recording defaults");
+            report.append("settings page: ").append(PymcBotScreen.Page.values().length).append(" tabs rendered\n");
             context.setScreen(() -> null);
             context.waitTicks(5);
 
             // Pause / resume through the same calls the hotkey uses.
             context.computeOnClient(client -> recorder().pause());
             check(context.computeOnClient(client -> recorder().isPaused()), "pause did not pause");
-            context.takeScreenshot("pymc-3-paused-hud");
+            context.takeScreenshot("pymc-" + shot + "-paused-hud");
             context.computeOnClient(client -> recorder().resume());
             context.getInput().holdKeyFor(options -> options.keyDown, 10);
 

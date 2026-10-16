@@ -1,6 +1,6 @@
 """Observation -> feature vector encoding, shared by the trainer and live inference.
 
-The mod (:file:`mod/`, ``pymcplaytime``) writes one observation per sample::
+The mod (:file:`mod/`, ``pymcbot``) writes one observation per sample::
 
     {"tick": 40, "activity": "forward", "x": 12.5, "y": 64.0, "z": -3.2,
      "vx": 0.1, "vy": 0.0, "vz": -0.2, "moved": 0.21, "yaw": 91.0, "pitch": 4.5,

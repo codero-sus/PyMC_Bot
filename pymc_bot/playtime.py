@@ -6,7 +6,7 @@ Two file formats exist, both line delimited JSON (NDJSON):
   Fabric mod as the player plays (one observation per sample, the action is the
   ``activity`` field).
 * **dataset file** -- ``<gameDir>/pymc-playtime/dataset.jsonl``, produced by
-  ``/pymc export`` in game or by :func:`export_dataset` here. Each line is one training
+  ``/pymcbot export`` in game or by :func:`export_dataset` here. Each line is one training
   example::
 
       {"instruction": "...", "input": {<observation>}, "output": "{\\"action\\": \\"forward\\"}",
@@ -148,7 +148,7 @@ def export_dataset(
     *,
     append: bool = False,
 ) -> Path:
-    """Mirror ``/pymc export`` outside the game (dataset dir -> dataset.jsonl)."""
+    """Mirror ``/pymcbot export`` outside the game (dataset dir -> dataset.jsonl)."""
     source_path = Path(source).expanduser()
     root = source_path if source_path.is_dir() else source_path.parent
     if destination is None:
@@ -221,7 +221,7 @@ def synthesize_playtime(
 
     ``advanced=True`` also writes the entity and item half of the schema (``entities``,
     ``items``, ``held_item``, ``armor``, ``ground_items``), which is what the mod records
-    with ``/pymc advanced on`` and what an advanced model trains on.
+    with ``/pymcbot advanced on`` and what an advanced model trains on.
     """
     rng = random.Random(seed)
     samples_per_minute = 60.0 / (sample_ticks * 0.05)

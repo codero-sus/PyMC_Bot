@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Every Minecraft version the PyMC Playtime Recorder is built for, one jar per entry.",
+    "Every Minecraft version the PyMC Bot mod is built for, one jar per entry.",
     "Build one with:  ./gradlew build -Pmc=<minecraft>   (default: the 'default' entry).",
     "Pins come from https://fabricmc.net/develop and the official fabric-example-mod branches.",
     "obfuscated=true  -> Loom plugin net.fabricmc.fabric-loom-remap + Mojang mappings (1.21.x).",

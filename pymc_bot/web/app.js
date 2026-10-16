@@ -806,7 +806,7 @@ function renderTraining(training) {
     if (dataset.entity_coverage !== undefined) pieces.push(`entity coverage ${(dataset.entity_coverage * 100).toFixed(0)}%`);
     if (dataset.item_coverage !== undefined) pieces.push(`item coverage ${(dataset.item_coverage * 100).toFixed(0)}%`);
   } else if (dataset.exists) {
-    pieces.push('dataset has no entity/item data yet — record with /pymc advanced on');
+    pieces.push('dataset has no entity/item data yet — record with /pymcbot advanced on');
   }
   if (advanced.trained && advanced.run) {
     pieces.push(`${advanced.run}: ${advanced.entity_slots || 0} entity word(s), ${advanced.item_slots || 0} item word(s)`);

@@ -205,7 +205,7 @@ curl localhost:8000/api/policy/preview
 ```
 
 `advanced: true` learns the entity and item vocabularies the recording contains (the mod writes them
-with `/pymc advanced on`) and feeds each word to the model with its distance and bearing; `entity_slots`
+with `/pymcbot advanced on`) and feeds each word to the model with its distance and bearing; `entity_slots`
 and `item_slots` cap the vocabularies. The learned words are stored in the checkpoint and in
 `model.json`, so the bot encodes the live world into exactly the same slots.
 

@@ -121,7 +121,7 @@ def test_compat_eras_match_the_api_changes():
     for era in ("v1_21_5", "v1_21_9", "v1_21_11", "v26_1", "v26_2"):
         assert "getSelectedSlot()" in files[era]
     for era in ("v1_21_1", "v1_21_5"):
-        assert 'String CATEGORY = "key.categories.pymcplaytime"' in files[era]
+        assert 'String CATEGORY = "key.categories.pymcbot"' in files[era]
     assert "ResourceLocation.fromNamespaceAndPath" in files["v1_21_9"]
     for era in ("v1_21_11", "v26_1", "v26_2"):
         assert "Identifier.fromNamespaceAndPath" in files[era]
@@ -140,7 +140,11 @@ def test_fabric_mod_json_is_filled_per_version():
         assert placeholder in text
     release = json.loads(re.sub(r"\$\{(\w+)\}", "1", text.replace("${gametest_entrypoint}", "")))
     assert release["depends"]["fabric-api"] == "*"
-    assert list(release["entrypoints"]) == ["client"], "release jars carry no test entrypoint"
+    assert list(release["entrypoints"]) == ["client", "modmenu"], "release jars carry no test entrypoint"
+    assert release["id"] == "pymcbot" and release["name"] == "PyMC Bot"
+    assert release["provides"] == ["pymcplaytime"], "the pre-0.6 id must keep resolving"
+    assert release["entrypoints"]["modmenu"] == ["dev.pymc.pymcb.client.PymcModMenu"]
+    assert release["icon"] == "assets/pymcbot/icon.png" and (MOD / "src/main/resources" / release["icon"]).is_file()
 
 
 def gametest_expansion() -> str:
@@ -165,7 +169,7 @@ def test_game_test_builds_add_the_client_gametest_entrypoint():
 def test_game_test_code_never_reaches_release_jars():
     gradle = (MOD / "build.gradle").read_text()
     assert "providers.gradleProperty('gameTest')" in gradle
-    assert "archivesName = gameTest ? 'pymcplaytime-gametest' : 'pymcplaytime'" in gradle
+    assert "archivesName = gameTest ? 'pymcbot-gametest' : 'pymcbot'" in gradle
     block = gradle[gradle.index("if (gameTest) {"):]
     assert block.index("srcDir 'src/gametest/java'") < block.index("}"), "test sources only under -PgameTest"
     assert "ClientProductionRunTask" in gradle and "runProductionClientGameTest" in gradle
@@ -196,9 +200,13 @@ def test_gui_bridge_matches_each_era():
     assert "client.gui.hud.isHidden()" in files["v26_2"]
     assert all("client.options.hideGui" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
     assert all("client.setScreen(screen)" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
-    assert "ResourceLocation.fromNamespaceAndPath(\"pymcplaytime\", \"recorder_badge\")" in files["v1_21_9"]
+    assert "ResourceLocation.fromNamespaceAndPath(\"pymcbot\", \"recorder_badge\")" in files["v1_21_9"]
     for era, text in files.items():
         assert "abstract static class PaintedScreen extends Screen" in text, era
+        # the settings page gets the mouse position for its hover help
+        assert "paint(canvas(graphics), mouseX, mouseY);" in text, era
+        assert "protected abstract void paint(HudCanvas canvas, int mouseX, int mouseY);" in text, era
+        assert "pymcplaytime" not in text, era
 
 
 def test_build_script_reads_the_version_table():
@@ -214,7 +222,7 @@ def test_ci_builds_every_version_from_the_table():
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "mod/versions.json" in ci
     assert "matrix.mc" in ci and "-Pmc=${{ matrix.mc }}" in ci
-    assert "pymcplaytime-all-versions" in ci
+    assert "pymcbot-all-versions" in ci and "pymcplaytime" not in ci
 
 
 def test_ci_runs_the_in_game_test_and_publishes_a_release():
@@ -234,22 +242,26 @@ def test_ci_runs_the_in_game_test_and_publishes_a_release():
 
 
 def test_hotkeys_have_translations():
-    lang = json.loads((MOD / "src/main/resources/assets/pymcplaytime/lang/en_us.json").read_text())
+    lang = json.loads((MOD / "src/main/resources/assets/pymcbot/lang/en_us.json").read_text())
     client = (MOD / "src/client/java/dev/pymc/pymcb/client/PymcPlaytimeClient.java").read_text()
     for key in re.findall(r'registerKey\("([^"]+)"\)', client):
         assert key in lang
-    assert "key.categories.pymcplaytime" in lang and "key.category.pymcplaytime.recorder" in lang
-    assert "key.pymcplaytime.settings" in lang
+    assert "key.categories.pymcbot" in lang and "key.category.pymcbot.recorder" in lang
+    assert lang["key.categories.pymcbot"] == "PyMC Bot" == lang["key.category.pymcbot.recorder"]
+    assert lang["key.pymcbot.settings"] == "Open PyMC Bot settings"
+    assert not (MOD / "src/main/resources/assets/pymcplaytime").exists()
 
 
 def test_settings_screen_and_hud_are_wired_up():
     client_dir = MOD / "src/client/java/dev/pymc/pymcb/client"
     client = (client_dir / "PymcPlaytimeClient.java").read_text()
     assert "Mc.registerHud(RecorderHud::paint)" in client
-    assert "new PymcSettingsScreen(null)" in client and "openSettingsNextTick" in client
+    assert "new PymcBotScreen(null)" in client and "openSettingsNextTick" in client
     commands = (client_dir / "PymcCommands.java").read_text()
-    assert 'guarded("settings")' in commands and 'literal("hud")' in commands
-    screen = (client_dir / "PymcSettingsScreen.java").read_text()
+    assert 'guarded("settings")' in commands and 'guarded("config")' in commands and 'literal("hud")' in commands
+    assert 'ROOTS = {"pymcbot", "pymc"}' in commands and "PymcBotScreen.CHAT_PREFIX" in commands
+    assert not (client_dir / "PymcSettingsScreen.java").exists()
+    screen = (client_dir / "PymcBotScreen.java").read_text()
     assert "extends Mc.PaintedScreen" in screen and "Mc.openScreen(" in screen
     assert "Made with \\u2764 by codero-sus" in screen
     config = (MOD / "src/main/java/dev/pymc/pymcb/PlaytimeConfig.java").read_text()
@@ -268,3 +280,55 @@ def test_build_all_scripts_cover_both_shells():
     ps = (MOD / "build-all.ps1").read_text()
     assert "versions.json" in sh and "versions.json" in ps
     assert "-Pmc=" in sh and "-Pmc=" in ps
+
+
+def test_pymc_bot_settings_page_covers_every_option():
+    """The PyMC Bot config & settings page has a button for every saved option."""
+    client_dir = MOD / "src/client/java/dev/pymc/pymcb/client"
+    screen = (client_dir / "PymcBotScreen.java").read_text()
+    config = (MOD / "src/main/java/dev/pymc/pymcb/PlaytimeConfig.java").read_text()
+    saved = re.findall(r'props\.setProperty\("([a-zA-Z]+)"', config)
+    saved = [key for key in saved if not key.startswith("_")]
+    assert len(saved) >= 15
+    missing = [key for key in saved if f"cfg().{key}" not in screen]
+    assert not missing, f"options without a button on the settings page: {missing}"
+    for page in ('RECORDER("Recorder")', 'RECORDING("Recording")', 'ADVANCED("Advanced")',
+                 'HUD("HUD & chat")', 'ABOUT("About")'):
+        assert page in screen
+    for reset in ("resetRecording", "resetAdvanced", "resetHud"):
+        assert f"public void {reset}()" in config and f"cfg().{reset}()" in screen
+    assert 'PymcPlaytimeMod.NAME + " - Settings"' in screen
+    assert "option.hovered(mouseX, mouseY)" in screen, "hover help"
+    assert "RecorderHud.draw(offset(" in screen, "live badge preview"
+    # only widgets that exist unchanged on every version (no sliders / edit boxes / tooltips)
+    for risky in ("AbstractSliderButton", "EditBox", "CycleButton", "Tooltip", "getWidth()"):
+        assert risky not in screen, risky
+
+
+def test_mod_menu_integration_ships_no_stubs():
+    client_root = MOD / "src/client/java"
+    stubs = client_root / "com/terraformersmc/modmenu/api"
+    assert (stubs / "ModMenuApi.java").is_file() and (stubs / "ConfigScreenFactory.java").is_file()
+    factory = (stubs / "ConfigScreenFactory.java").read_text()
+    assert "S create(Screen parent);" in factory, "must match Mod Menu's real signature"
+    hook = (client_root / "dev/pymc/pymcb/client/PymcModMenu.java").read_text()
+    assert "implements ModMenuApi" in hook and "new PymcBotScreen(parent)" in hook
+    gradle = (MOD / "build.gradle").read_text()
+    assert "def modMenuStubs = 'com/terraformersmc/**'" in gradle
+    assert gradle.count("exclude modMenuStubs") == 2, "excluded from the jar and the sources jar"
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "ships the Mod Menu API stubs" in ci
+
+
+def test_mod_is_named_pymc_bot_and_migrates_old_config():
+    config = (MOD / "src/main/java/dev/pymc/pymcb/PlaytimeConfig.java").read_text()
+    assert 'FILE_NAME = "pymcbot.properties"' in config
+    assert 'LEGACY_FILE_NAME = "pymcplaytime.properties"' in config and "migrate" in config
+    mod = (MOD / "src/main/java/dev/pymc/pymcb/PymcPlaytimeMod.java").read_text()
+    assert 'MOD_ID = "pymcbot"' in mod and 'NAME = "PyMC Bot"' in mod
+    assert "rootProject.name = 'pymcbot'" in (MOD / "settings.gradle").read_text()
+    # Nothing a player reads still says "PyMC Playtime" or prefixes chat with "[pymc]".
+    for path in (MOD / "src").rglob("*.java"):
+        text = code_only(path.read_text())
+        assert '"[pymc] "' not in text, path
+        assert "PyMC Playtime Recorder\"" not in text and "\"PyMC Playtime" not in text, path

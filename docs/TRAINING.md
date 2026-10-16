@@ -5,9 +5,9 @@ PyMC_Bot can learn **how you play** and then play that way itself. The loop is:
 ```
   Minecraft + ./mod                  pymc_bot train                 pymc_bot run
   ─────────────────                  ───────────────                ─────────────
-  /pymc record start      ──▶   dataset.jsonl   ──▶  models/<run>/  ──▶  brain = trained
+  /pymcbot record start      ──▶   dataset.jsonl   ──▶  models/<run>/  ──▶  brain = trained
   play normally                                        latest.npz        (panel or CLI)
-  /pymc export                                         model.json
+  /pymcbot export                                         model.json
                                                        checkpoints/
 ```
 
@@ -16,20 +16,20 @@ Everything runs locally: no cloud, no GPU, no Ollama required for the trained br
 ## 1. Record playtime (Fabric mod)
 
 ```text
-/pymc record start
+/pymcbot record start
 # ... play for 10-60 minutes: walk, mine, fight, build, look around ...
-/pymc record stop
-/pymc export
+/pymcbot record stop
+/pymcbot export
 ```
 
 That writes `<gameDir>/pymc-playtime/dataset.jsonl`. The mod runs on every Fabric release from
 Minecraft 1.21.1 to 26.3 (one jar per version, all on the [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases)). The REC badge
-shows that recording is running; `/pymc settings` has buttons for every option. See [`mod/README.md`](../mod/README.md) for
+shows that recording is running; the PyMC Bot settings page (`/pymcbot settings`, a hotkey or Mod Menu) has a button for every option. See [`mod/README.md`](../mod/README.md) for
 [how to compile it](../mod/README.md#compiling-the-mod), the exact sample format, the sampling
-rate (`/pymc sample <ticks>`), the hotkeys and the dataset-quality options (menus, idle skipping,
+rate (`/pymcbot sample <ticks>`), the hotkeys and the dataset-quality options (menus, idle skipping,
 auto-record). Copy that file next to the bot (or point `--dataset` at it).
 
-Run `/pymc advanced on` before recording (and `/pymc train` afterwards) if you want the recording to
+Run `/pymcbot advanced on` before recording (and `/pymcbot train` afterwards) if you want the recording to
 also carry entities and items — see [advanced training](#advanced-training-entities-and-items).
 
 No Minecraft handy? You can still exercise the whole pipeline with a synthetic session:
@@ -124,14 +124,14 @@ swing", which is what makes a basic model punch every player that walks past it.
 **Record it (mod).** Turn the recording on before you play:
 
 ```
-/pymc advanced on          # entities, items, held item, armour and drops are written from now on
-/pymc entities 24          # how many entities per sample (default 24, 0 = none)
-/pymc drops 8              # how many dropped stacks per sample (default 8)
-/pymc advanced status      # what is being recorded
-/pymc record start
+/pymcbot advanced on          # entities, items, held item, armour and drops are written from now on
+/pymcbot entities 24          # how many entities per sample (default 24, 0 = none)
+/pymcbot drops 8              # how many dropped stacks per sample (default 8)
+/pymcbot advanced status      # what is being recorded
+/pymcbot record start
 ... play normally ...
-/pymc record stop
-/pymc export               # dataset.jsonl now carries entities/items/held_item/armor/ground_items
+/pymcbot record stop
+/pymcbot export               # dataset.jsonl now carries entities/items/held_item/armor/ground_items
 ```
 
 **Train it.** Either tick *Advanced mode (entities + items)* in the panel or pass the flag:
@@ -226,7 +226,7 @@ HTTP API end to end. Transformer tests are skipped when PyTorch is not installed
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use `--engine mlp`. |
 | Bot never uses the model | `agent.mode` must be `trained` and `training.active_run` must point at a checkpoint (`python -m pymc_bot models`). |
 | Val accuracy looks low but play looks right | Compare `val_balanced_accuracy` too: rare actions are weighted up on purpose. |
-| Advanced model behaves like a basic one | `--inspect` shows an empty vocabulary: the recording was made before `/pymc advanced on`, so there is no entity/item data to learn from. |
+| Advanced model behaves like a basic one | `--inspect` shows an empty vocabulary: the recording was made before `/pymcbot advanced on`, so there is no entity/item data to learn from. |
 | An advanced checkpoint refuses to load | The vocabulary in `model.json` and in the checkpoint must match the build; retrain (a basic model cannot be upgraded in place). |
 
 ---

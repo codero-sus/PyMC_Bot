@@ -4,9 +4,9 @@ The pipeline, end to end::
 
     Minecraft + mod (./mod)          python -m pymc_bot train
     ───────────────────────          ──────────────────────
-    /pymc record start               dataset.jsonl ─▶ features (pymc_bot.features)
+    /pymcbot record start               dataset.jsonl ─▶ features (pymc_bot.features)
     ...play normally...                              ─▶ action + motion targets
-    /pymc export                     ─▶ models/<run>/latest.npz   (self-checkpointed)
+    /pymcbot export                     ─▶ models/<run>/latest.npz   (self-checkpointed)
                                         models/<run>/checkpoints/step-000500.npz
                                         models/<run>/trainer_state.json   (resumable)
                                         models/<run>/metrics.jsonl|.csv
@@ -94,7 +94,7 @@ class TrainConfig:
     class_weight_power: float = 0.5
     include_blocks: bool = True
     #: Advanced training: learn entity and item vocabularies from the playtime and feed
-    #: them to the model (layout v2). The mod records them with ``/pymc advanced on``.
+    #: them to the model (layout v2). The mod records them with ``/pymcbot advanced on``.
     advanced: bool = False
     entity_slots: int = DEFAULT_ENTITY_SLOTS
     item_slots: int = DEFAULT_ITEM_SLOTS
@@ -190,7 +190,7 @@ def build_dataset(
     if not examples:
         raise ValueError(
             f"no playtime samples found in {path!r} - record some with the Fabric mod "
-            "(/pymc record start ... /pymc export) or generate a demo set with "
+            "(/pymcbot record start ... /pymcbot export) or generate a demo set with "
             "'python -m pymc_bot train --simulate-out demo.jsonl'"
         )
     transitions = pair_transitions(examples)

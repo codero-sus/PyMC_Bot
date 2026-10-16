@@ -39,7 +39,7 @@ import net.minecraft.world.phys.Vec3;
  * appended to {@code <gameDir>/pymc-playtime/episodes/<run>.ndjsonl}. A record holds the
  * player's local state (position, velocity, orientation, hotbar, health, the 3x3x3 block
  * neighbourhood and the nearby entities) plus the action that was pressed since the previous
- * sample. {@code /pymc export} flattens every episode into {@code pymc-playtime/dataset.jsonl},
+ * sample. {@code /pymcbot export} flattens every episode into {@code pymc-playtime/dataset.jsonl},
  * one instruction/completion pair per line, which is what
  * {@code python -m pymc_bot train --dataset ...} consumes.
  *
@@ -95,7 +95,7 @@ public final class PlaytimeRecorder {
     // Sticky input flags: true if the key/button was pressed at any point since the last sample.
     private boolean forward, back, left, right, jump, sneak, attack, use;
 
-    /** Manually paused with /pymc pause or the pause hotkey (the episode file stays open). */
+    /** Manually paused with /pymcbot pause or the pause hotkey (the episode file stays open). */
     private boolean paused;
     /** Set when a world was joined with autoRecord on; the start happens on the first tick with a player. */
     private boolean pendingAutoStart;
@@ -106,7 +106,7 @@ public final class PlaytimeRecorder {
     private long pausedTicks;
     /** Samples not written because the player was idle, this run. */
     private long idleSkipped;
-    /** Wall-clock start of the run (unlike startedAtMillis it survives /pymc record episode). */
+    /** Wall-clock start of the run (unlike startedAtMillis it survives /pymcbot record episode). */
     private long runStartedMillis;
     /** True while samples are being skipped because the player is AFK (shown on the HUD badge). */
     private boolean idleSkipping;
@@ -120,7 +120,7 @@ public final class PlaytimeRecorder {
     /** Starts a new recording run (no-op when already recording). */
     public synchronized String start() {
         if (active) {
-            return "already recording as '" + runName + "' - use /pymc record stop";
+            return "already recording as '" + runName + "' - use /pymcbot record stop";
         }
         resolvePaths();
         runName = "run-" + LocalDateTime.now().format(RUN_STAMP) + "-" + episodeNumber;
@@ -157,13 +157,13 @@ public final class PlaytimeRecorder {
         resetInputs();
         writeMeta();
         return "recording -> " + episodesDir.resolve(runName + ".ndjsonl")
-                + "\nplay normally, then run /pymc record stop and /pymc export";
+                + "\nplay normally, then run /pymcbot record stop and /pymcbot export";
     }
 
     /** Stops the active recording and updates meta.json. */
     public synchronized String stop() {
         if (!active) {
-            return "not recording - start one with /pymc record start";
+            return "not recording - start one with /pymcbot record start";
         }
         closeWriter();
         active = false;
@@ -199,7 +199,7 @@ public final class PlaytimeRecorder {
     /** Closes the current episode file and starts a fresh one inside the same run. */
     public synchronized String endEpisode() {
         if (!active) {
-            return "not recording - start one with /pymc record start";
+            return "not recording - start one with /pymcbot record start";
         }
         if (episodeSamples == 0) {
             return "the current episode has no samples yet";
@@ -243,7 +243,7 @@ public final class PlaytimeRecorder {
             pendingAutoStart = false;
             if (!active) {
                 String result = start();
-                tell(player, active ? "auto-record started (/pymc autorecord off to disable)" : result);
+                tell(player, active ? "auto-record started (/pymcbot autorecord off to disable)" : result);
             }
         }
         tick++;
@@ -297,20 +297,20 @@ public final class PlaytimeRecorder {
     /** Pauses sampling without closing the episode (no-op when not recording). */
     public synchronized String pause() {
         if (!active) {
-            return "not recording - start one with /pymc record start";
+            return "not recording - start one with /pymcbot record start";
         }
         if (paused) {
-            return "already paused - /pymc resume continues";
+            return "already paused - /pymcbot resume continues";
         }
         paused = true;
         flushQuietly();
         writeMeta();
-        return "paused '" + runName + "' at " + totalSamples + " sample(s) - /pymc resume continues";
+        return "paused '" + runName + "' at " + totalSamples + " sample(s) - /pymcbot resume continues";
     }
 
     public synchronized String resume() {
         if (!active) {
-            return "not recording - start one with /pymc record start";
+            return "not recording - start one with /pymcbot record start";
         }
         if (!paused) {
             return "not paused";
@@ -357,7 +357,7 @@ public final class PlaytimeRecorder {
     /** Sends a chat line to the local player when notifications are on. */
     static void tell(LocalPlayer player, String message) {
         if (player != null && PlaytimeConfig.get().notifications) {
-            Mc.message(player, Component.literal("[pymc] " + message.split("\n", 2)[0]));
+            Mc.message(player, Component.literal(PymcBotScreen.CHAT_PREFIX + message.split("\n", 2)[0]));
         }
     }
 
@@ -777,7 +777,7 @@ public final class PlaytimeRecorder {
             return;
         }
         StringBuilder sb = new StringBuilder("{\n");
-        sb.append("  \"mod\": \"pymcplaytime\",\n");
+        sb.append("  \"mod\": \"pymcbot\",\n");
         sb.append("  \"mode\": \"live\",\n");
         sb.append("  \"mod_version\": \"").append(Json.escape(PymcPlaytimeMod.modVersion())).append("\",\n");
         sb.append("  \"minecraft_version\": \"").append(Json.escape(PymcPlaytimeMod.minecraftVersion())).append("\",\n");
@@ -816,7 +816,7 @@ public final class PlaytimeRecorder {
     public synchronized String export() {
         resolvePaths();
         if (!Files.isDirectory(episodesDir)) {
-            return "nothing recorded yet - run /pymc record start first";
+            return "nothing recorded yet - run /pymcbot record start first";
         }
         String system = "You are a Minecraft player bot. Given the observation, reply with the action to take next.";
         boolean advanced = PlaytimeConfig.get().advanced;
@@ -876,7 +876,7 @@ public final class PlaytimeRecorder {
                 lines, files, datasetPath, Files.exists(datasetPath) ? datasetPath.toFile().length() / 1048576.0 : 0.0)
                 + (advanced
                 ? "\nadvanced data included (entities, items, held item, armour, drops)"
-                : "\nbasic recording - run /pymc advanced on before recording to also export entities and items");
+                : "\nbasic recording - run /pymcbot advanced on before recording to also export entities and items");
     }
 
     /** Pulls the "activity" value out of a raw episode line without a full JSON parser. */
@@ -960,7 +960,7 @@ public final class PlaytimeRecorder {
                 active ? System.currentTimeMillis() - runStartedMillis : 0L, runName);
     }
 
-    /** Snapshot of the recorder for the HUD badge and the settings screen. */
+    /** Snapshot of the recorder for the HUD badge and the PyMC Bot settings page. */
     public record HudState(boolean active, boolean paused, boolean idle, boolean inMenu, long samples,
                            long elapsedMillis, String runName) {
         /** Short state label: REC, PAUSED, IDLE (AFK samples skipped), MENU (screen open) or OFF. */

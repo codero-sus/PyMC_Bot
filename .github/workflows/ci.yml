@@ -124,7 +124,7 @@ jobs:
           mods="$RUNNER_TEMP/mods"
           python updater.py --mod-only --mc 1.21.4 --mods-dir "$mods"
           ls -l "$mods"
-          test -f "$mods"/pymcplaytime-*+1.21.4.jar
+          test -f "$mods"/pymc*+1.21.4.jar
           python updater.py --mod-only --mods-dir "$mods" | tee again.log
           grep -q "is up to date" again.log
       - name: Live update of a downloaded (non-git) copy
@@ -213,15 +213,25 @@ jobs:
       - name: Check the jar targets the right game version
         working-directory: mod
         run: |
-          jar=$(ls build/libs/pymcplaytime-*+${{ matrix.mc }}.jar)
+          jar=$(ls build/libs/pymcbot-*+${{ matrix.mc }}.jar)
           echo "built $jar"
-          unzip -p "$jar" fabric.mod.json | tee fabric.mod.json.out
+          unzip -p "$jar" fabric.mod.json > fabric.mod.json.out
+          cat fabric.mod.json.out
           grep -q '"minecraft": "${{ matrix.mc }}"' fabric.mod.json.out
-          unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/compat/Mc.class"
-          unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/RecorderHud.class"
-          unzip -l "$jar" | grep -q "dev/pymc/pymcb/client/PymcSettingsScreen.class"
+          grep -q '"id": "pymcbot"' fabric.mod.json.out
+          grep -q '"name": "PyMC Bot"' fabric.mod.json.out
+          grep -q '"modmenu"' fabric.mod.json.out
+          unzip -l "$jar" > jar-contents.txt
+          for cls in compat/Mc RecorderHud PymcBotScreen PymcModMenu; do
+            grep -q "dev/pymc/pymcb/client/$cls.class" jar-contents.txt || { echo "::error::$cls missing from $jar"; exit 1; }
+          done
+          grep -q "assets/pymcbot/lang/en_us.json" jar-contents.txt
+          # The Mod Menu API stubs are compile-only; the real Mod Menu provides them.
+          if grep -q "com/terraformersmc" jar-contents.txt; then
+            echo "::error::$jar ships the Mod Menu API stubs"; exit 1
+          fi
           # Release jars never carry the in-game test (that is the separate -PgameTest jar).
-          if unzip -l "$jar" | grep -qi gametest || grep -q "fabric-client-gametest" fabric.mod.json.out; then
+          if grep -qi gametest jar-contents.txt || grep -q "fabric-client-gametest" fabric.mod.json.out; then
             echo "::error::$jar contains game test code"; exit 1
           fi
       - name: Extract the gradle errors
@@ -242,8 +252,8 @@ jobs:
           python scripts/ci_diagnostics.py mod/gradle.log --title "mc ${{ matrix.mc }}: Gradle log tail" --limit 12000
       - uses: actions/upload-artifact@v4
         with:
-          name: pymcplaytime-${{ matrix.mc }}
-          path: mod/build/libs/pymcplaytime-*+${{ matrix.mc }}.jar
+          name: pymcbot-${{ matrix.mc }}
+          path: mod/build/libs/pymcbot-*+${{ matrix.mc }}.jar
           if-no-files-found: error
 
       # ---- in-game test: launch the real game with the mod (1.21.4+, "gametest" in versions.json)
@@ -283,7 +293,7 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           set -o pipefail
-          # -PgameTest builds a separate pymcplaytime-gametest jar with the test entrypoint;
+          # -PgameTest builds a separate pymcbot-gametest jar with the test entrypoint;
           # the release jar uploaded above is untouched.
           # The game runs on its own Java (21 for 1.21.x, preinstalled on the runner; 25 for 26.x).
           ./gradlew runProductionClientGameTest -Pmc=${{ matrix.mc }} -PgameTest --no-daemon --stacktrace \
@@ -320,20 +330,20 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: pymcplaytime-*
+          pattern: pymcbot-*
           merge-multiple: true
           path: dist
       - name: List the jars
         run: ls -la dist
       - uses: actions/upload-artifact@v4
         with:
-          name: pymcplaytime-all-versions
+          name: pymcbot-all-versions
           path: dist/*.jar
           if-no-files-found: error
 
   # Publishes every jar on a GitHub release (no login needed to download). Runs only after every
   # version built and every in-game test passed. Pushes to main make the stable release
-  # pymcplaytime-v<mod_version>; other branches make/refresh it as a pre-release but never
+  # pymcbot-v<mod_version>; other branches make/refresh it as a pre-release but never
   # replace a stable one. Bump mod_version in mod/gradle.properties for a new release.
   release:
     name: mod (GitHub release)
@@ -343,13 +353,13 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: pymcplaytime-release
+      group: pymcbot-release
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: pymcplaytime-all-versions
+          name: pymcbot-all-versions
           path: dist
       - name: Create or update the release
         env:
@@ -370,6 +380,6 @@ jobs:
             gh release delete "$tag" --cleanup-tag --yes
           fi
           gh release create "$tag" dist/*.jar --target "$GITHUB_SHA" \
-            --title "PyMC Playtime Recorder ${tag#pymcplaytime-v}" --notes-file notes.md $pre
+            --title "PyMC Bot mod ${tag#pymcbot-v}" --notes-file notes.md $pre
           echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
