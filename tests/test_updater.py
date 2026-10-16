@@ -128,7 +128,8 @@ def test_cli_parses_and_rejects_conflicts():
 def test_apply_zip_keeps_user_files_and_backs_up_edits(tmp_path):
     (tmp_path / "pymc_bot").mkdir()
     (tmp_path / "pymc_bot" / "agent.py").write_text("my local edit\n")
-    (tmp_path / "README.md").write_text("same\n")
+    (tmp_path / "README.md").write_bytes(b"same\n")
+    (tmp_path / "CHANGES.md").write_bytes(b"one\r\ntwo\r\n")  # only the line endings differ
     (tmp_path / "pymc_bot_config.json").write_text('{"host": "mine"}')
     (tmp_path / "models" / "run1").mkdir(parents=True)
     (tmp_path / "models" / "run1" / "model.json").write_text("weights")
@@ -136,6 +137,7 @@ def test_apply_zip_keeps_user_files_and_backs_up_edits(tmp_path):
 
     archive = make_zip({
         "README.md": "same\n",
+        "CHANGES.md": "one\ntwo\n",
         "pymc_bot/agent.py": "new upstream code\n",
         "pymc_bot/new_module.py": "x = 1\n",
         "pymc_bot_config.json": '{"host": "upstream"}',
@@ -152,6 +154,8 @@ def test_apply_zip_keeps_user_files_and_backs_up_edits(tmp_path):
     assert (tmp_path / "notes.txt").read_text() == "not in the repo"
     assert report["backed_up"] == ["pymc_bot/agent.py"]
     assert "README.md" not in report["written"]  # unchanged files are not rewritten
+    assert "CHANGES.md" in report["written"]  # CRLF-only difference: replaced, but no backup
+    assert (tmp_path / "CHANGES.md").read_bytes() == b"one\ntwo\n"
     assert set(report["skipped"]) == {"pymc_bot_config.json", "models/run1/model.json"}
     if sys.platform != "win32":
         assert (tmp_path / "updater.sh").stat().st_mode & 0o111
