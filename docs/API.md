@@ -153,7 +153,7 @@ and the whole panel follow the selected player. The default is the main bot.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/ai/status` | running flag, decision/error counters, last decision (with the model's `thought` and `goal`), `persona`, `memory` (goal, recent actions, last thought) |
-| `GET` | `/api/ai/prompt` | `{brain, custom, system, turn}` – the exact system prompt and this turn's prompt the LLM brain would get right now |
+| `GET` | `/api/ai/behaviours` | `{selected, behaviours: [{key, label, emoji, blurb}]}` – the behaviours the LLM bot can be given (set one with `PUT /api/config` `{"agent": {"persona": key}}`); the prompts behind them are not exposed |
 | `POST` | `/api/ai/start` | start the decision loop (409 if the bot is not connected) |
 | `POST` | `/api/ai/stop` | stop the loop (aborts the current action) |
 | `POST` | `/api/ai/step` | decide and execute exactly one action now |

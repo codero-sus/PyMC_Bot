@@ -222,11 +222,19 @@ class AgentSettings(BaseModel):
     # How the LLM brain plays and talks (see pymc_bot.mind): a personality, extra notes about the
     # character ("from Delhi, mixes Hindi and English"), human pacing (typing pauses, no chat spam)
     # and how many recent actions it remembers.
-    persona: Literal["friendly", "chill", "builder", "explorer", "miner", "quiet"] = "friendly"
+    persona: str = "friendly"  # one of pymc_bot.mind.PERSONAS (unknown names fall back to "friendly")
     persona_notes: str = Field(default="", max_length=600)
     human_chat: bool = True
     chat_cooldown: float = Field(default=6.0, ge=0.0, le=120.0)
     memory_turns: int = Field(default=8, ge=1, le=30)
+
+    @field_validator("persona")
+    @classmethod
+    def _known_persona(cls, value: str) -> str:
+        from pymc_bot.mind import DEFAULT_PERSONA, PERSONAS
+
+        value = str(value or "").strip().lower()
+        return value if value in PERSONAS else DEFAULT_PERSONA
     wander_radius: int = Field(default=16, ge=2, le=200)
     action_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
 

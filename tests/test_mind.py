@@ -232,9 +232,6 @@ def test_agent_uses_the_human_prompt_and_memory(live_bot, store, log):
     # the second turn remembers the first
     agent.run_once()
     assert "Current goal: explore" in fake.calls[-1]["messages"][-1]["content"]
-    preview = agent.preview_prompts()
-    assert preview["brain"] == "ollama" and preview["custom"] is False
-    assert "loves cherry groves" in preview["system"] and "SITUATION" in preview["turn"]
 
 
 def test_agent_uses_a_custom_prompt_verbatim(live_bot, store, log):
@@ -266,3 +263,40 @@ def test_llm_brain_mutes_canned_replies(live_bot, store, log):
     finally:
         agent.stop()
     assert live_bot.llm_chat is False
+
+
+# ------------------------------------------------------------------ behaviours
+def test_behaviour_options_show_names_but_never_the_prompt():
+    from pymc_bot.mind import behaviours
+
+    options = behaviours()
+    keys = [option["key"] for option in options]
+    assert {"friendly", "chill", "social", "companion", "builder", "explorer", "miner", "newbie", "pro", "quiet"} <= set(keys)
+    for option in options:
+        assert set(option) == {"key", "label", "emoji", "blurb"}
+        assert option["label"] and option["blurb"] and option["emoji"]
+        persona = PERSONAS[option["key"]]
+        prompt_text = (persona.who, persona.playstyle, persona.voice)
+        assert not any(part in " ".join(option.values()) for part in prompt_text)
+
+
+def test_unknown_behaviour_falls_back_to_friendly():
+    from pymc_bot.config import AppSettings
+
+    assert AppSettings(agent={"persona": "PRO"}).agent.persona == "pro"
+    assert AppSettings(agent={"persona": "pirate"}).agent.persona == "friendly"
+
+
+def test_behaviours_endpoint_lists_choices_without_prompts(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from pymc_bot.server import create_app
+
+    with TestClient(create_app(tmp_path / "cfg.json")) as client:
+        data = client.get("/api/ai/behaviours").json()
+        assert data["selected"] == "friendly"
+        assert len(data["behaviours"]) == len(PERSONAS)
+        assert "Reply with a single JSON object" not in json.dumps(data)
+        assert client.get("/api/ai/prompt").status_code in (404, 405)
+        client.put("/api/config", json={"agent": {"persona": "companion"}})
+        assert client.get("/api/ai/behaviours").json()["selected"] == "companion"

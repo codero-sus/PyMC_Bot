@@ -306,39 +306,19 @@
           <button id="btn-cortex-use" class="btn ghost" title="Save and switch the brain to cortex">Use Cortex as brain</button>
         </div>
       </details>
-      <details id="mind-box">
-        <summary>Personality &amp; thinking <span class="hint" id="mind-summary">— how the Ollama / Cortex brain plays and talks</span></summary>
-        <p class="note">The LLM gets a detailed prompt that makes it play like a real person: it reads the
-          situation, keeps a goal for several turns, remembers what just worked or failed, answers people
-          first and chats casually (short lowercase lines, no spam). It never claims to be human when
-          someone sincerely asks.</p>
-        <div class="fields two">
-          <label>Personality
-            <select id="cfg-persona">
-              <option value="friendly">friendly — social, helpful</option>
-              <option value="chill">chill — laid-back, few words</option>
-              <option value="builder">builder — gathers &amp; builds</option>
-              <option value="explorer">explorer — roams, curious</option>
-              <option value="miner">miner — ores &amp; caves</option>
-              <option value="quiet">quiet — rarely talks</option>
-            </select>
-          </label>
-          <label>Memory (recent actions) <input id="cfg-memory-turns" type="number" min="1" max="30" step="1" /></label>
-          <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
-          <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
-        </div>
+      <details id="mind-box" open>
+        <summary>Bot behaviour <span class="hint" id="mind-summary">— how the Ollama / Cortex brain plays and talks</span></summary>
+        <p class="note">Pick how the bot should behave. Behind each choice is a detailed player prompt that makes
+          the LLM play like a real person: it keeps a goal, remembers what worked, answers people first and
+          chats casually without spamming. If someone sincerely asks whether it is a bot, it says so.</p>
+        <div id="behaviour-grid" class="behaviour-grid" role="radiogroup" aria-label="Bot behaviour"></div>
         <label class="block">About the character <span class="hint">(optional, max 600 chars)</span>
           <textarea id="cfg-persona-notes" rows="2" maxlength="600" placeholder="e.g. from Delhi, mixes Hindi and English, loves building bridges"></textarea>
         </label>
-        <label class="block">Custom system prompt <span class="hint">(optional — empty uses the built-in human-player prompt)</span>
-          <textarea id="cfg-system-prompt" rows="3" placeholder="Leave empty for the built-in prompt (recommended)"></textarea>
-        </label>
-        <div class="actions">
-          <button id="btn-prompt-preview" class="btn ghost" title="Show exactly what the LLM is sent right now">Show the prompt</button>
-        </div>
-        <div id="prompt-preview" hidden>
-          <label class="block">System prompt <textarea id="prompt-system" rows="10" readonly></textarea></label>
-          <label class="block">This turn <textarea id="prompt-turn" rows="10" readonly></textarea></label>
+        <div class="fields two">
+          <label>Memory (recent actions) <input id="cfg-memory-turns" type="number" min="1" max="30" step="1" /></label>
+          <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
+          <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
         </div>
       </details>
       <div class="permissions">
