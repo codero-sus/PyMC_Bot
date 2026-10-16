@@ -81,6 +81,58 @@ jobs:
           python -m pymc_bot models --models-dir /tmp/ci-models
           python -m pymc_bot run --backend simulated --think trained --models-dir /tmp/ci-models --run-name ci --no-ai --seconds 1 --quiet --config /tmp/ci-train.json
 
+  updater:
+    name: updater (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      GITHUB_TOKEN: ${{ github.token }}   # raises the API rate limit for the live checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests (offline)
+        run: |
+          pip install pytest
+          python -m pytest tests/test_updater.py -q
+      - name: Windows wrapper (updater.cmd)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call updater.cmd --help || exit /b 1
+          call updater.cmd --mod-only --check --mc 26.3 --mods-dir "%RUNNER_TEMP%\mods-check" || exit /b 1
+      - name: Shell wrapper (updater.sh)
+        if: runner.os != 'Windows'
+        run: |
+          ./updater.sh --help
+          ./updater.sh --mod-only --check --mc 26.3 --mods-dir "$RUNNER_TEMP/mods-check"
+      - name: Live mod install from the newest release
+        shell: bash
+        run: |
+          mods="$RUNNER_TEMP/mods"
+          python updater.py --mod-only --mc 1.21.4 --mods-dir "$mods"
+          ls -l "$mods"
+          test -f "$mods"/pymcplaytime-*+1.21.4.jar
+          python updater.py --mod-only --mods-dir "$mods" | tee again.log
+          grep -q "is up to date" again.log
+      - name: Live update of a downloaded (non-git) copy
+        shell: bash
+        run: |
+          copy="$RUNNER_TEMP/zipcopy"
+          mkdir -p "$copy"
+          git archive HEAD | tar -x -C "$copy"
+          echo '{"host": "keep-me"}' > "$copy/pymc_bot_config.json"
+          echo "local edit" >> "$copy/README.md"
+          cd "$copy"
+          python updater.py --no-deps --branch "${{ github.head_ref || github.ref_name }}"
+          grep -q keep-me pymc_bot_config.json
+          ls .pymc_backup/*/README.md
+          python updater.py --check --branch "${{ github.head_ref || github.ref_name }}" | grep -q "up to date"
+
   training-transformer:
     name: training (transformer engine, torch)
     runs-on: ubuntu-latest

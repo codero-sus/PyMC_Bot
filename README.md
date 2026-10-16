@@ -172,6 +172,42 @@ player table shows each bot's idle time and how many anti-AFK bursts it has done
 
 ---
 
+## Updating
+
+Run the updater from the project folder - it only needs Python, nothing has to be installed first:
+
+```bash
+./updater.sh              # macOS / Linux
+updater                   # Windows (cmd or PowerShell: .\updater.cmd), or double-click updater.cmd
+python updater.py         # anywhere
+```
+
+| Command | What it does |
+| --- | --- |
+| `updater --check` | shows the new commits / mod release, changes nothing |
+| `updater` | updates PyMC_Bot; reinstalls Python (and npm) packages **only if** `requirements*.txt` / `package.json` changed |
+| `updater --mod` | also updates the recorder mod in your `.minecraft/mods` folder |
+| `updater --mod-only` | only the mod |
+| `updater --mod-only --mc 1.21.4` | installs the mod for 1.21.4 when it is not there yet |
+| `updater --help` | all options (`--mods-dir`, `--pre`, `--reinstall`, `--deps`, `--no-deps`, `--branch`, `--autostash`) |
+
+* **Cloned with git:** `git fetch` + `git pull --ff-only`. If you edited tracked files the updater
+  stops and tells you which ones; `--autostash` stashes them, updates and puts them back.
+* **Downloaded the ZIP:** the updater downloads the newest `main` source and copies it over the
+  folder. `pymc_bot_config.json`, `.venv`, `models/`, recordings and every other file of yours are
+  left alone; repository files you changed are backed up to `.pymc_backup/<time>/` first.
+* **Mod:** finds `pymcplaytime-<version>+<mc>.jar` in the mods folder (`%APPDATA%\.minecraft\mods`,
+  `~/Library/Application Support/minecraft/mods`, `~/.minecraft/mods`, or `--mods-dir`),
+  downloads the jar for the same Minecraft version from the newest
+  [release](https://github.com/codero-sus/PyMC_Bot/releases), verifies its size, SHA-256 and
+  `fabric.mod.json`, and keeps the old jar as `*.jar.old`. Close Minecraft first on Windows.
+  Stable releases are preferred; `--pre` opts into pre-releases (used automatically while no stable
+  release exists).
+* Packages go into `.venv` when it exists; otherwise the updater prints the `pip` command to run.
+  Set `GITHUB_TOKEN` if you hit GitHub's 60-requests-per-hour limit. Exit code `0` = OK, `1` = error.
+
+Restart the panel / bot afterwards.
+
 ## Train a player model on your own playtime
 
 The bot can learn **how you play** and then play like that itself. Three steps:
@@ -475,7 +511,7 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 264 tests, no Minecraft server, no LLM required (2 skip without torch)
+pytest -q                       # 381 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -519,6 +555,7 @@ pymc_bot/
 mod/                 Fabric mod (MC 1.21.1 – 26.3): records your playtime into a training dataset
 tests/               pytest suite + fake bridge fixture
 scripts/dev.sh       small helper for common tasks
+updater.py           self-updater for the bot, its dependencies and the mod (+ updater.cmd / updater.sh)
 ```
 
 ## Troubleshooting
@@ -544,6 +581,9 @@ scripts/dev.sh       small helper for common tasks
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
 | Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |
 | `./gradlew build` fails in `mod/` | needs **JDK 25** to run Gradle (Loom 1.18 rejects older runtimes with "requires at least JVM runtime version 25"); pick a version with `-Pmc=<version>` (`./gradlew printTargets` lists them). See [the build troubleshooting table](mod/README.md#troubleshooting-the-build); CI builds every version on each push, so compare with the `mod (fabric <version>)` job there |
+| updater: `you have local changes` | commit/stash them, or run `updater --autostash` |
+| updater: `is in use - close Minecraft` | Windows locks loaded jars - quit the game, run `updater --mod-only` again |
+| updater: `rate limit` | wait an hour, or set `GITHUB_TOKEN` to any GitHub token |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |
 
 ## Credits
