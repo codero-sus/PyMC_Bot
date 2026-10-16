@@ -487,19 +487,6 @@ class AgentLoop:
         """This turn's situation as a person would see it (plus the exact JSON at the end)."""
         return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings))
 
-    def preview_prompts(self) -> dict[str, str]:
-        """What the LLM would be sent right now (shown in the panel)."""
-        settings = self._settings()
-        brain = self.resolved_brain(settings)
-        custom = settings.cortex.system_prompt if brain == "cortex" else settings.ollama.system_prompt
-        return {
-            "brain": brain,
-            "custom": bool(custom and custom.strip()),
-            "system": self.system_prompt(settings, custom),
-            "turn": self._build_prompt(settings, self.bot.snapshot()),
-            "connected": self.bot.connected,
-        }
-
     # -------------------------------------------------------------- executor
     def execute(self, decision: Decision, enforce_permissions: bool = True) -> tuple[bool, str]:
         """Run one decision against the bot.

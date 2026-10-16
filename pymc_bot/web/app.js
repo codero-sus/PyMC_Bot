@@ -516,12 +516,11 @@ function fillForm(cfg) {
   check('cfg-allow-mining', ag.allow_mining);
   check('cfg-allow-attack', ag.allow_attacking);
   check('cfg-greet', ag.greet_players);
-  set('cfg-persona', ag.persona || 'friendly');
+  selectBehaviour(ag.persona || 'friendly');
   set('cfg-persona-notes', ag.persona_notes || '');
   check('cfg-human-chat', ag.human_chat ?? true);
   set('cfg-chat-cooldown', ag.chat_cooldown ?? 6);
   set('cfg-memory-turns', ag.memory_turns ?? 8);
-  set('cfg-system-prompt', ol.system_prompt || cx.system_prompt || '');
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
@@ -595,7 +594,6 @@ function collectForm() {
       model: $('cfg-ollama-model').value.trim() || 'llama3.2',
       decision_interval: Number($('cfg-ollama-interval').value) || 6,
       temperature: Number($('cfg-ollama-temp').value ?? 0.7),
-      system_prompt: $('cfg-system-prompt').value.trim() ? $('cfg-system-prompt').value : '',
     },
     cortex: {
       enabled: $('cfg-cortex-enabled').checked,
@@ -605,7 +603,6 @@ function collectForm() {
       api_key_env: $('cfg-cortex-key-env').value.trim(),
       decision_interval: Number($('cfg-cortex-interval').value) || 6,
       temperature: Number($('cfg-cortex-temp').value ?? 0.7),
-      system_prompt: $('cfg-system-prompt').value.trim() ? $('cfg-system-prompt').value : '',
       max_tokens: Number($('cfg-cortex-max-tokens').value) || 320,
       json_mode: $('cfg-cortex-json').checked,
     },
@@ -616,7 +613,7 @@ function collectForm() {
       allow_mining: $('cfg-allow-mining').checked,
       allow_attacking: $('cfg-allow-attack').checked,
       greet_players: $('cfg-greet').checked,
-      persona: $('cfg-persona').value || 'friendly',
+      persona: selectedBehaviour(),
       persona_notes: $('cfg-persona-notes').value.slice(0, 600),
       human_chat: $('cfg-human-chat').checked,
       chat_cooldown: Math.max(0, Number($('cfg-chat-cooldown').value) || 0),
@@ -776,15 +773,56 @@ function updateCortexPill(health) {
   $('cortex-summary').textContent = `— ${health.ok ? 'ready' : 'unavailable'}: ${detail || '…'} · ${keyNote}`;
 }
 
-async function previewPrompt() {
+// ---------------------------------------------------------------- behaviours
+let behaviourChoice = 'friendly';
+
+function selectedBehaviour() {
+  const checked = document.querySelector('input[name="behaviour"]:checked');
+  return checked ? checked.value : behaviourChoice;
+}
+
+function selectBehaviour(key) {
+  behaviourChoice = key || 'friendly';
+  for (const input of document.querySelectorAll('input[name="behaviour"]')) {
+    input.checked = input.value === behaviourChoice;
+  }
+  const picked = document.querySelector(`input[name="behaviour"][value="${behaviourChoice}"]`);
+  const label = picked ? picked.dataset.label : behaviourChoice;
+  $('mind-summary').textContent = `— ${label}`;
+}
+
+async function loadBehaviours() {
   try {
-    await saveConfig(true);
-    const data = await api('/api/ai/prompt');
-    $('prompt-system').value = data.system || '';
-    $('prompt-turn').value = data.turn || '';
-    $('prompt-preview').hidden = false;
-    $('mind-summary').textContent = `— ${data.custom ? 'custom' : 'built-in'} prompt · brain ${data.brain}`
-      + (data.connected ? '' : ' · bot offline, so the turn shows an empty world');
+    const data = await request('/api/ai/behaviours');
+    const grid = $('behaviour-grid');
+    grid.innerHTML = '';
+    for (const item of data.behaviours || []) {
+      const card = document.createElement('label');
+      card.className = 'behaviour';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'behaviour';
+      input.value = item.key;
+      input.dataset.label = item.label;
+      input.addEventListener('change', async () => {
+        selectBehaviour(item.key);
+        try { await saveConfig(true); } catch (err) { reportError(err); }
+      });
+      const emoji = document.createElement('span');
+      emoji.className = 'behaviour-emoji';
+      emoji.setAttribute('aria-hidden', 'true');
+      emoji.textContent = item.emoji || '🙂';
+      const text = document.createElement('span');
+      text.className = 'behaviour-text';
+      const name = document.createElement('strong');
+      name.textContent = item.label;
+      const blurb = document.createElement('small');
+      blurb.textContent = item.blurb || '';
+      text.append(name, blurb);
+      card.append(input, emoji, text);
+      grid.appendChild(card);
+    }
+    selectBehaviour(data.selected || behaviourChoice);
   } catch (err) { reportError(err); }
 }
 
@@ -1119,7 +1157,7 @@ function wire() {
   $('btn-policy-preview').addEventListener('click', previewPolicy);
   $('btn-pull').addEventListener('click', pullModel);
   $('btn-cortex-check').addEventListener('click', checkCortex);
-  $('btn-prompt-preview').addEventListener('click', previewPrompt);
+  loadBehaviours();
   $('btn-cortex-use').addEventListener('click', useCortex);
 
   $('cfg-auth').addEventListener('change', applyAuthLabels);

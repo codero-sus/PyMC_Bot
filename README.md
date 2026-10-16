@@ -40,7 +40,8 @@ Minecraft versions), and it is driven purely by JSON from Python.
   built-in heuristic policy, so it never just stands there.
 * **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
   bearer key read from the environment and never saved).
-* **Plays and talks like a human** – the LLM gets a detailed player prompt with a personality, a goal it
+* **Plays and talks like a human** – pick a behaviour (helper, companion, explorer, pro, …); the LLM gets a
+  detailed, hidden player prompt for it, a goal it
   sticks to, short-term memory and plain-word perception; it chats in short casual lines with typing pauses
   and no spam ([details](#plays-and-talks-like-a-human)).
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
@@ -336,13 +337,29 @@ that makes it act like a real player at a keyboard, not an assistant:
 * **Chats like a person** – short casual lines in the other player's language, no markdown, no "as an AI"
   speeches, never the same line twice; a typing pause before sending and a `chat_cooldown` for messages
   nobody asked for (replies skip it). If someone sincerely asks whether it is a bot, it says so.
-* **Has a personality** – `agent.persona`: `friendly`, `chill`, `builder`, `explorer`, `miner` or `quiet`,
-  plus free-text `agent.persona_notes` ("from Delhi, mixes Hindi and English").
+* **Behaves the way you pick** – in the panel's **Bot behaviour** box choose one card; the prompt behind it
+  stays hidden:
 
-The panel's **Personality & thinking** box sets all of this and **Show the prompt** displays exactly what
-the model receives. A non-empty `ollama.system_prompt` / `cortex.system_prompt` replaces the built-in
-prompt entirely (configs that still hold the old default switch to the new prompt automatically). Small
-models work; 7–8B models (e.g. `llama3.1:8b`, `qwen2.5:7b`) follow the persona and goals noticeably better.
+  | Behaviour | What it does |
+  | --- | --- |
+  | 😊 Friendly helper (default) | plays survival, says hi, helps anyone who asks |
+  | 😎 Chill survivor | does its own thing at its own pace, few words |
+  | 💬 Social butterfly | loves to chat, hangs out with players, joins in |
+  | 🤝 Loyal companion | sticks with you, follows you around, watches your back |
+  | 🏗️ Builder | gathers logs and stone, talks about builds |
+  | 🧭 Explorer | wanders far, checks out caves and new places |
+  | ⛏️ Miner | mines ores, upgrades tools, shares coal and iron |
+  | 🐣 New player | still learning, asks questions, a bit clumsy |
+  | 🏆 Experienced pro | efficient and confident, gives short useful tips |
+  | 🤫 Quiet player | rarely talks, just plays near others |
+
+  Optional *About the character* notes ("from Delhi, mixes Hindi and English") are added on top.
+
+In the config the choice is `agent.persona` (`friendly`, `chill`, `social`, `companion`, `builder`,
+`explorer`, `miner`, `newbie`, `pro`, `quiet`) plus `agent.persona_notes`. Advanced: a non-empty
+`ollama.system_prompt` / `cortex.system_prompt` in the config file replaces the built-in prompt entirely
+(configs that still hold the old default switch to the new prompt automatically). Small models work; 7–8B
+models (e.g. `llama3.1:8b`, `qwen2.5:7b`) follow the behaviour and goals noticeably better.
 
 Accepted actions: `say`, `goto`, `follow`, `wander`, `mine`, `attack` (gated), `jump`, `eat`,
 `look_at_player`, `stop`, `wait`. The full list, including which permissions gate them, is in
@@ -507,7 +524,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "allow_movement": true, "allow_chat": true, "allow_mining": true,
     "allow_attacking": false,          // keep this off unless you mean it
     "greet_players": true, "max_chat_length": 200,
-    "persona": "friendly",             // friendly | chill | builder | explorer | miner | quiet
+    "persona": "friendly",             // friendly | chill | social | companion | builder | explorer | miner | newbie | pro | quiet
     "persona_notes": "",               // extra character notes for the LLM (max 600 chars)
     "human_chat": true,                // typing pauses, no repeats, cooldown for unprompted chat
     "chat_cooldown": 6.0,              // seconds between messages nobody asked for

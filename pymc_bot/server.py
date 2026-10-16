@@ -33,6 +33,7 @@ from pymc_bot.cortex import CortexError, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.fleet import AI_MODES, BotFleet, FleetError, primary_brain
 from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
+from pymc_bot.mind import behaviours
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.playtime import (
     dataset_summary,
@@ -686,10 +687,10 @@ def create_app(
     def ai_status() -> dict[str, Any]:
         return selected_agent().status
 
-    @app.get("/api/ai/prompt")
-    def ai_prompt() -> dict[str, Any]:
-        """The exact system prompt and this turn's prompt the LLM brain would get right now."""
-        return selected_agent().preview_prompts()
+    @app.get("/api/ai/behaviours")
+    def ai_behaviours() -> dict[str, Any]:
+        """How the LLM bot can behave: names and short descriptions only (the prompts stay hidden)."""
+        return {"selected": store.settings.agent.persona, "behaviours": behaviours()}
 
     @app.post("/api/ai/start")
     def ai_start() -> dict[str, Any]:
