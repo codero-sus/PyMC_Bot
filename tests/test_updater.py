@@ -1,4 +1,8 @@
-"""Tests for updater.py - all offline (local zips, a temporary git remote, fake releases)."""
+"""Tests for updater.py - all offline (local zips, a temporary git remote, fake releases).
+
+Standard library + pytest only: CI also runs this file with ``--noconftest`` on Windows and
+macOS without the bot's packages, the way a fresh download meets the updater.
+"""
 
 from __future__ import annotations
 

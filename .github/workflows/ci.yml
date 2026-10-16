@@ -95,10 +95,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Unit tests (offline)
+      - name: Unit tests (offline, with none of the bot's packages installed)
         run: |
           pip install pytest
-          python -m pytest tests/test_updater.py -q
+          python -m pytest tests/test_updater.py -q --noconftest
       - name: Windows wrapper (updater.cmd)
         if: runner.os == 'Windows'
         shell: cmd
