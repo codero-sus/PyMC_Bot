@@ -243,7 +243,8 @@ def test_bot_waits_for_a_sleeping_server_then_joins(tmp_path: Path, log: EventLo
         bot.start()
         assert bot.state == "waiting"
         deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not bot.connected:
+        # on_connected runs right after start() returns, so wait for it as well
+        while time.monotonic() < deadline and not (bot.connected and joined):
             time.sleep(0.05)
         assert bot.connected and joined == [True]
         assert len(probes) == 2
