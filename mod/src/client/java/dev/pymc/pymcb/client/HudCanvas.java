@@ -1,7 +1,7 @@
 package dev.pymc.pymcb.client;
 
 /**
- * The few 2D drawing calls the badge and the settings screen need.
+ * The few 2D drawing calls the badge and the PyMC Bot settings page need.
  *
  * <p>Minecraft renamed its GUI drawing class between versions ({@code GuiGraphics} in 1.21.x,
  * {@code GuiGraphicsExtractor} with {@code text(...)} instead of {@code drawString(...)} in 26.x),

@@ -30,11 +30,11 @@ import net.minecraft.network.chat.Component;
  * <p>What changed in this era: {@code Inventory.selected} became private behind {@code getSelectedSlot()}.
  */
 public final class Mc {
-    /** The Minecraft versions this copy is compiled for (shown by {@code /pymc version}). */
+    /** The Minecraft versions this copy is compiled for (shown by {@code /pymcbot version}). */
     public static final String ERA = "1.21.5 - 1.21.8";
 
     /** Key mapping category (a translation key before 1.21.9). */
-    private static final String CATEGORY = "key.categories.pymcplaytime";
+    private static final String CATEGORY = "key.categories.pymcbot";
 
     private Mc() {
     }
@@ -69,7 +69,7 @@ public final class Mc {
     }
 
     /**
-     * Registers a key mapping under the "PyMC Playtime" category, unbound by default so it never
+     * Registers a key mapping under the "PyMC Bot" category, unbound by default so it never
      * clashes with another key (bind it in Options - Controls - Key Binds).
      */
     public static KeyMapping registerKey(String translationKey) {
@@ -151,10 +151,10 @@ public final class Mc {
         @Override
         public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
             super.render(graphics, mouseX, mouseY, partialTick);
-            paint(canvas(graphics));
+            paint(canvas(graphics), mouseX, mouseY);
         }
 
-        /** Draws the screen's text; called every frame after the widgets. */
-        protected abstract void paint(HudCanvas canvas);
+        /** Draws the screen's text; called every frame after the widgets, with the mouse position (for hover help). */
+        protected abstract void paint(HudCanvas canvas, int mouseX, int mouseY);
     }
 }

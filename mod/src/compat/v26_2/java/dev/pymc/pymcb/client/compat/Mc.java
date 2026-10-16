@@ -31,12 +31,12 @@ import net.minecraft.resources.Identifier;
  * <p>What changed in this era: the open screen moved to {@code Minecraft.gui.screen()}. Fabric API 0.152 added attended client commands. 26.3 replaced GLFW with SDL3; the hotkey is registered unbound through {@code InputConstants.UNKNOWN}, so no raw key codes are involved.
  */
 public final class Mc {
-    /** The Minecraft versions this copy is compiled for (shown by {@code /pymc version}). */
+    /** The Minecraft versions this copy is compiled for (shown by {@code /pymcbot version}). */
     public static final String ERA = "26.2 - 26.3";
 
     /** Key mapping category (a registered object since 1.21.9). */
     private static final KeyMapping.Category CATEGORY =
-            KeyMapping.Category.register(Identifier.fromNamespaceAndPath("pymcplaytime", "recorder"));
+            KeyMapping.Category.register(Identifier.fromNamespaceAndPath("pymcbot", "recorder"));
 
     private Mc() {
     }
@@ -71,7 +71,7 @@ public final class Mc {
     }
 
     /**
-     * Registers a key mapping under the "PyMC Playtime" category, unbound by default so it never
+     * Registers a key mapping under the "PyMC Bot" category, unbound by default so it never
      * clashes with another key (bind it in Options - Controls - Key Binds).
      */
     public static KeyMapping registerKey(String translationKey) {
@@ -102,7 +102,7 @@ public final class Mc {
 
     /** Draws {@code painter} on the HUD every frame, through Fabric API's {@code HudElementRegistry}, drawn after every vanilla HUD element. */
     public static void registerHud(Consumer<HudCanvas> painter) {
-        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("pymcplaytime", "recorder_badge"),
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("pymcbot", "recorder_badge"),
                 (graphics, deltaTracker) -> painter.accept(canvas(graphics)));
     }
 
@@ -154,10 +154,10 @@ public final class Mc {
         @Override
         public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
             super.extractRenderState(graphics, mouseX, mouseY, partialTick);
-            paint(canvas(graphics));
+            paint(canvas(graphics), mouseX, mouseY);
         }
 
-        /** Draws the screen's text; called every frame after the widgets. */
-        protected abstract void paint(HudCanvas canvas);
+        /** Draws the screen's text; called every frame after the widgets, with the mouse position (for hover help). */
+        protected abstract void paint(HudCanvas canvas, int mouseX, int mouseY);
     }
 }

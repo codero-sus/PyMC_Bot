@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Write the GitHub release notes for the PyMC Playtime Recorder mod.
+"""Write the GitHub release notes for the PyMC Bot mod.
 
 CI's ``release`` job attaches one jar per Minecraft version to the release
-``pymcplaytime-v<mod_version>`` and uses this script for the description, so the
+``pymcbot-v<mod_version>`` and uses this script for the description, so the
 "which jar do I download?" table always matches ``mod/versions.json``.
 
 Usage::
@@ -35,11 +35,11 @@ def mod_version(mod_dir: Path = MOD) -> str:
 
 
 def tag_name(mod_dir: Path = MOD) -> str:
-    return f"pymcplaytime-v{mod_version(mod_dir)}"
+    return f"pymcbot-v{mod_version(mod_dir)}"
 
 
 def jar_name(version: str, minecraft: str) -> str:
-    return f"pymcplaytime-{version}+{minecraft}.jar"
+    return f"pymcbot-{version}+{minecraft}.jar"
 
 
 def notes(mod_dir: Path = MOD) -> str:
@@ -55,9 +55,10 @@ def notes(mod_dir: Path = MOD) -> str:
     first, last = table["versions"][0]["minecraft"], table["versions"][-1]["minecraft"]
     return "\n".join(
         [
-            f"## PyMC Playtime Recorder {version}",
+            f"## PyMC Bot mod {version}",
             "",
-            f"Records your Minecraft playtime so PyMC Bot can learn to play like you. One jar per "
+            f"The PyMC Bot companion mod records your Minecraft playtime so PyMC Bot can learn to play "
+            f"like you. One jar per "
             f"Minecraft version, **{first} to {last}** (Fabric).",
             "",
             "### Install",
@@ -66,8 +67,11 @@ def notes(mod_dir: Path = MOD) -> str:
             f"{table['loader']} or newer for your Minecraft version.",
             "2. Put **Fabric API** for the same version in `.minecraft/mods/`.",
             "3. Download the jar for your exact Minecraft version below and put it in `.minecraft/mods/`.",
-            "4. In game: `/pymc record start`, play, `/pymc record stop`, `/pymc export` - "
-            "or open `/pymc settings`.",
+            "4. In game: open the **PyMC Bot settings page** (`/pymcbot settings`, a hotkey or Mod Menu's "
+            "*Configure* button) and press *Start recording* - or use `/pymcbot record start`, play, "
+            "`/pymcbot record stop`, `/pymcbot export`.",
+            "5. Already have a `pymcplaytime-*.jar` (0.5.0 and older)? Delete it - this release replaces it "
+            "(`updater --mod-only` does that for you). Your settings move over automatically.",
             "",
             "Each jar only loads on the Minecraft version in its name.",
             "",
@@ -82,9 +86,11 @@ def notes(mod_dir: Path = MOD) -> str:
             "### What's in it",
             "",
             "- On-screen **REC / PAUSED / IDLE / MENU** badge with the run clock and sample count "
-            "(`/pymc hud on|off`, `/pymc hud corner <corner>`).",
-            "- **Settings screen** (`/pymc settings` or a hotkey): start/stop, pause, the badge, menu "
-            "pausing, AFK skipping, sample rate, entities + items, auto-record, chat notices, export.",
+            "(`/pymcbot hud on|off`, `/pymcbot hud corner <corner>`).",
+            "- **PyMC Bot settings page** (`/pymcbot settings`, a hotkey or Mod Menu): tabs for the recorder "
+            "controls, recording (sample rate, menus, AFK skipping, auto-record, block area, nearby "
+            "entities, thresholds), advanced entity + item limits, the HUD badge with a live preview, "
+            "and an About page. Hover a button for help; each page has *Reset page*.",
             "- Pause/resume, auto-record on join, menu and AFK filtering, entity + item recording.",
             "",
             f"Train on the dataset with PyMC Bot: see the [training guide]({REPO}/blob/main/docs/TRAINING.md). "

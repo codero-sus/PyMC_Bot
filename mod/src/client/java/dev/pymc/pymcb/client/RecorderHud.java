@@ -12,7 +12,7 @@ import net.minecraft.client.Minecraft;
  * <b>MENU</b> (a screen is open, sampling holds), plus the run clock and the sample count.
  *
  * <p>It is only drawn while a recording is running, disappears with F1, and can be turned off
- * or moved with {@code /pymc hud} or the settings screen ({@code /pymc settings}).
+ * or moved with {@code /pymcbot hud} or the PyMC Bot settings page ({@code /pymcbot settings}).
  */
 public final class RecorderHud {
     static final int RED = 0xFFFF4545;

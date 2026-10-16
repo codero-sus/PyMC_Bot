@@ -37,7 +37,7 @@ def make_zip(files: dict[str, bytes | str], top: str = "PyMC_Bot-abc123", mode: 
     return buf.getvalue()
 
 
-def mod_jar(mc: str, mod_id: str = "pymcplaytime") -> bytes:
+def mod_jar(mc: str, mod_id: str = "pymcbot") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("fabric.mod.json", json.dumps({"id": mod_id, "depends": {"minecraft": mc}}))
@@ -45,12 +45,13 @@ def mod_jar(mc: str, mod_id: str = "pymcplaytime") -> bytes:
 
 
 def release(tag: str, mcs: list[str], prerelease: bool = False, version: str | None = None) -> dict:
-    version = version or tag[len(updater.MOD_TAG_PREFIX):]
+    version = version or updater.release_version(tag)
+    mod_id = tag.split("-v", 1)[0]
     assets = []
     for mc in mcs:
-        data = mod_jar(mc)
+        data = mod_jar(mc, mod_id)
         assets.append({
-            "name": f"pymcplaytime-{version}+{mc}.jar",
+            "name": f"{mod_id}-{version}+{mc}.jar",
             "size": len(data),
             "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
             "browser_download_url": f"https://example.invalid/{version}/{mc}.jar",
@@ -63,6 +64,9 @@ def release(tag: str, mcs: list[str], prerelease: bool = False, version: str | N
 
 
 @pytest.mark.parametrize(("name", "expected"), [
+    ("pymcbot-0.6.0+1.21.4.jar", ("0.6.0", "1.21.4")),
+    ("pymcbot-0.6.0+26.3.jar", ("0.6.0", "26.3")),
+    ("pymcbot-gametest-0.6.0+26.3.jar", None),
     ("pymcplaytime-0.5.0+1.21.4.jar", ("0.5.0", "1.21.4")),
     ("pymcplaytime-0.5.0+26.3.jar", ("0.5.0", "26.3")),
     ("pymcplaytime-1.2+26.1.2.jar", ("1.2", "26.1.2")),
@@ -82,23 +86,33 @@ def test_version_tuple_orders_numerically():
 
 def test_pick_release_prefers_stable_and_falls_back_to_pre():
     rels = [
-        release("pymcplaytime-v0.6.0", ["1.21.4"], prerelease=True),
-        release("pymcplaytime-v0.5.0", ["1.21.4"]),
-        release("pymcplaytime-v0.10.0", ["1.21.4"], prerelease=True),
+        release("pymcbot-v0.6.0", ["1.21.4"], prerelease=True),
+        release("pymcbot-v0.5.0", ["1.21.4"]),
+        release("pymcbot-v0.10.0", ["1.21.4"], prerelease=True),
         {"tag_name": "v9.9.9", "prerelease": False, "draft": False, "assets": []},
-        {"tag_name": "pymcplaytime-v9.0.0", "prerelease": False, "draft": True, "assets": []},
+        {"tag_name": "pymcbot-v9.0.0", "prerelease": False, "draft": True, "assets": []},
     ]
-    assert updater.pick_release(rels, allow_pre=False)["tag_name"] == "pymcplaytime-v0.5.0"
-    assert updater.pick_release(rels, allow_pre=True)["tag_name"] == "pymcplaytime-v0.10.0"
-    only_pre = [release("pymcplaytime-v0.5.0", ["26.3"], prerelease=True)]
-    assert updater.pick_release(only_pre, allow_pre=False)["tag_name"] == "pymcplaytime-v0.5.0"
+    assert updater.pick_release(rels, allow_pre=False)["tag_name"] == "pymcbot-v0.5.0"
+    assert updater.pick_release(rels, allow_pre=True)["tag_name"] == "pymcbot-v0.10.0"
+    only_pre = [release("pymcbot-v0.5.0", ["26.3"], prerelease=True)]
+    assert updater.pick_release(only_pre, allow_pre=False)["tag_name"] == "pymcbot-v0.5.0"
     assert updater.pick_release([], allow_pre=True) is None
 
 
+def test_release_version_knows_both_names():
+    assert updater.release_version("pymcbot-v0.6.0") == "0.6.0"
+    assert updater.release_version("pymcplaytime-v0.5.0") == "0.5.0"
+    assert updater.release_version("v1.0.0") is None
+    rels = [release("pymcplaytime-v0.5.0", ["26.3"]), release("pymcbot-v0.6.0", ["26.3"])]
+    assert updater.pick_release(rels, allow_pre=False)["tag_name"] == "pymcbot-v0.6.0"
+    old_only = [release("pymcplaytime-v0.5.0", ["26.3"], prerelease=True)]
+    assert updater.asset_for(old_only[0], "0.5.0", "26.3")["name"] == "pymcplaytime-0.5.0+26.3.jar"
+
+
 def test_asset_for_matches_exact_version():
-    rel = release("pymcplaytime-v0.5.0", ["1.21.1", "1.21.10"])
-    assert updater.asset_for(rel, "0.5.0", "1.21.1")["name"] == "pymcplaytime-0.5.0+1.21.1.jar"
-    assert updater.asset_for(rel, "0.5.0", "1.21.10")["name"] == "pymcplaytime-0.5.0+1.21.10.jar"
+    rel = release("pymcbot-v0.5.0", ["1.21.1", "1.21.10"])
+    assert updater.asset_for(rel, "0.5.0", "1.21.1")["name"] == "pymcbot-0.5.0+1.21.1.jar"
+    assert updater.asset_for(rel, "0.5.0", "1.21.10")["name"] == "pymcbot-0.5.0+1.21.10.jar"
     assert updater.asset_for(rel, "0.5.0", "1.21.2") is None
 
 
@@ -289,7 +303,7 @@ def test_update_dependencies_uses_venv(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_github(monkeypatch):
-    state = {"releases": [release("pymcplaytime-v0.5.0", ["1.21.4", "26.3"], prerelease=True)], "downloads": []}
+    state = {"releases": [release("pymcbot-v0.5.0", ["1.21.4", "26.3"], prerelease=True)], "downloads": []}
 
     def http_json(url):
         assert "/releases" in url
@@ -318,15 +332,16 @@ def test_mod_update_replaces_old_jar(tmp_path, fake_github):
     assert fake_github["downloads"] == []
     assert updater.update_mod(mods, updater.REPO, None, allow_pre=False, check=False) is True
     names = sorted(p.name for p in mods.iterdir())
-    assert names == ["fabric-api-0.119.0+1.21.4.jar", "pymcplaytime-0.4.0+1.21.4.jar.old",
-                     "pymcplaytime-0.5.0+1.21.4.jar"]
+    # the pre-0.6 "pymcplaytime" jar is replaced by the renamed "pymcbot" jar
+    assert names == ["fabric-api-0.119.0+1.21.4.jar", "pymcbot-0.5.0+1.21.4.jar",
+                     "pymcplaytime-0.4.0+1.21.4.jar.old"]
     assert updater.update_mod(mods, updater.REPO, None, allow_pre=False, check=False) is False
 
 
 def test_mod_install_with_mc_and_missing_version(tmp_path, fake_github):
     mods = tmp_path / "mods"
     assert updater.update_mod(mods, updater.REPO, "26.3", allow_pre=False, check=False) is True
-    assert (mods / "pymcplaytime-0.5.0+26.3.jar").is_file()
+    assert (mods / "pymcbot-0.5.0+26.3.jar").is_file()
     assert updater.update_mod(mods, updater.REPO, "1.20.1", allow_pre=False, check=False) is False
     with pytest.raises(updater.UpdateError, match="--mc"):
         updater.update_mod(tmp_path / "empty", updater.REPO, None, allow_pre=False, check=False)
@@ -347,7 +362,7 @@ def test_mod_update_rejects_bad_download(tmp_path, fake_github):
 def test_verify_jar_checks_metadata():
     data = mod_jar("26.3", mod_id="something-else")
     asset = {"size": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
-    with pytest.raises(updater.UpdateError, match="not the recorder"):
+    with pytest.raises(updater.UpdateError, match="not the PyMC Bot mod"):
         updater.verify_jar(data, asset, "26.3")
     with pytest.raises(updater.UpdateError, match="not a valid mod jar"):
         updater.verify_jar(b"junk", {"size": 4}, "26.3")
@@ -366,7 +381,7 @@ def test_install_jar_reports_locked_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updater.Path, "rename", locked)
     with pytest.raises(updater.UpdateError, match="close Minecraft"):
-        updater.install_jar(mods, b"new", "pymcplaytime-0.5.0+26.3.jar", [old])
+        updater.install_jar(mods, b"new", "pymcbot-0.5.0+26.3.jar", [old])
     assert not any(p.name.endswith(".part") for p in mods.iterdir())
 
 

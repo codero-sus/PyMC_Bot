@@ -196,7 +196,7 @@ python updater.py         # anywhere
 * **Downloaded the ZIP:** the updater downloads the newest `main` source and copies it over the
   folder. `pymc_bot_config.json`, `.venv`, `models/`, recordings and every other file of yours are
   left alone; repository files you changed are backed up to `.pymc_backup/<time>/` first.
-* **Mod:** finds `pymcplaytime-<version>+<mc>.jar` in the mods folder (`%APPDATA%\.minecraft\mods`,
+* **Mod:** finds `pymcbot-<version>+<mc>.jar` (or a pre-0.6 `pymcplaytime-*.jar`, which it replaces) in the mods folder (`%APPDATA%\.minecraft\mods`,
   `~/Library/Application Support/minecraft/mods`, `~/.minecraft/mods`, or `--mods-dir`),
   downloads the jar for the same Minecraft version from the newest
   [release](https://github.com/codero-sus/PyMC_Bot/releases), verifies its size, SHA-256 and
@@ -212,25 +212,28 @@ Restart the panel / bot afterwards.
 
 The bot can learn **how you play** and then play like that itself. Three steps:
 
-**1. Record** – download the Fabric mod jar for your Minecraft version (**1.21.1 – 26.3**) from the
+**1. Record** – download the **PyMC Bot mod** jar (`pymcbot-<version>+<mc>.jar`) for your Minecraft version (**1.21.1 – 26.3**) from the
 [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) (or build it from [`./mod`](mod/README.md): with JDK 25 installed,
 `cd mod && ./gradlew build -Pmc=<your version>` – full steps in
 [Compiling the mod](mod/README.md#compiling-the-mod)), drop it in `.minecraft/mods/` with
 [Fabric API](https://modrinth.com/mod/fabric-api), then in game:
 
 ```text
-/pymc record start      # or your hotkey; play normally for 10-60 minutes
-/pymc record stop
-/pymc export            # -> <gameDir>/pymc-playtime/dataset.jsonl
+/pymcbot record start      # or your hotkey; play normally for 10-60 minutes
+/pymcbot record stop
+/pymcbot export            # -> <gameDir>/pymc-playtime/dataset.jsonl
 ```
 
-A **REC** badge in the corner shows the run clock and sample count while you record, and
-`/pymc settings` opens a settings screen with buttons for every recorder option.
+A **REC** badge in the corner shows the run clock and sample count while you record. Everything
+else is on the **PyMC Bot settings page** – `/pymcbot settings`, a hotkey, or Mod Menu's
+*Configure* button: tabs for the recorder controls, recording options, advanced entity + item
+limits, the HUD badge (with a live preview) and About; hover any button for help
+([details](mod/README.md#pymc-bot-settings-page)). `/pymc` still works as a short alias.
 
 The mod samples your playtime 20×/s — position, velocity, view, posture, hotbar, health/food, the 3×3×3
 block neighbourhood, nearby entities, and the action you were performing
 (`forward`, `back`, `left`, `right`, `jump`, `sneak`, `look`, `attack`, `use`, `hold`, `move`, `none`).
-`/pymc advanced on` additionally records **entities, items, the held item, armour and dropped stacks**
+`/pymcbot advanced on` additionally records **entities, items, the held item, armour and dropped stacks**
 for [advanced training](#advanced-training-entities-and-items).
 
 **2. Train** – *checkpointing itself as it goes*:
@@ -280,8 +283,8 @@ to the model with its distance and where it sits relative to your view — so "a
 while holding a sword" is a different situation from "a cow across the field while holding a pickaxe":
 
 ```text
-/pymc advanced on        # in game, before recording: entities + items + drops are written too
-/pymc record start  ...  /pymc record stop  ...  /pymc export
+/pymcbot advanced on        # in game, before recording: entities + items + drops are written too
+/pymcbot record start  ...  /pymcbot record stop  ...  /pymcbot export
 ```
 
 ```bash
@@ -427,7 +430,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
   },
   "training": {
     "models_dir": "models",             // where checkpoints + model.json cards live
-    "dataset": "pymc-playtime/dataset.jsonl",  // written by the mod's /pymc export
+    "dataset": "pymc-playtime/dataset.jsonl",  // written by the mod's /pymcbot export
     "active_run": "",                   // "" = newest trained run
     "engine": "mlp",                    // "mlp" (NumPy) | "transformer" (needs torch)
     "steps": 1000, "batch_size": 64, "lr": 0.003, "checkpoint_every": 200,
@@ -511,7 +514,7 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 ```bash
 pip install -r requirements-dev.txt
 
-pytest -q                       # 381 tests, no Minecraft server, no LLM required (2 skip without torch)
+pytest -q                       # 388 tests, no Minecraft server, no LLM required (2 skip without torch)
 ruff check .                    # lint
 pytest --cov=pymc_bot -q        # coverage
 
@@ -529,8 +532,8 @@ and **builds the Fabric mod for all 16 Minecraft versions from 1.21.1 to 26.3** 
 job per version from `mod/versions.json`; 1.21.x jars target Java 21, 26.x jars Java 25), **launches
 the game with the mod on every version from 1.21.4 on** (Fabric's client game test in a virtual
 display: it records a few seconds of scripted play, checks the dataset and uploads screenshots) and
-uploads each jar plus a `pymcplaytime-all-versions` bundle. When everything is green, the `release`
-job attaches all 16 jars to the GitHub release `pymcplaytime-v<mod_version>`.
+uploads each jar plus a `pymcbot-all-versions` bundle. When everything is green, the `release`
+job attaches all 16 jars to the GitHub release `pymcbot-v<mod_version>`.
 
 ```
 pymc_bot/
@@ -575,8 +578,8 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 | Panel shows `demo brain (stub)` | you are pointing Ollama at `python -m pymc_bot stub`, not a real model |
 | Panel pill says `cortex offline` | hover it for the reason; usually `CORTEX_API_KEY` not exported where PyMC_Bot runs, or the Cortex model is not started – see [docs/CORTEX.md](docs/CORTEX.md#troubleshooting) |
 | Bot stands still | AI off (press **Start AI**), or movement permission disabled, or the server is unreachable |
-| `no playtime samples found` | record with the mod first (`/pymc record start`, `/pymc export`), or try `python -m pymc_bot train --simulate 5` |
-| advanced training looks like basic training | `train --inspect` shows an empty vocabulary: the recording was made before `/pymc advanced on`, so there is nothing extra to learn. Record again with it on. |
+| `no playtime samples found` | record with the mod first (`/pymcbot record start`, `/pymcbot export`), or try `python -m pymc_bot train --simulate 5` |
+| advanced training looks like basic training | `train --inspect` shows an empty vocabulary: the recording was made before `/pymcbot advanced on`, so there is nothing extra to learn. Record again with it on. |
 | Trained model only walks forward | play/train more, or lower `training.temperature`; check `val_balanced_accuracy` in the model card |
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
 | Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |
@@ -597,7 +600,7 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 | **Built with** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/), [mineflayer](https://github.com/PrismarineJS/mineflayer), [Fabric](https://fabricmc.net/), [Ollama](https://ollama.com/), NumPy / PyTorch |
 
 The same credits are in the panel (footer and ⓘ *About*), at `GET /api/about`, in `python -m pymc_bot about`,
-in the OpenAPI docs (`/docs`) and in the Fabric mod (`/pymc about`, `fabric.mod.json`).
+in the OpenAPI docs (`/docs`) and in the Fabric mod (`/pymcbot about`, `fabric.mod.json`).
 
 ## License
 

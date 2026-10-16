@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the PyMC Playtime Recorder for every Minecraft version in versions.json.
+# Build the PyMC Bot mod for every Minecraft version in versions.json.
 #
-#   ./build-all.sh                 # all versions -> dist/pymcplaytime-<mod>+<mc>.jar
+#   ./build-all.sh                 # all versions -> dist/pymcbot-<mod>+<mc>.jar
 #   ./build-all.sh 1.21.1 26.3     # only these
 #
 # Needs JDK 25 on PATH (or JAVA_HOME). Gradle and Minecraft are downloaded automatically.
@@ -24,7 +24,7 @@ for mc in "${versions[@]}"; do
 	echo
 	echo "==> Minecraft ${mc}"
 	if ./gradlew build -Pmc="${mc}" --console=plain; then
-		jar=$(ls build/libs/pymcplaytime-*+"${mc}".jar 2>/dev/null | head -n 1)
+		jar=$(ls build/libs/pymcbot-*+"${mc}".jar 2>/dev/null | head -n 1)
 		if [ -n "${jar}" ]; then
 			cp "${jar}" dist/
 			built+=("$(basename "${jar}")")

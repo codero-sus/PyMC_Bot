@@ -1,6 +1,6 @@
-# Build the PyMC Playtime Recorder for every Minecraft version in versions.json (Windows).
+# Build the PyMC Bot mod for every Minecraft version in versions.json (Windows).
 #
-#   .\build-all.ps1                    # all versions -> dist\pymcplaytime-<mod>+<mc>.jar
+#   .\build-all.ps1                    # all versions -> dist\pymcbot-<mod>+<mc>.jar
 #   .\build-all.ps1 1.21.1 26.3        # only these
 #
 # Needs JDK 25 on PATH (or JAVA_HOME). Gradle and Minecraft are downloaded automatically.
@@ -23,7 +23,7 @@ foreach ($mc in $Versions) {
     Write-Host "==> Minecraft $mc"
     & .\gradlew.bat build "-Pmc=$mc" --console=plain
     if ($LASTEXITCODE -eq 0) {
-        $jar = Get-ChildItem -Path 'build\libs' -Filter "pymcplaytime-*+$mc.jar" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $jar = Get-ChildItem -Path 'build\libs' -Filter "pymcbot-*+$mc.jar" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($jar) {
             Copy-Item -Path $jar.FullName -Destination 'dist' -Force
             $built += $jar.Name

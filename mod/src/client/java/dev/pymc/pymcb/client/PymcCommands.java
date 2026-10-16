@@ -12,28 +12,28 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.network.chat.Component;
 
 /**
- * {@code /pymc ...} - client side commands for the playtime recorder.
+ * {@code /pymcbot ...} (short alias {@code /pymc ...}) - client side commands of the PyMC Bot mod.
  *
  * <pre>
- * /pymc record start|stop|toggle|status
- * /pymc record episode          close the current episode and start a new one
- * /pymc pause | resume          stop sampling for a moment without closing the episode
- * /pymc export                  write dataset.jsonl for the Python trainer
- * /pymc sample &lt;ticks&gt;          change the sampling rate (2 ticks = 100 ms)
- * /pymc advanced on|off|status   record entities, items, armour and drops too
- * /pymc entities &lt;n&gt;            how many entities to record per sample (advanced)
- * /pymc drops &lt;n&gt;               how many dropped item stacks to record (advanced)
- * /pymc autorecord on|off        start recording automatically when joining a world
- * /pymc menus on|off             skip samples while a screen is open (default on)
- * /pymc idle &lt;seconds&gt;          stop writing after this long without input (0 = never)
- * /pymc notify on|off            chat lines for hotkey / auto-record changes
- * /pymc hud on|off|status        the REC / PAUSED badge in a corner of the screen
- * /pymc hud corner &lt;corner&gt;      top_left, top_right, bottom_left or bottom_right
- * /pymc settings                open the settings screen (buttons for all of the above)
- * /pymc status                  where the dataset lives, how big it is
- * /pymc train                   print the exact command to train on this dataset
- * /pymc version                 mod, Minecraft and compatibility layer versions
- * /pymc about                   author, links and credits
+ * /pymcbot record start|stop|toggle|status
+ * /pymcbot record episode          close the current episode and start a new one
+ * /pymcbot pause | resume          stop sampling for a moment without closing the episode
+ * /pymcbot export                  write dataset.jsonl for the Python trainer
+ * /pymcbot sample &lt;ticks&gt;          change the sampling rate (2 ticks = 100 ms)
+ * /pymcbot advanced on|off|status   record entities, items, armour and drops too
+ * /pymcbot entities &lt;n&gt;            how many entities to record per sample (advanced)
+ * /pymcbot drops &lt;n&gt;               how many dropped item stacks to record (advanced)
+ * /pymcbot autorecord on|off        start recording automatically when joining a world
+ * /pymcbot menus on|off             skip samples while a screen is open (default on)
+ * /pymcbot idle &lt;seconds&gt;          stop writing after this long without input (0 = never)
+ * /pymcbot notify on|off            chat lines for hotkey / auto-record changes
+ * /pymcbot hud on|off|status        the REC / PAUSED badge in a corner of the screen
+ * /pymcbot hud corner &lt;corner&gt;      top_left, top_right, bottom_left or bottom_right
+ * /pymcbot settings | config       open the PyMC Bot settings page (every option above, in tabs)
+ * /pymcbot status                  where the dataset lives, how big it is
+ * /pymcbot train                   print the exact command to train on this dataset
+ * /pymcbot version                 mod, Minecraft and compatibility layer versions
+ * /pymcbot about                   author, links and credits
  * </pre>
  *
  * <p>Every command that changes what gets recorded requires an <em>attended</em> run on
@@ -43,8 +43,11 @@ import net.minecraft.network.chat.Component;
  * <p>Made with ❤ by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/</p>
  */
 public final class PymcCommands {
-    /** Shown by {@code /pymc about}. */
-    static final String ABOUT = "PyMC Playtime Recorder - part of PyMC_Bot\n"
+    /** Both spellings work; {@code /pymcbot} is the documented one, {@code /pymcbot} the short alias. */
+    static final String[] ROOTS = {"pymcbot", "pymc"};
+
+    /** Shown by {@code /pymcbot about}. */
+    static final String ABOUT = PymcPlaytimeMod.NAME + " mod - part of PyMC_Bot\n"
             + "Made with \u2764 by codero-sus\n"
             + "GitHub:  https://github.com/codero-sus\n"
             + "Website: https://the-codero.web.app/\n"
@@ -119,7 +122,7 @@ public final class PymcCommands {
                     }))
                     .then(literal("off").executes(ctx -> {
                         PlaytimeConfig.get().setAutoRecord(false);
-                        return feedback(ctx.getSource(), "auto-record off - start with /pymc record start or the hotkey");
+                        return feedback(ctx.getSource(), "auto-record off - start with /pymcbot record start or the hotkey");
                     }));
 
             LiteralArgumentBuilder<FabricClientCommandSource> menus = guarded("menus")
@@ -173,45 +176,62 @@ public final class PymcCommands {
                             "HUD badge " + (PlaytimeConfig.get().showHud ? "on" : "off") + ", "
                                     + PlaytimeConfig.cornerLabel(PlaytimeConfig.get().hudCorner).toLowerCase(Locale.ROOT) + " corner")));
 
-            dispatcher.register(literal("pymc")
-                    .then(record)
-                    .then(guarded("pause").executes(ctx -> feedback(ctx.getSource(), recorder.pause())))
-                    .then(guarded("resume").executes(ctx -> feedback(ctx.getSource(), recorder.resume())))
-                    .then(sample)
-                    .then(advanced)
-                    .then(entities)
-                    .then(drops)
-                    .then(autorecord)
-                    .then(menus)
-                    .then(idle)
-                    .then(notify)
-                    .then(hud)
-                    .then(guarded("settings").executes(ctx -> {
-                        PymcPlaytimeClient.openSettings();
-                        return 1;
-                    }))
-                    .then(literal("param").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())))
-                    .then(literal("status").executes(ctx -> feedback(ctx.getSource(), recorder.status())))
-                    .then(guarded("export").executes(ctx -> feedback(ctx.getSource(), recorder.export())))
-                    .then(literal("train").executes(ctx -> feedback(ctx.getSource(), trainHint())))
-                    .then(literal("version").executes(ctx -> feedback(ctx.getSource(), version())))
-                    .then(literal("about").executes(ctx -> feedback(ctx.getSource(), ABOUT))));
+            for (String root : ROOTS) {
+                dispatcher.register(literal(root)
+                        .executes(ctx -> feedback(ctx.getSource(), help()))
+                        .then(literal("help").executes(ctx -> feedback(ctx.getSource(), help())))
+                        .then(record)
+                        .then(guarded("pause").executes(ctx -> feedback(ctx.getSource(), recorder.pause())))
+                        .then(guarded("resume").executes(ctx -> feedback(ctx.getSource(), recorder.resume())))
+                        .then(sample)
+                        .then(advanced)
+                        .then(entities)
+                        .then(drops)
+                        .then(autorecord)
+                        .then(menus)
+                        .then(idle)
+                        .then(notify)
+                        .then(hud)
+                        .then(guarded("settings").executes(ctx -> {
+                            PymcPlaytimeClient.openSettings();
+                            return 1;
+                        }))
+                        .then(guarded("config").executes(ctx -> {
+                            PymcPlaytimeClient.openSettings();
+                            return 1;
+                        }))
+                        .then(literal("param").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())))
+                        .then(literal("status").executes(ctx -> feedback(ctx.getSource(), recorder.status())))
+                        .then(guarded("export").executes(ctx -> feedback(ctx.getSource(), recorder.export())))
+                        .then(literal("train").executes(ctx -> feedback(ctx.getSource(), trainHint(recorder))))
+                        .then(literal("version").executes(ctx -> feedback(ctx.getSource(), version())))
+                        .then(literal("about").executes(ctx -> feedback(ctx.getSource(), ABOUT))));
+            }
         });
     }
 
+    /** Shown by {@code /pymcbot} on its own. */
+    static String help() {
+        return PymcPlaytimeMod.NAME + " " + PymcPlaytimeMod.modVersion() + " - records your playtime for PyMC Bot\n"
+                + "/pymcbot settings   open the settings page (also: hotkey, Mod Menu)\n"
+                + "/pymcbot record start|stop   /pymcbot pause|resume   /pymcbot export\n"
+                + "/pymcbot status   /pymcbot train   /pymcbot about   (/pymcbot works too)";
+    }
+
     static String version() {
-        return "PyMC Playtime Recorder " + PymcPlaytimeMod.modVersion() + "\n"
+        return PymcPlaytimeMod.NAME + " " + PymcPlaytimeMod.modVersion() + "\n"
                 + "Minecraft " + PymcPlaytimeMod.minecraftVersion() + " (compat layer: " + Mc.ERA + ")\n"
                 + "one jar per Minecraft version, 1.21.1 to 26.3 - pick the one matching your game";
     }
 
-    private String trainHint() {
+    /** The command that trains a model on the current dataset (also used by the settings page). */
+    static String trainHint(PlaytimeRecorder recorder) {
         String dataset = recorder.datasetPath() == null ? "<gameDir>/pymc-playtime/dataset.jsonl"
                 : recorder.datasetPath().toString();
         String advancedFlag = PlaytimeConfig.get().advanced ? " --advanced" : "";
         String mode = PlaytimeConfig.get().advanced
                 ? "recording mode: advanced (entities + items)"
-                : "recording mode: basic - run /pymc advanced on to record entities and items";
+                : "recording mode: basic - run /pymcbot advanced on to record entities and items";
         return "dataset: " + dataset + "\n"
                 + mode + "\n"
                 + "train it with:  python -m pymc_bot train --dataset \"" + dataset + "\" --steps 5000"
@@ -223,7 +243,7 @@ public final class PymcCommands {
 
     private static int feedback(FabricClientCommandSource source, String message) {
         for (String line : message.split("\n")) {
-            source.sendFeedback(Component.literal("[pymc] " + line));
+            source.sendFeedback(Component.literal(PymcBotScreen.CHAT_PREFIX + line));
         }
         return 1;
     }

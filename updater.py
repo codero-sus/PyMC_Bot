@@ -3,7 +3,7 @@
 
     python updater.py                 # update PyMC_Bot (and its dependencies if they changed)
     python updater.py --check         # only show what would be updated
-    python updater.py --mod           # also update the PyMC Playtime Recorder jar in .minecraft/mods
+    python updater.py --mod           # also update the PyMC Bot mod jar in .minecraft/mods
     python updater.py --mod-only      # only the mod
     python updater.py --mod-only --mc 1.21.4    # install the mod for 1.21.4 if it is not there yet
 
@@ -19,7 +19,8 @@ How it updates PyMC_Bot:
   repository file you changed is first copied to ``.pymc_backup/<time>/``.
 
 Afterwards ``pip install -r requirements.txt`` (and ``npm install``) run only if those files
-changed, using ``.venv`` when it exists. The mod update finds ``pymcplaytime-<version>+<mc>.jar``
+changed, using ``.venv`` when it exists. The mod update finds ``pymcbot-<version>+<mc>.jar``
+(or a pre-0.6 ``pymcplaytime-*.jar``)
 in your mods folder, downloads the jar for the same Minecraft version from the newest GitHub
 release, checks its size, SHA-256 and ``fabric.mod.json``, and keeps the old one as ``*.jar.old``.
 
@@ -56,8 +57,11 @@ CODELOAD = "https://codeload.github.com"
 USER_AGENT = "PyMC_Bot-updater"
 STATE_FILE = ".pymc_update.json"
 BACKUP_DIR = ".pymc_backup"
-MOD_TAG_PREFIX = "pymcplaytime-v"
-JAR_RE = re.compile(r"^pymcplaytime-(?P<version>\d+(?:\.\d+)*)\+(?P<mc>[0-9][0-9A-Za-z.\-]*)\.jar$")
+# The mod is "PyMC Bot" (id pymcbot) since 0.6.0; 0.5.0 and older were "pymcplaytime".
+# Both names are recognised so an old jar is replaced by the new one.
+MOD_IDS = ("pymcbot", "pymcplaytime")
+MOD_TAG_PREFIXES = tuple(f"{mod_id}-v" for mod_id in MOD_IDS)
+JAR_RE = re.compile(r"^(?P<id>pymcbot|pymcplaytime)-(?P<version>\d+(?:\.\d+)*)\+(?P<mc>[0-9][0-9A-Za-z.\-]*)\.jar$")
 # Files whose change means dependencies must be reinstalled.
 DEPENDENCY_FILES = ("requirements.txt", "requirements-train.txt", "requirements-dev.txt", "package.json")
 # Never written by a zip update, even if a future archive contained them.
@@ -341,17 +345,25 @@ def parse_jar_name(name: str) -> tuple[str, str] | None:
 def installed_jars(mods_dir: Path) -> list[InstalledJar]:
     jars = []
     if mods_dir.is_dir():
-        for path in sorted(mods_dir.glob("pymcplaytime-*.jar")):
+        for path in sorted(p for mod_id in MOD_IDS for p in mods_dir.glob(f"{mod_id}-*.jar")):
             parsed = parse_jar_name(path.name)
             if parsed:
                 jars.append(InstalledJar(path, *parsed))
     return jars
 
 
+def release_version(tag: str) -> str | None:
+    """'pymcbot-v0.6.0' -> '0.6.0' (also the old 'pymcplaytime-v' tags); None for other tags."""
+    for prefix in MOD_TAG_PREFIXES:
+        if tag.startswith(prefix):
+            return tag[len(prefix):]
+    return None
+
+
 def pick_release(releases: list[dict], allow_pre: bool) -> dict | None:
     """Newest mod release: stable first; pre-releases with --pre or when there is no stable one."""
-    mod = [r for r in releases if not r.get("draft") and str(r.get("tag_name", "")).startswith(MOD_TAG_PREFIX)]
-    mod.sort(key=lambda r: version_tuple(r["tag_name"][len(MOD_TAG_PREFIX):]), reverse=True)
+    mod = [r for r in releases if not r.get("draft") and release_version(str(r.get("tag_name", "")))]
+    mod.sort(key=lambda r: version_tuple(release_version(r["tag_name"])), reverse=True)
     stable = [r for r in mod if not r.get("prerelease")]
     if allow_pre or not stable:
         return mod[0] if mod else None
@@ -359,8 +371,8 @@ def pick_release(releases: list[dict], allow_pre: bool) -> dict | None:
 
 
 def asset_for(release: dict, version: str, mc: str) -> dict | None:
-    wanted = f"pymcplaytime-{version}+{mc}.jar"
-    return next((a for a in release.get("assets", []) if a.get("name") == wanted), None)
+    wanted = {f"{mod_id}-{version}+{mc}.jar" for mod_id in MOD_IDS}
+    return next((a for a in release.get("assets", []) if a.get("name") in wanted), None)
 
 
 def verify_jar(data: bytes, asset: dict, mc: str) -> None:
@@ -374,8 +386,8 @@ def verify_jar(data: bytes, asset: dict, mc: str) -> None:
             meta = json.loads(zf.read("fabric.mod.json").decode("utf-8"))
     except (zipfile.BadZipFile, KeyError, ValueError) as exc:
         raise UpdateError(f"the downloaded file is not a valid mod jar ({exc})") from exc
-    if meta.get("id") != "pymcplaytime" or meta.get("depends", {}).get("minecraft") != mc:
-        raise UpdateError(f"the downloaded jar is not the recorder for Minecraft {mc}")
+    if meta.get("id") not in MOD_IDS or meta.get("depends", {}).get("minecraft") != mc:
+        raise UpdateError(f"the downloaded jar is not the PyMC Bot mod for Minecraft {mc}")
 
 
 def install_jar(mods_dir: Path, data: bytes, name: str, replaces: list[Path]) -> Path:
@@ -409,18 +421,18 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
     if mc_wanted:
         targets.setdefault(mc_wanted, [])
     if not targets:
-        raise UpdateError("no pymcplaytime-*.jar in that folder - pass --mc <your Minecraft version> to install it, "
+        raise UpdateError("no pymcbot-*.jar in that folder - pass --mc <your Minecraft version> to install it, "
                           "or --mods-dir if your mods live elsewhere")
     release = pick_release(http_json(f"{API}/repos/{repo}/releases?per_page=30"), allow_pre)
     if release is None:
-        raise UpdateError(f"{repo} has no {MOD_TAG_PREFIX}* release yet")
-    newest = release["tag_name"][len(MOD_TAG_PREFIX):]
+        raise UpdateError(f"{repo} has no {MOD_TAG_PREFIXES[0]}* release yet")
+    newest = release_version(release["tag_name"])
     say(f"newest mod release: {release['tag_name']}" + (" (pre-release)" if release.get("prerelease") else ""))
     changed = False
     for mc, current in sorted(targets.items()):
         best = max((j.version for j in current), key=version_tuple, default=None)
         if best and version_tuple(best) >= version_tuple(newest) and not reinstall:
-            say(f"Minecraft {mc}: pymcplaytime {best} is up to date")
+            say(f"Minecraft {mc}: PyMC Bot mod {best} is up to date")
             continue
         asset = asset_for(release, newest, mc)
         if asset is None:
@@ -451,7 +463,7 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="updater",
-        description="Update PyMC_Bot, its dependencies and the PyMC Playtime Recorder mod from GitHub.",
+        description="Update PyMC_Bot, its dependencies and the PyMC Bot mod from GitHub.",
         epilog="Examples:  updater --check   |   updater --mod   |   updater --mod-only --mc 1.21.4",
     )
     parser.add_argument("--check", action="store_true", help="only report available updates, change nothing")

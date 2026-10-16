@@ -806,7 +806,7 @@ def create_app(
                 status_code=400,
                 detail=(
                     f"no playtime dataset at {dataset} - record some with the Fabric mod in ./mod "
-                    "(/pymc record start, /pymc export), or ask for a synthetic one with "
+                    "(/pymcbot record start, /pymcbot export), or ask for a synthetic one with "
                     '{"simulate_minutes": 5}'
                 ),
             )

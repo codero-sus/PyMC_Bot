@@ -6,7 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Mod entrypoint. This mod is client only (it records the local player's own playtime), so the
+ * Mod entrypoint of the PyMC Bot mod. This mod is client only (it records the local player's own playtime), so the
  * real work happens in {@code dev.pymc.pymcb.client.PymcPlaytimeClient}; this class exists to own
  * the mod id and logger the same way the official Fabric template does.
  *
@@ -14,12 +14,14 @@ import org.slf4j.LoggerFactory;
  * for every supported Minecraft version.
  */
 public class PymcPlaytimeMod implements ModInitializer {
-    public static final String MOD_ID = "pymcplaytime";
+    public static final String MOD_ID = "pymcbot";
+    /** The name players see: mod list, settings page, chat prefix. */
+    public static final String NAME = "PyMC Bot";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     @Override
     public void onInitialize() {
-        LOGGER.info("PyMC Playtime Recorder loaded (client entrypoint does the recording) - made by codero-sus, https://github.com/codero-sus");
+        LOGGER.info(NAME + " mod loaded (client entrypoint does the recording) - made by codero-sus, https://github.com/codero-sus");
     }
 
     /** This mod's version, e.g. {@code 0.4.0+26.3}. */

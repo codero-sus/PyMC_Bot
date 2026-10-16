@@ -1,9 +1,9 @@
 import groovy.json.JsonSlurper
 
-// PyMC Playtime Recorder - one source tree, one jar per Minecraft version.
+// PyMC Bot mod - one source tree, one jar per Minecraft version.
 //
 //   ./gradlew build                 -> the default version from versions.json (newest)
-//   ./gradlew build -Pmc=1.21.4     -> build/libs/pymcplaytime-<mod_version>+1.21.4.jar
+//   ./gradlew build -Pmc=1.21.4     -> build/libs/pymcbot-<mod_version>+1.21.4.jar
 //   ./gradlew printTargets          -> every supported version
 //   ./gradlew runProductionClientGameTest -Pmc=1.21.4 -PgameTest
 //                                   -> launches the real game and runs the in-game test (1.21.4+)
@@ -46,7 +46,7 @@ apply plugin: obfuscated ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabr
 version = "${project.mod_version}+${mcVersion}"
 group = project.maven_group
 base {
-	archivesName = gameTest ? 'pymcplaytime-gametest' : 'pymcplaytime'
+	archivesName = gameTest ? 'pymcbot-gametest' : 'pymcbot'
 }
 
 repositories {
@@ -58,7 +58,7 @@ loom {
 	splitEnvironmentSourceSets()
 
 	mods {
-		"pymcplaytime" {
+		"pymcbot" {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
@@ -118,9 +118,19 @@ java {
 	targetCompatibility = JavaVersion.toVersion(javaLevel)
 }
 
+// src/client/java/com/terraformersmc/modmenu/api holds two compile-only copies of Mod Menu's
+// public interfaces, so the "Configure" button works without a Mod Menu dependency per Minecraft
+// version. They are never shipped: the real Mod Menu provides them at runtime.
+def modMenuStubs = 'com/terraformersmc/**'
+
+tasks.named('sourcesJar') {
+	exclude modMenuStubs
+}
+
 jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
+	exclude modMenuStubs
 
 	from("LICENSE") {
 		rename { "${it}_$projectName" }
@@ -140,7 +150,7 @@ if (gameTest) {
 	def gameTestJava = providers.gradleProperty('gameTestJava').map { it as int }.getOrElse(javaLevel)
 	tasks.register('runProductionClientGameTest', net.fabricmc.loom.task.prod.ClientProductionRunTask) {
 		group = 'verification'
-		description = "Runs the PyMC in-game test on Minecraft ${mcVersion}."
+		description = "Runs the PyMC Bot in-game test on Minecraft ${mcVersion}."
 		jvmArgs.add('-Dfabric.client.gametest')
 		// Fabric's network synchronizer is known to be flaky on GitHub Actions runners.
 		jvmArgs.add('-Dfabric.client.gametest.disableNetworkSynchronizer=true')

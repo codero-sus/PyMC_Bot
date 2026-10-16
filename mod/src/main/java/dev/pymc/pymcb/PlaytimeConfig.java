@@ -11,11 +11,16 @@ import java.util.Properties;
 import net.fabricmc.loader.api.FabricLoader;
 
 /**
- * Recorder configuration, stored as {@code config/pymcplaytime.properties} so the sampling
- * rate can be changed without rebuilding the mod.
+ * PyMC Bot mod configuration, stored as {@code config/pymcbot.properties}. Everything here can be
+ * changed on the PyMC Bot settings page ({@code /pymcbot settings}, the hotkey or Mod Menu), with
+ * {@code /pymcbot} commands, or by editing the file while the game is closed.
+ *
+ * <p>Versions before 0.6.0 were called "PyMC Playtime Recorder" and used
+ * {@code config/pymcplaytime.properties}; that file is read once and copied to the new name.
  */
 public final class PlaytimeConfig {
-    private static final String FILE_NAME = "pymcplaytime.properties";
+    private static final String FILE_NAME = "pymcbot.properties";
+    private static final String LEGACY_FILE_NAME = "pymcplaytime.properties";
     private static final PlaytimeConfig INSTANCE = load();
 
     /** How many client ticks between two dataset samples. 2 ticks = 100 ms = 20 Hz. */
@@ -53,7 +58,7 @@ public final class PlaytimeConfig {
     public boolean notifications = true;
 
     // ---------------------------------------------------------------- on-screen badge
-    /** Corners the HUD badge can sit in (cycled by the settings screen and /pymc hud corner). */
+    /** Corners the HUD badge can sit in (cycled by the PyMC Bot settings page and /pymcbot hud corner). */
     public static final String[] HUD_CORNERS = {"top_left", "top_right", "bottom_left", "bottom_right"};
     /** Show the REC / PAUSED badge while a recording is running. */
     public boolean showHud = true;
@@ -67,6 +72,11 @@ public final class PlaytimeConfig {
     private static PlaytimeConfig load() {
         PlaytimeConfig cfg = new PlaytimeConfig();
         Path path = path();
+        Path legacy = path.resolveSibling(LEGACY_FILE_NAME);
+        boolean migrate = !Files.isRegularFile(path) && Files.isRegularFile(legacy);
+        if (migrate) {
+            path = legacy;
+        }
         if (Files.isRegularFile(path)) {
             Properties props = new Properties();
             try (InputStream in = Files.newInputStream(path)) {
@@ -88,6 +98,9 @@ public final class PlaytimeConfig {
                 cfg.hudCorner = cornerProp(props.getProperty("hudCorner"), cfg.hudCorner);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
+            }
+            if (migrate) {
+                cfg.save(); // copy the old settings to config/pymcbot.properties
             }
         } else {
             cfg.save();
@@ -114,15 +127,78 @@ public final class PlaytimeConfig {
         props.setProperty("notifications", Boolean.toString(notifications));
         props.setProperty("showHud", Boolean.toString(showHud));
         props.setProperty("hudCorner", hudCorner);
-        props.setProperty("_comment", "PyMC Playtime Recorder - sampleTicks=2 means one dataset sample every 100 ms");
+        props.setProperty("_comment", "PyMC Bot - edit on the settings page (/pymcbot settings); sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());
             try (OutputStream out = Files.newOutputStream(path)) {
-                props.store(out, "PyMC Playtime Recorder configuration");
+                props.store(out, "PyMC Bot mod configuration");
             }
         } catch (IOException ignored) {
             // Best effort.
         }
+    }
+
+    public void setIncludeBlocks(boolean enabled) {
+        includeBlocks = enabled;
+        save();
+    }
+
+    public void setMaxNearby(int limit) {
+        maxNearby = Math.max(0, Math.min(64, limit));
+        save();
+    }
+
+    public void setMoveEpsilon(double blocks) {
+        moveEpsilon = Math.max(0.0, Math.min(10.0, blocks));
+        save();
+    }
+
+    public void setTurnDegrees(double degrees) {
+        turnDegrees = (float) Math.max(0.0, Math.min(180.0, degrees));
+        save();
+    }
+
+    public void setEntityRange(double blocks) {
+        entityRange = Math.max(4.0, Math.min(128.0, blocks));
+        save();
+    }
+
+    /** Puts the "Recording" page (sampling + dataset quality) back to its defaults. */
+    public void resetRecording() {
+        PlaytimeConfig d = new PlaytimeConfig();
+        sampleTicks = d.sampleTicks;
+        moveEpsilon = d.moveEpsilon;
+        turnDegrees = d.turnDegrees;
+        maxNearby = d.maxNearby;
+        includeBlocks = d.includeBlocks;
+        pauseInMenus = d.pauseInMenus;
+        idleSkipSeconds = d.idleSkipSeconds;
+        autoRecord = d.autoRecord;
+        save();
+    }
+
+    /** Puts the "Advanced" page (entities + items) back to its defaults. */
+    public void resetAdvanced() {
+        PlaytimeConfig d = new PlaytimeConfig();
+        advanced = d.advanced;
+        maxEntities = d.maxEntities;
+        entityRange = d.entityRange;
+        maxGroundItems = d.maxGroundItems;
+        save();
+    }
+
+    /** Puts the "HUD & chat" page back to its defaults. */
+    public void resetHud() {
+        PlaytimeConfig d = new PlaytimeConfig();
+        showHud = d.showHud;
+        hudCorner = d.hudCorner;
+        notifications = d.notifications;
+        save();
+    }
+
+    /** Where this configuration lives on disk. */
+    public static Path file() {
+        return path();
     }
 
     public void setSampleTicks(int ticks) {

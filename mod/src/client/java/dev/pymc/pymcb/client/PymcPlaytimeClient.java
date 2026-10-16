@@ -10,7 +10,7 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 
 /**
- * Client entrypoint: wires the recorder into the client tick loop, registers {@code /pymc}, the
+ * Client entrypoint: wires the recorder into the client tick loop, registers {@code /pymcbot}, the
  * three hotkeys, the HUD recording badge and the join/disconnect hooks.
  *
  * <p>The recorder samples the local player only - it never talks to the server, so it works on
@@ -21,7 +21,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
     private static KeyMapping toggleKey;
     private static KeyMapping pauseKey;
     private static KeyMapping settingsKey;
-    /** Set by /pymc settings; the screen opens on the next tick, after the chat screen has closed. */
+    /** Set by /pymcbot settings; the screen opens on the next tick, after the chat screen has closed. */
     private static volatile boolean openSettingsNextTick;
 
     @Override
@@ -29,13 +29,13 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         Minecraft client = Minecraft.getInstance();
         recorder = new PlaytimeRecorder(client);
 
-        // Unbound by default (Options -> Controls -> Key Binds -> PyMC Playtime), so they can
+        // Unbound by default (Options -> Controls -> Key Binds -> PyMC Bot), so they can
         // never steal a key from the game or another mod.
-        toggleKey = Mc.registerKey("key.pymcplaytime.toggle");
-        pauseKey = Mc.registerKey("key.pymcplaytime.pause");
-        settingsKey = Mc.registerKey("key.pymcplaytime.settings");
+        toggleKey = Mc.registerKey("key.pymcbot.toggle");
+        pauseKey = Mc.registerKey("key.pymcbot.pause");
+        settingsKey = Mc.registerKey("key.pymcbot.settings");
 
-        // REC / PAUSED badge in a corner of the HUD while recording (/pymc hud off hides it).
+        // REC / PAUSED badge in a corner of the HUD while recording (/pymcbot hud off hides it).
         Mc.registerHud(RecorderHud::paint);
 
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
@@ -45,7 +45,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
             handleKeys(mc);
             if (openSettingsNextTick) {
                 openSettingsNextTick = false;
-                Mc.openScreen(mc, new PymcSettingsScreen(null));
+                Mc.openScreen(mc, new PymcBotScreen(null));
             }
             recorder.onClientTick();
         });
@@ -66,8 +66,8 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         });
 
         new PymcCommands(recorder).register();
-        PymcPlaytimeMod.LOGGER.info("PyMC Playtime Recorder {} ready on Minecraft {} (compat {}) - /pymc record start begins a dataset",
-                PymcPlaytimeMod.modVersion(), PymcPlaytimeMod.minecraftVersion(), Mc.ERA);
+        PymcPlaytimeMod.LOGGER.info("{} {} ready on Minecraft {} (compat {}) - /pymcbot settings opens the settings page",
+                PymcPlaytimeMod.NAME, PymcPlaytimeMod.modVersion(), PymcPlaytimeMod.minecraftVersion(), Mc.ERA);
     }
 
     private static void handleKeys(Minecraft mc) {
@@ -86,7 +86,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         }
     }
 
-    /** Opens the settings screen on the next client tick (safe to call from a chat command). */
+    /** Opens the PyMC Bot settings page on the next client tick (safe to call from a chat command). */
     public static void openSettings() {
         openSettingsNextTick = true;
     }

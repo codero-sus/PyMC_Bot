@@ -316,7 +316,7 @@ class TrainingSettings(BaseModel):
     hidden: list[int] = Field(default_factory=lambda: [128, 64])
     include_blocks: bool = True
     #: Advanced training: learn entity and item vocabularies from the recorded playtime and
-    #: feed them to the model (needs the mod's `/pymc advanced on` recording).
+    #: feed them to the model (needs the mod's `/pymcbot advanced on` recording).
     advanced: bool = False
     entity_slots: int = Field(default=24, ge=0, le=256)
     item_slots: int = Field(default=32, ge=0, le=512)

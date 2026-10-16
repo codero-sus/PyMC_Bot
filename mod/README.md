@@ -1,6 +1,6 @@
-# PyMC Playtime Recorder (Fabric mod)
+# PyMC Bot mod (Fabric)
 
-A client-side Fabric mod that records **your own playtime** as a training dataset for
+The **PyMC Bot** companion mod: a client-side Fabric mod that records **your own playtime** as a training dataset for
 PyMC_Bot's player model: where you were, where you looked, what was around you (3×3×3
 blocks + nearby entities) and **which key you pressed** at that moment.
 
@@ -8,17 +8,24 @@ blocks + nearby entities) and **which key you pressed** at that moment.
 all built from the same source (see [Supported versions](#supported-versions)).
 
 **Download:** every jar is attached to the GitHub release
-[`pymcplaytime-v0.5.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcplaytime-v0.5.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
+[`pymcbot-v0.6.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.6.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
 account needed. Or [compile it yourself](#compiling-the-mod).
 
-While recording, a small **REC** badge in the corner of the screen shows the run clock and the
-sample count, and `/pymc settings` opens a settings screen with buttons for every option (see
-[On-screen badge and settings](#on-screen-badge-and-settings)).
+Everything is configured on the **[PyMC Bot settings page](#pymc-bot-settings-page)** – open it
+with `/pymcbot settings`, the *Open PyMC Bot settings* hotkey, or the **Configure** button next to
+PyMC Bot in [Mod Menu](https://modrinth.com/mod/modmenu). While recording, a small **REC** badge in
+the corner of the screen shows the run clock and the sample count.
+
+> Until 0.5.0 this mod was called "PyMC Playtime Recorder" (`pymcplaytime-*.jar`). From 0.6.0 it is
+> **PyMC Bot** (`pymcbot-*.jar`, mod id `pymcbot`, command `/pymcbot`). Delete the old jar (or run
+> `updater --mod-only`, which swaps it for you); your settings move from
+> `config/pymcplaytime.properties` to `config/pymcbot.properties` automatically and `/pymc` keeps
+> working as a short alias.
 
 ```
-/pymc record start     # or press your "Start / stop recording" hotkey; play normally
-/pymc record stop
-/pymc export           # writes pymc-playtime/dataset.jsonl
+/pymcbot record start     # or press your "Start / stop recording" hotkey; play normally
+/pymcbot record stop
+/pymcbot export           # writes pymc-playtime/dataset.jsonl
 ```
 
 Then, from the repository root:
@@ -27,7 +34,7 @@ Then, from the repository root:
 python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl"
 
 # advanced: learn the entity and item words the recording contains
-# (/pymc advanced on before recording)
+# (/pymcbot advanced on before recording)
 python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --advanced
 python -m pymc_bot run --think trained --run-name playtime-dataset
 ```
@@ -46,7 +53,7 @@ unzip fem.zip && cp -r fabric-example-mod-1.21.11/{gradle,gradlew,gradlew.bat} .
 
 Everything else in this folder is the edited result: the Gradle wrapper jar (which you
 cannot hand-roll), `settings.gradle`/`build.gradle`/`gradle.properties` (mod id
-`pymcplaytime`, plugin `net.fabricmc.fabric-loom-remap`, `splitEnvironmentSourceSets()`),
+`pymcplaytime` (renamed `pymcbot` in 0.6.0), plugin `net.fabricmc.fabric-loom-remap`, `splitEnvironmentSourceSets()`),
 `fabric.mod.json` and the Java sources under `src/`. The template's example mixins were
 deleted — this mod needs no mixins at all: it reads the vanilla key mappings and the
 client tick event, so it cannot break on other mods' code.
@@ -55,22 +62,22 @@ client tick event, so it cannot break on other mods' code.
 
 | Minecraft | Jar to install | Fabric API it was built with | Java to play | CI |
 | --- | --- | --- | --- | --- |
-| 1.21.1 | `pymcplaytime-0.5.0+1.21.1.jar` | 0.116.17+1.21.1 or newer | 21 | compiled |
-| 1.21.2 | `pymcplaytime-0.5.0+1.21.2.jar` | 0.106.1+1.21.2 or newer | 21 | compiled |
-| 1.21.3 | `pymcplaytime-0.5.0+1.21.3.jar` | 0.114.1+1.21.3 or newer | 21 | compiled |
-| 1.21.4 | `pymcplaytime-0.5.0+1.21.4.jar` | 0.119.4+1.21.4 or newer | 21 | compiled + launched in game |
-| 1.21.5 | `pymcplaytime-0.5.0+1.21.5.jar` | 0.128.2+1.21.5 or newer | 21 | compiled + launched in game |
-| 1.21.6 | `pymcplaytime-0.5.0+1.21.6.jar` | 0.128.2+1.21.6 or newer | 21 | compiled + launched in game |
-| 1.21.7 | `pymcplaytime-0.5.0+1.21.7.jar` | 0.129.0+1.21.7 or newer | 21 | compiled + launched in game |
-| 1.21.8 | `pymcplaytime-0.5.0+1.21.8.jar` | 0.136.1+1.21.8 or newer | 21 | compiled + launched in game |
-| 1.21.9 | `pymcplaytime-0.5.0+1.21.9.jar` | 0.134.1+1.21.9 or newer | 21 | compiled + launched in game |
-| 1.21.10 | `pymcplaytime-0.5.0+1.21.10.jar` | 0.138.4+1.21.10 or newer | 21 | compiled + launched in game |
-| 1.21.11 | `pymcplaytime-0.5.0+1.21.11.jar` | 0.141.6+1.21.11 or newer | 21 | compiled + launched in game |
-| 26.1 | `pymcplaytime-0.5.0+26.1.jar` | 0.145.1+26.1 or newer | 25 | compiled + launched in game |
-| 26.1.1 | `pymcplaytime-0.5.0+26.1.1.jar` | 0.145.4+26.1.1 or newer | 25 | compiled + launched in game |
-| 26.1.2 | `pymcplaytime-0.5.0+26.1.2.jar` | 0.155.3+26.1.2 or newer | 25 | compiled + launched in game |
-| 26.2 | `pymcplaytime-0.5.0+26.2.jar` | 0.161.0+26.2 or newer | 25 | compiled + launched in game |
-| 26.3 | `pymcplaytime-0.5.0+26.3.jar` | 0.162.0+26.3 or newer | 25 | compiled + launched in game |
+| 1.21.1 | `pymcbot-0.6.0+1.21.1.jar` | 0.116.17+1.21.1 or newer | 21 | compiled |
+| 1.21.2 | `pymcbot-0.6.0+1.21.2.jar` | 0.106.1+1.21.2 or newer | 21 | compiled |
+| 1.21.3 | `pymcbot-0.6.0+1.21.3.jar` | 0.114.1+1.21.3 or newer | 21 | compiled |
+| 1.21.4 | `pymcbot-0.6.0+1.21.4.jar` | 0.119.4+1.21.4 or newer | 21 | compiled + launched in game |
+| 1.21.5 | `pymcbot-0.6.0+1.21.5.jar` | 0.128.2+1.21.5 or newer | 21 | compiled + launched in game |
+| 1.21.6 | `pymcbot-0.6.0+1.21.6.jar` | 0.128.2+1.21.6 or newer | 21 | compiled + launched in game |
+| 1.21.7 | `pymcbot-0.6.0+1.21.7.jar` | 0.129.0+1.21.7 or newer | 21 | compiled + launched in game |
+| 1.21.8 | `pymcbot-0.6.0+1.21.8.jar` | 0.136.1+1.21.8 or newer | 21 | compiled + launched in game |
+| 1.21.9 | `pymcbot-0.6.0+1.21.9.jar` | 0.134.1+1.21.9 or newer | 21 | compiled + launched in game |
+| 1.21.10 | `pymcbot-0.6.0+1.21.10.jar` | 0.138.4+1.21.10 or newer | 21 | compiled + launched in game |
+| 1.21.11 | `pymcbot-0.6.0+1.21.11.jar` | 0.141.6+1.21.11 or newer | 21 | compiled + launched in game |
+| 26.1 | `pymcbot-0.6.0+26.1.jar` | 0.145.1+26.1 or newer | 25 | compiled + launched in game |
+| 26.1.1 | `pymcbot-0.6.0+26.1.1.jar` | 0.145.4+26.1.1 or newer | 25 | compiled + launched in game |
+| 26.1.2 | `pymcbot-0.6.0+26.1.2.jar` | 0.155.3+26.1.2 or newer | 25 | compiled + launched in game |
+| 26.2 | `pymcbot-0.6.0+26.2.jar` | 0.161.0+26.2 or newer | 25 | compiled + launched in game |
+| 26.3 | `pymcbot-0.6.0+26.3.jar` | 0.162.0+26.3 or newer | 25 | compiled + launched in game |
 
 That is every stable release from 1.21.1 to 26.3, 16 jars in total. *compiled + launched in game*
 means CI also starts that Minecraft version with the jar and runs the [in-game test](#6-run-the-in-game-test-optional)
@@ -132,7 +139,7 @@ cd PyMC_Bot/mod
 .\gradlew.bat build -Pmc=1.21.4
 ```
 
-The jar is **`build/libs/pymcplaytime-0.5.0+1.21.4.jar`** (ignore the `-sources.jar` next to it).
+The jar is **`build/libs/pymcbot-0.6.0+1.21.4.jar`** (ignore the `-sources.jar` next to it).
 Leave out `-Pmc` to build the newest version (26.3). `./gradlew printTargets` lists every
 version you can pass. The first build of a version takes a few minutes (it downloads and
 prepares that Minecraft); later builds take seconds.
@@ -167,9 +174,10 @@ A version that fails does not stop the others; the summary at the end names it.
 This launches the real game (a production Fabric launch with Fabric API) and runs
 [`PymcClientGameTest`](src/gametest/java/dev/pymc/pymcb/gametest/PymcClientGameTest.java): it
 creates a singleplayer world, starts recording, walks, jumps, strafes and turns, checks the HUD
-badge state, opens the settings screen (and checks that sampling holds while it is open), pauses,
+badge state, opens the PyMC Bot settings page (and checks that sampling holds while it is open),
+renders all five of its tabs, checks *Reset page*, pauses,
 stops, exports and asserts that the dataset contains the walk. Results land in
-`build/run/gametest/`: `screenshots/` (badge, settings screen, paused badge), `pymc-gametest.txt`
+`build/run/gametest/`: `screenshots/` (badge, one per settings tab, paused badge), `pymc-gametest.txt`
 and the recorded `pymc-playtime/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
 (Gradle needs both JDKs installed; override with `-PgameTestJava=25`). The game opens on your
 `DISPLAY`. On a Linux machine without one, start a 24-bit virtual display first – 26.3+ (SDL3)
@@ -179,7 +187,7 @@ finds no OpenGL visual on Xvfb's default 8-bit screen:
 Xvfb :99 -screen 0 1920x1080x24 &  export DISPLAY=:99
 ```
 
-`-PgameTest` builds a separate `pymcplaytime-gametest-…` jar – the normal jar never contains test
+`-PgameTest` builds a separate `pymcbot-gametest-…` jar – the normal jar never contains test
 code. CI runs this for every version from 1.21.4 on and uploads the screenshots as the
 `gametest-<version>` artifact.
 
@@ -188,15 +196,15 @@ code. CI runs this for every version from 1.21.4 on and uploads the screenshots 
 Every jar is on the [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) – CI publishes it automatically once all 16 versions
 have compiled and every in-game test has passed. Bleeding-edge builds of any push are under the
 repository's **Actions** tab → the latest green **ci** run → *Artifacts* →
-**`pymcplaytime-all-versions`** (or `pymcplaytime-<version>` for a single jar).
+**`pymcbot-all-versions`** (or `pymcbot-<version>` for a single jar).
 
 ### Install
 
 1. Install [Fabric Loader](https://fabricmc.net/use/installer/) **0.19.5 or newer** for your
    Minecraft version.
 2. Put the matching **[Fabric API](https://modrinth.com/mod/fabric-api)** jar and
-   `pymcplaytime-0.5.0+<your version>.jar` into `.minecraft/mods/`.
-3. Start the Fabric profile and type `/pymc version` – it prints the mod, game and compat
+   `pymcbot-0.6.0+<your version>.jar` into `.minecraft/mods/`.
+3. Start the Fabric profile and type `/pymcbot version` – it prints the mod, game and compat
    layer versions.
 
 ### Update
@@ -258,7 +266,7 @@ mod/
   every release, that each entry is consistent, that all `Mc.java` copies expose the same API and
   that no version-specific call leaks outside `src/compat/`. CI then compiles every version and
   launches every version from 1.21.4 on.
-* The badge and the settings screen draw through a tiny `HudCanvas` interface (`fill`, `text`,
+* The badge and the settings page draw through a tiny `HudCanvas` interface (`fill`, `text`,
   `textWidth`) that each `Mc.java` implements on top of that era's drawing class, so the drawing
   code itself is shared.
 
@@ -270,84 +278,89 @@ era, fix the calls there and point the new entry at it.
 
 ## Hotkeys
 
-Options → Controls → Key Binds → **PyMC Playtime**:
+Options → Controls → Key Binds → **PyMC Bot**:
 
 | Key | Default | Does |
 | --- | --- | --- |
-| Start / stop recording | unbound | same as `/pymc record toggle` |
-| Pause / resume recording | unbound | same as `/pymc pause` / `/pymc resume` |
-| Open recorder settings | unbound | same as `/pymc settings` |
+| Start / stop recording | unbound | same as `/pymcbot record toggle` |
+| Pause / resume recording | unbound | same as `/pymcbot pause` / `/pymcbot resume` |
+| Open PyMC Bot settings | unbound | same as `/pymcbot settings` |
 
 They start unbound so they can never steal a key from the game or another mod – assign whatever
 you like. With notifications on, a chat line confirms each change.
 
-## On-screen badge and settings
+## On-screen badge
 
 While a recording runs, a badge sits in the top-left corner of the screen:
 
 | Badge | Meaning |
 | --- | --- |
 | 🔴 **REC** `3:42  4,410 samples` (blinking dot) | recording – clock since the run started, samples written |
-| 🟡 **PAUSED** | paused with `/pymc pause` or the hotkey; nothing is written |
-| 🔵 **MENU** | a screen is open and `/pymc menus` is on, so sampling holds |
-| ⚪ **IDLE** | no input for longer than `/pymc idle` seconds – AFK samples are skipped until you move |
+| 🟡 **PAUSED** | paused with `/pymcbot pause` or the hotkey; nothing is written |
+| 🔵 **MENU** | a screen is open and `/pymcbot menus` is on, so sampling holds |
+| ⚪ **IDLE** | no input for longer than `/pymcbot idle` seconds – AFK samples are skipped until you move |
 
-It hides with F1 and when nothing is being recorded. `/pymc hud off` turns it off,
-`/pymc hud corner top_right` (or `top_left`, `bottom_left`, `bottom_right`) moves it.
+It hides with F1 and when nothing is being recorded. `/pymcbot hud off` turns it off,
+`/pymcbot hud corner top_right` (or `top_left`, `bottom_left`, `bottom_right`) moves it.
 
-**Settings screen** – `/pymc settings` or the *Open recorder settings* hotkey:
+## PyMC Bot settings page
 
-| Button | Same as |
-| --- | --- |
-| Start / Stop recording, Pause / Resume | `/pymc record toggle`, `/pymc pause` / `resume` |
-| HUD badge ON/OFF, Badge corner | `/pymc hud on\|off`, `/pymc hud corner …` |
-| Pause in menus, Skip AFK after (never / 5 / 15 / 30 / 60 / 120 / 300 s) | `/pymc menus`, `/pymc idle` |
-| Entities + items, Sample rate (20 / 10 / 5 / 2 / 1 per second) | `/pymc advanced`, `/pymc sample` |
-| Auto-record on join, Chat notices | `/pymc autorecord`, `/pymc notify` |
-| Export dataset | `/pymc export` |
+Open it with **`/pymcbot settings`** (or `/pymcbot config`), the *Open PyMC Bot settings* hotkey,
+or Mod Menu's **Configure** button. It has a button for every option in
+`config/pymcbot.properties`, grouped in five tabs. Every click is saved at once, hovering a button
+shows what it does, and each settings tab has **Reset page** (click twice) to restore its defaults.
 
-The live status (state, clock, samples, run name) and the result of the last action are shown
-above and below the buttons. Every change is saved to `config/pymcplaytime.properties` at once.
+| Tab | Buttons | Same as |
+| --- | --- | --- |
+| **Recorder** | Start / Stop recording, Pause / Resume, New episode, Export dataset, Status in chat, Training command | `/pymcbot record toggle`, `pause` / `resume`, `record episode`, `export`, `status`, `train` |
+| **Recording** | Sample rate (20 / 10 / 5 / 2 / 1 per second), Pause in menus, Skip AFK after (never / 5 – 300 s), Auto-record on join, Block area (3×3×3), Nearby entities (0 – 64), Move threshold, Turn threshold | `/pymcbot sample`, `menus`, `idle`, `autorecord`; `includeBlocks`, `maxNearby`, `moveEpsilon`, `turnDegrees` |
+| **Advanced** | Entities + items, Max entities (0 – 128), Entity range (8 – 128 blocks), Ground items (0 – 64) | `/pymcbot advanced`, `entities`, `drops`; `entityRange` |
+| **HUD & chat** | REC badge on/off, Badge corner, Chat notices, Hotkeys… – with a **live preview** of the badge in the chosen corner | `/pymcbot hud on\|off`, `hud corner …`, `notify` |
+| **About** | Mod / Minecraft / compat versions, config file location, credits; Links in chat, Version in chat | `/pymcbot about`, `version` |
+
+The line under the tabs always shows the live recorder state (REC / PAUSED / MENU / IDLE, clock,
+samples, run name). Mod Menu is optional – without it the page is still one command or hotkey away.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `/pymc record start` | Start a recording run (`pymc-playtime/episodes/run-<timestamp>.ndjsonl`). |
-| `/pymc record stop` | Stop recording and flush the file. |
-| `/pymc record toggle` | Start/stop in one command. |
-| `/pymc record episode` | Close the current episode and continue in a new file. |
-| `/pymc pause` / `/pymc resume` | Stop sampling for a moment without closing the episode. |
-| `/pymc export` | Flatten every episode into `pymc-playtime/dataset.jsonl` (the trainer input). |
-| `/pymc status` | Recording state, dataset size, config. |
-| `/pymc sample <ticks>` | Sampling rate: 2 ticks = one sample every 100 ms (20 Hz, the default). |
-| `/pymc advanced on\|off` | Advanced recording: also write entities, items, the held item, armour and dropped stacks (what `train --advanced` learns from). |
-| `/pymc advanced status` | Show the full recorder configuration, including the advanced limits. |
-| `/pymc entities <n>` | How many entities to write per sample in advanced mode (default 24, 0 disables). |
-| `/pymc drops <n>` | How many dropped item stacks to write per sample (default 8). |
-| `/pymc autorecord on\|off` | Start recording automatically whenever you join a world or server. |
-| `/pymc menus on\|off` | Skip samples while a screen (inventory, chat, pause menu) is open – default on. |
-| `/pymc idle <seconds>` | Stop writing samples after this long without any input, resume on the next action (default 15, 0 = never). |
-| `/pymc notify on\|off` | Chat lines when a hotkey or auto-record changes the state. |
-| `/pymc hud on\|off\|status` | The REC / PAUSED badge in a corner of the screen (default on). |
-| `/pymc hud corner <corner>` | Move the badge: `top_left` (default), `top_right`, `bottom_left`, `bottom_right`. |
-| `/pymc settings` | Open the settings screen. |
-| `/pymc param` | Show the current recorder configuration. |
-| `/pymc train` | Print the exact Python command to train on this dataset. |
-| `/pymc version` | Mod version, Minecraft version and compat layer. |
-| `/pymc about` | Author, links and credits (made by codero-sus). |
+| `/pymcbot record start` | Start a recording run (`pymc-playtime/episodes/run-<timestamp>.ndjsonl`). |
+| `/pymcbot record stop` | Stop recording and flush the file. |
+| `/pymcbot record toggle` | Start/stop in one command. |
+| `/pymcbot record episode` | Close the current episode and continue in a new file. |
+| `/pymcbot pause` / `/pymcbot resume` | Stop sampling for a moment without closing the episode. |
+| `/pymcbot export` | Flatten every episode into `pymc-playtime/dataset.jsonl` (the trainer input). |
+| `/pymcbot status` | Recording state, dataset size, config. |
+| `/pymcbot sample <ticks>` | Sampling rate: 2 ticks = one sample every 100 ms (20 Hz, the default). |
+| `/pymcbot advanced on\|off` | Advanced recording: also write entities, items, the held item, armour and dropped stacks (what `train --advanced` learns from). |
+| `/pymcbot advanced status` | Show the full recorder configuration, including the advanced limits. |
+| `/pymcbot entities <n>` | How many entities to write per sample in advanced mode (default 24, 0 disables). |
+| `/pymcbot drops <n>` | How many dropped item stacks to write per sample (default 8). |
+| `/pymcbot autorecord on\|off` | Start recording automatically whenever you join a world or server. |
+| `/pymcbot menus on\|off` | Skip samples while a screen (inventory, chat, pause menu) is open – default on. |
+| `/pymcbot idle <seconds>` | Stop writing samples after this long without any input, resume on the next action (default 15, 0 = never). |
+| `/pymcbot notify on\|off` | Chat lines when a hotkey or auto-record changes the state. |
+| `/pymcbot hud on\|off\|status` | The REC / PAUSED badge in a corner of the screen (default on). |
+| `/pymcbot hud corner <corner>` | Move the badge: `top_left` (default), `top_right`, `bottom_left`, `bottom_right`. |
+| `/pymcbot settings` (or `config`) | Open the [PyMC Bot settings page](#pymc-bot-settings-page). |
+| `/pymcbot` / `/pymcbot help` | Short help. `/pymc …` works as an alias for every command. |
+| `/pymcbot param` | Show the current recorder configuration. |
+| `/pymcbot train` | Print the exact Python command to train on this dataset. |
+| `/pymcbot version` | Mod version, Minecraft version and compat layer. |
+| `/pymcbot about` | Author, links and credits (made by codero-sus). |
 
 On Minecraft 26.2+ every command that changes the recorder needs an *attended* run (you typed it),
 so a server cannot start a recording through a clickable chat message; read-only commands
 (`status`, `param`, `train`, `version`, `about`, `hud status`) always work.
 
-All settings persist in `config/pymcplaytime.properties` (`sampleTicks`, `advanced`,
+All settings persist in `config/pymcbot.properties` (`sampleTicks`, `advanced`,
 `maxEntities`, `pauseInMenus`, `idleSkipSeconds`, `autoRecord`, `notifications`, `showHud`,
 `hudCorner`, ...).
 
 **Dataset quality.** Time spent in menus, paused, or idle beyond `idleSkipSeconds` is not
-written, so AFK minutes do not drown your real play in `none` samples; `/pymc status` and
-`/pymc record stop` report how much was skipped. Disconnecting stops the recording and flushes
+written, so AFK minutes do not drown your real play in `none` samples; `/pymcbot status` and
+`/pymcbot record stop` report how much was skipped. Disconnecting stops the recording and flushes
 it, so an episode never spans two worlds. `meta.json` also records `mod_version`,
 `minecraft_version`, the compat era and the skip counters.
 
@@ -370,7 +383,7 @@ One NDJSON line per sample (default every 2 client ticks ≈ 100 ms):
 `forward` · `back` · `left` · `right` · `jump` · `sneak` · `look` · `attack` · `use` ·
 `hold` (hotbar switch) · `move` (moved without a key, e.g. pushed) · `none` (stood still)
 
-`/pymc export` writes one training example per sample, which is what
+`/pymcbot export` writes one training example per sample, which is what
 `pymc_bot train` consumes:
 
 ```json
@@ -380,7 +393,7 @@ One NDJSON line per sample (default every 2 client ticks ≈ 100 ms):
  "episode": "run-20261007-181500"}
 ```
 
-With `/pymc advanced on` every sample also carries the entity and item half of the schema:
+With `/pymcbot advanced on` every sample also carries the entity and item half of the schema:
 
 ```json
  "entities": [{"type": "minecraft:zombie", "dx": 3.1, "dy": 0.0, "dz": -1.4, "dist": 3.4,
@@ -405,7 +418,7 @@ hour makes it noticeably better.
 
 Everything is written to your own game directory (`<gameDir>/pymc-playtime/`) and never
 uploaded anywhere. The mod is client-side only, talks to no server API and works on the
-same offline-mode (cracked) servers PyMC_Bot plays on. `/pymc export` reads only that
+same offline-mode (cracked) servers PyMC_Bot plays on. `/pymcbot export` reads only that
 folder.
 
 ## Other modding platforms
@@ -433,16 +446,18 @@ mod/
 ├── gradle/wrapper/*, gradlew, gradlew.bat             # Gradle wrapper (from the template)
 └── src/
     ├── main/java/dev/pymc/pymcb/                      # loader-agnostic helpers
-    │   ├── PymcPlaytimeMod.java                       # mod id, logger, version info
+    │   ├── PymcPlaytimeMod.java                       # mod id (pymcbot), name "PyMC Bot", logger, versions
     │   ├── Json.java                                  # tiny JSON writer
-    │   └── PlaytimeConfig.java                        # config/pymcplaytime.properties
+    │   └── PlaytimeConfig.java                        # config/pymcbot.properties (migrates the old file)
     ├── client/java/dev/pymc/pymcb/client/             # client-only code (same for every version)
     │   ├── PymcPlaytimeClient.java                    # tick hook, hotkeys, join/disconnect, entrypoint
     │   ├── PlaytimeRecorder.java                      # sampling + dataset export
-    │   ├── PymcCommands.java                          # /pymc ...
+    │   ├── PymcCommands.java                          # /pymcbot ... (alias /pymc)
     │   ├── RecorderHud.java                           # the REC / PAUSED / IDLE / MENU badge
-    │   ├── PymcSettingsScreen.java                    # /pymc settings
+    │   ├── PymcBotScreen.java                         # the PyMC Bot settings page (5 tabs)
+    │   ├── PymcModMenu.java                           # Mod Menu "Configure" button -> settings page
     │   └── HudCanvas.java                             # drawing calls the badge and screen use
+    ├── client/java/com/terraformersmc/modmenu/api/    # compile-only Mod Menu API stubs (never shipped)
     ├── compat/<era>/java/.../client/compat/Mc.java    # the version-specific calls, one copy per era
     ├── gametest/java/dev/pymc/pymcb/gametest/         # in-game test, only built with -PgameTest
     └── main/resources/fabric.mod.json, assets/...     # mod metadata (filled per version), icon, lang
