@@ -206,8 +206,8 @@ def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict[str,
     """Copies the repository archive over ``root``.
 
     Files that are not in the archive (config, venv, models, recordings) are left alone, protected
-    folders are never written, and a repository file whose content differs is backed up to
-    ``.pymc_backup/<stamp>/`` before it is replaced. Returns the written, backed-up and skipped paths.
+    folders are never written, and a repository file whose content differs (beyond CRLF/LF line
+    endings) is backed up to ``.pymc_backup/<stamp>/`` before it is replaced. Returns the written, backed-up and skipped paths.
     """
     stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
     report: dict[str, list[str]] = {"written": [], "backed_up": [], "skipped": []}
@@ -229,12 +229,15 @@ def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict[str,
             data = zf.read(name)
             dest = root.joinpath(*rel.parts)
             if dest.is_file():
-                if dest.read_bytes() == data:
+                current = dest.read_bytes()
+                if current == data:
                     continue
-                backup = root / BACKUP_DIR / stamp / Path(*rel.parts)
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dest, backup)
-                report["backed_up"].append(str(rel))
+                # Only back up real edits - not files an editor merely converted to CRLF.
+                if current.replace(b"\r\n", b"\n") != data.replace(b"\r\n", b"\n"):
+                    backup = root / BACKUP_DIR / stamp / Path(*rel.parts)
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dest, backup)
+                    report["backed_up"].append(str(rel))
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
             mode = (zf.getinfo(name).external_attr >> 16) & 0o777
