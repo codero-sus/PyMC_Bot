@@ -1,0 +1,58 @@
+# Uploads the PyMC Bot mod jars of a GitHub release to Modrinth (one Modrinth version per
+# Minecraft version). Run it from the Actions tab ("Publish to Modrinth" -> Run workflow) after CI
+# has created the release. Needs, under Settings -> Secrets and variables -> Actions:
+#   secret   MODRINTH_TOKEN    a Modrinth personal access token (scopes: Create versions, Write projects)
+#   variable MODRINTH_PROJECT  the project slug or id, e.g. pymc-bot
+# Without them the job only prints what it would upload (dry run). Already-published versions are skipped.
+name: Publish to Modrinth
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (empty = pymcbot-v<mod_version> from mod/gradle.properties)"
+        required: false
+        default: ""
+      channel:
+        description: "Modrinth release channel"
+        type: choice
+        options: [release, beta, alpha]
+        default: release
+      update_page:
+        description: "Also replace the project description with mod/MODRINTH.md"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  modrinth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download the release jars
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag }}"
+          [ -n "$tag" ] || tag=$(python3 scripts/release_notes.py --tag)
+          echo "Release: $tag"
+          gh release download "$tag" --pattern 'pymcbot-*.jar' --dir mod/dist
+          ls -la mod/dist
+      - name: Upload to Modrinth
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT: ${{ vars.MODRINTH_PROJECT }}
+        run: |
+          args="--jars mod/dist --channel ${{ inputs.channel }}"
+          if [ "${{ inputs.update_page }}" = "true" ]; then args="$args --update-page"; fi
+          if [ -z "$MODRINTH_TOKEN" ] || [ -z "$MODRINTH_PROJECT" ]; then
+            echo "::warning::MODRINTH_TOKEN secret or MODRINTH_PROJECT variable missing - dry run only"
+            python3 scripts/modrinth_publish.py $args --dry-run
+          else
+            python3 scripts/modrinth_publish.py $args
+          fi

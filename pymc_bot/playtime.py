@@ -2,10 +2,10 @@
 
 Two file formats exist, both line delimited JSON (NDJSON):
 
-* **episode files** -- ``<gameDir>/pymc-playtime/episodes/<run>.ndjsonl``, written by the
+* **episode files** -- ``<gameDir>/pymcbot/episodes/<run>.ndjsonl``, written by the
   Fabric mod as the player plays (one observation per sample, the action is the
   ``activity`` field).
-* **dataset file** -- ``<gameDir>/pymc-playtime/dataset.jsonl``, produced by
+* **dataset file** -- ``<gameDir>/pymcbot/dataset.jsonl``, produced by
   ``/pymcbot export`` in game or by :func:`export_dataset` here. Each line is one training
   example::
 
@@ -31,7 +31,38 @@ from typing import Any
 
 from pymc_bot.features import ACTION_SPACE, CELLS, movement_deltas
 
-DEFAULT_DIRNAME = "pymc-playtime"
+DEFAULT_DIRNAME = "pymcbot"
+# Folder name used by mod versions before 0.7.0 (the mod moves it on first use; both are still read).
+LEGACY_DIRNAME = "pymc-playtime"
+
+
+def resolve_dataset_path(path: str | Path) -> Path:
+    """``path`` as given, or the same path under the other data-folder name when only that exists.
+
+    Lets ``pymcbot/dataset.jsonl`` find recordings still in ``pymc-playtime/`` (and old configs that
+    point at ``pymc-playtime/...`` find them after the mod moved the folder).
+    """
+    target = Path(path).expanduser()
+    if target.exists():
+        return target
+    swap = {DEFAULT_DIRNAME: LEGACY_DIRNAME, LEGACY_DIRNAME: DEFAULT_DIRNAME}
+    parts = target.parts
+    for index, part in enumerate(parts):
+        if part in swap:
+            other = Path(*parts[:index], swap[part], *parts[index + 1:])
+            if other.exists():
+                return other
+    return target
+
+
+def data_dir(root: str | Path) -> Path:
+    """The recorder folder for a game dir (or the folder itself if it already is one)."""
+    root = Path(root).expanduser()
+    if root.name in (DEFAULT_DIRNAME, LEGACY_DIRNAME):
+        return root
+    if not (root / DEFAULT_DIRNAME).exists() and (root / LEGACY_DIRNAME).is_dir():
+        return root / LEGACY_DIRNAME
+    return root / DEFAULT_DIRNAME
 EPISODES_DIRNAME = "episodes"
 DATASET_FILENAME = "dataset.jsonl"
 META_FILENAME = "meta.json"
@@ -86,7 +117,7 @@ def iter_ndjson(path: Path) -> Iterator[dict[str, Any]]:
 
 def dataset_files(path: str | Path) -> list[Path]:
     """Resolve ``path`` (file or directory) into the list of NDJSON files to read."""
-    target = Path(path).expanduser()
+    target = resolve_dataset_path(path)
     if target.is_file():
         return [target]
     if not target.is_dir():
@@ -152,8 +183,7 @@ def export_dataset(
     source_path = Path(source).expanduser()
     root = source_path if source_path.is_dir() else source_path.parent
     if destination is None:
-        candidate = root if root.name == DEFAULT_DIRNAME else root / DEFAULT_DIRNAME
-        destination = candidate / DATASET_FILENAME
+        destination = data_dir(root) / DATASET_FILENAME
     examples = load_examples(source_path)
     if append and Path(destination).exists():
         existing = load_examples(destination)

@@ -26,3 +26,7 @@ pymc_bot_config.json
 .idea/
 .vscode/
 .DS_Store
+
+# Local playtime recordings / datasets (the mod writes them into the game folder)
+/pymcbot/
+/pymc-playtime/

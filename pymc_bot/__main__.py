@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_config_arg(train)
     train.add_argument("--dataset", default=None,
-                       help="playtime dataset (dataset.jsonl, an episode dir, or <gameDir>/pymc-playtime)")
+                       help="playtime dataset (dataset.jsonl, an episode dir, or <gameDir>/pymcbot)")
     train.add_argument("--simulate", type=float, default=0.0, metavar="MINUTES",
                        help="first generate MINUTES of synthetic playtime (no Minecraft needed) and train on it")
     train.add_argument("--simulate-out", default=None, help="where to write the synthetic dataset")
@@ -299,6 +299,10 @@ def cmd_train(args: argparse.Namespace) -> int:
     training = store.settings.training
     models_dir = args.models_dir or training.models_dir
     dataset = args.dataset or training.dataset
+    if not args.simulate:
+        from pymc_bot.playtime import resolve_dataset_path
+
+        dataset = str(resolve_dataset_path(dataset))
 
     advanced = bool(args.advanced or training.advanced)
     if args.simulate > 0:

@@ -40,6 +40,9 @@ Minecraft versions), and it is driven purely by JSON from Python.
   built-in heuristic policy, so it never just stands there.
 * **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
   bearer key read from the environment and never saved).
+* **Plays and talks like a human** – the LLM gets a detailed player prompt with a personality, a goal it
+  sticks to, short-term memory and plain-word perception; it chats in short casual lines with typing pauses
+  and no spam ([details](#plays-and-talks-like-a-human)).
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
   players one email at a time, and can keep the crowd alive (rejoin on kick, optional idle chatter).
 * **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
@@ -221,7 +224,7 @@ The bot can learn **how you play** and then play like that itself. Three steps:
 ```text
 /pymcbot record start      # or your hotkey; play normally for 10-60 minutes
 /pymcbot record stop
-/pymcbot export            # -> <gameDir>/pymc-playtime/dataset.jsonl
+/pymcbot export            # -> <gameDir>/pymcbot/dataset.jsonl
 ```
 
 A **REC** badge in the corner shows the run clock and sample count while you record. Everything
@@ -239,7 +242,7 @@ for [advanced training](#advanced-training-entities-and-items).
 **2. Train** – *checkpointing itself as it goes*:
 
 ```bash
-python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --steps 2000
+python -m pymc_bot train --dataset "<gameDir>/pymcbot/dataset.jsonl" --steps 2000
 python -m pymc_bot train --resume --run-name playtime-dataset        # continue where it left off
 python -m pymc_bot models                                            # list checkpoints + metrics
 ```
@@ -288,7 +291,7 @@ while holding a sword" is a different situation from "a cow across the field whi
 ```
 
 ```bash
-python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --advanced --steps 2000
+python -m pymc_bot train --dataset "<gameDir>/pymcbot/dataset.jsonl" --advanced --steps 2000
 python -m pymc_bot train --dataset ... --advanced --entity-slots 32 --item-slots 48   # bigger vocabularies
 python -m pymc_bot train --dataset ... --inspect      # vocabulary + coverage before you train
 ```
@@ -310,11 +313,36 @@ ollama serve                # usually already running on http://127.0.0.1:11434
 ```
 
 Then in the panel: enable **AI brain**, set the model name, **Start AI**. Every
-`ollama.decision_interval` seconds (default 6s) the bot sends the current world state and asks for one action:
+`ollama.decision_interval` seconds (default 6s, ±25% so it doesn't act like a metronome) the bot describes
+the situation and asks for one action:
 
 ```json
-{"action": "mine", "block": "oak_log"}
+{"thought": "need wood before tools", "goal": "get wood for tools", "action": "mine", "block": "oak_log"}
 ```
+
+### Plays and talks like a human
+
+The LLM brain (Ollama or Cortex) gets a detailed system prompt ([`pymc_bot/mind.py`](pymc_bot/mind.py))
+that makes it act like a real player at a keyboard, not an assistant:
+
+* **Thinks like a player** – every turn it checks danger, health, food and the time of day, answers people
+  first, then keeps working on a **goal** for several turns (wood → tools → food → shelter before night)
+  instead of picking random actions. A short private `thought` is shown in the log (`💭 ...`).
+* **Sees like a player** – the world is described in plain words: "zombie 6 m north-east", "Steve (4 m east)",
+  "Food 5/20 (hungry - eat soon)", "Waiting for your answer: <Steve> wanna mine together?" – with the exact
+  JSON appended for coordinates.
+* **Remembers** – its goal, the last `agent.memory_turns` actions with whether they worked (so it stops
+  retrying a failing path), its last thoughts and what it already said.
+* **Chats like a person** – short casual lines in the other player's language, no markdown, no "as an AI"
+  speeches, never the same line twice; a typing pause before sending and a `chat_cooldown` for messages
+  nobody asked for (replies skip it). If someone sincerely asks whether it is a bot, it says so.
+* **Has a personality** – `agent.persona`: `friendly`, `chill`, `builder`, `explorer`, `miner` or `quiet`,
+  plus free-text `agent.persona_notes` ("from Delhi, mixes Hindi and English").
+
+The panel's **Personality & thinking** box sets all of this and **Show the prompt** displays exactly what
+the model receives. A non-empty `ollama.system_prompt` / `cortex.system_prompt` replaces the built-in
+prompt entirely (configs that still hold the old default switch to the new prompt automatically). Small
+models work; 7–8B models (e.g. `llama3.1:8b`, `qwen2.5:7b`) follow the persona and goals noticeably better.
 
 Accepted actions: `say`, `goto`, `follow`, `wander`, `mine`, `attack` (gated), `jump`, `eat`,
 `look_at_player`, `stop`, `wait`. The full list, including which permissions gate them, is in
@@ -441,10 +469,10 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "enabled": false,
     "base_url": "http://127.0.0.1:11434",
     "model": "llama3.2",
-    "temperature": 0.4,
-    "decision_interval": 6.0,          // seconds between AI decisions
+    "temperature": 0.7,                // a little variety makes it more human
+    "decision_interval": 6.0,          // seconds between AI decisions (±25% jitter)
     "request_timeout": 60.0,
-    "system_prompt": "You are PyMC_Bot, an AI player ..."
+    "system_prompt": ""                // "" = built-in human-player prompt (recommended)
   },
   "cortex": {                         // Cortex LLMHoster (OpenAI-compatible), see docs/CORTEX.md
     "enabled": false,
@@ -452,16 +480,16 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "api_path": "/v1",
     "model": "",                      // blank = Cortex's default model
     "api_key_env": "CORTEX_API_KEY",  // env var NAME; the key itself is never stored
-    "temperature": 0.4,
-    "max_tokens": 256,
+    "temperature": 0.7,
+    "max_tokens": 320,
     "json_mode": true,
     "decision_interval": 6.0,
     "request_timeout": 120.0,
-    "system_prompt": "You are PyMC_Bot, an AI player ..."
+    "system_prompt": ""
   },
   "training": {
     "models_dir": "models",             // where checkpoints + model.json cards live
-    "dataset": "pymc-playtime/dataset.jsonl",  // written by the mod's /pymcbot export
+    "dataset": "pymcbot/dataset.jsonl",  // written by the mod's /pymcbot export
     "active_run": "",                   // "" = newest trained run
     "engine": "mlp",                    // "mlp" (NumPy) | "transformer" (needs torch)
     "steps": 1000, "batch_size": 64, "lr": 0.003, "checkpoint_every": 200,
@@ -479,6 +507,11 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "allow_movement": true, "allow_chat": true, "allow_mining": true,
     "allow_attacking": false,          // keep this off unless you mean it
     "greet_players": true, "max_chat_length": 200,
+    "persona": "friendly",             // friendly | chill | builder | explorer | miner | quiet
+    "persona_notes": "",               // extra character notes for the LLM (max 600 chars)
+    "human_chat": true,                // typing pauses, no repeats, cooldown for unprompted chat
+    "chat_cooldown": 6.0,              // seconds between messages nobody asked for
+    "memory_turns": 8,                 // recent actions the LLM remembers
     "wander_radius": 16, "action_timeout": 30.0
   },
   "fleet": {

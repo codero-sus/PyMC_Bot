@@ -8,7 +8,7 @@ blocks + nearby entities) and **which key you pressed** at that moment.
 all built from the same source (see [Supported versions](#supported-versions)).
 
 **Download:** every jar is attached to the GitHub release
-[`pymcbot-v0.6.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.6.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
+[`pymcbot-v0.7.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.7.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
 account needed. Or [compile it yourself](#compiling-the-mod).
 
 Everything is configured on the **[PyMC Bot settings page](#pymc-bot-settings-page)** – open it
@@ -21,21 +21,25 @@ the corner of the screen shows the run clock and the sample count.
 > `updater --mod-only`, which swaps it for you); your settings move from
 > `config/pymcplaytime.properties` to `config/pymcbot.properties` automatically and `/pymc` keeps
 > working as a short alias.
+>
+> From 0.7.0 recordings go to `<gameDir>/pymcbot/` instead of `<gameDir>/pymc-playtime/`. The old
+> folder is renamed the first time the recorder needs it (if both exist, nothing is merged or deleted);
+> the PyMC Bot app finds datasets in either folder. Changes per version: [CHANGELOG.md](CHANGELOG.md).
 
 ```
 /pymcbot record start     # or press your "Start / stop recording" hotkey; play normally
 /pymcbot record stop
-/pymcbot export           # writes pymc-playtime/dataset.jsonl
+/pymcbot export           # writes pymcbot/dataset.jsonl
 ```
 
 Then, from the repository root:
 
 ```powershell
-python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl"
+python -m pymc_bot train --dataset "<gameDir>/pymcbot/dataset.jsonl"
 
 # advanced: learn the entity and item words the recording contains
 # (/pymcbot advanced on before recording)
-python -m pymc_bot train --dataset "<gameDir>/pymc-playtime/dataset.jsonl" --advanced
+python -m pymc_bot train --dataset "<gameDir>/pymcbot/dataset.jsonl" --advanced
 python -m pymc_bot run --think trained --run-name playtime-dataset
 ```
 
@@ -178,7 +182,7 @@ badge state, opens the PyMC Bot settings page (and checks that sampling holds wh
 renders all five of its tabs, checks *Reset page*, pauses,
 stops, exports and asserts that the dataset contains the walk. Results land in
 `build/run/gametest/`: `screenshots/` (badge, one per settings tab, paused badge), `pymc-gametest.txt`
-and the recorded `pymc-playtime/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
+and the recorded `pymcbot/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
 (Gradle needs both JDKs installed; override with `-PgameTestJava=25`). The game opens on your
 `DISPLAY`. On a Linux machine without one, start a 24-bit virtual display first – 26.3+ (SDL3)
 finds no OpenGL visual on Xvfb's default 8-bit screen:
@@ -325,12 +329,12 @@ samples, run name). Mod Menu is optional – without it the page is still one co
 
 | Command | What it does |
 | --- | --- |
-| `/pymcbot record start` | Start a recording run (`pymc-playtime/episodes/run-<timestamp>.ndjsonl`). |
+| `/pymcbot record start` | Start a recording run (`pymcbot/episodes/run-<timestamp>.ndjsonl`). |
 | `/pymcbot record stop` | Stop recording and flush the file. |
 | `/pymcbot record toggle` | Start/stop in one command. |
 | `/pymcbot record episode` | Close the current episode and continue in a new file. |
 | `/pymcbot pause` / `/pymcbot resume` | Stop sampling for a moment without closing the episode. |
-| `/pymcbot export` | Flatten every episode into `pymc-playtime/dataset.jsonl` (the trainer input). |
+| `/pymcbot export` | Flatten every episode into `pymcbot/dataset.jsonl` (the trainer input). |
 | `/pymcbot status` | Recording state, dataset size, config. |
 | `/pymcbot sample <ticks>` | Sampling rate: 2 ticks = one sample every 100 ms (20 Hz, the default). |
 | `/pymcbot advanced on\|off` | Advanced recording: also write entities, items, the held item, armour and dropped stacks (what `train --advanced` learns from). |
@@ -416,10 +420,42 @@ hour makes it noticeably better.
 
 ## Privacy / safety
 
-Everything is written to your own game directory (`<gameDir>/pymc-playtime/`) and never
+Everything is written to your own game directory (`<gameDir>/pymcbot/`) and never
 uploaded anywhere. The mod is client-side only, talks to no server API and works on the
 same offline-mode (cracked) servers PyMC_Bot plays on. `/pymcbot export` reads only that
 folder.
+
+## Publishing on Modrinth
+
+Everything Modrinth needs is in the repo:
+
+| File | Use |
+| --- | --- |
+| [`MODRINTH.md`](MODRINTH.md) | the project description (paste it, or `--update-page` below) |
+| [`../docs/modrinth-icon.png`](../docs/modrinth-icon.png) | 512×512 project icon (39 KB, the limit is 256 KiB) |
+| [`CHANGELOG.md`](CHANGELOG.md) | per-version changelog – the section for `mod_version` is used for every upload |
+| [`../scripts/modrinth_publish.py`](../scripts/modrinth_publish.py) | uploads one Modrinth version per jar |
+
+1. **Create the project once** on modrinth.com → *Create a project*: name **PyMC Bot**, type *Mod*,
+   summary e.g. "Record your own playtime so a bot can learn to play like you". Then in its settings:
+   environment **client-side only**, license **MIT**, categories *Utility* (+ *Game Mechanics* if you like),
+   source/issues links `https://github.com/codero-sus/PyMC_Bot`, upload the icon.
+2. **Get the jars**: `./build-all.sh` (→ `mod/dist/`) or download them from the GitHub release.
+3. **Upload** (token from <https://modrinth.com/settings/pats> with *Create versions* and *Write projects*):
+
+   ```bash
+   python scripts/modrinth_publish.py --jars mod/dist --dry-run          # check, no token needed
+   MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project <slug> --jars mod/dist --update-page
+   ```
+
+   Each jar becomes the version `<mod>+<mc>` for exactly that Minecraft version, loader *fabric*,
+   environment *client only*, Fabric API **required** and Mod Menu **optional**; the newest Minecraft
+   version is *featured*. Versions already on Modrinth are skipped, so re-running is safe.
+   `--channel beta|alpha` and `--only 26.3` are available too.
+4. **Or from GitHub**: add the secret `MODRINTH_TOKEN` and the variable `MODRINTH_PROJECT` (the slug)
+   under *Settings → Secrets and variables → Actions*, then *Actions → Publish to Modrinth → Run
+   workflow*. It downloads the release jars and runs the same script (a dry run while the secret is missing).
+5. Submit the project for review on Modrinth (new projects are checked by their moderators).
 
 ## Other modding platforms
 

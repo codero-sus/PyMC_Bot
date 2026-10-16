@@ -36,10 +36,10 @@ import net.minecraft.world.phys.Vec3;
  * Records the local player's playtime as a training dataset for PyMC Bot.
  *
  * <p>Every {@code sampleTicks} client ticks (default 2 = 100 ms = 20 Hz) one JSON object is
- * appended to {@code <gameDir>/pymc-playtime/episodes/<run>.ndjsonl}. A record holds the
+ * appended to {@code <gameDir>/pymcbot/episodes/<run>.ndjsonl}. A record holds the
  * player's local state (position, velocity, orientation, hotbar, health, the 3x3x3 block
  * neighbourhood and the nearby entities) plus the action that was pressed since the previous
- * sample. {@code /pymcbot export} flattens every episode into {@code pymc-playtime/dataset.jsonl},
+ * sample. {@code /pymcbot export} flattens every episode into {@code pymcbot/dataset.jsonl},
  * one instruction/completion pair per line, which is what
  * {@code python -m pymc_bot train --dataset ...} consumes.
  *
@@ -52,7 +52,10 @@ import net.minecraft.world.phys.Vec3;
  * through {@link Mc}.
  */
 public final class PlaytimeRecorder {
-    public static final String DIR_NAME = "pymc-playtime";
+    public static final String DIR_NAME = "pymcbot";
+    /** Folder name used before 0.7.0; moved to {@link #DIR_NAME} the first time the recorder needs it. */
+    public static final String LEGACY_DIR_NAME = "pymc-playtime";
+    private static boolean legacyNoticeLogged;
     public static final String EPISODES_DIR = "episodes";
     public static final String DATASET_FILE = "dataset.jsonl";
     public static final String META_FILE = "meta.json";
@@ -225,10 +228,39 @@ public final class PlaytimeRecorder {
     }
 
     private void resolvePaths() {
-        root = FabricLoader.getInstance().getGameDir().resolve(DIR_NAME);
+        Path gameDir = FabricLoader.getInstance().getGameDir();
+        root = migrateLegacyDir(gameDir);
         episodesDir = root.resolve(EPISODES_DIR);
         metaPath = root.resolve(META_FILE);
         datasetPath = root.resolve(DATASET_FILE);
+    }
+
+    /**
+     * Returns {@code <gameDir>/pymcbot}. Recordings made by older versions live in
+     * {@code <gameDir>/pymc-playtime}: that folder is renamed when the new one does not exist yet,
+     * otherwise both are kept (nothing is ever merged or deleted) and the old one is mentioned in the log.
+     */
+    static Path migrateLegacyDir(Path gameDir) {
+        Path target = gameDir.resolve(DIR_NAME);
+        Path legacy = gameDir.resolve(LEGACY_DIR_NAME);
+        if (!Files.isDirectory(legacy)) {
+            return target;
+        }
+        if (Files.exists(target)) {
+            if (legacyNoticeLogged) {
+                return target;
+            }
+            legacyNoticeLogged = true;
+            PymcPlaytimeMod.LOGGER.info("[pymcbot] old recordings are still in {} (new ones go to {})", legacy, target);
+            return target;
+        }
+        try {
+            Files.move(legacy, target);
+            PymcPlaytimeMod.LOGGER.info("[pymcbot] moved recordings from {} to {}", legacy, target);
+        } catch (IOException e) {
+            PymcPlaytimeMod.LOGGER.warn("[pymcbot] could not move {} to {}: {}", legacy, target, e.getMessage());
+        }
+        return target;
     }
 
     // ------------------------------------------------------------------ ticking

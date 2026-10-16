@@ -13,27 +13,16 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 DEFAULT_CONFIG_FILENAME = "pymc_bot_config.json"
 
-DEFAULT_SYSTEM_PROMPT = """You are PyMC_Bot, an AI player inside a Minecraft server.
-Every turn you receive the current world state as compact JSON and you must pick exactly
-ONE action that moves you towards a sensible goal: exploring, gathering wood/stone,
-following and helping other players, chatting when someone talks to you, and staying alive.
+# Empty = the detailed built-in "human player" prompt from pymc_bot.mind (persona-aware). Put your own
+# text in ollama.system_prompt / cortex.system_prompt to replace it completely.
+DEFAULT_SYSTEM_PROMPT = ""
 
-Reply with a single JSON object and nothing else. Available actions:
 
-  {"action": "say",      "message": "<short chat message>"}
-  {"action": "goto",     "x": <int>, "y": <int>, "z": <int>}      # walk to coordinates
-  {"action": "follow",   "player": "<name>"}                       # follow a player
-  {"action": "wander"}                                             # explore randomly nearby
-  {"action": "mine",     "block": "<block name, e.g. oak_log, stone, coal_ore>"}
-  {"action": "attack",   "player": "<name>"}                       # only if allowed
-  {"action": "jump"}                                               # hop over something
-  {"action": "eat"}                                                # eat if hungry
-  {"action": "look_at_player", "player": "<name>"}
-  {"action": "stop"}                                               # stop moving
-  {"action": "wait"}                                               # do nothing this turn
+def _auto_prompt(value: str) -> str:
+    """Configs written before 0.7 carry the old one-paragraph default; treat it as "use the built-in"."""
+    from pymc_bot.mind import LEGACY_SYSTEM_PROMPT_START
 
-Keep messages short and friendly. Never invent coordinates that are extremely far away.
-If a player is talking to you, reply with "say" before doing anything else."""
+    return "" if str(value or "").strip().startswith(LEGACY_SYSTEM_PROMPT_START) else str(value or "")
 
 
 def default_config_path() -> Path:
@@ -139,10 +128,15 @@ class OllamaSettings(BaseModel):
     enabled: bool = False
     base_url: str = "http://127.0.0.1:11434"
     model: str = "llama3.2"
-    temperature: float = Field(default=0.4, ge=0.0, le=2.0)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
     request_timeout: float = Field(default=60.0, gt=0, le=600)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    @field_validator("system_prompt")
+    @classmethod
+    def _legacy_prompt(cls, value: str) -> str:
+        return _auto_prompt(value)
 
 
 class CortexSettings(BaseModel):
@@ -158,12 +152,17 @@ class CortexSettings(BaseModel):
     api_path: str = "/v1"
     model: str = ""
     api_key_env: str = "CORTEX_API_KEY"
-    temperature: float = Field(default=0.4, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=256, ge=16, le=4096)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=320, ge=16, le=4096)
     json_mode: bool = True
     decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
     request_timeout: float = Field(default=120.0, gt=0, le=900)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    @field_validator("system_prompt")
+    @classmethod
+    def _legacy_prompt(cls, value: str) -> str:
+        return _auto_prompt(value)
 
     @field_validator("base_url")
     @classmethod
@@ -220,6 +219,14 @@ class AgentSettings(BaseModel):
     allow_attacking: bool = False
     greet_players: bool = True
     max_chat_length: int = Field(default=200, ge=1, le=500)
+    # How the LLM brain plays and talks (see pymc_bot.mind): a personality, extra notes about the
+    # character ("from Delhi, mixes Hindi and English"), human pacing (typing pauses, no chat spam)
+    # and how many recent actions it remembers.
+    persona: Literal["friendly", "chill", "builder", "explorer", "miner", "quiet"] = "friendly"
+    persona_notes: str = Field(default="", max_length=600)
+    human_chat: bool = True
+    chat_cooldown: float = Field(default=6.0, ge=0.0, le=120.0)
+    memory_turns: int = Field(default=8, ge=1, le=30)
     wander_radius: int = Field(default=16, ge=2, le=200)
     action_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
 
@@ -321,12 +328,12 @@ class TrainingSettings(BaseModel):
     """Training a Minecraft player model on recorded playtime.
 
     The Fabric mod in ``./mod`` records the player into
-    ``<gameDir>/pymc-playtime/``; ``dataset`` is the file the trainer reads and
+    ``<gameDir>/pymcbot/`` (``pymc-playtime/`` before 0.7); ``dataset`` is the file the trainer reads and
     ``models_dir`` is where checkpoints (and their ``model.json`` cards) land.
     """
 
     models_dir: str = "models"
-    dataset: str = "pymc-playtime/dataset.jsonl"
+    dataset: str = "pymcbot/dataset.jsonl"
     # Empty means "the newest trained run in models_dir".
     active_run: str = ""
     engine: Literal["mlp", "transformer"] = "mlp"

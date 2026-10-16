@@ -23,6 +23,13 @@ from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
+from pymc_bot.mind import (
+    Mind,
+    build_system_prompt,
+    build_turn_prompt,
+    humanize_message,
+    typing_delay,
+)
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.train import list_models
 
@@ -52,9 +59,19 @@ class Decision:
     params: dict[str, Any] = field(default_factory=dict)
     source: str = "heuristic"
     raw: str = ""
+    # LLM brains: a private one-sentence thought and the goal the model is working on.
+    thought: str = ""
+    goal: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"action": self.action, "params": self.params, "source": self.source, "raw": self.raw}
+        return {
+            "action": self.action,
+            "params": self.params,
+            "source": self.source,
+            "raw": self.raw,
+            "thought": self.thought,
+            "goal": self.goal,
+        }
 
 
 def parse_decision(text: str, source: str = "ollama") -> Decision:
@@ -86,7 +103,11 @@ def parse_decision(text: str, source: str = "ollama") -> Decision:
         if key in ("action", "name", "cmd", "command", "params", "parameters", "args"):
             continue
         params.setdefault(key, value)
-    return Decision(action=action, params=params, source=source, raw=text[:500])
+    thought = next((str(params.pop(key)) for key in ("thought", "thinking", "reason", "reasoning") if key in params), "")
+    goal = str(params.pop("goal", "") or "")
+    return Decision(
+        action=action, params=params, source=source, raw=text[:500], thought=thought.strip()[:240], goal=goal.strip()[:80]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +134,7 @@ class HeuristicPolicy:
         if mentioned:
             return Decision(
                 "say",
-                {"message": self._rng.choice(["On it!", "Sure, coming over.", "Hello there!", "Yes?"])},
+                {"message": self._rng.choice(["on it!", "sure, coming", "hey", "yeah?", "one sec"])},
                 "heuristic",
             )
 
@@ -125,7 +146,7 @@ class HeuristicPolicy:
         if self._step % 5 == 0:
             return Decision("mine", {"block": self._rng.choice(MINING_TARGETS)}, "heuristic")
         if self._step % 7 == 0:
-            return Decision("say", {"message": self._rng.choice(["Just exploring!", "Nice server!"])}, "heuristic")
+            return Decision("say", {"message": self._rng.choice(["just exploring", "nice server", "anyone need wood?"])}, "heuristic")
         if state.get("time_of_day") == "night" and self._step % 4 == 0:
             return Decision("mine", {"block": "coal_ore"}, "heuristic")
         return Decision("wander", {}, "heuristic")
@@ -168,6 +189,9 @@ class AgentLoop:
         self._decisions = 0
         self._errors = 0
         self._last_error: str | None = None
+        # Short-term memory for the LLM brains (goal, recent actions, things already said).
+        self.mind = Mind(store.settings.agent.memory_turns)
+        self._rng = random.Random()
 
     # ------------------------------------------------------------- lifecycle
     @property
@@ -180,6 +204,7 @@ class AgentLoop:
                 return False
             self.bot.clear_cancel()
             self._stop_event.clear()
+            self.bot.llm_chat = self.uses_llm()
             self._thread = threading.Thread(target=self._run, name="agent-loop", daemon=True)
             self._thread.start()
         self.log.add("AI agent loop started.", "success", "agent")
@@ -194,6 +219,7 @@ class AgentLoop:
         # Abort any long movement action (walking, following, mining) so the
         # loop can exit promptly instead of finishing its 30s action.
         self.bot.cancel_actions()
+        self.bot.llm_chat = False
         if wait and thread is not None:
             thread.join(timeout=10.0)
         self.bot.clear_cancel()
@@ -299,6 +325,9 @@ class AgentLoop:
             return self._ask_cortex(settings, state)
         return self._heuristic.decide(state, self.bot.recent_chat())
 
+    def uses_llm(self, settings: AppSettings | None = None) -> bool:
+        return self.resolved_brain(settings) in ("ollama", "cortex")
+
     def resolved_brain(self, settings: AppSettings | None = None) -> str:
         """The brain that really decides: ``auto`` resolved to ollama/cortex/heuristic."""
         settings = settings or self._settings()
@@ -325,6 +354,8 @@ class AgentLoop:
             "brain": self.brain(),
             "resolved_brain": self.resolved_brain(),
             "trained": trained.describe() if trained is not None else None,
+            "persona": self._settings().agent.persona,
+            "memory": self.mind.snapshot(),
         }
 
     # ------------------------------------------------------------ main logic
@@ -394,11 +425,10 @@ class AgentLoop:
             if decision is None:
                 decision = self._heuristic.decide(state, self.bot.recent_chat())
             failures = 0
-            self._decisions += 1
-            self._last_decision = {**decision.to_dict(), "ts": time.time()}
-            self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
-            ok, detail = self.execute(decision)
-            self.log.add(f"{'✓' if ok else '✗'} {detail}", "info" if ok else "warn", "agent")
+            ok, detail = self._act(decision)
+            if self.uses_llm(settings):
+                # people don't act on a metronome: +-25% around the configured interval
+                interval *= self._rng.uniform(0.75, 1.25)
             if self._wait(interval):
                 break
         self.log.add("AI agent loop finished.", "debug", "agent")
@@ -415,43 +445,60 @@ class AgentLoop:
     def _ask_ollama(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         client = self._ollama_client(settings)
         prompt = self._build_prompt(settings, state)
+        system = self.system_prompt(settings, settings.ollama.system_prompt)
         try:
-            reply = client.chat([{"role": "user", "content": prompt}], system=settings.ollama.system_prompt)
+            reply = client.chat([{"role": "user", "content": prompt}], system=system)
         except OllamaError:
             # Some models/servers only implement /api/generate.
-            reply = client.generate(prompt, system=settings.ollama.system_prompt)
+            reply = client.generate(prompt, system=system)
         return parse_decision(reply, source=f"ollama:{settings.ollama.model}")
 
     def _ask_cortex(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         """One decision from the model hosted by Cortex LLMHoster."""
         client = self._cortex_client(settings)
         prompt = self._build_prompt(settings, state)
-        reply = client.decide(prompt, system=settings.cortex.system_prompt)
+        reply = client.decide(prompt, system=self.system_prompt(settings, settings.cortex.system_prompt))
         model = client.last_model or settings.cortex.model or "default"
         return parse_decision(reply, source=f"cortex:{model}")
 
-    def _build_prompt(self, settings: AppSettings, state: dict[str, Any]) -> str:
-        compact = {
-            "position": state.get("position"),
-            "health": state.get("health"),
-            "food": state.get("food"),
-            "time_of_day": state.get("time_of_day"),
-            "players": state.get("players"),
-            "inventory": state.get("inventory"),
-            "recent_chat": self.bot.recent_chat(6),
-            "allowed": {
-                "movement": settings.agent.allow_movement,
-                "chat": settings.agent.allow_chat,
-                "mining": settings.agent.allow_mining,
-                "attacking": settings.agent.allow_attacking,
-            },
-            "goal": "Explore, gather resources, and be a friendly helpful player.",
+    def allowed(self, settings: AppSettings) -> dict[str, bool]:
+        agent = settings.agent
+        return {
+            "movement": agent.allow_movement,
+            "chat": agent.allow_chat,
+            "mining": agent.allow_mining,
+            "attacking": agent.allow_attacking,
         }
-        return (
-            "Current Minecraft world state:\n"
-            + json.dumps(compact, separators=(",", ":"))
-            + "\n\nPick the single best next action. Reply with JSON only."
+
+    def system_prompt(self, settings: AppSettings, custom: str = "") -> str:
+        """The system prompt the LLM gets: the owner's own text, or the detailed built-in one."""
+        if custom and custom.strip():
+            return custom
+        agent = settings.agent
+        return build_system_prompt(
+            name=self.bot.username,
+            persona=agent.persona,
+            notes=agent.persona_notes,
+            allowed=self.allowed(settings),
+            max_chat_length=min(agent.max_chat_length, 160),
         )
+
+    def _build_prompt(self, settings: AppSettings, state: dict[str, Any]) -> str:
+        """This turn's situation as a person would see it (plus the exact JSON at the end)."""
+        return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings))
+
+    def preview_prompts(self) -> dict[str, str]:
+        """What the LLM would be sent right now (shown in the panel)."""
+        settings = self._settings()
+        brain = self.resolved_brain(settings)
+        custom = settings.cortex.system_prompt if brain == "cortex" else settings.ollama.system_prompt
+        return {
+            "brain": brain,
+            "custom": bool(custom and custom.strip()),
+            "system": self.system_prompt(settings, custom),
+            "turn": self._build_prompt(settings, self.bot.snapshot()),
+            "connected": self.bot.connected,
+        }
 
     # -------------------------------------------------------------- executor
     def execute(self, decision: Decision, enforce_permissions: bool = True) -> tuple[bool, str]:
@@ -490,8 +537,21 @@ class AgentLoop:
             if blocked("chat", agent.allow_chat):
                 return False, "chat is disabled in settings"
             message = str(params.get("message") or params.get("text") or "").strip()
+            llm = str(decision.source or "").startswith(("ollama", "cortex"))
+            if llm:
+                message = humanize_message(message, self.bot.username, agent.max_chat_length)
             if not message:
                 return False, "say had no message"
+            if llm and self.mind.already_said(message):
+                return False, "skipped: already said that"
+            if llm and agent.human_chat:
+                since = time.time() - self.mind.last_said_at
+                if since < agent.chat_cooldown and not self._addressed_recently():
+                    return False, f"held back chat ({since:.0f}s since the last message)"
+                # read, think, type - like a person at the keyboard
+                if self._wait(typing_delay(message, self._rng)):
+                    return False, "stopped before sending"
+            params["message"] = message
             return (True, f"said: {message}") if self.bot.say(message) else (False, "could not send chat")
 
         if action in ("goto", "walk", "move"):
@@ -561,6 +621,20 @@ class AgentLoop:
 
         return False, f"unsupported action: {action}"
 
+    def _addressed_recently(self, window: float = 60.0) -> bool:
+        """Did someone talk to this bot in the last ``window`` seconds (replies skip the cooldown)?"""
+        from pymc_bot.mind import mentions
+
+        name = self.bot.username
+        now = time.time()
+        for entry in reversed(self.bot.chat_history):
+            if now - float(entry.get("time", 0)) > window:
+                break
+            who = str(entry.get("username", ""))
+            if who.lower() != name.lower() and mentions(str(entry.get("message", "")), name):
+                return True
+        return False
+
     def run_once(self) -> tuple[bool, str]:
         """Decide and execute a single action (used by ``POST /api/step``)."""
         settings = self._settings()
@@ -573,7 +647,18 @@ class AgentLoop:
             self._last_error = str(exc)
             self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
             decision = self._heuristic.decide(state, self.bot.recent_chat())
+        return self._act(decision)
+
+    def _act(self, decision: Decision) -> tuple[bool, str]:
+        """Bookkeeping + memory around :meth:`execute` for one decision of the loop."""
         self._decisions += 1
         self._last_decision = {**decision.to_dict(), "ts": time.time()}
+        self.mind.resize(self._settings().agent.memory_turns)
+        self.mind.note_decision(decision)
+        if decision.thought:
+            self.log.add(f"💭 {decision.thought}" + (f"  [goal: {decision.goal}]" if decision.goal else ""), "ai", "agent")
         self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
-        return self.execute(decision)
+        ok, detail = self.execute(decision)
+        self.mind.note_result(decision, ok, detail)
+        self.log.add(f"{'✓' if ok else '✗'} {detail}", "info" if ok else "warn", "agent")
+        return ok, detail

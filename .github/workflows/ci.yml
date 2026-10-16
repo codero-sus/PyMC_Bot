@@ -325,7 +325,7 @@ jobs:
           path: |
             mod/build/run/gametest/screenshots/
             mod/build/run/gametest/pymc-gametest.txt
-            mod/build/run/gametest/pymc-playtime/meta.json
+            mod/build/run/gametest/pymcbot/meta.json
             mod/build/run/gametest/logs/latest.log
             mod/gametest.log
           if-no-files-found: warn

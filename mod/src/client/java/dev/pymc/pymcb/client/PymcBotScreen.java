@@ -429,7 +429,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
     }
 
     private void paintRecorder(HudCanvas canvas, int center) {
-        String dataset = recorder().datasetPath() == null ? "<game folder>/pymc-playtime/" : recorder().datasetPath().toString();
+        String dataset = recorder().datasetPath() == null ? "<game folder>/pymcbot/" : recorder().datasetPath().toString();
         paintLines(canvas, center, rowY(3) + 2, new String[]{
                 "Dataset: " + dataset,
                 "Mode: " + (cfg().advanced ? "advanced (entities + items)" : "basic") + "   Sample rate: "

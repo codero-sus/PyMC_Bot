@@ -45,12 +45,21 @@ class StubBrain:
         players = state.get("players") or []
         chat = [str(line) for line in (state.get("recent_chat") or [])]
         position = state.get("position") or {"x": 0, "y": 64, "z": 0}
-        bot_name = str((state.get("server") or {}).get("username") or "PyMC_Bot")
+        bot_name = str(state.get("you") or (state.get("server") or {}).get("username") or "PyMC_Bot")
 
         # Reactive rules first: stay alive, answer people who talk to us.
         if health <= 8 or food <= 6:
-            return _json({"action": "eat"})
-        others = [line for line in chat[-4:] if not line.startswith(f"<{bot_name}>")]
+            return _json({"thought": "low on health or food, eat first", "goal": "stay alive", "action": "eat"})
+        waiting = [str(line) for line in (state.get("waiting_for_reply") or [])]
+        if "waiting_for_reply" in state:
+            # the human-player prompt says exactly which messages still need an answer
+            if waiting and waiting[-1] != self._last_replied:
+                self._last_replied = waiting[-1]
+                return _json({"thought": "someone talked to me, answer first", "goal": "chat",
+                              "action": "say", "message": "hey! i'm just the demo brain, but hi"})
+            others = []
+        else:
+            others = [line for line in chat[-4:] if not line.startswith(f"<{bot_name}>")]
         if others:
             latest = others[-1]
             addressed = "?" in latest or bot_name.lower() in latest.lower()
@@ -63,7 +72,7 @@ class StubBrain:
         if cycle == 0 and players and players[0].get("distance", 99) < 20:
             return _json({"action": "say", "message": f"Hey {players[0].get('name', 'there')}!"})
         if cycle == 1:
-            return _json({"action": "mine", "block": "oak_log"})
+            return _json({"thought": "need wood for tools", "goal": "get wood", "action": "mine", "block": "oak_log"})
         if cycle == 2:
             target = {
                 "x": round(float(position.get("x", 0)) + 12, 1),
@@ -72,10 +81,11 @@ class StubBrain:
             }
             return _json({"action": "goto", **target})
         if cycle == 3 and players:
-            return _json({"action": "follow", "player": players[0].get("name", "Steve")})
+            return _json({"thought": "stick with the others", "goal": "hang out",
+                          "action": "follow", "player": players[0].get("name", "Steve")})
         if cycle == 4:
-            return _json({"action": "mine", "block": "stone"})
-        return _json({"action": "wander"})
+            return _json({"thought": "stone tools next", "goal": "get stone", "action": "mine", "block": "stone"})
+        return _json({"thought": "let's see what's around", "goal": "explore", "action": "wander"})
 
 
 def _json(payload: dict[str, Any]) -> str:

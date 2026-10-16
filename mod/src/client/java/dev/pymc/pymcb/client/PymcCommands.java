@@ -226,7 +226,7 @@ public final class PymcCommands {
 
     /** The command that trains a model on the current dataset (also used by the settings page). */
     static String trainHint(PlaytimeRecorder recorder) {
-        String dataset = recorder.datasetPath() == null ? "<gameDir>/pymc-playtime/dataset.jsonl"
+        String dataset = recorder.datasetPath() == null ? "<gameDir>/pymcbot/dataset.jsonl"
                 : recorder.datasetPath().toString();
         String advancedFlag = PlaytimeConfig.get().advanced ? " --advanced" : "";
         String mode = PlaytimeConfig.get().advanced
@@ -237,7 +237,7 @@ public final class PymcCommands {
                 + "train it with:  python -m pymc_bot train --dataset \"" + dataset + "\" --steps 5000"
                 + advancedFlag + "\n"
                 + "then either run the native policy in the panel (Agent -> trained) or\n"
-                + "python -m pymc_bot train --dataset \"" + dataset + "\" --ollama-model pymc-playtime\n"
+                + "python -m pymc_bot train --dataset \"" + dataset + "\" --ollama-model pymc-bot\n"
                 + "to import it into Ollama and select it in the config page.";
     }
 
