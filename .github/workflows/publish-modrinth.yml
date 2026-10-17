@@ -2,7 +2,7 @@
 # Minecraft version). Run it from the Actions tab ("Publish to Modrinth" -> Run workflow) after CI
 # has created the release. Needs, under Settings -> Secrets and variables -> Actions:
 #   secret   MODRINTH_TOKEN    a Modrinth personal access token (scopes: see mod/README.md)
-#   variable MODRINTH_PROJECT  the project id or slug, e.g. Imrzxzon / pymcbot
+#   variable MODRINTH_PROJECT  the project id or slug, e.g. pymcbot
 # Without them the job only prints what it would publish (dry run). CI does the same automatically for main;
 # use this to re-publish an older release by hand.
 name: Publish to Modrinth
