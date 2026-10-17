@@ -431,40 +431,66 @@ Everything Modrinth needs is in the repo:
 
 | File | Use |
 | --- | --- |
-| [`MODRINTH.md`](MODRINTH.md) | the project description (paste it, or `--update-page` below) |
+| [`MODRINTH.md`](MODRINTH.md) | the project description – synced to Modrinth on every release |
 | [`../docs/modrinth/`](../docs/modrinth/) | 512×512 icon, banner and a copy-paste [listing sheet](../docs/modrinth/LISTING.md) for every Modrinth field |
+| [`modrinth.json`](modrinth.json) | title, summary, categories, links and licence – synced on every release |
 | [`CHANGELOG.md`](CHANGELOG.md) | per-version changelog – the section for `mod_version` is used for every upload |
-| [`../scripts/modrinth_publish.py`](../scripts/modrinth_publish.py) | uploads one Modrinth version per jar |
+| [`../scripts/modrinth_publish.py`](../scripts/modrinth_publish.py) | syncs the project page and one Modrinth version per jar |
 
 1. **Create the project once** on modrinth.com → *Create a project*: name **PyMC Bot**, type *Mod*,
    summary e.g. "Record your own playtime so a bot can learn to play like you". Then in its settings:
    environment **client-side only**, license **PolyForm Noncommercial 1.0.0** (`PolyForm-Noncommercial-1.0.0`), categories *Utility* (+ *Game Mechanics* if you like),
    source/issues links `https://github.com/codero-sus/PyMC_Bot`, upload the icon.
 2. **Get the jars**: `./build-all.sh` (→ `mod/dist/`) or download them from the GitHub release.
-3. **Upload** (token from <https://modrinth.com/settings/pats> with *Create versions* and *Write projects*):
+3. **Connect GitHub to Modrinth once** – after that every push to `main` keeps Modrinth up to date:
+
+   **a. Make a Modrinth token** at <https://modrinth.com/settings/pats> → *Create a PAT*: name `PyMC Bot CI`,
+   expiry as long as you like, and tick these scopes:
+
+   | Scope | Needed for |
+   | --- | --- |
+   | Read projects | reading the project while it is under review / unlisted |
+   | Write projects | title, summary, description, links, licence |
+   | Read versions | finding the versions that are already there |
+   | Create versions | new versions |
+   | Write versions | updating versions and replacing their jar |
+
+   **b. Add it to GitHub** at
+   [github.com/codero-sus/PyMC_Bot/settings/secrets/actions](https://github.com/codero-sus/PyMC_Bot/settings/secrets/actions)
+   (*Settings → Secrets and variables → Actions*):
+
+   | Tab | Button | Name | Value |
+   | --- | --- | --- | --- |
+   | **Secrets** | *New repository secret* | `MODRINTH_TOKEN` | the token (`mrp_…`) |
+   | **Variables** | *New repository variable* | `MODRINTH_PROJECT` | `Imrzxzon` (the project id – stays valid if the slug changes) |
+
+   Nothing else is needed. Without the secret the job only prints what it would publish; without the
+   variable it does not run.
+
+4. **What happens on every push to `main`**: CI builds all versions, runs the in-game tests, makes the
+   GitHub release, then the **mod (Modrinth)** job
+   - updates the project's **title, summary, description** (`MODRINTH.md`), categories, links and licence
+     (`modrinth.json`; the summary's version range comes from `versions.json`);
+   - updates **every version** of the current `mod_version`: name, changelog (`CHANGELOG.md`), game version,
+     loader, Fabric API / Mod Menu dependencies and channel, and **replaces the jar when the code changed**
+     (rebuilds of unchanged code are recognised and left alone);
+   - creates versions that are missing (a new Minecraft version, or a new `mod_version`);
+   - keeps only the newest Minecraft version of the current release *featured*.
+
+   Bump `mod_version` in `gradle.properties` (+ a `CHANGELOG.md` section) when you want a new version that
+   launchers offer as an update; without a bump the existing versions are refreshed in place. Branch and
+   pull-request builds never publish. *Actions → Publish to Modrinth → Run workflow* does the same by hand.
+
+   By hand from your PC:
 
    ```bash
-   python scripts/modrinth_publish.py --jars mod/dist --dry-run          # check, no token needed
-   MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project <slug> --jars mod/dist --update-page
+   python scripts/modrinth_publish.py --jars mod/dist --update-project --dry-run    # check, no token needed
+   MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project Imrzxzon --jars mod/dist --update-project
    ```
 
-   Each jar becomes the version `<mod>+<mc>` for exactly that Minecraft version, loader *fabric*,
-   environment *client only*, Fabric API **required** and Mod Menu **optional**; the newest Minecraft
-   version is *featured*. Versions already on Modrinth are skipped, so re-running is safe.
-   `--channel beta|alpha` and `--only 26.3` are available too.
-4. **Automatically, from now on**: add under *Settings → Secrets and variables → Actions*
-   - secret **`MODRINTH_TOKEN`** – the Modrinth token (*Create versions* + *Write projects*),
-   - variable **`MODRINTH_PROJECT`** – the project id or slug (`Imrzxzon` / `pymcbot`),
-   - optional variable **`MODRINTH_UPDATE_PAGE`** = `true` to keep the Modrinth description in sync with `MODRINTH.md`.
-
-   Every push to `main` then builds all versions, runs the in-game tests, makes the GitHub release and the
-   **mod (Modrinth)** job uploads the jars. Versions already on Modrinth are skipped, so code changes reach
-   Modrinth when you **bump `mod_version`** in `gradle.properties`. Branch and pull-request builds never
-   publish. *Actions → Publish to Modrinth → Run workflow* re-uploads a release by hand.
-
    Limits: GitHub Actions minutes are free and unlimited for public repositories (20 jobs at once, 6 h per
-   job); the Modrinth API allows 300 requests per minute per IP and a release needs about 18, and the script
-   waits and retries when Modrinth answers 429 or a temporary 5xx.
+   job). The Modrinth API allows 300 requests per minute per IP; a full sync needs at most about 70, and the
+   script waits and retries when Modrinth answers 429 or a temporary 5xx.
 5. Submit the project for review on Modrinth (new projects are checked by their moderators).
 
 ## Other modding platforms

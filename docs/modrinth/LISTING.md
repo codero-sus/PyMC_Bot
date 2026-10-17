@@ -19,7 +19,7 @@ Upload **`icon.png`** (512×512, 146 KB – the limit is 256 KiB).
 ## 3. Description
 
 Paste the whole of [`../../mod/MODRINTH.md`](../../mod/MODRINTH.md) into *Description*
-(or run `python scripts/modrinth_publish.py --project pymcbot --update-page` with a token).
+(after the GitHub connection below, every release from `main` re-syncs it automatically).
 The banner at the top loads from GitHub once PR #1 is merged into `main`. To show it before that, upload
 `banner.jpg` to the gallery first, copy its image link and replace the first line of the description with it.
 
@@ -52,8 +52,8 @@ The banner at the top loads from GitHub once PR #1 is merged into `main`. To sho
 Download the 16 jars from the GitHub release
 [`pymcbot-v0.7.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.7.0), then either:
 
-- **Automatic:** `MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project pymcbot --jars <folder>`
-  (token: modrinth.com/settings/pats, scopes *Create versions* + *Write projects*), or
+- **Automatic:** `MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project Imrzxzon --jars <folder> --update-project`
+  (token scopes: see below), or
 - **By hand**, for each jar:
 
 | Field | Value |
@@ -67,11 +67,16 @@ Download the 16 jars from the GitHub release
 | Dependencies | Fabric API – **required** · Mod Menu – **optional** |
 | Changelog | the `## 0.7.0` section of [`../../mod/CHANGELOG.md`](../../mod/CHANGELOG.md) |
 
-### Automatic uploads after this
+### Automatic sync after this
 
-Add the secret `MODRINTH_TOKEN` and the variable `MODRINTH_PROJECT` (`Imrzxzon` or `pymcbot`) in the GitHub
-repository (*Settings → Secrets and variables → Actions*). Every push to `main` then publishes the new jars
-to Modrinth after CI passes; bump `mod_version` in `mod/gradle.properties` for a new Modrinth version.
+1. Modrinth token: <https://modrinth.com/settings/pats> → *Create a PAT* with **Read projects, Write projects,
+   Read versions, Create versions, Write versions**.
+2. GitHub: <https://github.com/codero-sus/PyMC_Bot/settings/secrets/actions>
+   - *Secrets* tab → *New repository secret* → `MODRINTH_TOKEN` = the token
+   - *Variables* tab → *New repository variable* → `MODRINTH_PROJECT` = `Imrzxzon`
+
+Every push to `main` then updates the summary (`mod/modrinth.json`), the description (`mod/MODRINTH.md`)
+and every version on Modrinth, and replaces jars whose code changed.
 
 ## 8. Submit
 

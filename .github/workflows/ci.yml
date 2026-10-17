@@ -407,11 +407,11 @@ jobs:
           echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
 
-  # Publishes the same jars to Modrinth once the stable GitHub release for main exists - one Modrinth
-  # version per Minecraft version (<mod_version>+<mc>). Versions already on Modrinth are skipped, so
-  # only a bump of mod_version in mod/gradle.properties uploads anything new. Needs the repository
-  # secret MODRINTH_TOKEN (Modrinth PAT: Create versions + Write projects) and the variable
-  # MODRINTH_PROJECT (project id or slug); set MODRINTH_UPDATE_PAGE=true to also sync mod/MODRINTH.md.
+  # Syncs Modrinth after the stable GitHub release for main, on every push to main: the project's
+  # title, summary, description (mod/MODRINTH.md), links and licence (mod/modrinth.json), and every
+  # version - missing ones are created, existing ones get fresh details, and their jar is replaced when
+  # the code changed. Needs the repository secret MODRINTH_TOKEN and the variable MODRINTH_PROJECT
+  # (see mod/README.md -> Publishing on Modrinth).
   modrinth:
     name: mod (Modrinth)
     needs: release
@@ -429,19 +429,17 @@ jobs:
         with:
           name: pymcbot-all-versions
           path: mod/dist
-      - name: Upload new versions to Modrinth
+      - name: Sync the Modrinth project and all versions
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
           MODRINTH_PROJECT: ${{ vars.MODRINTH_PROJECT }}
-          UPDATE_PAGE: ${{ vars.MODRINTH_UPDATE_PAGE }}
         run: |
           if [ -z "$MODRINTH_TOKEN" ]; then
-            echo "::warning::MODRINTH_TOKEN secret is not set - showing what would be uploaded"
-            python3 scripts/modrinth_publish.py --jars mod/dist --dry-run
+            echo "::warning::MODRINTH_TOKEN secret is not set - showing what would be published"
+            python3 scripts/modrinth_publish.py --jars mod/dist --update-project --dry-run
             exit 0
           fi
-          args="--jars mod/dist --channel release"
-          if [ "$UPDATE_PAGE" = "true" ]; then args="$args --update-page"; fi
+          args="--jars mod/dist --channel release --update-project"
           python3 scripts/modrinth_publish.py $args | tee modrinth.txt
           {
             echo "### Modrinth"
