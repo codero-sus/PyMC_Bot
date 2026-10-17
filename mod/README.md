@@ -452,9 +452,19 @@ Everything Modrinth needs is in the repo:
    environment *client only*, Fabric API **required** and Mod Menu **optional**; the newest Minecraft
    version is *featured*. Versions already on Modrinth are skipped, so re-running is safe.
    `--channel beta|alpha` and `--only 26.3` are available too.
-4. **Or from GitHub**: add the secret `MODRINTH_TOKEN` and the variable `MODRINTH_PROJECT` (the slug)
-   under *Settings → Secrets and variables → Actions*, then *Actions → Publish to Modrinth → Run
-   workflow*. It downloads the release jars and runs the same script (a dry run while the secret is missing).
+4. **Automatically, from now on**: add under *Settings → Secrets and variables → Actions*
+   - secret **`MODRINTH_TOKEN`** – the Modrinth token (*Create versions* + *Write projects*),
+   - variable **`MODRINTH_PROJECT`** – the project id or slug (`Imrzxzon` / `pymcbot`),
+   - optional variable **`MODRINTH_UPDATE_PAGE`** = `true` to keep the Modrinth description in sync with `MODRINTH.md`.
+
+   Every push to `main` then builds all versions, runs the in-game tests, makes the GitHub release and the
+   **mod (Modrinth)** job uploads the jars. Versions already on Modrinth are skipped, so code changes reach
+   Modrinth when you **bump `mod_version`** in `gradle.properties`. Branch and pull-request builds never
+   publish. *Actions → Publish to Modrinth → Run workflow* re-uploads a release by hand.
+
+   Limits: GitHub Actions minutes are free and unlimited for public repositories (20 jobs at once, 6 h per
+   job); the Modrinth API allows 300 requests per minute per IP and a release needs about 18, and the script
+   waits and retries when Modrinth answers 429 or a temporary 5xx.
 5. Submit the project for review on Modrinth (new projects are checked by their moderators).
 
 ## Other modding platforms
