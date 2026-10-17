@@ -51,7 +51,7 @@ public final class PymcCommands {
             + "Made with \u2764 by codero-sus\n"
             + "GitHub:  https://github.com/codero-sus\n"
             + "Website: https://the-codero.web.app/\n"
-            + "Source:  https://github.com/codero-sus/PyMC_Bot (MIT)";
+            + "Source:  https://github.com/codero-sus/PyMC_Bot (PolyForm Noncommercial 1.0.0 - free for personal, non-commercial use)";
 
     private final PlaytimeRecorder recorder;
 

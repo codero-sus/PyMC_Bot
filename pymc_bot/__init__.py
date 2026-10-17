@@ -28,7 +28,8 @@ __author__ = "codero-sus"
 __author_url__ = "https://github.com/codero-sus"
 __website__ = "https://the-codero.web.app/"
 __repository__ = "https://github.com/codero-sus/PyMC_Bot"
-__license__ = "MIT"
+__license__ = "PolyForm-Noncommercial-1.0.0"
+__license_url__ = "https://polyformproject.org/licenses/noncommercial/1.0.0"
 MADE_WITH = "Made with \u2764\ufe0f by codero-sus"
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "__author__",
     "__author_url__",
     "__license__",
+    "__license_url__",
     "__repository__",
     "__version__",
     "__website__",
@@ -59,6 +61,8 @@ def about() -> dict:
         "website": __website__,
         "repository": __repository__,
         "license": __license__,
+        "license_url": __license_url__,
+        "license_summary": "free for personal, non-commercial use",
         "made_with": MADE_WITH,
         "credits": [
             {

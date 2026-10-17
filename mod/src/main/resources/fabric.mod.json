@@ -18,7 +18,7 @@
 		"sources": "https://github.com/codero-sus/PyMC_Bot",
 		"issues": "https://github.com/codero-sus/PyMC_Bot/issues"
 	},
-	"license": "MIT",
+	"license": "PolyForm-Noncommercial-1.0.0",
 	"provides": [
 		"pymcplaytime"
 	],

@@ -438,7 +438,7 @@ Everything Modrinth needs is in the repo:
 
 1. **Create the project once** on modrinth.com → *Create a project*: name **PyMC Bot**, type *Mod*,
    summary e.g. "Record your own playtime so a bot can learn to play like you". Then in its settings:
-   environment **client-side only**, license **MIT**, categories *Utility* (+ *Game Mechanics* if you like),
+   environment **client-side only**, license **PolyForm Noncommercial 1.0.0** (`PolyForm-Noncommercial-1.0.0`), categories *Utility* (+ *Game Mechanics* if you like),
    source/issues links `https://github.com/codero-sus/PyMC_Bot`, upload the icon.
 2. **Get the jars**: `./build-all.sh` (→ `mod/dist/`) or download them from the GitHub release.
 3. **Upload** (token from <https://modrinth.com/settings/pats> with *Create versions* and *Write projects*):
@@ -501,7 +501,11 @@ mod/
 
 ## Licensing
 
-Same MIT license as PyMC_Bot; the Fabric template files it was bootstrapped from are CC0.
+Same license as PyMC_Bot: the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) – free for personal,
+non-commercial use; no selling or commercial use without permission from codero-sus (see
+[LICENSE](LICENSE) and the main [README](../README.md#license)). Releases up to 0.7.0 were published under
+MIT. The Fabric template files the mod was bootstrapped from are CC0; the compile-only Mod Menu API stubs
+are Mod Menu's own code (MIT, TerraformersMC) and are never shipped in the jars.
 
 ---
 

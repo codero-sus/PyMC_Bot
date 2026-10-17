@@ -320,7 +320,7 @@ ws.onmessage = (m) => { const frame = JSON.parse(m.data); if (frame.type === 'ev
 ```json
 {"name": "PyMC_Bot", "version": "0.1.0", "author": "codero-sus",
  "author_github": "https://github.com/codero-sus", "website": "https://the-codero.web.app/",
- "repository": "https://github.com/codero-sus/PyMC_Bot", "license": "MIT",
+ "repository": "https://github.com/codero-sus/PyMC_Bot", "license": "PolyForm-Noncommercial-1.0.0",
  "made_with": "Made with ❤️ by codero-sus", "credits": [...], "built_with": [...]}
 ```
 

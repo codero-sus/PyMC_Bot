@@ -30,7 +30,7 @@ The banner at the top loads from GitHub once PR #1 is merged into `main`. To sho
 | Environment | **Client-side only** (client: required, server: unsupported) |
 | Primary categories | **Utility** |
 | Additional categories | **Technology** |
-| License | **MIT** (`MIT`) |
+| License | **PolyForm Noncommercial 1.0.0** – pick *Custom license* / type the SPDX id `PolyForm-Noncommercial-1.0.0`, license URL `https://polyformproject.org/licenses/noncommercial/1.0.0` |
 
 ## 5. Settings → Links
 

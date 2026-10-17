@@ -2,7 +2,7 @@
 
 [![Author: codero-sus](https://img.shields.io/badge/author-codero--sus-22c55e?logo=github)](https://github.com/codero-sus)
 [![Website](https://img.shields.io/badge/website-the--codero.web.app-0ea5e9)](https://the-codero.web.app/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-a78bfa)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial-a78bfa)](LICENSE)
 
 > **Made with ❤️ by [codero-sus](https://github.com/codero-sus)** · [the-codero.web.app](https://the-codero.web.app/)
 
@@ -692,6 +692,20 @@ in the OpenAPI docs (`/docs`) and in the Fabric mod (`/pymcbot about`, `fabric.m
 
 ## License
 
-MIT © 2026 [codero-sus](https://github.com/codero-sus) – see [LICENSE](LICENSE).
+© 2026 [codero-sus](https://github.com/codero-sus). Licensed under the
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) – see [LICENSE](LICENSE).
+
+**Free for personal, non-commercial use.** You may use, change and share PyMC_Bot and the PyMC Bot mod for
+yourself, as a hobby, for study or research, or in a charity, school or public organisation. You may
+**not** sell it, put it behind a paywall, or use it to make money (for example selling bots or "player
+filling" as a service) without written permission from codero-sus. Anyone you share it with must get the
+licence text (or its URL) and the `Required Notice:` line at the top of [LICENSE](LICENSE).
+
+Versions published before this change (up to commit `271a602` and the mod releases up to 0.7.0 built
+from it) were released under the MIT license; copies already obtained under MIT keep those terms.
+
+Third-party parts keep their own licenses: the compile-only Mod Menu API stubs in
+`mod/src/client/java/com/terraformersmc/` (MIT, TerraformersMC; never shipped in the jars), the Fabric
+template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies.
 
 <p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>
