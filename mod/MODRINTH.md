@@ -1,3 +1,5 @@
+![PyMC Bot](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg)
+
 # PyMC Bot
 
 **Teach a Minecraft bot to play like you.** PyMC Bot is a small, client-side Fabric mod that records
@@ -37,9 +39,18 @@ a player model on it, and that model can then play a bot on your server the way 
    python -m pymc_bot run --think trained
    ```
 
-The PyMC Bot app also runs bots on offline-mode, premium (Microsoft) and free-host (Aternos & co.)
-servers, with a web control panel, anti-AFK movement and an optional local LLM brain (Ollama) that
-plays and chats like a human. See the [GitHub page](https://github.com/codero-sus/PyMC_Bot).
+## The PyMC Bot app
+
+The free Python app that goes with this mod runs bots on offline-mode, premium (Microsoft) and free-host
+(Aternos & co.) servers, from a web control panel:
+
+- 🤖 **Plays like you** – the model trained on your recordings drives the bot.
+- 🧠 **Or thinks like a human** – with a local LLM (Ollama) it keeps goals, remembers what worked and chats
+  casually. Pick how it behaves: 😊 Friendly helper, 😎 Chill survivor, 💬 Social butterfly,
+  🤝 Loyal companion, 🏗️ Builder, 🧭 Explorer, ⛏️ Miner, 🐣 New player, 🏆 Experienced pro or 🤫 Quiet player.
+- 👥 **Many bots** to fill a server, with anti-AFK movement so none get kicked.
+
+See the [GitHub page](https://github.com/codero-sus/PyMC_Bot).
 
 ## Commands
 
