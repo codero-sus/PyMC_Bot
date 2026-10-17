@@ -462,7 +462,7 @@ Everything Modrinth needs is in the repo:
    | Tab | Button | Name | Value |
    | --- | --- | --- | --- |
    | **Secrets** | *New repository secret* | `MODRINTH_TOKEN` | the token (`mrp_…`) |
-   | **Variables** | *New repository variable* | `MODRINTH_PROJECT` | `Imrzxzon` (the project id – stays valid if the slug changes) |
+   | **Variables** | *New repository variable* | `MODRINTH_PROJECT` | `pymcbot` (the project slug) |
 
    Nothing else is needed. Without the secret the job only prints what it would publish; without the
    variable it does not run.
@@ -485,7 +485,7 @@ Everything Modrinth needs is in the repo:
 
    ```bash
    python scripts/modrinth_publish.py --jars mod/dist --update-project --dry-run    # check, no token needed
-   MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project Imrzxzon --jars mod/dist --update-project
+   MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project pymcbot --jars mod/dist --update-project
    ```
 
    Limits: GitHub Actions minutes are free and unlimited for public repositories (20 jobs at once, 6 h per

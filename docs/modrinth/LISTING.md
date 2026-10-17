@@ -52,7 +52,7 @@ The banner at the top loads from GitHub once PR #1 is merged into `main`. To sho
 Download the 16 jars from the GitHub release
 [`pymcbot-v0.7.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.7.0), then either:
 
-- **Automatic:** `MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project Imrzxzon --jars <folder> --update-project`
+- **Automatic:** `MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project pymcbot --jars <folder> --update-project`
   (token scopes: see below), or
 - **By hand**, for each jar:
 
@@ -73,7 +73,7 @@ Download the 16 jars from the GitHub release
    Read versions, Create versions, Write versions**.
 2. GitHub: <https://github.com/codero-sus/PyMC_Bot/settings/secrets/actions>
    - *Secrets* tab → *New repository secret* → `MODRINTH_TOKEN` = the token
-   - *Variables* tab → *New repository variable* → `MODRINTH_PROJECT` = `Imrzxzon`
+   - *Variables* tab → *New repository variable* → `MODRINTH_PROJECT` = `pymcbot`
 
 Every push to `main` then updates the summary (`mod/modrinth.json`), the description (`mod/MODRINTH.md`)
 and every version on Modrinth, and replaces jars whose code changed.
