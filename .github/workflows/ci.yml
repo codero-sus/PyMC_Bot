@@ -216,7 +216,23 @@ jobs:
         run: |
           set -o pipefail
           chmod +x gradlew
-          ./gradlew build -Pmc=${{ matrix.mc }} --no-daemon --stacktrace 2>&1 | tee gradle.log
+          # Maven Central / maven.fabricmc.net occasionally fail to serve a file ("Could not find
+          # gson ..."). Retry such network hiccups twice so one blip does not cancel the release and
+          # the Modrinth upload; real compile errors still fail on the first try.
+          extra=""
+          for attempt in 1 2 3; do
+            if ./gradlew build -Pmc=${{ matrix.mc }} --no-daemon --stacktrace $extra 2>&1 | tee gradle.log; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ] && grep -qE "Could not (find|resolve|GET|HEAD|download)|Connection (reset|refused|timed out)|Read timed out|Received status code 5[0-9][0-9]|Remote host terminated" gradle.log \
+                && ! grep -qE "Compilation failed|error: " gradle.log; then
+              echo "::warning::dependency download failed - retrying in 30 s (attempt $attempt of 3)"
+              sleep 30
+              extra="--refresh-dependencies"
+              continue
+            fi
+            exit 1
+          done
       - name: Check the jar targets the right game version
         working-directory: mod
         run: |
