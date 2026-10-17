@@ -381,7 +381,7 @@ def create_app(
             f"Made with \u2764\ufe0f by [{__author__}]({__author_url__}) \u00b7 [{__website__}]({__website__})"
         ),
         contact={"name": __author__, "url": __author_url__},
-        license_info={"name": __license__},
+        license_info={"name": __license__, "url": "https://polyformproject.org/licenses/noncommercial/1.0.0"},
         lifespan=_lifespan,
     )
     app.state.store = store

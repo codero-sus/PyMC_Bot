@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/codero-sus/PyMC_Bot.git"
   },
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "main": "pymc_bot/node/minecraft_bridge.js",
   "scripts": {
     "bridge": "node pymc_bot/node/minecraft_bridge.js"

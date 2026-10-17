@@ -446,7 +446,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
                 "Config file: " + PlaytimeConfig.file(),
                 "Commands: /pymcbot (or /pymc) - try /pymcbot status",
                 "Made with \u2764 by codero-sus  -  github.com/codero-sus",
-                "the-codero.web.app  -  github.com/codero-sus/PyMC_Bot (MIT)",
+                "the-codero.web.app  -  github.com/codero-sus/PyMC_Bot (PolyForm Noncommercial)",
         };
         for (int i = 0; i < lines.length; i++) {
             canvas.centeredText(canvas.fit(lines[i], this.width - 20), center, y + i * step,

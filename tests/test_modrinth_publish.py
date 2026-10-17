@@ -104,7 +104,7 @@ def test_modrinth_page_is_about_pymc_bot_and_honest_about_privacy():
     assert "no network" in page.lower()
     assert "pymcbot/dataset.jsonl" in page
     assert "Playtime Recorder" not in page
-    assert "codero-sus" in page and "MIT" in page
+    assert "codero-sus" in page and "PolyForm Noncommercial" in page
     assert "Cortex" not in page
 
 
