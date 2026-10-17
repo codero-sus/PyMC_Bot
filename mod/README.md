@@ -432,7 +432,7 @@ Everything Modrinth needs is in the repo:
 | File | Use |
 | --- | --- |
 | [`MODRINTH.md`](MODRINTH.md) | the project description (paste it, or `--update-page` below) |
-| [`../docs/modrinth-icon.png`](../docs/modrinth-icon.png) | 512×512 project icon (39 KB, the limit is 256 KiB) |
+| [`../docs/modrinth/`](../docs/modrinth/) | 512×512 icon, banner and a copy-paste [listing sheet](../docs/modrinth/LISTING.md) for every Modrinth field |
 | [`CHANGELOG.md`](CHANGELOG.md) | per-version changelog – the section for `mod_version` is used for every upload |
 | [`../scripts/modrinth_publish.py`](../scripts/modrinth_publish.py) | uploads one Modrinth version per jar |
 

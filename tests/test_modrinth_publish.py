@@ -99,7 +99,7 @@ def test_already_published_versions_are_skipped(tmp_path: Path, monkeypatch, cap
 # ----------------------------------------------------------------- page + icon
 def test_modrinth_page_is_about_pymc_bot_and_honest_about_privacy():
     page = (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8")
-    assert page.startswith("# PyMC Bot")
+    assert "# PyMC Bot" in page.split("\n", 3)[2]
     assert "1.21.1 to 26.3" in page
     assert "no network" in page.lower()
     assert "pymcbot/dataset.jsonl" in page
@@ -115,7 +115,7 @@ def _png_size(path: Path) -> tuple[int, int]:
 
 
 @pytest.mark.parametrize(("path", "size"), [("mod/src/main/resources/assets/pymcbot/icon.png", 128),
-                                            ("docs/modrinth-icon.png", 512)])
+                                            ("docs/modrinth/icon.png", 512)])
 def test_icons_fit_modrinth(path: str, size: int):
     icon = ROOT / path
     assert _png_size(icon) == (size, size)
