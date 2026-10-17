@@ -120,3 +120,67 @@ def test_icons_fit_modrinth(path: str, size: int):
     icon = ROOT / path
     assert _png_size(icon) == (size, size)
     assert icon.stat().st_size < 256 * 1024  # Modrinth's icon limit
+
+
+# ----------------------------------------------------------------- limits
+class _Response:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return self.payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
+def _http_error(code: int, headers: dict[str, str]):
+    import email.message
+    import io
+    import urllib.error
+
+    message = email.message.Message()
+    for key, value in headers.items():
+        message[key] = value
+    return urllib.error.HTTPError("https://api.modrinth.com/v2/version", code, "x", message, io.BytesIO(b"{}"))
+
+
+def test_rate_limits_are_waited_out_and_retried(monkeypatch):
+    answers = [_http_error(429, {"X-Ratelimit-Reset": "7"}), _http_error(502, {}), _Response(b'{"id": "ok"}')]
+    waits: list[float] = []
+
+    def fake_urlopen(req, timeout):
+        assert req.get_header("User-agent") == mp.USER_AGENT
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(mp.urllib.request, "urlopen", fake_urlopen)
+    assert mp.request("POST", "/version", "mrp_x", b"{}", sleep=waits.append) == {"id": "ok"}
+    assert waits == [7.0, 4.0]  # Modrinth's reset header, then exponential back-off
+
+
+def test_client_errors_are_not_retried(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(1)
+        raise _http_error(400, {})
+
+    monkeypatch.setattr(mp.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SystemExit, match="HTTP 400"):
+        mp.request("POST", "/version", "mrp_x", b"{}", sleep=lambda _s: None)
+    assert len(calls) == 1
+
+
+def test_ci_publishes_to_modrinth_only_from_main():
+    text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = text.split("\n  modrinth:\n", 1)[1]
+    assert "needs: release" in job
+    assert "github.ref == 'refs/heads/main'" in job and "vars.MODRINTH_PROJECT != ''" in job
+    assert "secrets.MODRINTH_TOKEN" in job and "--dry-run" in job
+    assert "name: pymcbot-all-versions" in job

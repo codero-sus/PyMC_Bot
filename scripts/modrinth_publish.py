@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -130,23 +131,49 @@ def multipart(data: dict[str, Any], jar: Path) -> tuple[bytes, str]:
 
 
 # --------------------------------------------------------------------------- HTTP
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _retry_delay(headers: Any, attempt: int) -> float:
+    """Seconds to wait before the next try: Retry-After / X-Ratelimit-Reset, else 2, 4, 8, 16 s."""
+    for name in ("Retry-After", "X-Ratelimit-Reset"):
+        value = headers.get(name) if headers is not None else None
+        try:
+            if value is not None:
+                return min(max(float(value), 1.0), 90.0)
+        except ValueError:
+            pass
+    return float(2 ** (attempt + 1))
+
+
 def request(method: str, path: str, token: str | None, body: bytes | None = None,
-            content_type: str = "application/json") -> Any:
-    req = urllib.request.Request(API + path, data=body, method=method)
-    req.add_header("User-Agent", USER_AGENT)
-    if token:
-        req.add_header("Authorization", token)
-    if body is not None:
-        req.add_header("Content-Type", content_type)
-    try:
-        with urllib.request.urlopen(req, timeout=120) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:400]
-        raise SystemExit(f"Modrinth {method} {path} failed: HTTP {exc.code} {detail}") from None
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"Could not reach Modrinth ({exc.reason})") from None
-    return json.loads(raw) if raw else None
+            content_type: str = "application/json", attempts: int = 5, sleep: Any = time.sleep) -> Any:
+    """One API call. Rate limits (HTTP 429, 300 requests/minute per IP) and server hiccups are retried."""
+    for attempt in range(attempts):
+        req = urllib.request.Request(API + path, data=body, method=method)
+        req.add_header("User-Agent", USER_AGENT)
+        if token:
+            req.add_header("Authorization", token)
+        if body is not None:
+            req.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                raw = response.read()
+            return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            if exc.code in RETRY_STATUS and attempt + 1 < attempts:
+                delay = _retry_delay(exc.headers, attempt)
+                print(f"  Modrinth answered HTTP {exc.code} - retrying in {delay:.0f}s", file=sys.stderr)
+                sleep(delay)
+                continue
+            raise SystemExit(f"Modrinth {method} {path} failed: HTTP {exc.code} {detail}") from None
+        except urllib.error.URLError as exc:
+            if attempt + 1 < attempts:
+                sleep(_retry_delay(None, attempt))
+                continue
+            raise SystemExit(f"Could not reach Modrinth ({exc.reason})") from None
+    raise SystemExit(f"Modrinth {method} {path} failed after {attempts} attempts")
 
 
 def published_numbers(project: str, token: str | None) -> set[str]:

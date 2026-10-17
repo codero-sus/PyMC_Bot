@@ -390,3 +390,47 @@ jobs:
             --title "PyMC Bot mod ${tag#pymcbot-v}" --notes-file notes.md $pre
           echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
+
+  # Publishes the same jars to Modrinth once the stable GitHub release for main exists - one Modrinth
+  # version per Minecraft version (<mod_version>+<mc>). Versions already on Modrinth are skipped, so
+  # only a bump of mod_version in mod/gradle.properties uploads anything new. Needs the repository
+  # secret MODRINTH_TOKEN (Modrinth PAT: Create versions + Write projects) and the variable
+  # MODRINTH_PROJECT (project id or slug); set MODRINTH_UPDATE_PAGE=true to also sync mod/MODRINTH.md.
+  modrinth:
+    name: mod (Modrinth)
+    needs: release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.MODRINTH_PROJECT != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pymcbot-modrinth
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pymcbot-all-versions
+          path: mod/dist
+      - name: Upload new versions to Modrinth
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT: ${{ vars.MODRINTH_PROJECT }}
+          UPDATE_PAGE: ${{ vars.MODRINTH_UPDATE_PAGE }}
+        run: |
+          if [ -z "$MODRINTH_TOKEN" ]; then
+            echo "::warning::MODRINTH_TOKEN secret is not set - showing what would be uploaded"
+            python3 scripts/modrinth_publish.py --jars mod/dist --dry-run
+            exit 0
+          fi
+          args="--jars mod/dist --channel release"
+          if [ "$UPDATE_PAGE" = "true" ]; then args="$args --update-page"; fi
+          python3 scripts/modrinth_publish.py $args | tee modrinth.txt
+          {
+            echo "### Modrinth"
+            echo '```'
+            cat modrinth.txt
+            echo '```'
+            echo "https://modrinth.com/mod/$MODRINTH_PROJECT"
+          } >> "$GITHUB_STEP_SUMMARY"

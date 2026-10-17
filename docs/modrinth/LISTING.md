@@ -67,6 +67,12 @@ Download the 16 jars from the GitHub release
 | Dependencies | Fabric API – **required** · Mod Menu – **optional** |
 | Changelog | the `## 0.7.0` section of [`../../mod/CHANGELOG.md`](../../mod/CHANGELOG.md) |
 
+### Automatic uploads after this
+
+Add the secret `MODRINTH_TOKEN` and the variable `MODRINTH_PROJECT` (`Imrzxzon` or `pymcbot`) in the GitHub
+repository (*Settings → Secrets and variables → Actions*). Every push to `main` then publishes the new jars
+to Modrinth after CI passes; bump `mod_version` in `mod/gradle.properties` for a new Modrinth version.
+
 ## 8. Submit
 
 *Submit for review*. Moderators usually check that the description explains what the mod does, the
