@@ -62,11 +62,11 @@ def test_dry_run_needs_no_token(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.delenv("MODRINTH_TOKEN", raising=False)
     version = mp.mod_version()
     folder = _jars(tmp_path, [f"pymcbot-{version}+26.3.jar", f"pymcbot-{version}+1.21.1.jar"])
-    assert mp.main(["--jars", str(folder), "--dry-run", "--update-page"]) == 0
+    assert mp.main(["--jars", str(folder), "--dry-run", "--update-project"]) == 0
     out = capsys.readouterr().out
     assert f"{version}+1.21.1" in out and f"{version}+26.3" in out
     assert out.index("1.21.1") < out.index("26.3")  # oldest first, newest last (featured)
-    assert "would update the project page" in out
+    assert "would update the project" in out and "summary" in out
 
 
 def test_real_upload_requires_project_and_token(tmp_path: Path, monkeypatch):
@@ -78,22 +78,119 @@ def test_real_upload_requires_project_and_token(tmp_path: Path, monkeypatch):
     assert mp.main(["--jars", str(tmp_path / "empty")]) == 1
 
 
-def test_already_published_versions_are_skipped(tmp_path: Path, monkeypatch, capsys):
+def _zip_jar(path: Path, files: dict[str, bytes], when: tuple = (2026, 1, 1, 0, 0, 0)) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(zipfile.ZipInfo(name, when), data)
+    return path
+
+
+class FakeModrinth:
+    """Records API calls; GET /project/<p>/version answers with ``versions``."""
+
+    def __init__(self, versions: list[dict]) -> None:
+        self.versions = versions
+        self.calls: list[tuple[str, str, object]] = []
+
+    def __call__(self, method, path, token, body=None, content_type="application/json"):
+        payload = json.loads(body) if body and content_type == "application/json" else body
+        self.calls.append((method, path, payload))
+        return self.versions if method == "GET" else None
+
+    def paths(self) -> list[tuple[str, str]]:
+        return [(method, path) for method, path, _ in self.calls]
+
+
+def _remote(number: str, vid: str, jar: Path, featured: bool = False) -> dict:
+    return {"id": vid, "version_number": number, "featured": featured,
+            "files": [{"primary": True, "url": f"https://cdn.modrinth.com/{vid}.jar",
+                       "hashes": {"sha1": mp.sha1(jar.read_bytes())}}]}
+
+
+def test_every_run_creates_missing_updates_existing_and_replaces_changed_jars(tmp_path: Path):
     version = mp.mod_version()
-    folder = _jars(tmp_path, [f"pymcbot-{version}+26.3.jar", f"pymcbot-{version}+26.2.jar"])
-    calls: list[tuple[str, str]] = []
+    new = tmp_path / "new"
+    new.mkdir()
+    same = _zip_jar(new / f"pymcbot-{version}+26.1.jar", {"a.class": b"same"})
+    changed = _zip_jar(new / f"pymcbot-{version}+26.2.jar", {"a.class": b"new code"})
+    fresh = _zip_jar(new / f"pymcbot-{version}+26.3.jar", {"a.class": b"fresh"})
+    # On Modrinth: 26.1 is the same code built at another time, 26.2 holds old code, plus an old featured release.
+    old_same = _zip_jar(tmp_path / "old-same.jar", {"a.class": b"same"}, when=(2025, 5, 5, 5, 5, 6))
+    old_changed = _zip_jar(tmp_path / "old-changed.jar", {"a.class": b"old code"})
+    api = FakeModrinth([
+        _remote(f"{version}+26.1", "V261", old_same),
+        _remote(f"{version}+26.2", "V262", old_changed),
+        _remote("0.6.0+26.1", "OLD", old_changed, featured=True),
+    ])
+    cdn = {"https://cdn.modrinth.com/V261.jar": old_same.read_bytes(),
+           "https://cdn.modrinth.com/V262.jar": old_changed.read_bytes()}
+    payloads = [(mp.version_payload("p", version, mc, featured=mc == "26.3"), jar)
+                for mc, jar in (("26.1", same), ("26.2", changed), ("26.3", fresh))]
 
-    def fake_request(method, path, token, body=None, content_type="application/json"):
-        calls.append((method, path))
-        if method == "GET":
-            return [{"version_number": f"{version}+26.3"}]
-        return {"id": "abc"}
+    counts = mp.sync_versions("p", payloads, "mrp_x", call=api, fetch=cdn.__getitem__)
 
+    assert counts == {"created": 1, "updated": 1, "replaced": 1, "skipped": 0}
+    assert api.paths() == [
+        ("GET", "/project/p/version"),
+        ("PATCH", "/version/V261"),                       # details only - same classes, other timestamps
+        ("POST", "/version/V262/file"),                   # new jar ...
+        ("PATCH", "/version/V262"),                       # ... made primary, details refreshed
+        ("DELETE", f"/version_file/{mp.sha1(old_changed.read_bytes())}?algorithm=sha1&version_id=V262"),
+        ("POST", "/version"),                             # 26.3 did not exist yet
+        ("PATCH", "/version/OLD"),                        # older release loses "featured"
+    ]
+    details = api.calls[1][2]
+    assert details["name"] == f"PyMC Bot {version} for Minecraft 26.1" and details["game_versions"] == ["26.1"]
+    assert details["dependencies"][0]["dependency_type"] == "required" and "changelog" in details
+    assert api.calls[3][2]["primary_file"] == ["sha1", mp.sha1(changed.read_bytes())]
+    assert api.calls[-1][2] == {"featured": False}
+
+
+def test_a_jar_already_uploaded_under_another_number_is_not_sent_twice(tmp_path: Path, capsys):
+    version = mp.mod_version()
+    jar = _zip_jar(tmp_path / f"pymcbot-{version}+26.3.jar", {"a.class": b"x"})
+    api = FakeModrinth([_remote("0.7.0-manual", "MAN", jar)])
+    counts = mp.sync_versions("p", [(mp.version_payload("p", version, "26.3"), jar)], "mrp_x", call=api)
+    assert counts["skipped"] == 1 and api.paths() == [("GET", "/project/p/version")]
+    assert "already on Modrinth as 0.7.0-manual" in capsys.readouterr().out
+
+
+def test_project_settings_sync_title_summary_description_links_and_licence():
+    settings = mp.project_settings()
+    versions = mp.supported_versions()
+    assert settings["title"] == "PyMC Bot"
+    assert f"from {versions[0]} to {versions[-1]}" in settings["description"] and "{" not in settings["description"]
+    assert len(settings["description"]) <= 256
+    assert settings["body"] == (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8")
+    assert settings["license_id"] == "PolyForm-Noncommercial-1.0.0"
+    assert settings["source_url"] == "https://github.com/codero-sus/PyMC_Bot"
+    listing = (ROOT / "docs/modrinth/LISTING.md").read_text(encoding="utf-8")
+    assert settings["description"] in listing  # the copy-paste sheet shows the same summary
+
+
+def test_a_rejected_optional_project_field_still_updates_the_text():
+    calls = []
+
+    def call(method, path, token, body=None, content_type="application/json"):
+        data = json.loads(body)
+        calls.append(sorted(data))
+        if "categories" in data:
+            raise SystemExit("Modrinth PATCH /project/p failed: HTTP 400 bad category")
+
+    mp.update_project("p", "mrp_x", mp.project_settings(), call=call)
+    assert calls[-1] == ["body", "description", "title"]
+
+
+def test_main_updates_the_project_before_the_versions(tmp_path: Path, monkeypatch):
+    version = mp.mod_version()
+    _zip_jar(tmp_path / f"pymcbot-{version}+26.3.jar", {"a.class": b"x"})
+    api = FakeModrinth([])
     monkeypatch.setenv("MODRINTH_TOKEN", "mrp_test")
-    monkeypatch.setattr(mp, "request", fake_request)
-    assert mp.main(["--jars", str(folder), "--project", "pymc-bot"]) == 0
-    assert calls == [("GET", "/project/pymc-bot/version"), ("POST", "/version")]
-    assert "already on Modrinth" in capsys.readouterr().out
+    monkeypatch.setattr(mp, "request", api)
+    assert mp.main(["--jars", str(tmp_path), "--project", "pymcbot", "--update-project"]) == 0
+    assert api.paths() == [("PATCH", "/project/pymcbot"), ("GET", "/project/pymcbot/version"), ("POST", "/version")]
 
 
 # ----------------------------------------------------------------- page + icon
@@ -183,4 +280,5 @@ def test_ci_publishes_to_modrinth_only_from_main():
     assert "needs: release" in job
     assert "github.ref == 'refs/heads/main'" in job and "vars.MODRINTH_PROJECT != ''" in job
     assert "secrets.MODRINTH_TOKEN" in job and "--dry-run" in job
+    assert "--update-project" in job and "MODRINTH_UPDATE_PAGE" not in job  # page + summary every time
     assert "name: pymcbot-all-versions" in job

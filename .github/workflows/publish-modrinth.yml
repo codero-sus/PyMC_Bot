@@ -1,9 +1,10 @@
 # Uploads the PyMC Bot mod jars of a GitHub release to Modrinth (one Modrinth version per
 # Minecraft version). Run it from the Actions tab ("Publish to Modrinth" -> Run workflow) after CI
 # has created the release. Needs, under Settings -> Secrets and variables -> Actions:
-#   secret   MODRINTH_TOKEN    a Modrinth personal access token (scopes: Create versions, Write projects)
-#   variable MODRINTH_PROJECT  the project slug or id, e.g. pymc-bot
-# Without them the job only prints what it would upload (dry run). Already-published versions are skipped.
+#   secret   MODRINTH_TOKEN    a Modrinth personal access token (scopes: see mod/README.md)
+#   variable MODRINTH_PROJECT  the project id or slug, e.g. Imrzxzon / pymcbot
+# Without them the job only prints what it would publish (dry run). CI does the same automatically for main;
+# use this to re-publish an older release by hand.
 name: Publish to Modrinth
 
 on:
@@ -19,7 +20,7 @@ on:
         options: [release, beta, alpha]
         default: release
       update_page:
-        description: "Also replace the project description with mod/MODRINTH.md"
+        description: "Also update title, summary, description, links and licence"
         type: boolean
         default: true
 
@@ -49,7 +50,7 @@ jobs:
           MODRINTH_PROJECT: ${{ vars.MODRINTH_PROJECT }}
         run: |
           args="--jars mod/dist --channel ${{ inputs.channel }}"
-          if [ "${{ inputs.update_page }}" = "true" ]; then args="$args --update-page"; fi
+          if [ "${{ inputs.update_page }}" = "true" ]; then args="$args --update-project"; fi
           if [ -z "$MODRINTH_TOKEN" ] || [ -z "$MODRINTH_PROJECT" ]; then
             echo "::warning::MODRINTH_TOKEN secret or MODRINTH_PROJECT variable missing - dry run only"
             python3 scripts/modrinth_publish.py $args --dry-run
