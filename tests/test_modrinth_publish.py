@@ -186,6 +186,28 @@ def test_a_hand_made_version_holding_several_jars_is_untangled(tmp_path: Path, c
     assert "Modrinth has 1 version(s)" in capsys.readouterr().out
 
 
+def test_a_replacement_jar_never_reuses_the_name_of_the_file_it_replaces(tmp_path: Path):
+    """The real failure: version 0.7.0+1.21.1 held pymcbot-0.7.0+1.21.1.jar (a different build) and
+    Modrinth refused a second file of that name. The new jar goes up as -<sha7>, then the old one goes."""
+    version = mp.mod_version()
+    jar = _zip_jar(tmp_path / f"pymcbot-{version}+1.21.1.jar", {"a.class": b"new"})
+    old = _zip_jar(tmp_path / "old.jar", {"a.class": b"old"})
+    api = FakeModrinth([{"id": "V", "version_number": f"{version}+1.21.1", "files": [
+        {"filename": jar.name, "primary": True, "url": "u", "hashes": {"sha1": mp.sha1(old.read_bytes())}}]}])
+    counts = mp.sync_versions("p", [(mp.version_payload("p", version, "1.21.1"), jar)], "mrp_x",
+                              call=api, fetch=lambda url: old.read_bytes())
+    assert counts["replaced"] == 1 and counts["failed"] == 0
+    upload = api.calls[1][2]
+    new_name = f"pymcbot-{version}+1.21.1-{mp.sha1(jar.read_bytes())[:7]}.jar"
+    assert f'filename="{new_name}"'.encode() in upload
+    assert api.paths()[2:] == [("PATCH", "/version/V"),
+                               ("DELETE", f"/version_file/{mp.sha1(old.read_bytes())}?algorithm=sha1&version_id=V")]
+    # Next time the plain name is free again, and the -<sha7> file is still recognised as the 1.21.1 jar.
+    assert mp.upload_name(jar, {new_name}, "f" * 40) == jar.name
+    assert mp._jar_mc(new_name) == "1.21.1" and mp._jar_mc(f"pymcbot-{version}+26.1.2.jar") == "26.1.2"
+    assert mp._jar_mc(f"pymcbot-{version}+1.21.1-sources.jar") is None
+
+
 def test_one_refused_version_does_not_stop_the_others_but_fails_the_run(tmp_path: Path, monkeypatch, capsys):
     version = mp.mod_version()
     _zip_jar(tmp_path / f"pymcbot-{version}+26.2.jar", {"a.class": b"x"})
