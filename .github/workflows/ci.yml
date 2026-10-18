@@ -444,7 +444,10 @@ jobs:
             exit 0
           fi
           args="--jars mod/dist --channel release --update-project"
-          python3 scripts/modrinth_publish.py $args | tee modrinth.txt
+          set +e
+          python3 scripts/modrinth_publish.py $args 2>&1 | tee modrinth.txt
+          status=${PIPESTATUS[0]}
+          set -e
           {
             echo "### Modrinth"
             echo '```'
@@ -452,3 +455,7 @@ jobs:
             echo '```'
             echo "https://modrinth.com/mod/$MODRINTH_PROJECT"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            grep -E '^!|failed' modrinth.txt | while read -r line; do echo "::error::$line"; done
+            exit "$status"
+          fi

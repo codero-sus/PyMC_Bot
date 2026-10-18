@@ -131,7 +131,7 @@ def test_every_run_creates_missing_updates_existing_and_replaces_changed_jars(tm
 
     counts = mp.sync_versions("p", payloads, "mrp_x", call=api, fetch=cdn.__getitem__)
 
-    assert counts == {"created": 1, "updated": 1, "replaced": 1, "skipped": 0}
+    assert counts == {"created": 1, "updated": 1, "replaced": 1, "skipped": 0, "failed": 0}
     assert api.paths() == [
         ("GET", "/project/p/version"),
         ("PATCH", "/version/V261"),                       # details only - same classes, other timestamps
@@ -155,6 +155,62 @@ def test_a_jar_already_uploaded_under_another_number_is_not_sent_twice(tmp_path:
     counts = mp.sync_versions("p", [(mp.version_payload("p", version, "26.3"), jar)], "mrp_x", call=api)
     assert counts["skipped"] == 1 and api.paths() == [("GET", "/project/p/version")]
     assert "already on Modrinth as 0.7.0-manual" in capsys.readouterr().out
+
+
+def test_a_hand_made_version_holding_several_jars_is_untangled(tmp_path: Path, capsys):
+    """Like the real project: 0.7.0+1.21.1 made by hand, with its jar not primary and a 26.3 jar inside."""
+    version = mp.mod_version()
+    jar_1211 = _zip_jar(tmp_path / f"pymcbot-{version}+1.21.1.jar", {"a.class": b"1.21.1"})
+    jar_263 = _zip_jar(tmp_path / f"pymcbot-{version}+26.3.jar", {"a.class": b"26.3"})
+    hand = _zip_jar(tmp_path / "hand.jar", {"a.class": b"older 1.21.1 build"})
+    api = FakeModrinth([{"id": "HAND", "version_number": f"{version}+1.21.1", "version_type": "beta", "files": [
+        {"filename": f"pymcbot-{version}+1.21.1.jar", "primary": True, "url": "u", "hashes": {"sha1": mp.sha1(hand.read_bytes())}},
+        {"filename": f"pymcbot-{version}+1.21.1.jar", "primary": False, "url": "u", "hashes": {"sha1": mp.sha1(jar_1211.read_bytes())}},
+        {"filename": f"pymcbot-{version}+26.3.jar", "primary": False, "url": "u", "hashes": {"sha1": mp.sha1(jar_263.read_bytes())}},
+    ]}])
+    payloads = [(mp.version_payload("p", version, mc, featured=mc == "26.3"), jar)
+                for mc, jar in (("1.21.1", jar_1211), ("26.3", jar_263))]
+
+    counts = mp.sync_versions("p", payloads, "mrp_x", call=api, fetch=lambda url: b"")
+
+    assert counts == {"created": 1, "updated": 1, "replaced": 0, "skipped": 0, "failed": 0}
+    assert api.paths() == [
+        ("GET", "/project/p/version"),
+        ("DELETE", f"/version_file/{mp.sha1(jar_263.read_bytes())}?algorithm=sha1&version_id=HAND"),  # misplaced
+        ("PATCH", "/version/HAND"),                                                                   # no re-upload
+        ("DELETE", f"/version_file/{mp.sha1(hand.read_bytes())}?algorithm=sha1&version_id=HAND"),     # older build
+        ("POST", "/version"),                                                                         # 26.3 gets its own
+    ]
+    patch = api.calls[2][2]
+    assert patch["primary_file"] == ["sha1", mp.sha1(jar_1211.read_bytes())] and patch["version_type"] == "release"
+    assert "Modrinth has 1 version(s)" in capsys.readouterr().out
+
+
+def test_one_refused_version_does_not_stop_the_others_but_fails_the_run(tmp_path: Path, monkeypatch, capsys):
+    version = mp.mod_version()
+    _zip_jar(tmp_path / f"pymcbot-{version}+26.2.jar", {"a.class": b"x"})
+    _zip_jar(tmp_path / f"pymcbot-{version}+26.3.jar", {"a.class": b"y"})
+    seen = []
+
+    def call(method, path, token, body=None, content_type="application/json"):
+        seen.append((method, path))
+        if method == "GET":
+            return []
+        if method == "POST" and len([m for m, _ in seen if m == "POST"]) == 1:
+            raise SystemExit('Modrinth POST /version failed: HTTP 400 {"description":"Duplicate files are not allowed"}')
+        return None
+
+    monkeypatch.setenv("MODRINTH_TOKEN", "mrp_test")
+    monkeypatch.setattr(mp, "request", call)
+    assert mp.main(["--jars", str(tmp_path), "--project", "p"]) == 1
+    assert [m for m, _ in seen].count("POST") == 2  # the second version was still created
+    out = capsys.readouterr().out
+    assert "failed: Modrinth POST /version failed: HTTP 400" in out and "1 created" in out and "1 failed" in out
+
+
+def test_ci_turns_red_when_publishing_fails():
+    job = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").split("\n  modrinth:\n", 1)[1]
+    assert "status=${PIPESTATUS[0]}" in job and 'exit "$status"' in job  # tee must not hide the exit code
 
 
 def test_project_settings_sync_title_summary_description_links_and_licence():

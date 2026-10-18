@@ -256,6 +256,31 @@ def update_project(project: str, token: str, settings: dict[str, Any], call: Cal
         call("PATCH", f"/project/{project}", token, json.dumps(basic).encode())
 
 
+def _file_hash(entry: dict[str, Any]) -> str:
+    return (entry.get("hashes") or {}).get("sha1", "")
+
+
+def _jar_mc(filename: str) -> str | None:
+    """Minecraft version of a ``pymcbot-<mod>+<mc>.jar`` file name (None for any other file)."""
+    match = JAR_RE.match(filename or "")
+    return match["mc"] if match else None
+
+
+def describe(remote: list[dict[str, Any]]) -> None:
+    """Log what is on Modrinth right now - makes a failed sync easy to understand from the CI log."""
+    print(f"Modrinth has {len(remote)} version(s):")
+    for version in remote:
+        files = ", ".join(
+            f"{f.get('filename')}{' (primary)' if f.get('primary') else ''} sha1 {_file_hash(f)[:10]}"
+            for f in version.get("files") or []
+        )
+        print(f"  {version.get('version_number')} [{version.get('version_type')}] id {version.get('id')}: {files or 'no files'}")
+
+
+def _delete_file(call: Callable[..., Any], token: str, version_id: str, file_hash: str) -> None:
+    call("DELETE", f"/version_file/{file_hash}?algorithm=sha1&version_id={version_id}", token)
+
+
 def sync_versions(
     project: str,
     payloads: list[tuple[dict[str, Any], Path]],
@@ -264,52 +289,89 @@ def sync_versions(
     call: Callable[..., Any] = None,
     fetch: Callable[[str], bytes] = download,
 ) -> dict[str, int]:
-    """Create missing versions and bring every existing one up to date (details + jar). Returns counts."""
+    """Create missing versions and bring every existing one up to date (details + jar). Returns counts.
+
+    A problem with one version (e.g. Modrinth refusing a file) is reported and the others still go
+    through; ``counts["failed"]`` tells the caller to fail the run.
+    """
     call = call or request
     remote = call("GET", f"/project/{project}/version", token) or []
+    describe(remote)
     by_number = {v.get("version_number"): v for v in remote}
-    hashes = {f.get("hashes", {}).get("sha1"): v.get("version_number") for v in remote for f in v.get("files") or []}
-    ours = {data["version_number"] for data, _ in payloads}
-    counts = {"created": 0, "updated": 0, "replaced": 0, "skipped": 0}
+    ours = {data["version_number"]: (data, jar) for data, jar in payloads}
+    counts = {"created": 0, "updated": 0, "replaced": 0, "skipped": 0, "failed": 0}
+
+    # 1. Clean-up: a version of ours that also carries jars for *other* Minecraft versions (e.g. several
+    #    jars uploaded by hand into one version) would block those jars - Modrinth refuses duplicates.
+    for number, version in by_number.items():
+        if number not in ours:
+            continue
+        mc = ours[number][0]["game_versions"][0]
+        files = list(version.get("files") or [])
+        kept = list(files)
+        for entry in files:
+            other = _jar_mc(entry.get("filename", ""))
+            if other and other != mc and len(kept) > 1:
+                _delete_file(call, token, version["id"], _file_hash(entry))
+                kept.remove(entry)
+                print(f"- removed {entry.get('filename')} from {number} (it belongs to Minecraft {other})")
+        version["files"] = kept
+
+    where = {_file_hash(f): v.get("version_number") for v in remote for f in v.get("files") or []}
 
     for data, jar in payloads:
         number, local = data["version_number"], jar.read_bytes()
+        local_hash = sha1(local)
         existing = by_number.get(number)
-        if existing is None:
-            other = hashes.get(sha1(local))
-            if other:  # Modrinth refuses the same file twice in one project
-                print(f"! {number}: this exact jar is already on Modrinth as {other} - skipped")
-                counts["skipped"] += 1
+        try:
+            if existing is None:
+                if local_hash in where:  # Modrinth refuses the same file twice
+                    print(f"! {number}: this exact jar is already on Modrinth as {where[local_hash]} - skipped")
+                    counts["skipped"] += 1
+                    continue
+                body, content_type = multipart(data, jar)
+                call("POST", "/version", token, body, content_type)
+                print(f"+ {number} created")
+                counts["created"] += 1
                 continue
-            body, content_type = multipart(data, jar)
-            call("POST", "/version", token, body, content_type)
-            print(f"+ {number} created")
-            counts["created"] += 1
-            continue
 
-        patch = metadata(data)
-        old = primary_file(existing)
-        if old is None or not same_contents(old, local, fetch):
-            body, content_type = multipart({}, jar)
-            call("POST", f"/version/{existing['id']}/file", token, body, content_type)
-            patch["primary_file"] = ["sha1", sha1(local)]
+            patch = metadata(data)
+            files = existing.get("files") or []
+            hashes = {_file_hash(f) for f in files}
+            old = primary_file(existing)
+            if local_hash in hashes:
+                action = "details updated (jar already there)"
+                counts["updated"] += 1
+            elif old is not None and same_contents(old, local, fetch):
+                local_hash = _file_hash(old)  # same classes, other build time: keep the file
+                action = "details updated (jar unchanged)"
+                counts["updated"] += 1
+            else:
+                body, content_type = multipart({}, jar)
+                call("POST", f"/version/{existing['id']}/file", token, body, content_type)
+                action = "jar replaced and details updated"
+                counts["replaced"] += 1
+            patch["primary_file"] = ["sha1", local_hash]
             call("PATCH", f"/version/{existing['id']}", token, json.dumps(patch).encode())
-            for stale in existing.get("files") or []:
-                stale_hash = stale.get("hashes", {}).get("sha1")
-                if stale_hash and stale_hash != sha1(local):
-                    call("DELETE", f"/version_file/{stale_hash}?algorithm=sha1&version_id={existing['id']}", token)
-            print(f"~ {number} jar replaced and details updated")
-            counts["replaced"] += 1
-        else:
-            call("PATCH", f"/version/{existing['id']}", token, json.dumps(patch).encode())
-            print(f"~ {number} details updated (jar unchanged)")
-            counts["updated"] += 1
+            # Older builds of this jar are removed; files that are not PyMC Bot jars (e.g. sources) stay.
+            this_mc = data["game_versions"][0]
+            for entry in files:
+                stale, jar_mc = _file_hash(entry), _jar_mc(entry.get("filename", ""))
+                if stale and stale != local_hash and (jar_mc == this_mc or (jar_mc is None and entry.get("primary"))):
+                    _delete_file(call, token, existing["id"], stale)
+            print(f"~ {number} {action}")
+        except SystemExit as exc:
+            print(f"! {number} failed: {exc}")
+            counts["failed"] += 1
 
     # Only the newest Minecraft version of the current release stays featured.
     for version in remote:
         if version.get("featured") and version.get("version_number") not in ours:
-            call("PATCH", f"/version/{version['id']}", token, json.dumps({"featured": False}).encode())
-            print(f"- {version.get('version_number')} no longer featured")
+            try:
+                call("PATCH", f"/version/{version['id']}", token, json.dumps({"featured": False}).encode())
+                print(f"- {version.get('version_number')} no longer featured")
+            except SystemExit as exc:
+                print(f"! could not un-feature {version.get('version_number')}: {exc}")
     return counts
 
 
@@ -375,8 +437,8 @@ def main(argv: list[str] | None = None) -> int:
         print("updated the project: title, summary, description, links and licence")
     counts = sync_versions(project, payloads, token)
     print(f"{len(payloads)} jar(s): {counts['created']} created, {counts['replaced']} jar(s) replaced, "
-          f"{counts['updated']} details-only updates, {counts['skipped']} skipped.")
-    return 0
+          f"{counts['updated']} details-only updates, {counts['skipped']} skipped, {counts['failed']} failed.")
+    return 1 if counts["failed"] else 0
 
 
 if __name__ == "__main__":
