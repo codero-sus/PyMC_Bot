@@ -122,12 +122,12 @@ def version_payload(
     }
 
 
-def multipart(data: dict[str, Any], jar: Path) -> tuple[bytes, str]:
+def multipart(data: dict[str, Any], jar: Path, filename: str | None = None) -> tuple[bytes, str]:
     boundary = f"----pymcbot{uuid.uuid4().hex}"
     head = (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"data\"\r\n"
         f"Content-Type: application/json\r\n\r\n{json.dumps(data)}\r\n"
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{jar.name}\"\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename or jar.name}\"\r\n"
         f"Content-Type: application/java-archive\r\n\r\n"
     ).encode()
     tail = f"\r\n--{boundary}--\r\n".encode()
@@ -260,10 +260,32 @@ def _file_hash(entry: dict[str, Any]) -> str:
     return (entry.get("hashes") or {}).get("sha1", "")
 
 
+FILE_RE = re.compile(r"^pymcbot-(?P<mod>[^+]+)\+(?P<mc>[0-9][0-9A-Za-z.\-]*?)(?:-[0-9a-f]{7})?\.jar$")
+
+
 def _jar_mc(filename: str) -> str | None:
-    """Minecraft version of a ``pymcbot-<mod>+<mc>.jar`` file name (None for any other file)."""
-    match = JAR_RE.match(filename or "")
+    """Minecraft version of a ``pymcbot-<mod>+<mc>[-<sha7>].jar`` file name (None for any other file)."""
+    if (filename or "").endswith(("-sources.jar", "-dev.jar", "-javadoc.jar")):
+        return None
+    match = FILE_RE.match(filename or "")
     return match["mc"] if match else None
+
+
+def upload_name(jar: Path, taken: set[str], file_hash: str) -> str:
+    """Modrinth refuses a second file with the same name in one version ("Duplicate files are not
+    allowed"), so a replacement jar gets ``-<sha7>`` while the old one is still there."""
+    if jar.name not in taken:
+        return jar.name
+    return f"{jar.stem}-{file_hash[:7]}{jar.suffix}"
+
+
+def explain_duplicate(call: Callable[..., Any], token: str, file_hash: str) -> str:
+    """Where Modrinth already has this exact file - for the log when it refuses an upload."""
+    try:
+        found = call("GET", f"/version_file/{file_hash}?algorithm=sha1", token) or {}
+        return f" (this file is already in project {found.get('project_id')}, version {found.get('version_number')})"
+    except SystemExit:
+        return ""
 
 
 def describe(remote: list[dict[str, Any]]) -> None:
@@ -347,7 +369,8 @@ def sync_versions(
                 action = "details updated (jar unchanged)"
                 counts["updated"] += 1
             else:
-                body, content_type = multipart({}, jar)
+                name = upload_name(jar, {f.get("filename", "") for f in files}, local_hash)
+                body, content_type = multipart({}, jar, name)
                 call("POST", f"/version/{existing['id']}/file", token, body, content_type)
                 action = "jar replaced and details updated"
                 counts["replaced"] += 1
@@ -361,7 +384,8 @@ def sync_versions(
                     _delete_file(call, token, existing["id"], stale)
             print(f"~ {number} {action}")
         except SystemExit as exc:
-            print(f"! {number} failed: {exc}")
+            hint = explain_duplicate(call, token, local_hash) if "Duplicate files" in str(exc) else ""
+            print(f"! {number} failed: {exc}{hint}")
             counts["failed"] += 1
 
     # Only the newest Minecraft version of the current release stays featured.
