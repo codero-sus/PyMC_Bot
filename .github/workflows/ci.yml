@@ -411,11 +411,15 @@ jobs:
   # title, summary, description (mod/MODRINTH.md), links and licence (mod/modrinth.json), and every
   # version - missing ones are created, existing ones get fresh details, and their jar is replaced when
   # the code changed. Needs the repository secret MODRINTH_TOKEN and the variable MODRINTH_PROJECT
-  # (see mod/README.md -> Publishing on Modrinth).
+  # (see mod/README.md -> Publishing on Modrinth). Other branches publish only on request: put
+  # [modrinth] in the commit message.
   modrinth:
     name: mod (Modrinth)
     needs: release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.MODRINTH_PROJECT != ''
+    # main always publishes; any other branch only when the pushed commit message contains [modrinth].
+    if: >-
+      github.event_name == 'push' && vars.MODRINTH_PROJECT != '' &&
+      (github.ref == 'refs/heads/main' || contains(github.event.head_commit.message, '[modrinth]'))
     runs-on: ubuntu-latest
     concurrency:
       group: pymcbot-modrinth

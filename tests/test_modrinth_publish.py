@@ -274,11 +274,13 @@ def test_client_errors_are_not_retried(monkeypatch):
     assert len(calls) == 1
 
 
-def test_ci_publishes_to_modrinth_only_from_main():
+def test_ci_publishes_to_modrinth_from_main_or_on_request():
     text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     job = text.split("\n  modrinth:\n", 1)[1]
     assert "needs: release" in job
     assert "github.ref == 'refs/heads/main'" in job and "vars.MODRINTH_PROJECT != ''" in job
+    assert "contains(github.event.head_commit.message, '[modrinth]')" in job  # opt-in for other branches
+    assert "github.event_name == 'push'" in job  # never from pull requests
     assert "secrets.MODRINTH_TOKEN" in job and "--dry-run" in job
     assert "--update-project" in job and "MODRINTH_UPDATE_PAGE" not in job  # page + summary every time
     assert "name: pymcbot-all-versions" in job
