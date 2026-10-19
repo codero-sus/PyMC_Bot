@@ -1,10 +1,11 @@
 # Modrinth listing – copy & paste
 
-Everything you need to fill in on modrinth.com for **PyMC Bot**. All pictures load from the `main` branch.
+Everything you need to fill in on modrinth.com for **PyMC Bot**. All pictures load from the root of the `main` branch
+(`icon.png`, `banner.jpg` – the same files as in this folder).
 
-![PyMC Bot logo](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/icon.png)
+![PyMC Bot logo](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/icon.png)
 
-![PyMC Bot banner](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg)
+![PyMC Bot banner](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg)
 
 ## 1. Create the project (modrinth.com → **+** → *Create a project*)
 
@@ -19,14 +20,14 @@ Everything you need to fill in on modrinth.com for **PyMC Bot**. All pictures lo
 ## 2. Icon
 
 Upload the logo (512×512, 146 KB – the limit is 256 KiB): download it from
-https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/icon.png
+https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/icon.png
 
 ## 3. Description
 
 Paste the whole of [`../../mod/MODRINTH.md`](../../mod/MODRINTH.md) into *Description*
 (after the GitHub connection below, every release from `main` re-syncs it automatically).
-The banner at the top of the description is https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg –
-it appears on Modrinth as soon as the picture is on `main` (i.e. after PR #1 is merged).
+The banner at the top of the description is https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg –
+it is in the root of the `main` branch, so it shows on Modrinth right away.
 
 ## 4. Settings → General / Tags
 
@@ -50,7 +51,7 @@ it appears on Modrinth as soon as the picture is on `main` (i.e. after PR #1 is 
 
 | Image | Title | Description | Featured |
 | --- | --- | --- | --- |
-| [banner.jpg](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg) | `PyMC Bot` | `Record how you play, then let a bot play like you.` | ✅ |
+| [banner.jpg](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg) | `PyMC Bot` | `Record how you play, then let a bot play like you.` | ✅ |
 
 ## 7. Versions (one per Minecraft version)
 

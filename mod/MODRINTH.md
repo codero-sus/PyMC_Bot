@@ -1,4 +1,4 @@
-![PyMC Bot](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg)
+![PyMC Bot](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg)
 
 # PyMC Bot
 
