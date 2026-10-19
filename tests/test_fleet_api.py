@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from pymc_bot.antiafk import HABITS
 from pymc_bot.server import create_app
 
 
@@ -216,7 +217,7 @@ def test_antiafk_keeps_a_populated_server_alive(client: TestClient):
     assert status["pokes"] >= 3
     for bot in status["bots"]:
         assert bot["last_habits"], "each poke records what the bot did"
-        assert set(bot["last_habits"]) <= {"look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"}
+        assert set(bot["last_habits"]) <= set(HABITS)
 
 
 def test_antiafk_can_be_switched_off(client: TestClient):
