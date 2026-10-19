@@ -844,6 +844,11 @@ public final class PlaytimeRecorder {
      * Flattens every episode file in the directory into dataset.jsonl, one training example per
      * line: {@code {"instruction": ..., "input": <observation>, "output": "{\"action\": ...}",
      * "episode": ...}}.
+     *
+     * <p>The two export filters from the settings page's Power tab are applied here (the episode
+     * files themselves are never changed, so a different filter can be tried with another export):
+     * episodes shorter than {@code minEpisodeSeconds} are left out, and long standing-still
+     * stretches keep only {@code idleKeepPercent} of their {@code none} samples ({@link IdleThinner}).
      */
     public synchronized String export() {
         resolvePaths();
@@ -851,9 +856,13 @@ public final class PlaytimeRecorder {
             return "nothing recorded yet - run /pymcbot record start first";
         }
         String system = "You are a Minecraft player bot. Given the observation, reply with the action to take next.";
-        boolean advanced = PlaytimeConfig.get().advanced;
+        PlaytimeConfig cfg = PlaytimeConfig.get();
+        boolean advanced = cfg.advanced;
+        long minTicks = cfg.minEpisodeSeconds * 20L;
         long lines = 0;
         int files = 0;
+        int shortEpisodes = 0;
+        long idleDropped = 0;
         if (active) {
             // Make sure the tail of the current episode is on disk before reading it back.
             try {
@@ -876,10 +885,20 @@ public final class PlaytimeRecorder {
             }
             for (Path file : episodeFiles) {
                 String episode = file.getFileName().toString().replace(".ndjsonl", "");
+                if (minTicks > 0 && lastTick(file) < minTicks) {
+                    shortEpisodes++;
+                    continue;
+                }
+                IdleThinner thinner = new IdleThinner(cfg.idleKeepPercent);
                 try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                     String line;
                     while ((line = reader.readLine()) != null) {
                         if (line.isBlank() || !line.startsWith("{")) {
+                            continue;
+                        }
+                        String action = actionOf(line);
+                        if (!thinner.keep(action)) {
+                            idleDropped++;
                             continue;
                         }
                         out.write("{\"instruction\": \"");
@@ -887,7 +906,7 @@ public final class PlaytimeRecorder {
                         out.write("\", \"input\": ");
                         out.write(line);
                         out.write(", \"output\": \"{\\\"action\\\": \\\"");
-                        out.write(Json.escape(actionOf(line)));
+                        out.write(Json.escape(action));
                         out.write("\\\"}\", \"episode\": \"");
                         out.write(Json.escape(episode));
                         out.write("\"}");
@@ -900,15 +919,91 @@ public final class PlaytimeRecorder {
         } catch (IOException e) {
             return "export failed: " + e.getMessage();
         }
+        String filtered = shortEpisodes == 0 && idleDropped == 0 ? "" : String.format(Locale.ROOT,
+                "\nfilters: %d episode(s) shorter than %ds left out, %d idle sample(s) thinned out (keeping %d%%)",
+                shortEpisodes, cfg.minEpisodeSeconds, idleDropped, cfg.idleKeepPercent);
         if (lines == 0) {
-            return "no samples found in " + episodesDir + " - record some playtime first";
+            return shortEpisodes > 0
+                    ? "every episode is shorter than " + cfg.minEpisodeSeconds
+                            + "s - lower \"Min episode\" on the Power tab (/pymcbot settings)" + filtered
+                    : "no samples found in " + episodesDir + " - record some playtime first";
         }
         return String.format(Locale.ROOT,
                 "exported %d sample(s) from %d episode file(s) -> %s (%.1f MB)",
                 lines, files, datasetPath, Files.exists(datasetPath) ? datasetPath.toFile().length() / 1048576.0 : 0.0)
+                + filtered
                 + (advanced
                 ? "\nadvanced data included (entities, items, held item, armour, drops)"
                 : "\nbasic recording - run /pymcbot advanced on before recording to also export entities and items");
+    }
+
+    /**
+     * Decides which {@code none} (standing still, no input) samples an export keeps.
+     *
+     * <p>Every other action is kept, and so is the first {@code none} after it - that sample is
+     * where the player stopped, which the model needs to learn. Inside a longer idle stretch a
+     * budget grows by {@code keepPercent} per sample and a sample is kept each time it reaches
+     * 100, so 25 keeps exactly every fourth one: evenly spread and the same on every export.
+     */
+    public static final class IdleThinner {
+        private final int keepPercent;
+        private int budget;
+        private boolean idle;
+
+        public IdleThinner(int keepPercent) {
+            this.keepPercent = Math.max(0, Math.min(100, keepPercent));
+        }
+
+        public boolean keep(String action) {
+            if (!"none".equals(action)) {
+                idle = false;
+                return true;
+            }
+            if (!idle) {
+                idle = true;
+                budget = 0;
+                return true;
+            }
+            budget += keepPercent;
+            if (budget >= 100) {
+                budget -= 100;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /** The largest {@code "tick"} in an episode file (its length in client ticks), 0 if unreadable. */
+    static long lastTick(Path file) {
+        long last = 0;
+        try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                last = Math.max(last, tickOf(line));
+            }
+        } catch (IOException ignored) {
+            // An unreadable file counts as empty (and is skipped by the length filter).
+        }
+        return last;
+    }
+
+    /** Pulls the {@code "tick"} number out of a raw episode line (0 when missing). */
+    public static long tickOf(String rawLine) {
+        String needle = "\"tick\": ";
+        int start = rawLine.indexOf(needle);
+        if (start < 0) {
+            return 0;
+        }
+        start += needle.length();
+        int end = start;
+        while (end < rawLine.length() && Character.isDigit(rawLine.charAt(end))) {
+            end++;
+        }
+        try {
+            return end == start ? 0 : Long.parseLong(rawLine.substring(start, end));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /** Pulls the "activity" value out of a raw episode line without a full JSON parser. */

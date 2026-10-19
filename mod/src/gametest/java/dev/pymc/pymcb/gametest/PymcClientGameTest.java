@@ -104,6 +104,25 @@ public class PymcClientGameTest implements FabricClientGameTest {
                 return PlaytimeConfig.get().includeBlocks && PlaytimeConfig.get().maxNearby == 12;
             });
             check(blocksRestored, "Reset page did not restore the Recording defaults");
+            boolean powerRestored = context.computeOnClient(client -> {
+                PlaytimeConfig cfg = PlaytimeConfig.get();
+                cfg.setSampleTicks(7);
+                cfg.setTurnDegrees(12.5);
+                cfg.setMinEpisodeSeconds(90);
+                cfg.setIdleKeepPercent(25);
+                cfg.resetPower();
+                return cfg.sampleTicks == 2 && cfg.turnDegrees == 1.0f && cfg.minEpisodeSeconds == 0
+                        && cfg.idleKeepPercent == 100;
+            });
+            check(powerRestored, "Reset page did not restore the Power (slider) defaults");
+            // Export filter maths: 25% keeps the first idle sample, then every fourth one.
+            PlaytimeRecorder.IdleThinner thinner = new PlaytimeRecorder.IdleThinner(25);
+            StringBuilder kept = new StringBuilder();
+            for (String action : new String[]{"forward", "none", "none", "none", "none", "none", "jump", "none", "none"}) {
+                kept.append(thinner.keep(action) ? '1' : '0');
+            }
+            check("110001110".equals(kept.toString()), "idle thinning kept " + kept + " instead of 110001110");
+            check(PlaytimeRecorder.tickOf("{\"tick\": 1234, \"activity\": \"none\"}") == 1234, "tick parsing");
             report.append("settings page: ").append(PymcBotScreen.Page.values().length).append(" tabs rendered\n");
             context.setScreen(() -> null);
             context.waitTicks(5);

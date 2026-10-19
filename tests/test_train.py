@@ -375,3 +375,20 @@ def test_resume_keeps_advanced_mode(advanced_dataset_file: Path, tmp_path: Path)
     assert summary["steps"] == 20
     card = read_card(models_dir, "resume-advanced")
     assert card["advanced"] is True and card["step"] == 20
+
+
+def test_build_dataset_applies_the_power_tab_filters(tmp_path: Path):
+    path = tmp_path / "idle.ndjsonl"
+    with path.open("w", encoding="utf-8") as handle:
+        for tick in range(0, 400, 2):
+            action = "none" if 100 <= tick < 300 else "forward"
+            handle.write(json.dumps({"tick": tick, "episode": "ep1", "activity": action,
+                                     "x": tick / 10, "y": 64.0, "z": 0.0, "yaw": 0.0, "pitch": 0.0}) + "\n")
+    full = build_dataset(path)
+    thinned = build_dataset(path, idle_keep_percent=0)
+    assert full.summary["actions"]["none"] == 100 and "filtered" not in full.summary
+    assert thinned.summary["actions"]["none"] == 1, "only the sample where the player stopped"
+    assert thinned.summary["filtered"]["idle_samples_dropped"] == 99
+    assert len(thinned) == len(full) - 99
+    with pytest.raises(ValueError, match="filtered out"):
+        build_dataset(path, min_episode_seconds=60)

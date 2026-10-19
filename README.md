@@ -231,7 +231,8 @@ The bot can learn **how you play** and then play like that itself. Three steps:
 A **REC** badge in the corner shows the run clock and sample count while you record. Everything
 else is on the **PyMC Bot settings page** – `/pymcbot settings`, a hotkey, or Mod Menu's
 *Configure* button: tabs for the recorder controls, recording options, advanced entity + item
-limits, the HUD badge (with a live preview) and About; hover any button for help
+limits, a **Power** tab with sliders and export filters for nicer datasets, the HUD badge (with a
+live preview) and About; hover any button for help
 ([details](mod/README.md#pymc-bot-settings-page)). `/pymc` still works as a short alias.
 
 The mod samples your playtime 20×/s — position, velocity, view, posture, hotbar, health/food, the 3×3×3
@@ -256,6 +257,10 @@ models/playtime-dataset/
 ├── trainer_state.json    step/epoch/RNG/best-val -> exactly resumable
 └── metrics.jsonl, metrics.csv
 ```
+
+Training straight from the episode folder instead of an exported `dataset.jsonl`? `--min-episode 30`
+and `--idle-keep 30` apply the same filters as the mod's Power tab (drop episodes under 30 s, keep
+30 % of standing-still samples).
 
 No recording yet? `python -m pymc_bot train --simulate 10` fabricates a believable session so you can try
 the whole pipeline (and the panel's **Demo: simulate 5 min** button) without launching Minecraft.
@@ -450,7 +455,7 @@ PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and server
 | --- | --- |
 | `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent]` | run the web config panel (Uvicorn) |
 | `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|cortex\|trained] [--cortex-url URL] [--cortex-model ID]` | headless bot: connect and play (optionally populate the server), logs to stdout |
-| `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
+| `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--min-episode S] [--idle-keep PCT] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |

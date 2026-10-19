@@ -4,6 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.BooleanSupplier;
+import java.util.function.DoubleConsumer;
+import java.util.function.DoubleFunction;
+import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
 import dev.pymc.pymcb.PlaytimeConfig;
@@ -17,11 +20,13 @@ import net.minecraft.network.chat.Component;
 /**
  * The PyMC Bot config and settings page.
  *
- * <p>Five tabs cover everything in {@code config/pymcbot.properties} plus the recorder controls:
+ * <p>Six tabs cover everything in {@code config/pymcbot.properties} plus the recorder controls:
  * <ul>
  *   <li><b>Recorder</b> - start / stop, pause, new episode, export, status and the training command;</li>
  *   <li><b>Recording</b> - sample rate, menus, AFK skipping, auto-record, blocks, nearby entities, thresholds;</li>
  *   <li><b>Advanced</b> - entity + item recording and its limits;</li>
+ *   <li><b>Power</b> - sliders for fine control over every number (sample rate, thresholds, limits)
+ *       plus the export filters that drop short episodes and thin out standing-still samples;</li>
  *   <li><b>HUD &amp; chat</b> - the REC badge (with a live preview), its corner and chat notices;</li>
  *   <li><b>About</b> - versions, file locations and credits.</li>
  * </ul>
@@ -29,8 +34,9 @@ import net.minecraft.network.chat.Component;
  * "Reset page" button (click twice).
  *
  * <p>Open it with {@code /pymcbot settings}, the "Open PyMC Bot settings" hotkey, or Mod Menu's
- * Configure button ({@link PymcModMenu}). Only vanilla buttons are used and all text goes through
- * {@link HudCanvas}, so this one class works on every supported Minecraft version.
+ * Configure button ({@link PymcModMenu}). Only vanilla buttons and vanilla sliders (wrapped in
+ * {@link PowerSlider}) are used and all text goes through {@link HudCanvas}, so this one class works
+ * on every supported Minecraft version.
  */
 public class PymcBotScreen extends Mc.PaintedScreen {
     /** The tabs, in display order. */
@@ -38,6 +44,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         RECORDER("Recorder"),
         RECORDING("Recording"),
         ADVANCED("Advanced"),
+        POWER("Power"),
         HUD("HUD & chat"),
         ABOUT("About");
 
@@ -49,7 +56,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
 
         /** Whether the page has settings that "Reset page" can restore. */
         boolean resettable() {
-            return this == RECORDING || this == ADVANCED || this == HUD;
+            return this == RECORDING || this == ADVANCED || this == POWER || this == HUD;
         }
     }
 
@@ -90,10 +97,18 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         }
     }
 
+    /** A Power-tab slider, its enabled state and its hover help. */
+    private record SliderOption(PowerSlider slider, int x, int y, BooleanSupplier enabled, String hint) {
+        boolean hovered(int mouseX, int mouseY) {
+            return mouseX >= x && mouseX < x + COLUMN && mouseY >= y && mouseY < y + 20;
+        }
+    }
+
     /** Screen to return to when closed (null = back to the game). */
     private final Screen parent;
     private final Page page;
     private final List<Option> options = new ArrayList<>();
+    private final List<SliderOption> sliders = new ArrayList<>();
     private String lastMessage;
     private boolean confirmReset;
     private Button resetButton;
@@ -160,6 +175,14 @@ public class PymcBotScreen extends Mc.PaintedScreen {
                 : String.format(Locale.ROOT, "%.1f", perSecond)) + "/s";
     }
 
+    /** "never" / "45s" / "2m 30s". */
+    static String seconds(int value) {
+        if (value <= 0) {
+            return "never";
+        }
+        return value < 60 ? value + "s" : value / 60 + "m" + (value % 60 == 0 ? "" : " " + value % 60 + "s");
+    }
+
     static String number(double value) {
         return value == Math.rint(value) ? Integer.toString((int) value) : String.format(Locale.ROOT, "%.2f", value)
                 .replaceAll("0+$", "");
@@ -170,6 +193,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
     @Override
     protected void init() {
         options.clear();
+        sliders.clear();
         int center = this.width / 2;
 
         // Tab row: the open tab is shown as a disabled (pressed) button.
@@ -188,6 +212,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
             case RECORDER -> initRecorder();
             case RECORDING -> initRecording();
             case ADVANCED -> initAdvanced();
+            case POWER -> initPower();
             case HUD -> initHud();
             case ABOUT -> initAbout();
         }
@@ -296,6 +321,62 @@ public class PymcBotScreen extends Mc.PaintedScreen {
                 () -> cfg().setMaxGroundItems(next(DROP_STEPS, cfg().maxGroundItems)));
     }
 
+    /** Adds a config slider at (column, row). */
+    private void slider(int column, int row, String name, double min, double max, double step,
+                        DoubleSupplier getter, DoubleConsumer setter, DoubleFunction<String> format,
+                        BooleanSupplier enabled, String hint) {
+        int x = columnX(column);
+        int y = rowY(row);
+        PowerSlider slider = new PowerSlider(x, y, COLUMN, name, min, max, step, getter, value -> {
+            confirmReset = false;
+            setter.accept(value);
+        }, format);
+        this.addRenderableWidget(slider);
+        sliders.add(new SliderOption(slider, x, y, enabled, hint));
+    }
+
+    /**
+     * Power users: every number as a slider (finer than the Recording / Advanced buttons, which
+     * cycle through a few presets) plus the two export filters. Drag, or click and use the arrow keys.
+     */
+    private void initPower() {
+        BooleanSupplier always = () -> true;
+        BooleanSupplier advanced = () -> cfg().advanced;
+        // min > max: 1 sample/s on the left, 20/s on the right, while the config stores ticks.
+        slider(0, 0, "Sample rate", 20, 1, 1, () -> cfg().sampleTicks,
+                v -> cfg().setSampleTicks((int) Math.round(v)),
+                v -> perSecond((int) Math.round(v)) + " (" + (int) Math.round(v) + "t)", always,
+                "Samples per second. More = smoother motion targets but bigger files; 10/s suits most play.");
+        slider(1, 0, "Turn threshold", 0.1, 20.0, 0.1, () -> cfg().turnDegrees,
+                cfg()::setTurnDegrees, v -> number(v) + "\u00b0", always,
+                "Camera turn that labels a sample \"look\". Lower = catches small aim corrections.");
+        slider(0, 1, "Move threshold", 0.0, 0.5, 0.01, () -> cfg().moveEpsilon,
+                cfg()::setMoveEpsilon, v -> number(v) + " blk", always,
+                "Drift (knockback, ice, water) that counts as \"move\" when no key explains it.");
+        slider(1, 1, "Skip AFK after", 0, 600, 5, () -> cfg().idleSkipSeconds,
+                v -> cfg().setIdleSkipSeconds((int) Math.round(v)), v -> seconds((int) Math.round(v)), always,
+                "Stops writing after this long without input. Shorter = less AFK noise in the dataset.");
+        slider(0, 2, "Nearby entities", 0, 64, 1, () -> cfg().maxNearby,
+                v -> cfg().setMaxNearby((int) Math.round(v)), v -> Integer.toString((int) Math.round(v)), always,
+                "Closest mobs / players per sample. Basic training reads the nearest 6; more only grows files.");
+        slider(1, 2, "Min episode", 0, 300, 5, () -> cfg().minEpisodeSeconds,
+                v -> cfg().setMinEpisodeSeconds((int) Math.round(v)),
+                v -> v < 0.5 ? "off" : seconds((int) Math.round(v)), always,
+                "Export filter: leaves out accidental short recordings. Episode files stay on disk.");
+        slider(0, 3, "Keep idle samples", 0, 100, 5, () -> cfg().idleKeepPercent,
+                v -> cfg().setIdleKeepPercent((int) Math.round(v)), v -> (int) Math.round(v) + "%", always,
+                "Export filter: share of standing-still samples kept. Less idle = the bot stands around less.");
+        slider(1, 3, "Max entities", 0, 128, 1, () -> cfg().maxEntities,
+                v -> cfg().setMaxEntities((int) Math.round(v)), v -> Integer.toString((int) Math.round(v)), advanced,
+                "Advanced mode: entities written per sample (turn it on in the Advanced tab).");
+        slider(0, 4, "Entity range", 4, 128, 1, () -> cfg().entityRange,
+                cfg()::setEntityRange, v -> number(v) + " blk", advanced,
+                "Advanced mode: how far away an entity may be and still be written.");
+        slider(1, 4, "Ground items", 0, 64, 1, () -> cfg().maxGroundItems,
+                v -> cfg().setMaxGroundItems((int) Math.round(v)), v -> Integer.toString((int) Math.round(v)), advanced,
+                "Advanced mode: dropped item stacks written per sample.");
+    }
+
     private void initHud() {
         option(0, 0, () -> "REC badge: " + onOff(cfg().showHud),
                 "Shows REC / PAUSED / IDLE / MENU in a corner of the screen while recording.",
@@ -326,6 +407,10 @@ public class PymcBotScreen extends Mc.PaintedScreen {
             option.button().setMessage(Component.literal(option.label().get()));
             option.button().active = option.enabled().getAsBoolean();
         }
+        for (SliderOption slider : sliders) {
+            slider.slider().sync();
+            slider.slider().active = slider.enabled().getAsBoolean();
+        }
         if (resetButton != null) {
             resetButton.setMessage(Component.literal(confirmReset ? "Click again to reset" : "Reset page"));
         }
@@ -350,6 +435,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         switch (page) {
             case RECORDING -> cfg().resetRecording();
             case ADVANCED -> cfg().resetAdvanced();
+            case POWER -> cfg().resetPower();
             case HUD -> cfg().resetHud();
             default -> {
             }
@@ -401,6 +487,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
                             "Larger limits = bigger datasets; 24 entities within 32 blocks is the default."}
                     : new String[]{"Turn on \"Entities + items\" to record mobs, held items, armour and drops.",
                             "The PyMC Bot trainer learns them with --advanced."});
+            case POWER -> paintPower(canvas, center);
             case HUD -> paintBadgePreview(canvas, center, state);
             case ABOUT -> paintAbout(canvas, center);
             default -> {
@@ -412,6 +499,11 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         for (Option option : options) {
             if (option.hovered(mouseX, mouseY)) {
                 help = option.hint();
+            }
+        }
+        for (SliderOption slider : sliders) {
+            if (slider.hovered(mouseX, mouseY)) {
+                help = slider.hint();
             }
         }
         if (help != null && !help.isEmpty()) {
@@ -426,6 +518,27 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         for (int i = 0; i < lines.length; i++) {
             canvas.centeredText(canvas.fit(lines[i], this.width - 20), center, y + i * (canvas.lineHeight() + 3), DIM);
         }
+    }
+
+    /** What the sliders add up to: samples per minute and the active export filters. */
+    private void paintPower(HudCanvas canvas, int center) {
+        int y = rowY(5) + 2;
+        if (y + 2 * (canvas.lineHeight() + 3) > this.height - 50) {
+            return; // window too small - the hover help still explains each slider
+        }
+        int perMinute = 1200 / Math.max(1, cfg().sampleTicks);
+        List<String> active = new ArrayList<>();
+        if (cfg().minEpisodeSeconds > 0) {
+            active.add("episodes under " + seconds(cfg().minEpisodeSeconds) + " dropped");
+        }
+        if (cfg().idleKeepPercent < 100) {
+            active.add(cfg().idleKeepPercent + "% of idle kept");
+        }
+        String filters = active.isEmpty() ? "export filters off" : "export: " + String.join(", ", active);
+        paintLines(canvas, center, y, new String[]{
+                "Up to " + perMinute + " samples per minute of play  -  " + filters,
+                cfg().advanced ? "Advanced is ON: train with  python -m pymc_bot train --advanced"
+                        : "Advanced is OFF: the last three sliders apply once it is on (Advanced tab)"});
     }
 
     private void paintRecorder(HudCanvas canvas, int center) {

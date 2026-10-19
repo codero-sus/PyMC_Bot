@@ -179,7 +179,7 @@ This launches the real game (a production Fabric launch with Fabric API) and run
 [`PymcClientGameTest`](src/gametest/java/dev/pymc/pymcb/gametest/PymcClientGameTest.java): it
 creates a singleplayer world, starts recording, walks, jumps, strafes and turns, checks the HUD
 badge state, opens the PyMC Bot settings page (and checks that sampling holds while it is open),
-renders all five of its tabs, checks *Reset page*, pauses,
+renders all six of its tabs, checks *Reset page* (Recording and Power) and the idle-thinning maths, pauses,
 stops, exports and asserts that the dataset contains the walk. Results land in
 `build/run/gametest/`: `screenshots/` (badge, one per settings tab, paused badge), `pymc-gametest.txt`
 and the recorded `pymcbot/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
@@ -311,7 +311,7 @@ It hides with F1 and when nothing is being recorded. `/pymcbot hud off` turns it
 
 Open it with **`/pymcbot settings`** (or `/pymcbot config`), the *Open PyMC Bot settings* hotkey,
 or Mod Menu's **Configure** button. It has a button for every option in
-`config/pymcbot.properties`, grouped in five tabs. Every click is saved at once, hovering a button
+`config/pymcbot.properties`, grouped in six tabs. Every click is saved at once, hovering a button
 shows what it does, and each settings tab has **Reset page** (click twice) to restore its defaults.
 
 | Tab | Buttons | Same as |
@@ -319,11 +319,32 @@ shows what it does, and each settings tab has **Reset page** (click twice) to re
 | **Recorder** | Start / Stop recording, Pause / Resume, New episode, Export dataset, Status in chat, Training command | `/pymcbot record toggle`, `pause` / `resume`, `record episode`, `export`, `status`, `train` |
 | **Recording** | Sample rate (20 / 10 / 5 / 2 / 1 per second), Pause in menus, Skip AFK after (never / 5 – 300 s), Auto-record on join, Block area (3×3×3), Nearby entities (0 – 64), Move threshold, Turn threshold | `/pymcbot sample`, `menus`, `idle`, `autorecord`; `includeBlocks`, `maxNearby`, `moveEpsilon`, `turnDegrees` |
 | **Advanced** | Entities + items, Max entities (0 – 128), Entity range (8 – 128 blocks), Ground items (0 – 64) | `/pymcbot advanced`, `entities`, `drops`; `entityRange` |
+| **Power** | Sliders for fine control: Sample rate (1 – 20/s), Turn threshold (0.1 – 20°), Move threshold (0 – 0.5 blocks), Skip AFK after (0 – 600 s), Nearby entities (0 – 64), Min episode (export filter, 0 – 300 s), Keep idle samples (export filter, 0 – 100 %), Max entities, Entity range, Ground items (advanced) | the same keys as Recording / Advanced; `minEpisodeSeconds`, `idleKeepPercent` |
 | **HUD & chat** | REC badge on/off, Badge corner, Chat notices, Hotkeys… – with a **live preview** of the badge in the chosen corner | `/pymcbot hud on\|off`, `hud corner …`, `notify` |
 | **About** | Mod / Minecraft / compat versions, config file location, credits; Links in chat, Version in chat | `/pymcbot about`, `version` |
 
 The line under the tabs always shows the live recorder state (REC / PAUSED / MENU / IDLE, clock,
 samples, run name). Mod Menu is optional – without it the page is still one command or hotkey away.
+
+### Power tab: nicer datasets
+
+The Recording and Advanced buttons cycle through a few presets; the **Power** tab sets the same
+numbers with sliders (drag, or click one and use the arrow keys) and adds two export filters. A
+slider only saves when its value actually changes, and the page shows how many samples per minute
+your settings produce.
+
+| Goal | Try |
+| --- | --- |
+| The bot copies small aim corrections | Turn threshold **0.3 – 0.5°** |
+| The bot stands around too much | Keep idle samples **20 – 40 %** (the moment you stop is always kept) |
+| Join-and-quit recordings clutter the data | Min episode **30 – 60 s** |
+| Smoother motion, files don't matter | Sample rate **20/s** |
+| Long sessions, small files | Sample rate **5/s**, Nearby entities **6** (basic training reads the nearest 6) |
+| Knockback / ice drift shows up as "move" | Move threshold **0.05 – 0.1** |
+
+The filters run in `/pymcbot export` (it reports what was dropped); the episode files are never
+changed, so you can export again with other values. Training straight from the episode folder?
+`python -m pymc_bot train --min-episode 30 --idle-keep 30` applies the same filters in the app.
 
 ## Commands
 
@@ -529,7 +550,8 @@ mod/
     │   ├── PlaytimeRecorder.java                      # sampling + dataset export
     │   ├── PymcCommands.java                          # /pymcbot ... (alias /pymc)
     │   ├── RecorderHud.java                           # the REC / PAUSED / IDLE / MENU badge
-    │   ├── PymcBotScreen.java                         # the PyMC Bot settings page (5 tabs)
+    │   ├── PymcBotScreen.java                         # the PyMC Bot settings page (6 tabs)
+    │   ├── PowerSlider.java                           # the vanilla slider behind the Power tab
     │   ├── PymcModMenu.java                           # Mod Menu "Configure" button -> settings page
     │   └── HudCanvas.java                             # drawing calls the badge and screen use
     ├── client/java/com/terraformersmc/modmenu/api/    # compile-only Mod Menu API stubs (never shipped)

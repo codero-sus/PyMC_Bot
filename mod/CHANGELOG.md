@@ -1,5 +1,19 @@
 # PyMC Bot mod – changelog
 
+## 0.9.0
+
+- New **Power** tab on the settings page with sliders for power users who want finer control over
+  their datasets: sample rate (1 – 20/s), turn threshold (0.1 – 20°), move threshold (0 – 0.5 blocks),
+  AFK skipping (0 – 600 s), nearby entities, and the advanced limits (max entities, entity range,
+  ground items). Drag, or click and use the arrow keys; hover a slider for help.
+- Two new **export filters** for cleaner datasets, also on the Power tab:
+  - **Min episode** leaves accidental short recordings out of `/pymcbot export` (0 – 300 s).
+  - **Keep idle samples** thins out long standing-still stretches (0 – 100 %). The moment you stop
+    is always kept, so the bot still learns to stop, just not to stand around.
+  Your episode files are never changed, so you can export again with other values.
+  `/pymcbot export` reports what was filtered.
+- *Reset page* on the Power tab restores every slider's default.
+
 ## 0.8.0
 
 - New icon: the PyMC Bot logo (also shown in Mod Menu and on Modrinth).
