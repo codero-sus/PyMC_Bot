@@ -271,12 +271,41 @@ ignored and every parameter is validated before anything happens.
 | `attack` | `player` | `agent.allow_attacking` (**always** gated, even for humans) | hit a player |
 | `look_at_player` | `player` | – | turn the bot's head towards a player |
 | `jump` | – | – | hop (useful over obstacles) |
-| `eat` | – | – | eat food from the inventory if hungry |
+| `eat` | – | – | eat the best food for the moment (none on a full bar) |
 | `stop` | – | – | release all movement keys |
 | `wait` | – | – | do nothing this turn |
+| `select_slot` | `slot` (1-9) | `agent.allow_inventory` | press a hotbar key |
+| `hold_item` | `item` (id or `sword`/`weapon`/`pickaxe`/`axe`/`shovel`/`food`/`blocks`) | `agent.allow_inventory` | take it in hand, pulling it into the hotbar if needed |
+| `to_hotbar` | `item`, `slot` (1-9, optional) | `agent.allow_inventory` | backpack → hotbar (first free slot, else the selected one) |
+| `to_inventory` | `slot` (1-9) or `item` | `agent.allow_inventory` | hotbar → backpack (default: the selected slot) |
+| `organize` | – | `agent.allow_inventory` | sort the hotbar: weapon, pickaxe, axe, shovel, blocks, torches, bow, –, food |
+| `wear_armor` | – | `agent.allow_inventory` | put on every armour piece better than the worn one |
+| `equip` | `item`, `to` (`hand`/`offhand`/`head`/`chest`/`legs`/`feet`, optional) | `agent.allow_inventory` | armour to its slot, else the hand |
+| `unequip` | `slot` (`head`/`chest`/`legs`/`feet`/`offhand`) | `agent.allow_inventory` | take it off into a free slot |
+| `swap_hands` | – | `agent.allow_inventory` | main hand ↔ off-hand |
+| `drop` | `item`, `count` (optional: whole stack) | `agent.allow_inventory` | throw items |
+| `give` | `player`, `item`, `count` | `agent.allow_inventory` (+ movement when the player is > 3 m away) | walk over, look at them, toss |
+| `place` | `block` (default `blocks`) | `agent.allow_building` (off by default) | place a block next to the bot |
+| `use_item` | `seconds` (0.1-5) | `agent.allow_building` | right-click with the held item |
+| `fight` | `mob` (optional: nearest hostile) | `agent.allow_mob_fighting` | best weapon in hand, fight until it dies (refuses wardens, endermen, withers…) |
+| `flee` | – | `agent.allow_movement` | sprint away from the closest hostile mob |
+| `collect` | – | `agent.allow_movement` | pick up dropped items nearby |
+| `sleep` / `wake` | – | `agent.allow_movement` | sleep in a bed within 32 blocks (night only) / get up |
+| `emote` | `kind`: `wave`, `crouch`, `nod`, `shake`, `spin` | – | body language |
+| `look_around` | – | – | a few natural glances |
 
 Aliases accepted from models: `walk`/`move` → `goto`, `follow_player` → `follow`, `explore` → `wander`,
 `dig`/`gather` → `mine`, `hit` → `attack`, `hop` → `jump`, `idle` → `stop`, `noop`/`none`/`nothing` → `wait`.
+Inventory aliases: `hotbar` → `select_slot`, `hold` → `hold_item`, `wear` → `equip`, `take_off` → `unequip`,
+`armor` → `wear_armor`, `sort_hotbar` → `organize`, `toss` → `drop`, `place_block`/`build` → `place`,
+`use` → `use_item`, `attack_mob`/`kill` → `fight`, `run` → `flee`, `pickup`/`pick_up` → `collect`.
+
+Slots in snapshots (`slots`, 36 entries) are numbered like the screen: 0-8 hotbar, 9-35 backpack;
+`selected_slot` is 0-based there, while actions use the player's keys 1-9. Snapshots also carry
+`armor_slots`, `offhand`, `sleeping` and `ground_items`.
+
+The panel posts flat JSON (`{"action": "mine", "block": "oak_log"}`); fields next to `action` are
+parameters, and anything in `params` wins.
 
 The executor also tolerates real-world LLM noise: ```` ```json ```` fences, prose before/after the object,
 `name`/`cmd`/`command` instead of `action`, a namespaced `minecraft:mine`, nested `params`, and non-finite

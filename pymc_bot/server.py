@@ -13,7 +13,7 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import Request
 
 from pymc_bot import (
@@ -49,6 +49,9 @@ OLLAMA_HEALTH_TTL = 15.0
 BRIDGE_COMMANDS = [
     "connect", "say", "command", "control", "look", "stop_motion", "pathfind_to",
     "stop_path", "dig", "eat", "attack", "jump", "swing_arm", "disconnect", "ping", "state",
+    # inventory & life (pymc_bot.inventory numbers slots 0-8 hotbar, 9-35 backpack)
+    "select_slot", "move_slot", "equip", "unequip", "swap_hands", "toss", "place", "use_item",
+    "sleep", "wake", "collect", "attack_mob",
 ]
 
 AuthMode = Literal["offline", "microsoft"]
@@ -70,6 +73,10 @@ class CommandRequest(BaseModel):
 
 
 class ActionRequest(BaseModel):
+    # The panel sends the same flat JSON the AI emits ({"action": "mine", "block": "oak_log"}):
+    # fields next to "action" are parameters too.
+    model_config = ConfigDict(extra="allow")
+
     action: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     raw: str | None = None
@@ -430,7 +437,7 @@ def create_app(
             "bridge_commands": BRIDGE_COMMANDS,
             "auth_modes": ["offline", "microsoft"],
             "ai_modes": list(AI_MODES),
-            "antiafk_habits": ["look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing"],
+            "antiafk_habits": ["look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing", "hotbar"],
             "brains": ["auto", "heuristic", "ollama", "cortex", "trained"],
             "training_engines": ["mlp", "transformer"],
             "training_modes": ["basic", "advanced"],
@@ -1075,7 +1082,8 @@ def _decision_from_request(request: ActionRequest) -> Decision:
             status_code=422,
             detail=f"unknown action '{action}'. Valid actions: {', '.join(sorted(ACTIONS))}",
         )
-    return Decision(action=action, params=dict(request.params or {}), source="manual")
+    params = {**(request.model_extra or {}), **(request.params or {})}
+    return Decision(action=action, params=params, source="manual")
 
 
 def config_path_for_cli(cli_path: str | None) -> Path:

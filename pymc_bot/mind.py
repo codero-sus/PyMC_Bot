@@ -30,6 +30,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from pymc_bot.inventory import Inventory
+
 
 # --------------------------------------------------------------------------- personas
 @dataclass(frozen=True)
@@ -183,7 +185,28 @@ ACTIONS (pick exactly one per turn):
   jump           {"action": "jump"}                                        hop (over a block, or just a little hop)
   stop           {"action": "stop"}                                        stop moving
   wait           {"action": "wait"}                                        do nothing this turn (watch, think, let others talk)
-  attack         {"action": "attack", "player": "<name>"}                  hit a player - ONLY when attacking is allowed"""
+  attack         {"action": "attack", "player": "<name>"}                  hit a player - ONLY when attacking is allowed
+ your stuff (hotbar slots are 1-9; "item" can be an id like iron_pickaxe or a word: sword, pickaxe, axe, food, blocks)
+  hold_item      {"action": "hold_item", "item": "<item>"}                 take it in your hand (pulled into the hotbar if needed)
+  select_slot    {"action": "select_slot", "slot": <1-9>}                  press a hotbar key
+  to_hotbar      {"action": "to_hotbar", "item": "<item>", "slot": <1-9>}  move something from the backpack into the hotbar
+  to_inventory   {"action": "to_inventory", "slot": <1-9>}                 put a hotbar item back into the backpack
+  organize       {"action": "organize"}                                    sort the hotbar: weapon, pickaxe, axe, shovel, blocks, torches, bow, -, food
+  wear_armor     {"action": "wear_armor"}                                  put on the best armour you carry
+  equip          {"action": "equip", "item": "<item>", "to": "offhand"}    armour goes to its slot; "to": "offhand" for a shield or torch
+  unequip        {"action": "unequip", "slot": "head|chest|legs|feet|offhand"}
+  swap_hands     {"action": "swap_hands"}                                  swap main hand and off-hand
+  drop           {"action": "drop", "item": "<item>", "count": <n>}        throw junk away
+  give           {"action": "give", "player": "<name>", "item": "<item>", "count": <n>}  walk over and toss it to them
+ living
+  fight          {"action": "fight", "mob": "<zombie, skeleton...>"}       grab your best weapon and fight a hostile mob
+  flee           {"action": "flee"}                                        sprint away from the closest mob
+  collect        {"action": "collect"}                                     pick up dropped items nearby
+  sleep          {"action": "sleep"}                                       sleep in a bed nearby (night only)
+  place          {"action": "place", "block": "<block or blocks>"}         place a block next to you - only when building is allowed
+  use_item       {"action": "use_item", "seconds": <0.2-5>}                right-click with the held item (bow, shield, bucket)
+  emote          {"action": "emote", "kind": "wave|crouch|nod|shake|spin"} body language - wave or crouch-spam to greet, nod for yes
+  look_around    {"action": "look_around"}                                 glance around"""
 
 REPLY_FORMAT = """\
 REPLY FORMAT - Reply with a single JSON object and nothing else (no markdown, no text around it):
@@ -203,6 +226,12 @@ Situation: health 7/20, a zombie 5 m east, night, Alex 12 m west.
 
 Situation: daytime, alone, inventory empty, birch trees around, goal "get wood for tools" set 2 turns ago, last action "mine birch_log" worked.
 {"thought": "need a few more logs before i make tools", "goal": "get wood for tools", "action": "mine", "block": "birch_log"}
+
+Situation: healthy, daytime, a zombie 4 m south, your hotbar holds dirt and torches, iron_sword is in the backpack.
+{"thought": "zombie's close, sword out and deal with it", "goal": "clear the zombie", "action": "fight", "mob": "zombie"}
+
+Situation: Steve (3 m east) said "can i have some bread?", you have bread x6.
+{"thought": "i've got plenty, i'll toss him a couple", "goal": "help Steve", "action": "give", "player": "Steve", "item": "bread", "count": 2}
 
 Situation: Alex asked "are you a bot?".
 {"thought": "they're asking directly, i'll be honest", "goal": "chat with Alex", "action": "say", "message": "yeah i'm a bot lol, still here to help though"}"""
@@ -227,6 +256,12 @@ def build_system_prompt(
         rules.append("- Mining is switched off: never use \"mine\".")
     if not allowed.get("attacking", False):
         rules.append("- Attacking players is switched off: never use \"attack\".")
+    if not allowed.get("inventory", True):
+        rules.append("- Inventory actions are switched off: no hold_item/select_slot/to_hotbar/to_inventory/organize/equip/drop/give.")
+    if not allowed.get("building", False):
+        rules.append("- Building is switched off: never use \"place\" or \"use_item\".")
+    if not allowed.get("fighting", True):
+        rules.append("- Fighting mobs is switched off: never use \"fight\" - flee or stay near players instead.")
     switched_off = "\n".join(rules) if rules else "- Everything in the action list is allowed, but attack only when it really makes sense."
     notes = " ".join(str(notes or "").split())[:600]
     extra = f"\nMore about you (from your owner): {notes}\n" if notes else ""
@@ -247,9 +282,12 @@ HOW YOU THINK EACH TURN (like a human player would)
       only switch when it is done, impossible (the last tries failed), or something more important happened.
    d. Otherwise pick a sensible new goal: early game is wood -> crafting table -> wooden then stone tools -> food -> coal
       and iron -> a small shelter before night. Curiosity counts too: explore, check out caves, look at what others do.
-3. Learn from what just happened: if an action failed twice, try something else (another block type, another
+3. Handle your stuff like a player: wear the best armour you have, keep the hotbar tidy (organize), hold the
+   right tool for the job, pick up drops, put junk in the backpack or drop it, share with friends who ask.
+   Mining picks the right tool and fighting the best weapon by themselves.
+4. Learn from what just happened: if an action failed twice, try something else (another block type, another
    place, or just wander a bit). Don't repeat the exact same failing action.
-4. Be a bit imperfect and relaxed: pause now and then, look at people when they talk, hop occasionally. Humans
+5. Be a bit imperfect and relaxed: pause now and then, look at people when they talk, hop occasionally. Humans
    are not optimal machines - but they are never random for no reason either.
 
 HOW YOU CHAT
@@ -472,8 +510,12 @@ def build_turn_prompt(
     night = " - mobs spawn in the dark, stay near light or other players" if tod == "night" else ""
     lines.append(f"You ({name}) are at x={px:.0f} y={py:.0f} z={pz:.0f} in the {dim}. It is {tod}{night}.")
     lines.append(_vitals(state))
-    held = str(state.get("held_item") or "").removeprefix("minecraft:")
-    lines.append(f"Holding: {held or 'nothing'}. " + _inventory(state))
+    if state.get("slots") or state.get("inventory"):
+        # what a player sees: the hotbar with the selected slot, armour, off-hand, the backpack
+        lines.extend(Inventory.from_snapshot(state).describe(float(state.get("food") or 20), float(state.get("health") or 20)))
+    else:
+        held = str(state.get("held_item") or "").removeprefix("minecraft:")
+        lines.append(f"Holding: {held or 'nothing'}. " + _inventory(state))
 
     players = state.get("players") or []
     if players:
@@ -541,6 +583,10 @@ def build_turn_prompt(
         "time_of_day": state.get("time_of_day"),
         "players": players,
         "inventory": state.get("inventory"),
+        "hotbar": [(slot or {}).get("name") or None for slot in (state.get("slots") or [])[:9]] or None,
+        "selected_slot": (int(state["selected_slot"]) + 1) if isinstance(state.get("selected_slot"), int) else None,
+        "armor": state.get("armor"),
+        "offhand": state.get("offhand") or None,
         "you": name,
         # raw "<name> message" lines (no timestamps, so a line reads the same on every turn)
         "recent_chat": [

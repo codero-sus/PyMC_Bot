@@ -217,7 +217,7 @@
       </div>
 
       <h3>Anti-AFK <span class="hint" id="antiafk-state">—</span></h3>
-      <p class="note">Every bot walks a step, hops, crouches, swings and turns its head in randomised bursts,
+      <p class="note">Every bot walks a step, hops, crouches, swings, scrolls its hotbar and turns its head in randomised bursts,
         so servers do not kick it for standing still. The AI and manual commands always win.</p>
       <div class="permissions">
         <label class="check"><input id="antiafk-enabled" type="checkbox" /> keep bots active</label>
@@ -227,6 +227,7 @@
         <label class="check"><input id="antiafk-jump" type="checkbox" /> jump</label>
         <label class="check"><input id="antiafk-sneak" type="checkbox" /> crouch</label>
         <label class="check"><input id="antiafk-swing" type="checkbox" /> swing arm</label>
+        <label class="check"><input id="antiafk-hotbar" type="checkbox" /> scroll hotbar</label>
       </div>
       <div class="actions">
         <button id="btn-antiafk-poke" class="btn">Poke all now</button>
@@ -326,7 +327,10 @@
         <label class="check"><input id="cfg-allow-movement" type="checkbox" /> move</label>
         <label class="check"><input id="cfg-allow-chat" type="checkbox" /> chat</label>
         <label class="check"><input id="cfg-allow-mining" type="checkbox" /> mine</label>
-        <label class="check"><input id="cfg-allow-attack" type="checkbox" /> attack</label>
+        <label class="check"><input id="cfg-allow-attack" type="checkbox" /> attack players</label>
+        <label class="check" title="hotbar, armour, moving items, dropping and giving"><input id="cfg-allow-inventory" type="checkbox" /> use inventory</label>
+        <label class="check" title="placing blocks and right-clicking items"><input id="cfg-allow-building" type="checkbox" /> build</label>
+        <label class="check"><input id="cfg-allow-mob-fighting" type="checkbox" /> fight mobs</label>
         <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
       </div>
       <p id="ai-status" class="note"></p>
@@ -426,6 +430,8 @@
         </div>
         <div>
           <h3>Inventory</h3>
+          <div id="hotbar" class="hotbar" role="toolbar" aria-label="hotbar - click a slot to select it"></div>
+          <p id="gear" class="note gear"></p>
           <div id="inventory" class="chips"><span class="empty">empty</span></div>
         </div>
       </div>
@@ -457,6 +463,25 @@
         <button class="btn ghost" data-action='{"action":"stop"}'>stop</button>
         <button class="btn ghost" data-action='{"action":"say","message":"Hello from Python!"}'>say hi</button>
       </div>
+      <h3>Inventory &amp; life</h3>
+      <div class="actions wrap" id="life-actions">
+        <button class="btn ghost" data-action='{"action":"organize"}' title="weapon, pickaxe, axe, shovel, blocks, torches, bow, -, food">sort hotbar</button>
+        <button class="btn ghost" data-action='{"action":"wear_armor"}'>wear best armour</button>
+        <button class="btn ghost" data-action='{"action":"hold_item","item":"sword"}'>hold sword</button>
+        <button class="btn ghost" data-action='{"action":"hold_item","item":"pickaxe"}'>hold pickaxe</button>
+        <button class="btn ghost" data-action='{"action":"to_inventory"}' title="the selected hotbar slot goes into the backpack">hotbar → backpack</button>
+        <button class="btn ghost" data-action='{"action":"swap_hands"}'>swap hands</button>
+        <button class="btn ghost" data-action='{"action":"collect"}'>pick up items</button>
+        <button class="btn ghost" data-action='{"action":"fight"}'>fight nearest mob</button>
+        <button class="btn ghost" data-action='{"action":"flee"}'>flee</button>
+        <button class="btn ghost" data-action='{"action":"sleep"}'>sleep</button>
+        <button class="btn ghost" data-action='{"action":"place","block":"blocks"}'>place block</button>
+        <button class="btn ghost" data-action='{"action":"emote","kind":"wave"}'>wave</button>
+        <button class="btn ghost" data-action='{"action":"emote","kind":"crouch"}'>crouch hello</button>
+        <button class="btn ghost" data-action='{"action":"look_around"}'>look around</button>
+      </div>
+      <p class="note">Click a hotbar slot in <em>Inventory</em> to select it. Backpack → hotbar:
+        <code>{"action":"to_hotbar","item":"cobblestone","slot":5}</code></p>
       <div class="inline">
         <input id="action-input" type="text" placeholder='{"action":"goto","x":10,"y":64,"z":-20}' />
         <button id="btn-action" class="btn">Run action</button>

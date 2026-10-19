@@ -731,3 +731,18 @@ svg.i .fill { fill: currentColor; }
 .heart-svg { width: 1.05em; height: 1.05em; fill: #ef4444; vertical-align: -0.15em; display: block; }
 .heart.small { display: inline-block; vertical-align: -2px; }
 .heart.small .heart-svg { width: 12px; height: 12px; }
+
+/* hotbar: nine slots like the game, the selected one outlined */
+.hotbar { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 4px; margin-bottom: 0.5rem; max-width: 420px; }
+.hotbar .slot {
+  position: relative; aspect-ratio: 1; min-width: 0; padding: 0; cursor: pointer;
+  background: var(--panel-2); border: 2px solid var(--border); border-radius: 6px; color: inherit;
+  display: flex; align-items: center; justify-content: center; font-size: 1.15rem;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.hotbar .slot:hover { border-color: var(--accent); transform: translateY(-1px); }
+.hotbar .slot.selected { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+.hotbar .slot.empty-slot { opacity: 0.55; }
+.hotbar .key { position: absolute; top: 1px; left: 4px; font-size: 0.6rem; color: var(--muted); }
+.hotbar .count { position: absolute; bottom: 1px; right: 4px; font-size: 0.66rem; font-weight: 700; }
+.gear { margin: 0 0 0.5rem; font-size: 0.75rem; }

@@ -23,6 +23,14 @@ from typing import Any
 from pymc_bot.backends import BackendError, BaseBackend, create_backend
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.events import EventLog
+from pymc_bot.inventory import (
+    ARMOR_SLOTS,
+    HOTBAR_SIZE,
+    Inventory,
+    armor_slot_for,
+    is_food,
+    short,
+)
 
 STATE_DISCONNECTED = "disconnected"
 STATE_CONNECTING = "connecting"
@@ -84,6 +92,8 @@ class MinecraftBot:
             "actions": 0,
             "chats_sent": 0,
             "blocks_mined": 0,
+            "blocks_placed": 0,
+            "mobs_killed": 0,
             "distance_walked": 0.0,
             "started_at": None,
         }
@@ -812,6 +822,10 @@ class MinecraftBot:
         with self._motion_lock, self.activity("mine"):
             with self._lock:
                 self._stats["actions"] += 1
+            # A player switches to the right tool first (pickaxe for stone, axe for logs...).
+            tool = self.inventory().best_tool(block)
+            if tool is not None:
+                self._hold_index(tool, quiet=True)
             for attempt in range(max(1, attempts)):
                 if self.cancelled:
                     return False
@@ -826,15 +840,6 @@ class MinecraftBot:
             self.log.add(f"Could not mine {block}.", "warn", "bot")
             return False
 
-    def eat(self) -> bool:
-        backend = self.backend
-        if backend is None or not backend.connected:
-            return False
-        with self.activity("eat"):
-            result = bool(getattr(backend, "eat", lambda: False)())
-        self.log.add("Ate some food." if result else "Nothing to eat (or still full).", "info", "bot")
-        return result
-
     def attack(self, player: str) -> bool:
         backend = self.backend
         if backend is None or not backend.connected:
@@ -842,6 +847,379 @@ class MinecraftBot:
         with self.activity("attack"), self._lock:
             self._stats["actions"] += 1
         return bool(backend.attack(player))
+
+    # ---------------------------------------------------- inventory & life
+    # Slots are numbered like the screen: 0-8 hotbar (keys 1-9), 9-35 backpack. Public methods
+    # that take a hotbar slot use the player's 1-9 numbering.
+    last_failure: str = ""
+
+    def inventory(self) -> Inventory:
+        """The current inventory (hotbar, backpack, armour, off-hand) from the snapshot."""
+        return Inventory.from_snapshot(self.snapshot())
+
+    def _perform(self, cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 10.0,
+                 activity: str | None = None, quiet: bool = False) -> tuple[bool, dict[str, Any]]:
+        backend = self.backend
+        if backend is None or not backend.connected:
+            self.last_failure = "not connected"
+            return False, {}
+        with self.activity(activity or cmd):
+            ok, why, result = backend.perform(cmd, params or {}, timeout=timeout)
+            with self._lock:
+                self._stats["actions"] += 1
+        self.last_failure = "" if ok else why
+        if not ok and not quiet:
+            self.log.add(f"Could not {cmd.replace('_', ' ')}: {why}", "info", "bot")
+        return ok, result
+
+    def _fail(self, why: str) -> bool:
+        self.last_failure = why
+        self.log.add(why, "info", "bot")
+        return False
+
+    @staticmethod
+    def _human_pause(low: float = 0.12, high: float = 0.35) -> None:
+        """The short gap between two clicks of a real player."""
+        time.sleep(random.uniform(low, high))
+
+    def select_slot(self, slot: int) -> bool:
+        """Press a hotbar key (1-9)."""
+        try:
+            index = int(slot) - 1
+        except (TypeError, ValueError):
+            return self._fail(f"hotbar slot must be 1-9, not {slot!r}")
+        if not 0 <= index < HOTBAR_SIZE:
+            return self._fail("hotbar slots are 1-9")
+        ok, _ = self._perform("select_slot", {"slot": index}, quiet=True)
+        return ok
+
+    def _hold_index(self, index: int, quiet: bool = False) -> bool:
+        """Get inventory slot ``index`` into the hand: press its key, or pull it into the hotbar first."""
+        inv = self.inventory()
+        if index < HOTBAR_SIZE:
+            if inv.selected == index:
+                return True
+            ok, _ = self._perform("select_slot", {"slot": index}, quiet=quiet)
+            return ok
+        target = inv.first_empty("hotbar")
+        if target is None:
+            target = inv.selected
+        ok, _ = self._perform("move_slot", {"from": index, "to": target}, quiet=quiet)
+        if not ok:
+            return False
+        self._human_pause()
+        if inv.selected != target:
+            ok, _ = self._perform("select_slot", {"slot": target}, quiet=quiet)
+        return ok
+
+    def _resolve(self, item: str) -> tuple[Inventory, int | None]:
+        snap = self.snapshot()
+        inv = Inventory.from_snapshot(snap)
+        return inv, inv.resolve(item, float(snap.get("food") or 20), float(snap.get("health") or 20))
+
+    def hold(self, item: str) -> bool:
+        """Hold an item: an id (``iron_pickaxe``) or a word (``sword``, ``food``, ``blocks``, ``axe``)."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        name = inv.slots[index].name
+        if self._hold_index(index):
+            self.log.add(f"Holding {name}.", "info", "bot")
+            return True
+        return False
+
+    def equip(self, item: str, to: str | None = None) -> bool:
+        """Put something on: armour goes to its slot, ``to="offhand"`` for a shield/torch, else the hand."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        name = inv.slots[index].name
+        destination = (to or "").lower().replace("-", "").replace("_", "") or armor_slot_for(name) or "hand"
+        destination = {"torso": "chest", "offhand": "offhand", "mainhand": "hand"}.get(destination, destination)
+        if destination == "hand":
+            return self.hold(name)
+        ok, _ = self._perform("equip", {"slot": index, "destination": destination})
+        if ok:
+            self.log.add(f"Put on {name} ({destination}).", "info", "bot")
+        return ok
+
+    def unequip(self, slot: str) -> bool:
+        """Take armour (head/chest/legs/feet) or the off-hand item off."""
+        slot = str(slot or "").lower().replace("-", "").replace("_", "")
+        slot = {"helmet": "head", "chestplate": "chest", "torso": "chest", "leggings": "legs", "boots": "feet"}.get(slot, slot)
+        ok, _ = self._perform("unequip", {"destination": slot})
+        return ok
+
+    def wear_best_armor(self) -> bool:
+        """Put on every armour piece that is better than what is worn (one click at a time)."""
+        worn = 0
+        for slot in ARMOR_SLOTS:
+            upgrades = self.inventory().armor_upgrades()
+            if slot not in upgrades:
+                continue
+            index = upgrades[slot]
+            name = self.inventory().slots[index].name
+            ok, _ = self._perform("equip", {"slot": index, "destination": slot}, activity="wear_armor")
+            if ok:
+                worn += 1
+                self.log.add(f"Put on {name}.", "info", "bot")
+                self._human_pause(0.25, 0.6)
+        return worn > 0 or self._fail("No better armour to wear.")
+
+    def swap_hands(self) -> bool:
+        """The F key: swap the main hand and the off-hand."""
+        ok, _ = self._perform("swap_hands", {})
+        return ok
+
+    def to_hotbar(self, item: str, slot: int | None = None) -> bool:
+        """Move an item from the backpack into the hotbar (slot 1-9, or the first free one)."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        if slot is None:
+            if index < HOTBAR_SIZE:
+                return True  # already in the hotbar
+            target = inv.first_empty("hotbar")
+            target = inv.selected if target is None else target
+        else:
+            try:
+                target = int(slot) - 1
+            except (TypeError, ValueError):
+                return self._fail("hotbar slots are 1-9")
+            if not 0 <= target < HOTBAR_SIZE:
+                return self._fail("hotbar slots are 1-9")
+        if target == index:
+            return True
+        ok, _ = self._perform("move_slot", {"from": index, "to": target}, activity="to_hotbar")
+        if ok:
+            self.log.add(f"Moved {inv.slots[index].name} to hotbar slot {target + 1}.", "info", "bot")
+        return ok
+
+    def to_inventory(self, slot: int | None = None, item: str | None = None) -> bool:
+        """Put a hotbar item (slot 1-9, or by name) back into the backpack."""
+        inv = self.inventory()
+        if item:
+            index = inv.find(short(item), "hotbar")
+            if index is None:
+                _, found = self._resolve(item)
+                index = found if found is not None and found < HOTBAR_SIZE else None
+            if index is None:
+                return self._fail(f"No {item} in the hotbar.")
+        else:
+            try:
+                index = (int(slot) - 1) if slot is not None else inv.selected
+            except (TypeError, ValueError):
+                return self._fail("hotbar slots are 1-9")
+            if not 0 <= index < HOTBAR_SIZE:
+                return self._fail("hotbar slots are 1-9")
+        if inv.slots[index] is None:
+            return self._fail(f"Hotbar slot {index + 1} is empty.")
+        target = inv.first_empty("backpack")
+        if target is None:
+            return self._fail("The backpack is full.")
+        ok, _ = self._perform("move_slot", {"from": index, "to": target}, activity="to_inventory")
+        if ok:
+            self.log.add(f"Put {inv.slots[index].name} into the backpack.", "info", "bot")
+        return ok
+
+    def organize_hotbar(self) -> bool:
+        """Lay the hotbar out like a tidy player: weapon, pickaxe, axe, shovel, blocks, torches, bow, -, food."""
+        snap = self.snapshot()
+        inv = Inventory.from_snapshot(snap)
+        moves = inv.plan_hotbar(float(snap.get("food") or 20), float(snap.get("health") or 20))
+        if not moves:
+            return self._fail("The hotbar is already tidy.")
+        done = 0
+        for source, target in moves:
+            if self.cancelled:
+                break
+            ok, _ = self._perform("move_slot", {"from": source, "to": target}, activity="organize", quiet=True)
+            if not ok:
+                break
+            done += 1
+            self._human_pause()
+        if done:
+            self.log.add(f"Sorted the hotbar ({done} move{'s' if done != 1 else ''}).", "info", "bot")
+        return done > 0
+
+    def drop(self, item: str, count: int | None = None) -> bool:
+        """Throw items on the ground (Q)."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        params: dict[str, Any] = {"slot": index}
+        if count:
+            params["count"] = max(1, int(count))
+        ok, result = self._perform("toss", params, activity="drop")
+        if ok:
+            self.log.add(f"Dropped {result.get('count', count or '')} {inv.slots[index].name}.", "info", "bot")
+        return ok
+
+    def give(self, player: str, item: str, count: int | None = None) -> bool:
+        """Walk up to a player, look at them and throw them the item - how players hand things over."""
+        target = self.find_player(player)
+        if target is None:
+            return self._fail(f"I can't see {player}.")
+        _, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item} to give.")
+        if target.get("distance", 99) > 3:
+            self.walk_to(target["x"], target["z"], tolerance=2.5, timeout=20)
+        self.look_at_player(player)
+        self._human_pause(0.2, 0.5)
+        return self.drop(item, count)
+
+    def place_block(self, block: str = "blocks") -> bool:
+        """Place a block next to the bot (``blocks`` = the building block it has most of)."""
+        inv, index = self._resolve(block)
+        if index is None:
+            return self._fail(f"I have no {block} to place.")
+        ok, result = self._perform("place", {"slot": index}, activity="place")
+        if ok:
+            with self._lock:
+                self._stats["blocks_placed"] += 1
+            self.log.add(f"Placed {inv.slots[index].name}.", "info", "bot")
+        return ok
+
+    def use_item(self, seconds: float = 0.3) -> bool:
+        """Right-click with what is in the hand (bow, shield, bucket, flint and steel...)."""
+        ok, _ = self._perform("use_item", {"seconds": max(0.1, min(5.0, float(seconds)))}, timeout=8.0)
+        return ok
+
+    def eat(self) -> bool:
+        """Eat the best food for the moment (no steak on a full bar, golden apples only when hurt)."""
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        snap = self.snapshot()
+        inv = Inventory.from_snapshot(snap)
+        index = inv.best_food(float(snap.get("food") or 20), float(snap.get("health") or 20))
+        if index is None and not any(is_food(stack.name) for _, stack in inv.items()):
+            if snap.get("slots") or snap.get("inventory"):
+                return self._fail("Nothing to eat.")
+        params = {} if index is None else {"slot": index}
+        ok, result = self._perform("eat", params, timeout=12.0, quiet=True)
+        if ok:
+            self.log.add(f"Ate {result.get('item') or 'some food'}.", "info", "bot")
+        else:
+            self.log.add(f"Could not eat: {self.last_failure or 'nothing to eat'}.", "info", "bot")
+        return ok
+
+    def sleep_in_bed(self) -> bool:
+        """Find a bed nearby and sleep (only works at night, like for a player)."""
+        ok, _ = self._perform("sleep", {}, timeout=25.0, activity="sleep")
+        if ok:
+            self.log.add("Went to bed.", "info", "bot")
+        return ok
+
+    def wake_up(self) -> bool:
+        ok, _ = self._perform("wake", {}, activity="wake")
+        return ok
+
+    def collect_items(self, radius: float = 12.0) -> bool:
+        """Walk over dropped items nearby to pick them up."""
+        with self._motion_lock:
+            ok, result = self._perform("collect", {"radius": radius, "seconds": 15}, timeout=20.0, activity="collect")
+        if ok:
+            self.log.add(f"Picked up {result.get('picked', 1)} dropped item(s).", "info", "bot")
+        return ok
+
+    def fight(self, mob: str | None = None) -> bool:
+        """Take out the best weapon and fight the nearest hostile mob (or a named one)."""
+        index = self.inventory().best_weapon()
+        if index is not None:
+            self._hold_index(index, quiet=True)
+        params: dict[str, Any] = {"seconds": 15}
+        if mob:
+            params["mob"] = short(mob)
+        with self._motion_lock:
+            ok, result = self._perform("attack_mob", params, timeout=20.0, activity="fight")
+        if ok:
+            if result.get("killed"):
+                with self._lock:
+                    self._stats["mobs_killed"] += 1
+            self.log.add(
+                f"Fought a {result.get('target', mob or 'mob')}"
+                + (" and won." if result.get("killed") else " - it got away."),
+                "info", "bot",
+            )
+        return ok
+
+    def flee(self, distance: float = 12.0) -> bool:
+        """Sprint away from the closest hostile mob."""
+        snap = self.snapshot()
+        pose = snap.get("position")
+        threats = [e for e in snap.get("entities") or [] if e.get("hostile")]
+        if not pose or not threats:
+            return self._fail("Nothing to run from.")
+        threat = min(threats, key=lambda e: e.get("dist", 99))
+        length = math.hypot(threat.get("dx", 0.0), threat.get("dz", 0.0)) or 1.0
+        x = pose["x"] - threat.get("dx", 0.0) / length * distance
+        z = pose["z"] - threat.get("dz", 0.0) / length * distance
+        self.log.add(f"Running away from a {short(threat.get('type')) or 'mob'}!", "warn", "bot")
+        return self.walk_to(x, z, tolerance=2.0, timeout=10)
+
+    def emote(self, kind: str = "wave") -> bool:
+        """Body language players use: wave (swing at someone), crouch (the sneak greeting), nod, shake, spin."""
+        kind = (kind or "wave").lower()
+        backend = self.backend
+        pose = self._current_pose()
+        if backend is None or not backend.connected or pose is None:
+            return False
+        near = self.nearby_player(10)
+        with self.activity("emote"):
+            if near:
+                self.look_at_player(near["name"])
+            yaw, pitch = pose[2], pose[3]
+            if near:
+                current = self._current_pose()
+                if current:
+                    yaw, pitch = current[2], current[3]
+            try:
+                if kind == "crouch":
+                    for _ in range(random.randint(2, 4)):
+                        backend.set_control("sneak", True)
+                        time.sleep(random.uniform(0.12, 0.2))
+                        backend.set_control("sneak", False)
+                        time.sleep(random.uniform(0.12, 0.2))
+                elif kind == "nod":
+                    for _ in range(2):
+                        backend.look(yaw, min(1.2, pitch + 0.45))
+                        time.sleep(0.18)
+                        backend.look(yaw, pitch)
+                        time.sleep(0.18)
+                elif kind == "shake":
+                    for _ in range(2):
+                        backend.look(yaw + 0.4, pitch)
+                        time.sleep(0.16)
+                        backend.look(yaw - 0.4, pitch)
+                        time.sleep(0.16)
+                    backend.look(yaw, pitch)
+                elif kind == "spin":
+                    for step in range(1, 9):
+                        backend.look(yaw + step * math.pi / 4, pitch)
+                        time.sleep(0.07)
+                else:  # wave
+                    for _ in range(random.randint(2, 3)):
+                        backend.swing_arm()
+                        time.sleep(random.uniform(0.18, 0.3))
+            except BackendError:
+                return False
+        return True
+
+    def look_around(self) -> bool:
+        """A few natural glances left, right, up and down."""
+        pose = self._current_pose()
+        if pose is None:
+            return False
+        yaw = pose[2]
+        with self.activity("look_around"):
+            for _ in range(random.randint(2, 4)):
+                if self.cancelled:
+                    break
+                self.look(yaw + random.uniform(-1.4, 1.4), max(-0.6, min(0.6, random.gauss(0.0, 0.25))))
+                time.sleep(random.uniform(0.35, 0.9))
+        return True
 
     def reconnect(self) -> None:
         self.stop()

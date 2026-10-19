@@ -35,6 +35,15 @@ from typing import Any
 
 from pymc_bot.config import AppSettings, MinecraftSettings
 from pymc_bot.events import EventLog
+from pymc_bot.inventory import (
+    FOODS,
+    INVENTORY_SIZE,
+    Inventory,
+    InventoryError,
+    Stack,
+    short,
+    weapon_score,
+)
 
 NODE_DIR = Path(__file__).resolve().parent / "node"
 BRIDGE_SCRIPT = NODE_DIR / "minecraft_bridge.js"
@@ -174,6 +183,22 @@ class BaseBackend(abc.ABC):
     @abc.abstractmethod
     def snapshot(self) -> dict[str, Any]: ...
 
+    # ------------------------------------------------- inventory & life actions
+    #: Body actions beyond walking: hotbar, slots, armour, placing, sleeping, fighting mobs...
+    #: Slots are numbered like a player sees them (0-8 hotbar, 9-35 backpack; pymc_bot.inventory).
+    LIFE_COMMANDS: tuple[str, ...] = (
+        "select_slot", "move_slot", "equip", "unequip", "swap_hands", "toss", "place", "use_item",
+        "eat", "sleep", "wake", "collect", "attack_mob",
+    )
+
+    def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
+        """Run one body action. Returns ``(ok, why_not, result)`` - never raises."""
+        return False, f"the {self.name} backend cannot {cmd.replace('_', ' ')}", {}
+
+    def eat(self, slot: int | None = None) -> bool:
+        ok, _, _ = self.perform("eat", {} if slot is None else {"slot": slot}, timeout=10.0)
+        return ok
+
 
 # ---------------------------------------------------------------------------
 # simulated backend
@@ -203,18 +228,21 @@ class SimulatedBackend(BaseBackend):
         self._pitch = 0.0
         self._health = 20.0
         self._food = 20.0
-        # A starter kit a player would have after a few minutes: the trained brain's item
-        # inputs (advanced training) need something to look at.
-        self._inventory: dict[str, int] = {
-            "oak_log": 3,
-            "dirt": 2,
-            "iron_sword": 1,
-            "iron_pickaxe": 1,
-            "bread": 3,
-            "torch": 8,
-        }
-        self._held_item = "iron_sword"
-        self._selected_slot = 2
+        # A starter kit a player would have after a few minutes - a little untidy on purpose,
+        # so the AI has a reason to organise the hotbar and put armour on.
+        self._inv = Inventory()
+        for slot, (name, count) in {
+            0: ("iron_pickaxe", 1), 1: ("dirt", 2), 2: ("iron_sword", 1), 3: ("oak_log", 3),
+            4: ("torch", 8), 12: ("bread", 3), 15: ("stone_axe", 1), 20: ("leather_helmet", 1),
+        }.items():
+            self._inv.slots[slot] = Stack(name, count)
+        self._inv.selected = 2
+        self._world_time = 1000.0  # Minecraft ticks: 0 sunrise, 13000 night, 24000 next day
+        self._sleeping = False
+        self._mobs: list[dict[str, Any]] = [dict(mob) for mob in self.MOBS]
+        self._respawns: list[tuple[float, dict[str, Any]]] = []
+        self._ground: list[dict[str, Any]] = [{"name": "oak_log", "count": 1, "x": 2.0, "z": 3.0, "at": 0.0}]
+        self._placed: list[dict[str, Any]] = []
         self._connected_at: float | None = None
         self._last_error: str | None = None
         self._server = {"host": "", "port": 0, "version": ""}
@@ -301,6 +329,17 @@ class SimulatedBackend(BaseBackend):
             self._position[0] = max(-300.0, min(300.0, self._position[0]))
             self._position[2] = max(-300.0, min(300.0, self._position[2]))
 
+        # --- day and night (20 ticks a second, like Minecraft) -------------------
+        self._world_time = (self._world_time + 20.0 * dt) % 24000.0
+        now = time.monotonic()
+        with self._lock:
+            for when, mob in list(self._respawns):
+                if now >= when:
+                    self._respawns.remove((when, mob))
+                    self._mobs.append(mob)
+            if not self._ground and self._rng.random() < 0.002:
+                self._ground.append({"name": "oak_log", "count": 1, "x": self._rng.uniform(-8, 8), "z": self._rng.uniform(-8, 8), "at": 0.0})
+
         # --- needs -------------------------------------------------------------
         self._food = max(0.0, self._food - 0.02 * dt)
         if self._food > 6 and self._health < 20.0:
@@ -364,7 +403,12 @@ class SimulatedBackend(BaseBackend):
     def dig(self, block: str) -> bool:
         block = (block or "stone").strip().lower().replace(" ", "_")
         time.sleep(0.05)
-        self._inventory[block] = self._inventory.get(block, 0) + 1
+        with self._lock:
+            if self._inv.add(block, 1):
+                self.log.add(f"Mined 1 {block}, but the inventory is full - it stays on the ground.", "warn", "sim")
+                x, _, z = self._position
+                self._ground.append({"name": block, "count": 1, "x": x, "z": z, "at": time.monotonic()})
+                return True
         self.log.add(f"Mined 1 {block}.", "success", "sim")
         return True
 
@@ -383,14 +427,12 @@ class SimulatedBackend(BaseBackend):
         snap["food"] = round(self._food, 1)
         snap["players"] = self._player_list()
         snap["online_players"] = list(self._players)
-        snap["inventory"] = [
-            {"name": name, "count": count} for name, count in sorted(self._inventory.items()) if count > 0
-        ]
-        # What the bot is holding: the trained brain uses it like the mod's recording does.
-        snap["held_item"] = self._held_item if self._inventory.get(self._held_item, 0) > 0 else (
-            snap["inventory"][0]["name"] if snap["inventory"] else ""
-        )
-        snap["selected_slot"] = self._selected_slot
+        with self._lock:
+            # slots / hotbar / armour / off-hand + the flat list older code reads
+            snap.update(self._inv.to_snapshot())
+        snap["time_of_day"] = "night" if 13000 <= self._world_time < 23000 else "day"
+        snap["world_time"] = int(self._world_time)
+        snap["sleeping"] = self._sleeping
         snap["entities"] = self._entity_list()
         snap["ground_items"] = self._ground_items()
         snap["server"] = dict(self._server)
@@ -405,6 +447,173 @@ class SimulatedBackend(BaseBackend):
         {"type": "minecraft:zombie", "x": -5.0, "y": GROUND_Y, "z": -9.0, "hostile": True, "health": 20.0},
         {"type": "minecraft:cow", "x": 9.0, "y": GROUND_Y, "z": 5.0, "hostile": False, "health": 10.0},
     )
+
+    # --------------------------------------------------- inventory & life actions
+    MOB_LOOT: dict[str, str] = {
+        "zombie": "rotten_flesh", "husk": "rotten_flesh", "skeleton": "bone", "spider": "string",
+        "creeper": "gunpowder", "cow": "beef", "pig": "porkchop", "sheep": "mutton", "chicken": "chicken",
+    }
+
+    def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
+        params = dict(params or {})
+        handler = getattr(self, f"_do_{cmd}", None)
+        if cmd not in self.LIFE_COMMANDS or handler is None:
+            return False, f"unknown action {cmd!r}", {}
+        if self._status != "connected":
+            return False, "not connected", {}
+        try:
+            with self._lock:
+                result = handler(params)
+        except (InventoryError, ValueError, TypeError, KeyError) as exc:
+            return False, str(exc).strip("'\"") or cmd, {}
+        time.sleep(0.02)
+        return True, "", result
+
+    def _slot(self, params: dict[str, Any], key: str = "slot") -> int:
+        index = int(params[key])
+        if not 0 <= index < INVENTORY_SIZE:
+            raise InventoryError(f"slot {index} does not exist (0-35)")
+        if self._inv.slots[index] is None:
+            raise InventoryError(f"slot {index} is empty")
+        return index
+
+    def _do_select_slot(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._inv.select(int(params["slot"]))
+        return {"selected": self._inv.selected}
+
+    def _do_move_slot(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._inv.move(self._slot(params, "from"), int(params["to"]))
+        return {"moved": True}
+
+    def _do_equip(self, params: dict[str, Any]) -> dict[str, Any]:
+        index = self._slot(params)
+        name = self._inv.slots[index].name
+        self._inv.equip(index, str(params.get("destination") or "hand"))
+        self.log.add(f"Equipped {name} ({params.get('destination') or 'hand'}).", "info", "sim")
+        return {"equipped": name}
+
+    def _do_unequip(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"slot": self._inv.unequip(str(params.get("destination") or ""))}
+
+    def _do_swap_hands(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._inv.swap_hands()
+        return {"swapped": True}
+
+    def _do_toss(self, params: dict[str, Any]) -> dict[str, Any]:
+        index = self._slot(params)
+        stack = self._inv.slots[index]
+        count = min(stack.count, int(params.get("count") or stack.count))
+        name = stack.name
+        stack.count -= count
+        if stack.count <= 0:
+            self._inv.slots[index] = None
+        x, _, z = self._position
+        self._ground.append({"name": name, "count": count, "x": x - math.sin(self._yaw) * 1.5,
+                             "z": z + math.cos(self._yaw) * 1.5, "at": time.monotonic()})
+        self.log.add(f"Dropped {count} {name}.", "info", "sim")
+        return {"tossed": name, "count": count}
+
+    def _do_place(self, params: dict[str, Any]) -> dict[str, Any]:
+        index = self._slot(params)
+        name = self._inv.slots[index].name
+        self._inv.equip(index, "hand")
+        self._inv.remove(name, 1)
+        x, y, z = self._position
+        spot = {"block": name, "x": math.floor(x - math.sin(self._yaw)), "y": int(y), "z": math.floor(z + math.cos(self._yaw))}
+        self._placed.append(spot)
+        self.log.add(f"Placed {name} at {spot['x']} {spot['y']} {spot['z']}.", "info", "sim")
+        return {"placed": name, **{k: spot[k] for k in ("x", "y", "z")}}
+
+    def _do_use_item(self, params: dict[str, Any]) -> dict[str, Any]:
+        held = self._inv.held
+        name = held.name if held else "hand"
+        self.log.add(f"Used {name}.", "info", "sim")
+        return {"used": name, "seconds": float(params.get("seconds") or 0.3)}
+
+    def _do_eat(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("slot") is not None:
+            index = self._slot(params)
+        else:
+            index = self._inv.best_food(min(self._food, 14.0), self._health)
+        if index is None:
+            raise InventoryError("no food in the inventory")
+        name = self._inv.slots[index].name
+        if name not in FOODS:
+            raise InventoryError(f"{name} is not food")
+        if self._food >= 20 and name not in ("golden_apple", "enchanted_golden_apple", "chorus_fruit"):
+            raise InventoryError("not hungry")
+        stack = self._inv.slots[index]
+        stack.count -= 1
+        if stack.count <= 0:
+            self._inv.slots[index] = None
+        self._food = min(20.0, self._food + FOODS[name][0])
+        if name in ("golden_apple", "enchanted_golden_apple"):
+            self._health = min(20.0, self._health + 4.0)
+        self.log.add(f"Ate {name}.", "success", "sim")
+        return {"ate": True, "item": name}
+
+    def _do_sleep(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not 12542 <= self._world_time < 23460:
+            raise InventoryError("you can only sleep at night")
+        self._world_time = 0.0  # the night passes for everyone
+        self.log.add("Slept until morning.", "success", "sim")
+        return {"sleeping": False, "slept": True}
+
+    def _do_wake(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._sleeping = False
+        return {"sleeping": False}
+
+    def _do_collect(self, params: dict[str, Any]) -> dict[str, Any]:
+        radius = float(params.get("radius") or 12)
+        x, _, z = self._position
+        now = time.monotonic()
+        near = [d for d in self._ground if math.dist((x, z), (d["x"], d["z"])) <= radius and now - d["at"] > 2.0]
+        if not near:
+            raise InventoryError(f"nothing to pick up within {radius:g} blocks")
+        picked = 0
+        for drop in sorted(near, key=lambda d: math.dist((x, z), (d["x"], d["z"]))):
+            left = self._inv.add(drop["name"], drop["count"])
+            if left == drop["count"]:
+                break
+            picked += 1
+            self._position[0], self._position[2] = drop["x"], drop["z"]
+            if left:
+                drop["count"] = left
+            else:
+                self._ground.remove(drop)
+        if not picked:
+            raise InventoryError("the inventory is full")
+        self.log.add(f"Picked up {picked} item stack(s).", "info", "sim")
+        return {"picked": picked}
+
+    def _do_attack_mob(self, params: dict[str, Any]) -> dict[str, Any]:
+        wanted = short(params.get("mob") or "")
+        reach = float(params.get("range") or 16)
+        x, y, z = self._position
+
+        def kind(mob: dict[str, Any]) -> str:
+            return short(mob["type"])
+
+        candidates = [
+            m for m in self._mobs
+            if math.dist((x, z), (m["x"], m["z"])) <= reach and (kind(m) == wanted if wanted else m["hostile"])
+        ]
+        if not candidates:
+            raise InventoryError(f"no {wanted or 'hostile mob'} within {reach:g} blocks")
+        target = min(candidates, key=lambda m: math.dist((x, z), (m["x"], m["z"])))
+        angle = math.atan2(x - target["x"], z - target["z"])
+        self._position[0] = target["x"] + math.sin(angle) * 2.0
+        self._position[2] = target["z"] + math.cos(angle) * 2.0
+        held = self._inv.held
+        damage = max(1.0, weapon_score(held.name) - 6.0) if held else 1.0
+        hits = math.ceil(target["health"] / damage)
+        self._mobs.remove(target)
+        self._respawns.append((time.monotonic() + 60.0, target))
+        loot = self.MOB_LOOT.get(kind(target))
+        if loot:
+            self._ground.append({"name": loot, "count": 1, "x": target["x"], "z": target["z"], "at": 0.0})
+        self.log.add(f"Killed a {kind(target)} ({hits} hits).", "success", "sim")
+        return {"target": kind(target), "hits": hits, "killed": True}
 
     def _entity_list(self) -> list[dict[str, Any]]:
         """Everything in range, in the same shape the mod and the bridge report it."""
@@ -426,7 +635,7 @@ class SimulatedBackend(BaseBackend):
                     "held_item": "minecraft:iron_sword",
                 }
             )
-        for mob in self.MOBS:
+        for mob in list(self._mobs):
             dx, dy, dz = mob["x"] - x, mob["y"] - y, mob["z"] - z
             entries.append(
                 {
@@ -447,15 +656,13 @@ class SimulatedBackend(BaseBackend):
         return entries[:24]
 
     def _ground_items(self) -> list[dict[str, Any]]:
-        x, y, z = self._position
-        dx, dz = 2.0 - x, 3.0 - z
-        return [
-            {
-                "item": "minecraft:oak_log",
-                "count": 1,
-                "dist": round(math.sqrt(dx * dx + dz * dz), 2),
-            }
+        x, _, z = self._position
+        items = [
+            {"item": f"minecraft:{drop['name']}", "count": drop["count"], "dist": round(math.dist((x, z), (drop["x"], drop["z"])), 2)}
+            for drop in list(self._ground)
         ]
+        items.sort(key=lambda item: item["dist"])
+        return items[:12]
 
     def _player_list(self) -> list[dict[str, Any]]:
         out = []
@@ -939,10 +1146,10 @@ class NodeBridgeBackend(BaseBackend):
             return str(base)
         return str(folder)
 
-    def _fire(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    def _fire(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 5.0) -> dict[str, Any] | None:
         """Best-effort command: log failures instead of raising."""
         try:
-            response = self._request(cmd, params or {}, timeout=5.0)
+            response = self._request(cmd, params or {}, timeout=timeout)
         except BackendError as exc:
             self.log.add(f"Bridge command '{cmd}' failed: {exc}", "warn", "node")
             return None
@@ -982,12 +1189,25 @@ class NodeBridgeBackend(BaseBackend):
         return bool(response and response.get("ok"))
 
     def dig(self, block: str) -> bool:
-        response = self._fire("dig", {"block": block, "timeout": 20})
+        # The bridge walks to the block and digs it: give it the whole 20 s budget (+ slack).
+        response = self._fire("dig", {"block": block, "timeout": 20}, timeout=25.0)
         return bool(response and response.get("ok") and (response.get("result") or {}).get("dug"))
 
     def attack(self, player: str) -> bool:
         response = self._fire("attack", {"player": player})
         return bool(response and response.get("ok"))
+
+    def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
+        if cmd not in self.LIFE_COMMANDS:
+            return False, f"unknown action {cmd!r}", {}
+        try:
+            response = self._request(cmd, params or {}, timeout=timeout)
+        except BackendError as exc:
+            return False, str(exc), {}
+        if not response.get("ok"):
+            return False, str(response.get("error") or f"{cmd} failed"), {}
+        result = response.get("result")
+        return True, "", result if isinstance(result, dict) else {}
 
     def snapshot(self) -> dict[str, Any]:
         snapshot = dict(self._snapshot)

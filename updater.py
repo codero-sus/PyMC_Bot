@@ -9,14 +9,18 @@
 
 or use the wrappers next to this file: ``updater.cmd`` (Windows) / ``./updater.sh`` (macOS, Linux).
 
-How it updates PyMC_Bot:
+How it updates PyMC_Bot - always by downloading and extracting a ``.zip``, never with git:
 
-* **git checkout** - ``git fetch`` + ``git pull --ff-only``. Local edits to tracked files stop the
-  update (nothing is overwritten) unless you pass ``--autostash``.
-* **downloaded copy** (no ``.git``) - downloads the source zip of the branch from GitHub and copies
-  it over this folder. Your files are kept: ``pymc_bot_config.json``, ``.venv``, ``models/``,
-  recordings and anything else that is not part of the repository are never touched, and every
-  repository file you changed is first copied to ``.pymc_backup/<time>/``.
+1. asks GitHub which commit is newest on this build's update channel (one small API call);
+2. downloads that exact commit as a source ``.zip`` and checks it (complete archive, and the commit
+   id stored inside the zip must match);
+3. extracts it over this folder. Your files are kept: ``pymc_bot_config.json``, ``.venv``,
+   ``models/``, recordings, ``.git`` and anything else that is not part of the project are never
+   touched, and every project file you changed is first copied to ``.pymc_backup/<time>/``;
+4. removes files the project deleted since your last update - but only files you never edited.
+
+A git clone works too: it is updated the same way (``.git`` is left alone, so ``git status`` will
+show the new files as changes - commit, stash or reset them as you like).
 
 Afterwards ``pip install -r requirements.txt`` (and ``npm install``) run only if those files
 changed, using ``.venv`` when it exists. The mod update finds ``pymcbot-<version>+<mc>.jar``
@@ -25,7 +29,8 @@ in your mods folder, downloads the jar for the same Minecraft version from the n
 release, checks its size, SHA-256 and ``fabric.mod.json``, and keeps the old one as ``*.jar.old``.
 
 Only the Python standard library is used, so the updater works before anything is installed.
-Set ``GITHUB_TOKEN`` to raise GitHub's API limit (60 requests/hour without it).
+Set ``GITHUB_TOKEN`` to raise GitHub's API limit (60 requests/hour without it); without the API
+the updater still works by downloading the zip and reading the commit id stored in it.
 
 Made with love by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/
 """
@@ -33,6 +38,7 @@ Made with love by codero-sus - https://github.com/codero-sus - https://the-coder
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
 import json
@@ -44,6 +50,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -51,7 +58,6 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent
 REPO = "codero-sus/PyMC_Bot"
-DEFAULT_BRANCH = "main"
 API = "https://api.github.com"
 CODELOAD = "https://codeload.github.com"
 USER_AGENT = "PyMC_Bot-updater"
@@ -69,12 +75,68 @@ PROTECTED = (".git", ".venv", "venv", "node_modules", "models", ".pymc_profiles"
              "pymc_bot_config.json", STATE_FILE, "pymc-playtime")
 
 
+# ---------------------------------------------------------------------------- update channel
+#
+# The branch this build updates from is stored sealed (XOR with a fixed key, base85, reversed) so
+# it does not show up as plain text in this file, in the console output or in error messages.
+# This only hides the name from casual reading - it is not encryption. Maintainers re-seal a new
+# branch with:  python updater.py --seal <branch>   and paste the result into _CHANNEL.
+_SEAL_KEY = hashlib.sha256(b"PyMC_Bot:update-channel:v1").digest()
+_CHANNEL = (
+    "?43GhL@Uq!fF+s"
+    "ERTSYozS}+{qdR1"
+)
+
+
+def _xor(data: bytes) -> bytes:
+    return bytes(byte ^ _SEAL_KEY[index % len(_SEAL_KEY)] for index, byte in enumerate(data))
+
+
+def seal(text: str) -> str:
+    """Seal a branch name for ``_CHANNEL``."""
+    return base64.b85encode(_xor(text.encode("utf-8"))).decode("ascii")[::-1]
+
+
+def unseal(blob: str) -> str:
+    return _xor(base64.b85decode(blob[::-1].encode("ascii"))).decode("utf-8")
+
+
+def update_channel() -> str:
+    """The branch this build follows (never printed)."""
+    return unseal(_CHANNEL)
+
+
+def _secret_forms(ref: str) -> set[str]:
+    """Every way a ref can appear in URLs, archive folder names and messages."""
+    forms = {ref, urllib.parse.quote(ref, safe=""), urllib.parse.quote(ref, safe="/"), ref.replace("/", "-")}
+    return {form for form in forms if len(form) >= 4}
+
+
+def redact(text: str, refs: tuple[str, ...] = ()) -> str:
+    """``text`` with the update channel (and any other hidden ``refs``) replaced by a placeholder."""
+    out = str(text)
+    hidden = set(refs)
+    try:
+        hidden.add(update_channel())
+    except (ValueError, UnicodeDecodeError):  # pragma: no cover - only if _CHANNEL was mangled
+        pass
+    for ref in hidden:
+        for form in sorted(_secret_forms(ref), key=len, reverse=True):
+            out = out.replace(form, "<update channel>")
+    return out
+
+
 class UpdateError(Exception):
     """A problem the user can act on; printed without a traceback."""
 
 
+class RateLimited(UpdateError):
+    """GitHub's API limit is used up (the zip download still works)."""
+
+
 def say(message: str = "") -> None:
-    print(f"[update] {message}" if message else "", flush=True)
+    # Every line goes through redact(), so the update channel can never reach the console.
+    print(f"[update] {redact(message)}" if message else "", flush=True)
 
 
 # ---------------------------------------------------------------------------- HTTP
@@ -94,11 +156,11 @@ def http_get(url: str, accept: str = "application/vnd.github+json", timeout: flo
         with urllib.request.urlopen(_request(url, accept), timeout=timeout) as response:
             return response.read()
     except urllib.error.HTTPError as exc:
-        if exc.code == 403 and "rate limit" in exc.read().decode("utf-8", "replace").lower():
-            raise UpdateError("GitHub's API rate limit was reached - wait an hour or set GITHUB_TOKEN") from exc
+        if exc.code == 429 or (exc.code == 403 and "rate limit" in exc.read().decode("utf-8", "replace").lower()):
+            raise RateLimited("GitHub's API rate limit was reached - wait an hour or set GITHUB_TOKEN") from exc
         if exc.code == 404:
-            raise UpdateError(f"not found on GitHub: {url}") from exc
-        raise UpdateError(f"GitHub answered HTTP {exc.code} for {url}") from exc
+            raise UpdateError(f"not found on GitHub: {redact(url)}") from exc
+        raise UpdateError(f"GitHub answered HTTP {exc.code} for {redact(url)}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise UpdateError(f"could not reach GitHub ({exc}) - are you online?") from exc
 
@@ -108,14 +170,6 @@ def http_json(url: str):
 
 
 # ---------------------------------------------------------------------------- helpers
-
-
-def run(cmd: list[str], cwd: Path = ROOT, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if check and result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise UpdateError(f"`{' '.join(cmd)}` failed: {detail}")
-    return result
 
 
 def file_hashes(root: Path, names=DEPENDENCY_FILES) -> dict[str, str | None]:
@@ -147,56 +201,50 @@ def venv_python(root: Path = ROOT) -> Path | None:
     return None
 
 
-# ---------------------------------------------------------------------------- bot: git
-
-
-def is_git_checkout(root: Path = ROOT) -> bool:
-    if not (root / ".git").exists() or shutil.which("git") is None:
-        return False
-    return run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root, check=False).stdout.strip() == "true"
-
-
-def update_git(root: Path, check: bool, autostash: bool) -> bool:
-    """Fast-forwards the checkout. Returns True when new commits were pulled."""
-    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root).stdout.strip()
-    upstream = run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=root, check=False)
-    if upstream.returncode != 0:
-        raise UpdateError(f"branch '{branch}' does not track a remote branch - run `git branch -u origin/{branch}`")
-    upstream_name = upstream.stdout.strip()
-    say(f"git checkout on '{branch}' (tracking {upstream_name}) - fetching ...")
-    run(["git", "fetch", "--quiet"], cwd=root)
-    behind = int(run(["git", "rev-list", "--count", "HEAD..@{u}"], cwd=root).stdout.strip() or 0)
-    ahead = int(run(["git", "rev-list", "--count", "@{u}..HEAD"], cwd=root).stdout.strip() or 0)
-    if behind == 0:
-        say(f"PyMC_Bot is up to date ({local_version(root)})" + (f", {ahead} local commit(s) not pushed" if ahead else ""))
-        return False
-    log = run(["git", "log", "--oneline", "--no-decorate", "-n", "10", "HEAD..@{u}"], cwd=root).stdout.strip()
-    say(f"{behind} new commit(s) on {upstream_name}:")
-    for line in log.splitlines():
-        say(f"  {line}")
-    if check:
-        return False
-    if ahead:
-        raise UpdateError(f"your branch has {ahead} local commit(s) and the remote moved on - "
-                          "merge or rebase yourself (`git pull --rebase`)")
-    dirty = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root).stdout.strip()
-    if dirty and not autostash:
-        raise UpdateError("you have local changes to repository files:\n" + dirty
-                          + "\n  commit or stash them, or run the updater with --autostash")
-    cmd = ["git", "pull", "--ff-only", "--quiet"] + (["--autostash"] if autostash else [])
-    run(cmd, cwd=root)
-    say(f"pulled {behind} commit(s) - PyMC_Bot is now {local_version(root)} "
-        f"({run(['git', 'rev-parse', '--short', 'HEAD'], cwd=root).stdout.strip()})")
-    return True
-
-
 # ---------------------------------------------------------------------------- bot: zip
 
 
-def remote_commit(repo: str, branch: str) -> dict:
-    data = http_json(f"{API}/repos/{repo}/commits/{branch}")
+def git_checkout_present(root: Path = ROOT) -> bool:
+    """A ``.git`` folder is there (it is never used or touched, only mentioned)."""
+    return (root / ".git").exists()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def remote_commit(repo: str, ref: str) -> dict:
+    """The newest commit of ``ref`` (one API call)."""
+    data = http_json(f"{API}/repos/{repo}/commits/{urllib.parse.quote(ref, safe='')}")
     return {"sha": data["sha"], "date": data["commit"]["committer"]["date"],
             "message": data["commit"]["message"].splitlines()[0]}
+
+
+def archive_commit(archive: bytes) -> str:
+    """The commit id GitHub stores as the zip comment of a source archive ('' if missing)."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            comment = zf.comment.decode("ascii", "replace").strip()
+    except zipfile.BadZipFile as exc:
+        raise UpdateError("the download is not a valid zip archive - try again") from exc
+    return comment if re.fullmatch(r"[0-9a-f]{40}", comment) else ""
+
+
+def download_archive(repo: str, ref: str, expected_sha: str = "") -> tuple[bytes, str]:
+    """Downloads the source zip (by commit id when known) and verifies it. Returns (zip, commit)."""
+    target = expected_sha or f"refs/heads/{urllib.parse.quote(ref, safe='/')}"
+    archive = http_get(f"{CODELOAD}/{repo}/zip/{target}", accept="application/zip", timeout=300)
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            broken = zf.testzip()
+    except zipfile.BadZipFile as exc:
+        raise UpdateError("the downloaded file is not a valid zip archive - try again") from exc
+    if broken:
+        raise UpdateError(f"the downloaded zip is damaged ({redact(broken)}) - try again")
+    commit = archive_commit(archive)
+    if expected_sha and commit and commit != expected_sha:
+        raise UpdateError("the downloaded zip is not the expected commit - try again")
+    return archive, commit or expected_sha
 
 
 def read_state(root: Path) -> dict:
@@ -206,15 +254,25 @@ def read_state(root: Path) -> dict:
         return {}
 
 
-def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict[str, list[str]]:
-    """Copies the repository archive over ``root``.
+def _write_file(dest: Path, data: bytes) -> None:
+    """Write next to the target first, then swap it in (no half-written files on a crash)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".pymc-new")
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
+
+
+def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict:
+    """Extracts the repository archive over ``root``.
 
     Files that are not in the archive (config, venv, models, recordings) are left alone, protected
     folders are never written, and a repository file whose content differs (beyond CRLF/LF line
-    endings) is backed up to ``.pymc_backup/<stamp>/`` before it is replaced. Returns the written, backed-up and skipped paths.
+    endings) is backed up to ``.pymc_backup/<stamp>/`` before it is replaced. Returns the written,
+    backed-up and skipped paths plus ``files``: a manifest (path -> SHA-256) of everything the
+    archive contained, used next time to remove files the project deleted.
     """
     stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
-    report: dict[str, list[str]] = {"written": [], "backed_up": [], "skipped": []}
+    report: dict = {"written": [], "backed_up": [], "skipped": [], "files": {}}
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         if not names:
@@ -225,12 +283,13 @@ def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict[str,
             if parts[0] != top or len(parts) < 2:
                 continue
             rel = PurePosixPath(*parts[1:])
-            if rel.is_absolute() or ".." in rel.parts:
-                raise UpdateError(f"refusing unsafe path in archive: {name}")
+            if rel.is_absolute() or ".." in rel.parts or ":" in rel.parts[0]:
+                raise UpdateError(f"refusing unsafe path in archive: {redact(name)}")
             if is_protected(rel):
                 report["skipped"].append(str(rel))
                 continue
             data = zf.read(name)
+            report["files"][str(rel)] = _sha256(data)
             dest = root.joinpath(*rel.parts)
             if dest.is_file():
                 current = dest.read_bytes()
@@ -242,8 +301,7 @@ def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict[str,
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(dest, backup)
                     report["backed_up"].append(str(rel))
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            _write_file(dest, data)
             mode = (zf.getinfo(name).external_attr >> 16) & 0o777
             if mode & 0o100 and os.name != "nt":
                 dest.chmod(dest.stat().st_mode | 0o111)
@@ -251,28 +309,86 @@ def apply_zip(archive: bytes, root: Path, stamp: str | None = None) -> dict[str,
     return report
 
 
-def update_zip(root: Path, repo: str, branch: str, check: bool) -> bool:
-    say(f"downloaded copy (no git) - checking {repo}@{branch} on GitHub ...")
-    remote = remote_commit(repo, branch)
+def remove_deleted(root: Path, old_files: dict, new_files: dict) -> dict[str, list[str]]:
+    """Deletes files the project removed since the last zip update - only if you never edited them."""
+    removed: list[str] = []
+    kept: list[str] = []
+    for rel, digest in sorted(old_files.items()):
+        if rel in new_files:
+            continue
+        path_rel = PurePosixPath(rel)
+        if path_rel.is_absolute() or ".." in path_rel.parts or is_protected(path_rel):
+            continue
+        path = root.joinpath(*path_rel.parts)
+        if not path.is_file():
+            continue
+        if _sha256(path.read_bytes()) != digest:
+            kept.append(rel)  # you changed it - leave it to you
+            continue
+        path.unlink()
+        removed.append(rel)
+        parent = path.parent
+        while parent != root and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+    return {"removed": removed, "kept": kept}
+
+
+def update_zip(root: Path, repo: str, ref: str | None, check: bool) -> bool:
+    """Updates PyMC_Bot from a downloaded source zip. ``ref`` None = this build's update channel."""
+    channel = ref or update_channel()
+    where = "the update channel" if ref is None else "the chosen branch"
+    if git_checkout_present(root):
+        say("a .git folder is here - it is not used: the update comes as a zip and .git is left alone")
+    say(f"checking {where} on GitHub ...")
     state = read_state(root)
+    archive: bytes | None = None
+    try:
+        remote = remote_commit(repo, channel)
+    except RateLimited:
+        # No API calls left: the zip itself says which commit it is.
+        say("GitHub's API limit is used up - downloading the zip to compare instead")
+        archive, sha = download_archive(repo, channel)
+        if not sha:
+            raise
+        remote = {"sha": sha, "date": "", "message": "(details need the GitHub API)"}
     if state.get("sha") == remote["sha"]:
         say(f"PyMC_Bot is up to date ({local_version(root)}, {remote['sha'][:7]})")
         return False
     known = f"installed {state['sha'][:7]}" if state.get("sha") else "installed version unknown"
-    say(f"newest commit {remote['sha'][:7]} ({remote['date'][:10]}): {remote['message']} [{known}]")
+    when = f" ({remote['date'][:10]})" if remote.get("date") else ""
+    say(f"newest commit {remote['sha'][:7]}{when}: {remote['message']} [{known}]")
     if check:
         return False
-    say("downloading the source zip ...")
-    archive = http_get(f"{CODELOAD}/{repo}/zip/{remote['sha']}", accept="application/zip", timeout=300)
+    if archive is None:
+        say("downloading the source zip ...")
+        archive, _ = download_archive(repo, channel, remote["sha"])
+    say(f"extracting {len(archive) / 1048576:.1f} MB ...")
     report = apply_zip(archive, root)
-    (root / STATE_FILE).write_text(json.dumps({"repo": repo, "branch": branch, **remote}, indent=2) + "\n",
-                                   encoding="utf-8")
+    cleanup = remove_deleted(root, state.get("files") or {}, report["files"]) if state.get("files") else None
+    (root / STATE_FILE).write_text(json.dumps({
+        "repo": repo,
+        "channel": "default" if ref is None else "custom",
+        **remote,
+        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "files": report["files"],
+    }, indent=2) + "\n", encoding="utf-8")
     say(f"updated {len(report['written'])} file(s) - PyMC_Bot is now {local_version(root)} ({remote['sha'][:7]})")
     if report["backed_up"]:
         say(f"your edited copies of {len(report['backed_up'])} file(s) were saved in {BACKUP_DIR}/ first:")
         for rel in report["backed_up"][:15]:
             say(f"  {rel}")
-    say("files deleted upstream are not removed - delete them by hand if they get in the way")
+    if cleanup is None:
+        say("first zip update here: files the project deletes from now on are removed on the next update")
+    else:
+        if cleanup["removed"]:
+            say(f"removed {len(cleanup['removed'])} file(s) the project deleted:")
+            for rel in cleanup["removed"][:15]:
+                say(f"  {rel}")
+        if cleanup["kept"]:
+            say(f"kept {len(cleanup['kept'])} deleted-upstream file(s) because you edited them:")
+            for rel in cleanup["kept"][:15]:
+                say(f"  {rel}")
     return True
 
 
@@ -473,9 +589,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mods-dir", type=Path, help="mods folder (default: the official launcher's .minecraft/mods)")
     parser.add_argument("--pre", action="store_true", help="allow mod pre-releases even when a stable release exists")
     parser.add_argument("--reinstall", action="store_true", help="download the mod again even if it is up to date")
-    parser.add_argument("--branch", default=DEFAULT_BRANCH, help=f"branch for downloaded copies (default {DEFAULT_BRANCH})")
+    parser.add_argument("--branch", default=None, metavar="NAME",
+                        help="update from another branch instead of this build's update channel")
     parser.add_argument("--repo", default=REPO, help=argparse.SUPPRESS)
-    parser.add_argument("--autostash", action="store_true", help="git: stash local edits, update, re-apply them")
+    parser.add_argument("--seal", metavar="BRANCH", help=argparse.SUPPRESS)  # maintainers: value for _CHANNEL
     deps = parser.add_mutually_exclusive_group()
     deps.add_argument("--deps", action="store_true", help="reinstall dependencies even if unchanged")
     deps.add_argument("--no-deps", action="store_true", help="never touch dependencies")
@@ -484,16 +601,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     args = build_parser().parse_args(argv)
+    if args.seal:
+        print(seal(args.seal))
+        return 0
     if args.mc and not (args.mod or args.mod_only):
         args.mod = True
     say(f"PyMC_Bot updater - {args.repo}" + ("  (check only)" if args.check else ""))
     try:
         if not args.mod_only:
             before = file_hashes(root)
-            if is_git_checkout(root):
-                pulled = update_git(root, args.check, args.autostash)
-            else:
-                pulled = update_zip(root, args.repo, args.branch, args.check)
+            pulled = update_zip(root, args.repo, args.branch, args.check)
             if not args.no_deps and (pulled or args.deps):
                 update_dependencies(root, before, args.deps, args.check)
             if pulled:
@@ -503,6 +620,9 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
             update_mod(args.mods_dir or default_mods_dir(), args.repo, args.mc, args.pre, args.check, args.reinstall)
     except UpdateError as exc:
         say(f"ERROR: {exc}")
+        return 1
+    except Exception as exc:  # never show a traceback (it could contain the update channel)
+        say(f"ERROR: unexpected {type(exc).__name__}: {exc}")
         return 1
     except KeyboardInterrupt:
         say("cancelled")

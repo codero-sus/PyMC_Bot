@@ -39,7 +39,7 @@ from pymc_bot.events import EventLog
 TICK = 0.4          # how often the keeper looks at the fleet
 MAX_BURST = 3       # habits per burst at most
 MAX_CONCURRENT = 32  # bursts in flight at once (a burst can take a few seconds)
-HABITS = ("look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing")
+HABITS = ("look", "look_at_player", "stroll", "strafe", "hop", "crouch", "swing", "hotbar")
 
 
 @dataclass
@@ -252,6 +252,8 @@ class AntiAfkKeeper:
             habits.append("crouch")
         if settings.swing:
             habits.append("swing")
+        if settings.hotbar and sum(1 for i in range(9) if bot.inventory().slots[i]) >= 2:
+            habits.append("hotbar")
         return habits
 
     def _perform(self, bot: MinecraftBot, habit: str, settings: AntiAfkSettings) -> bool:
@@ -269,7 +271,27 @@ class AntiAfkKeeper:
             return self._habit_crouch(bot)
         if habit == "swing":
             return self._habit_swing(bot)
+        if habit == "hotbar":
+            return self._habit_hotbar(bot)
         return False
+
+    def _habit_hotbar(self, bot: MinecraftBot) -> bool:
+        """Scroll through a hotbar slot or two and come back - what idle players' fingers do."""
+        inv = bot.inventory()
+        filled = [i for i in range(9) if inv.slots[i]]
+        if len(filled) < 2:
+            return False
+        home = inv.selected
+        with bot.activity("antiafk:hotbar"):
+            current = home
+            for _ in range(self._rng.randint(1, 3)):
+                current = (current + self._rng.choice([-1, 1])) % 9
+                if not bot.select_slot(current + 1):
+                    return False
+                time.sleep(self._rng.uniform(0.15, 0.45))
+            if self._rng.random() < 0.85:  # usually back to what they were holding
+                bot.select_slot(home + 1)
+        return True
 
     # --------------------------------------------------------- the habit impls
     def _habit_look(self, bot: MinecraftBot) -> bool:
