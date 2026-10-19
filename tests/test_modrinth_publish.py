@@ -282,7 +282,8 @@ def test_modrinth_page_is_about_pymc_bot_and_honest_about_privacy():
 
 
 def test_modrinth_pictures_load_from_the_main_branch():
-    """Modrinth shows pictures straight from GitHub, so they must come from main (not a branch) and exist."""
+    """Modrinth shows pictures straight from GitHub: they load from the root of main (where icon.png and
+    banner.jpg were uploaded - the same files as docs/modrinth/), never from a working branch."""
     import re
 
     main = "https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/"
@@ -292,8 +293,10 @@ def test_modrinth_pictures_load_from_the_main_branch():
         assert pictures, doc
         for url in pictures:
             assert url.startswith(main), f"{doc}: {url} does not load from main"
-            assert (ROOT / url[len(main):]).is_file(), f"{doc}: {url} points to a missing file"
-    assert (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8").startswith(f"![PyMC Bot]({main}docs/modrinth/banner.jpg)")
+            name = url[len(main):]
+            assert "/" not in name, f"{doc}: {url} is not in the root of main"
+            assert (ROOT / "docs/modrinth" / name).is_file(), f"{doc}: {name} is not one of the Modrinth pictures"
+    assert (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8").startswith(f"![PyMC Bot]({main}banner.jpg)")
 
 
 def _png_size(path: Path) -> tuple[int, int]:
