@@ -1,6 +1,10 @@
 # Modrinth listing – copy & paste
 
-Everything you need to fill in on modrinth.com for **PyMC Bot**. Files referenced here are in this folder.
+Everything you need to fill in on modrinth.com for **PyMC Bot**. All pictures load from the `main` branch.
+
+![PyMC Bot logo](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/icon.png)
+
+![PyMC Bot banner](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg)
 
 ## 1. Create the project (modrinth.com → **+** → *Create a project*)
 
@@ -14,14 +18,15 @@ Everything you need to fill in on modrinth.com for **PyMC Bot**. Files reference
 
 ## 2. Icon
 
-Upload **`icon.png`** (512×512, 146 KB – the limit is 256 KiB).
+Upload the logo (512×512, 146 KB – the limit is 256 KiB): download it from
+https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/icon.png
 
 ## 3. Description
 
 Paste the whole of [`../../mod/MODRINTH.md`](../../mod/MODRINTH.md) into *Description*
 (after the GitHub connection below, every release from `main` re-syncs it automatically).
-The banner at the top loads from GitHub once PR #1 is merged into `main`. To show it before that, upload
-`banner.jpg` to the gallery first, copy its image link and replace the first line of the description with it.
+The banner at the top of the description is https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg –
+it appears on Modrinth as soon as the picture is on `main` (i.e. after PR #1 is merged).
 
 ## 4. Settings → General / Tags
 
@@ -45,7 +50,7 @@ The banner at the top loads from GitHub once PR #1 is merged into `main`. To sho
 
 | Image | Title | Description | Featured |
 | --- | --- | --- | --- |
-| `banner.jpg` | `PyMC Bot` | `Record how you play, then let a bot play like you.` | ✅ |
+| [banner.jpg](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/docs/modrinth/banner.jpg) | `PyMC Bot` | `Record how you play, then let a bot play like you.` | ✅ |
 
 ## 7. Versions (one per Minecraft version)
 
