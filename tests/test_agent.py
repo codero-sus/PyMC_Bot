@@ -84,7 +84,7 @@ def test_heuristic_keeps_busy():
     policy = HeuristicPolicy(seed=4)
     state = {"health": 20, "food": 20, "players": [], "time_of_day": "day"}
     actions = {policy.decide(state, []).action for _ in range(20)}
-    assert actions <= {"wander", "say", "mine"}
+    assert actions <= {"wander", "say", "mine", "look_around"}  # no inventory known -> no slot fidgets
     assert "wander" in actions
 
 

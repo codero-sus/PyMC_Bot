@@ -134,7 +134,7 @@ jobs:
           test -f "$mods"/pymc*+1.21.4.jar
           python updater.py --mod-only --mods-dir "$mods" | tee again.log
           grep -q "is up to date" again.log
-      - name: Live update of a downloaded (non-git) copy
+      - name: Live zip update of a downloaded copy
         shell: bash
         run: |
           exec > >(tee -a "$GITHUB_WORKSPACE/updater-live.log") 2>&1
@@ -146,10 +146,17 @@ jobs:
           echo '{"host": "keep-me"}' > "$copy/pymc_bot_config.json"
           echo "local edit" >> "$copy/README.md"
           cd "$copy"
-          python updater.py --no-deps --branch "${{ github.head_ref || github.ref_name }}"
+          # The default update channel only - the updater never prints which branch that is.
+          python updater.py --no-deps | tee update.log
           grep -q keep-me pymc_bot_config.json
           ls .pymc_backup/*/README.md
-          python updater.py --check --branch "${{ github.head_ref || github.ref_name }}" | grep -q "up to date"
+          python - <<'PY'
+          import json
+          state = json.load(open(".pymc_update.json"))
+          assert state["channel"] == "default" and len(state["sha"]) == 40 and state["files"], state.keys()
+          PY
+          python updater.py --check | grep -q "up to date"
+          if grep -qi "git pull\|git fetch" update.log; then echo "the updater must not use git"; exit 1; fi
       - name: Publish live update diagnostics
         if: failure()
         shell: bash

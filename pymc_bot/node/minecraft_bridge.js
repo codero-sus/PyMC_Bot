@@ -217,6 +217,25 @@ function buildState() {
   entities.sort((a, b) => a.dist - b.dist);
   entities.length = Math.min(entities.length, ADVANCED_ENTITY_LIMIT);
   const heldItem = bot.heldItem && bot.heldItem.name ? `minecraft:${bot.heldItem.name}` : '';
+  const inv = inventoryState();
+  const groundItems = [];
+  for (const id of Object.keys(tracked)) {
+    const entity = tracked[id];
+    if (!entity || !entity.position || entity.name !== 'item') continue;
+    let dropped = null;
+    try {
+      dropped = typeof entity.getDroppedItem === 'function' ? entity.getDroppedItem() : null;
+    } catch (err) {
+      dropped = null;
+    }
+    groundItems.push({
+      item: dropped && dropped.name ? `minecraft:${dropped.name}` : 'minecraft:unknown',
+      count: dropped ? dropped.count : 1,
+      dist: Number(pos.distanceTo(entity.position).toFixed(2)),
+    });
+  }
+  groundItems.sort((a, b) => a.dist - b.dist);
+  groundItems.length = Math.min(groundItems.length, 12);
 
   const timeOfDay = bot.time && typeof bot.time.timeOfDay === 'number' ? bot.time.timeOfDay : 0;
 
@@ -236,6 +255,14 @@ function buildState() {
     inventory,
     held_item: heldItem,
     entities,
+    ground_items: groundItems,
+    // Slot layout as a player sees it: 0-8 hotbar, 9-35 backpack (pymc_bot.inventory).
+    slots: inv.slots,
+    selected_slot: inv.selected,
+    armor_slots: inv.armor,
+    armor: Object.values(inv.armor).filter(Boolean).map((stack) => stack.name),
+    offhand: inv.offhand ? inv.offhand.name : '',
+    sleeping: Boolean(bot.isSleeping),
   };
 }
 
@@ -449,7 +476,8 @@ function cmdStopPath() {
 async function cmdDig(params) {
   if (!bot) throw new Error('not connected');
   const blockName = String(params.block || 'stone').trim().toLowerCase();
-  const budgetMs = Number(params.timeout || 20000);
+  const rawTimeout = Number(params.timeout || 20);
+  const budgetMs = rawTimeout <= 1000 ? rawTimeout * 1000 : rawTimeout; // seconds (ms accepted too)
   const deadline = Date.now() + budgetMs;
 
   const mcData = require('minecraft-data')(bot.version);
@@ -495,12 +523,22 @@ async function cmdDig(params) {
 async function cmdEat(params) {
   if (!bot) throw new Error('not connected');
   const mcData = require('minecraft-data')(bot.version);
-  const item = (bot.inventory ? bot.inventory.items() : []).find(
-    (it) => mcData.foodsByName && mcData.foodsByName[it.name]
-  );
-  if (!item) return { ate: false, reason: 'no food in inventory' };
+  const foods = mcData.foodsByName || {};
+  let item = params.slot === undefined || params.slot === null ? null : slotItem(params.slot);
+  if (item && !foods[item.name]) throw new Error(`${item.name} is not food`);
+  if (!item) {
+    const edible = (bot.inventory ? bot.inventory.items() : []).filter((it) => foods[it.name]);
+    edible.sort((a, b) => (foods[b.name].foodPoints || 0) - (foods[a.name].foodPoints || 0));
+    item = edible[0];
+  }
+  if (!item) throw new Error('no food in the inventory');
+  if (bot.food >= 20 && !['golden_apple', 'enchanted_golden_apple', 'chorus_fruit'].includes(item.name)) {
+    throw new Error('not hungry');
+  }
+  const before = bot.quickBarSlot;
   await bot.equip(item, 'hand');
   await withTimeout(bot.consume(), 8000, 'eating');
+  if (params.restore !== false && before !== bot.quickBarSlot) bot.setQuickBarSlot(before);
   return { ate: true, item: item.name };
 }
 
@@ -539,6 +577,198 @@ async function cmdDisconnect() {
   return { disconnected: true };
 }
 
+/* -------------------------------------------------------- inventory & life */
+// Python numbers the inventory like a player sees it: 0-8 hotbar, 9-35 backpack.
+// mineflayer's window: 5-8 armour, 9-35 backpack, 36-44 hotbar, 45 off-hand.
+const ARMOR_WINDOW = { head: 5, chest: 6, legs: 7, feet: 8 };
+const DESTINATIONS = { hand: 'hand', offhand: 'off-hand', head: 'head', chest: 'torso', legs: 'legs', feet: 'feet' };
+
+function windowSlot(index) {
+  const i = Number(index);
+  if (!Number.isInteger(i) || i < 0 || i > 35) throw new Error(`slot ${index} does not exist (0-35)`);
+  return i < 9 ? 36 + i : i;
+}
+
+function stackOf(item) {
+  return item ? { name: item.name, count: item.count } : null;
+}
+
+function inventoryState() {
+  const slots = [];
+  const window = bot && bot.inventory ? bot.inventory.slots : [];
+  for (let i = 0; i < 36; i += 1) slots.push(stackOf(window[windowSlot(i)]));
+  const armor = {};
+  for (const [name, slot] of Object.entries(ARMOR_WINDOW)) armor[name] = stackOf(window[slot]);
+  return { slots, armor, offhand: stackOf(window[45]), selected: bot ? bot.quickBarSlot || 0 : 0 };
+}
+
+function slotItem(index) {
+  const item = bot.inventory.slots[windowSlot(index)];
+  if (!item) throw new Error(`slot ${index} is empty`);
+  return item;
+}
+
+function cmdSelectSlot(params) {
+  if (!bot) throw new Error('not connected');
+  const slot = Number(params.slot);
+  if (!Number.isInteger(slot) || slot < 0 || slot > 8) throw new Error('hotbar slots are 0-8');
+  bot.setQuickBarSlot(slot);
+  return { selected: slot };
+}
+
+async function cmdMoveSlot(params) {
+  if (!bot) throw new Error('not connected');
+  const from = windowSlot(params.from);
+  const to = windowSlot(params.to);
+  if (!bot.inventory.slots[from]) throw new Error(`slot ${params.from} is empty`);
+  await withTimeout(bot.moveSlotItem(from, to), 5000, 'moving the item');
+  return { moved: true };
+}
+
+async function cmdEquip(params) {
+  if (!bot) throw new Error('not connected');
+  const destination = DESTINATIONS[String(params.destination || 'hand')];
+  if (!destination) throw new Error('destination: hand, offhand, head, chest, legs or feet');
+  const item = slotItem(params.slot);
+  await withTimeout(bot.equip(item, destination), 5000, 'equipping');
+  return { equipped: item.name, destination: params.destination || 'hand' };
+}
+
+async function cmdUnequip(params) {
+  if (!bot) throw new Error('not connected');
+  const destination = DESTINATIONS[String(params.destination || '')];
+  if (!destination || destination === 'hand') throw new Error('unequip: offhand, head, chest, legs or feet');
+  await withTimeout(bot.unequip(destination), 5000, 'unequipping');
+  return { unequipped: params.destination };
+}
+
+async function cmdSwapHands() {
+  if (!bot) throw new Error('not connected');
+  await withTimeout(bot.moveSlotItem(36 + bot.quickBarSlot, 45), 5000, 'swapping hands');
+  return { swapped: true };
+}
+
+async function cmdToss(params) {
+  if (!bot) throw new Error('not connected');
+  const item = slotItem(params.slot);
+  const count = params.count === undefined || params.count === null ? item.count : Math.max(1, Number(params.count));
+  if (count >= item.count) await withTimeout(bot.tossStack(item), 5000, 'dropping');
+  else await withTimeout(bot.toss(item.type, item.metadata === undefined ? null : item.metadata, count), 5000, 'dropping');
+  return { tossed: item.name, count: Math.min(count, item.count) };
+}
+
+async function cmdPlace(params) {
+  if (!bot) throw new Error('not connected');
+  const item = slotItem(params.slot);
+  const Vec3 = bot.entity.position.constructor;
+  await withTimeout(bot.equip(item, 'hand'), 5000, 'equipping');
+  const base = bot.entity.position.floored();
+  const yaw = bot.entity.yaw;
+  const ahead = [Math.round(-Math.sin(yaw)), Math.round(-Math.cos(yaw))];
+  const options = [ahead, [1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => dx || dz);
+  for (const [dx, dz] of options) {
+    const target = base.offset(dx, 0, dz);
+    const here = bot.blockAt(target);
+    const below = bot.blockAt(target.offset(0, -1, 0));
+    if (!here || !below || here.boundingBox !== 'empty' || below.boundingBox !== 'block') continue;
+    await bot.lookAt(target.offset(0.5, 0.5, 0.5));
+    await withTimeout(bot.placeBlock(below, new Vec3(0, 1, 0)), 5000, 'placing');
+    return { placed: item.name, x: target.x, y: target.y, z: target.z };
+  }
+  throw new Error('no free spot next to you to place a block');
+}
+
+async function cmdUseItem(params) {
+  if (!bot) throw new Error('not connected');
+  const seconds = Math.max(0.1, Math.min(5, Number(params.seconds || 0.3)));
+  bot.activateItem(Boolean(params.offhand));
+  await sleep(seconds * 1000);
+  bot.deactivateItem();
+  return { used: bot.heldItem ? bot.heldItem.name : 'hand', seconds };
+}
+
+async function walkNear(position, range, budgetMs) {
+  if (bot.entity.position.distanceTo(position) <= range + 0.5) return true;
+  if (!pathfinder || !bot.pathfinder) return false;
+  bot.pathfinder.setGoal(new goals.GoalNear(position.x, position.y, position.z, range));
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline && bot.entity.position.distanceTo(position) > range + 0.5) await sleep(200);
+  stopPath();
+  return bot.entity.position.distanceTo(position) <= range + 0.5;
+}
+
+async function cmdSleep() {
+  if (!bot) throw new Error('not connected');
+  if (bot.isSleeping) return { sleeping: true };
+  const bed = bot.findBlock({ matching: (block) => bot.isABed(block), maxDistance: 32 });
+  if (!bed) throw new Error('no bed within 32 blocks');
+  if (!(await walkNear(bed.position, 2, 15000))) throw new Error('could not reach the bed');
+  await withTimeout(bot.sleep(bed), 5000, 'getting into bed');
+  return { sleeping: true };
+}
+
+async function cmdWake() {
+  if (!bot) throw new Error('not connected');
+  if (bot.isSleeping) await withTimeout(bot.wake(), 5000, 'getting up');
+  return { sleeping: false };
+}
+
+async function cmdCollect(params) {
+  if (!bot) throw new Error('not connected');
+  const radius = Math.max(1, Math.min(32, Number(params.radius || 12)));
+  const deadline = Date.now() + Math.max(2000, Number(params.seconds || 15) * 1000);
+  let picked = 0;
+  while (Date.now() < deadline) {
+    const drops = Object.values(bot.entities).filter(
+      (e) => e && e.name === 'item' && e.position && bot.entity.position.distanceTo(e.position) <= radius
+    );
+    if (!drops.length) break;
+    drops.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+    const target = drops[0];
+    if (!pathfinder || !bot.pathfinder) throw new Error('pathfinder_unavailable');
+    bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 0));
+    const until = Math.min(deadline, Date.now() + 6000);
+    while (Date.now() < until && bot.entities[target.id]) await sleep(150);
+    if (!bot.entities[target.id]) picked += 1;
+    else break;
+  }
+  stopPath();
+  if (!picked) throw new Error(`nothing to pick up within ${radius} blocks`);
+  return { picked };
+}
+
+async function cmdAttackMob(params) {
+  if (!bot) throw new Error('not connected');
+  const wanted = params.mob ? String(params.mob).toLowerCase().replace(/^minecraft:/, '') : '';
+  const range = Math.max(4, Math.min(24, Number(params.range || 16)));
+  const candidates = Object.values(bot.entities).filter((e) => {
+    if (!e || e === bot.entity || !e.position || e.type === 'player' || e.username || e.name === 'item') return false;
+    if (bot.entity.position.distanceTo(e.position) > range) return false;
+    const name = String(e.name || '').toLowerCase();
+    return wanted ? name === wanted : HOSTILE_ENTITIES.has(name);
+  });
+  if (!candidates.length) throw new Error(wanted ? `no ${wanted} within ${range} blocks` : `no hostile mob within ${range} blocks`);
+  candidates.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+  const target = candidates[0];
+  const deadline = Date.now() + Math.max(2000, Math.min(30000, Number(params.seconds || 15) * 1000));
+  let hits = 0;
+  while (Date.now() < deadline && bot.entities[target.id] && target.isValid !== false) {
+    const distance = bot.entity.position.distanceTo(target.position);
+    if (distance > 3 && pathfinder && bot.pathfinder) {
+      bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
+    }
+    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.85, 0));
+    if (distance <= 3.2) {
+      bot.attack(target);
+      hits += 1;
+    }
+    await sleep(600 + Math.random() * 150); // attack cooldown, like a player timing the swing
+  }
+  stopPath();
+  const killed = !bot.entities[target.id] || target.isValid === false;
+  return { target: target.name, hits, killed };
+}
+
 const COMMANDS = {
   connect: cmdConnect,
   say: cmdSay,
@@ -553,6 +783,18 @@ const COMMANDS = {
   attack: cmdAttack,
   jump: cmdJump,
   swing_arm: cmdSwingArm,
+  select_slot: cmdSelectSlot,
+  move_slot: cmdMoveSlot,
+  equip: cmdEquip,
+  unequip: cmdUnequip,
+  swap_hands: cmdSwapHands,
+  toss: cmdToss,
+  place: cmdPlace,
+  use_item: cmdUseItem,
+  sleep: cmdSleep,
+  wake: cmdWake,
+  collect: cmdCollect,
+  attack_mob: cmdAttackMob,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),

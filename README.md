@@ -36,8 +36,12 @@ Minecraft versions), and it is driven purely by JSON from Python.
 
 * **Works without Minecraft** – a built-in simulated world (`backend: simulated`, reporting players, a mob, an animal, a dropped
   stack and a starter inventory, so trained models have entity and item inputs) lets you try the whole panel, movement and AI loop on any machine, and it is what the test suite runs against.
-* **Works without an LLM** – if Ollama/Cortex is disabled or unreachable the bot keeps playing with a small
+* **Works without an LLM** – if Ollama/Cortex is disabled or unreachable the bot keeps playing with a
   built-in heuristic policy, so it never just stands there.
+* **Lives like a real player** – it handles its inventory the way people do: presses hotbar keys, pulls items
+  from the backpack into the hotbar and back, sorts the hotbar, puts on the best armour, holds the right tool
+  before mining and its best weapon before a fight, eats sensibly, picks up drops, hands items to players
+  who ask, sleeps at night, flees when hurt and waves or crouch-greets people ([details](#lives-like-a-real-player)).
 * **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
   bearer key read from the environment and never saved).
 * **Plays and talks like a human** – pick a behaviour (helper, companion, explorer, pro, …); the LLM gets a
@@ -46,8 +50,8 @@ Minecraft versions), and it is driven purely by JSON from Python.
   and no spam ([details](#plays-and-talks-like-a-human)).
 * **One bot or a hundred** – the *Players* panel spawns offline bots from a name pattern, adds premium
   players one email at a time, and can keep the crowd alive (rejoin on kick, optional idle chatter).
-* **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm and turns its
-  head in smooth, randomised bursts, so servers do not kick them for standing still. It never fights the AI
+* **Anti-AFK built in** – every bot periodically walks a step, hops, crouches, swings its arm, scrolls its
+  hotbar and turns its head in smooth, randomised bursts, so servers do not kick them for standing still. It never fights the AI
   or your manual commands, and it scales to the whole fleet from one thread.
 * **A panel that is nice to live in** – four themes (midnight, daylight, nether, end), a command palette
   (<kbd>Ctrl</kbd>+<kbd>K</kbd>), an at-a-glance overview strip, a section bar that follows your scroll,
@@ -150,6 +154,7 @@ while (8–25 s by default, randomised), it performs a short burst of human-ish 
 | `hop` | one or two jumps in place |
 | `crouch` | a brief sneak |
 | `swing` | swings the arm a couple of times (some plugins only check animation) |
+| `hotbar` | scrolls a slot or two along the hotbar, usually back to the item it was holding |
 
 Two or three habits are often chained, the same habit never repeats back-to-back, and the intervals are
 jittered — so the pattern does not look like a metronome. The keeper only touches bots that are **not** busy:
@@ -160,7 +165,7 @@ AI decisions, follows, mining and your manual commands always take priority.
   "enabled": true,
   "interval_min": 8.0,        // idle seconds before a burst (randomised)
   "interval_max": 25.0,
-  "look": true, "look_at_players": true, "walk": true, "jump": true, "sneak": true, "swing": true,
+  "look": true, "look_at_players": true, "walk": true, "jump": true, "sneak": true, "swing": true, "hotbar": true,
   "max_walk_distance": 3.0,
   "combo_probability": 0.35,  // chance of chaining 2-3 habits in one burst
   "verbose": false            // log every burst to the event stream
@@ -193,13 +198,17 @@ python updater.py         # anywhere
 | `updater --mod` | also updates the recorder mod in your `.minecraft/mods` folder |
 | `updater --mod-only` | only the mod |
 | `updater --mod-only --mc 1.21.4` | installs the mod for 1.21.4 when it is not there yet |
-| `updater --help` | all options (`--mods-dir`, `--pre`, `--reinstall`, `--deps`, `--no-deps`, `--branch`, `--autostash`) |
+| `updater --help` | all options (`--mods-dir`, `--pre`, `--reinstall`, `--deps`, `--no-deps`, `--branch`) |
 
-* **Cloned with git:** `git fetch` + `git pull --ff-only`. If you edited tracked files the updater
-  stops and tells you which ones; `--autostash` stashes them, updates and puts them back.
-* **Downloaded the ZIP:** the updater downloads the newest `main` source and copies it over the
-  folder. `pymc_bot_config.json`, `.venv`, `models/`, recordings and every other file of yours are
-  left alone; repository files you changed are backed up to `.pymc_backup/<time>/` first.
+* **PyMC_Bot itself – always a `.zip`, never git:** the updater asks GitHub for the newest commit
+  of this build's *update channel*, downloads exactly that commit as a source `.zip`, checks it
+  (complete archive, commit id inside the zip matches) and extracts it over the folder.
+  `pymc_bot_config.json`, `.venv`, `models/`, recordings, `.git` and every other file of yours are
+  left alone; project files you changed are backed up to `.pymc_backup/<time>/` first, and files the
+  project deleted are removed on later updates – unless you edited them. Works the same for a
+  downloaded ZIP and a git clone (git is never run; a clone just shows the new files in `git status`).
+  The channel is built into `updater.py` and never printed; `--branch NAME` follows another branch
+  instead. Out of GitHub API calls? The updater downloads the zip and reads the commit id from it.
 * **Mod:** finds `pymcbot-<version>+<mc>.jar` (or a pre-0.6 `pymcplaytime-*.jar`, which it replaces) in the mods folder (`%APPDATA%\.minecraft\mods`,
   `~/Library/Application Support/minecraft/mods`, `~/.minecraft/mods`, or `--mods-dir`),
   downloads the jar for the same Minecraft version from the newest
@@ -367,9 +376,49 @@ In the config the choice is `agent.persona` (`friendly`, `chill`, `social`, `com
 models (e.g. `llama3.1:8b`, `qwen2.5:7b`) follow the behaviour and goals noticeably better.
 
 Accepted actions: `say`, `goto`, `follow`, `wander`, `mine`, `attack` (gated), `jump`, `eat`,
-`look_at_player`, `stop`, `wait`. The full list, including which permissions gate them, is in
+`look_at_player`, `stop`, `wait`, plus the inventory and life actions below. The full list, including which permissions gate them, is in
 [docs/API.md](docs/API.md#actions). Malformed model output is caught, logged and retried with the
 heuristic policy instead of crashing the loop.
+
+### Lives like a real player
+
+The bot sees its inventory the way you do: **hotbar slots 1-9** (one is selected, so that item is in its
+hand), the **backpack** above it, **armour** and the **off-hand**. Every brain (LLM, heuristic and you in
+the panel) can use these actions:
+
+| Action | Example | What happens |
+| --- | --- | --- |
+| `select_slot` | `{"action":"select_slot","slot":3}` | presses hotbar key 3 |
+| `hold_item` | `{"action":"hold_item","item":"pickaxe"}` | takes the best pickaxe in hand, pulling it into the hotbar if it is in the backpack |
+| `to_hotbar` | `{"action":"to_hotbar","item":"cobblestone","slot":5}` | backpack → hotbar (slot optional: the first free one) |
+| `to_inventory` | `{"action":"to_inventory","slot":7}` | hotbar → backpack (or `"item":"dirt"`; no slot = the selected one) |
+| `organize` | `{"action":"organize"}` | sorts the hotbar like a tidy player: 1 weapon, 2 pickaxe, 3 axe, 4 shovel, 5 blocks, 6 torches, 7 bow, 9 food – one click at a time |
+| `wear_armor` | `{"action":"wear_armor"}` | puts on every piece that beats what it is wearing |
+| `equip` / `unequip` | `{"action":"equip","item":"shield","to":"offhand"}` | armour goes to its slot; `unequip` takes `head`/`chest`/`legs`/`feet`/`offhand` off |
+| `swap_hands` | `{"action":"swap_hands"}` | the F key |
+| `drop` / `give` | `{"action":"give","player":"Steve","item":"bread","count":2}` | `give` walks over, looks at the player and tosses it |
+| `fight` / `flee` | `{"action":"fight","mob":"zombie"}` | takes out the best weapon and fights a hostile mob (never a warden/enderman); `flee` sprints away |
+| `collect` | `{"action":"collect"}` | walks over dropped items nearby |
+| `sleep` | `{"action":"sleep"}` | finds a bed within 32 blocks (night only) |
+| `place` / `use_item` | `{"action":"place","block":"blocks"}` | places a block next to it / right-clicks the held item |
+| `emote` | `{"action":"emote","kind":"crouch"}` | `wave`, `crouch` (the sneak greeting), `nod`, `shake`, `spin` |
+| `look_around` | `{"action":"look_around"}` | a few natural glances |
+
+`item` can be an exact id (`iron_pickaxe`) or a word: `sword`, `weapon`, `pickaxe`, `axe`, `shovel`,
+`food`, `blocks`. On its own it also **switches to the right tool before mining** (pickaxe for stone, axe for
+logs, shovel for dirt…) and **eats sensibly** (no steak on an almost full bar, rotten flesh only when
+starving, golden apples only when badly hurt).
+
+The built-in heuristic brain uses all of this in the order a player would: flee when badly hurt, eat, fight a
+mob that comes close, answer people and hand over what they ask for ("can i have some bread?"), put on better
+armour, tidy a messy hotbar, pick up drops, sleep at night, greet newcomers once with a wave or crouch – then
+follow friends, mine, explore and fidget with the hotbar. The LLM sees a player's view of the inventory
+(`Hotbar (* = in your hand): [1*] iron_sword  [2] iron_pickaxe …`, armour, backpack and notes like
+"better armour in your inventory").
+
+Permissions (`agent.*`, panel **AI permissions**): `allow_inventory` (on), `allow_mob_fighting` (on) and
+`allow_building` (**off** – placing blocks and right-clicking items, so an AI does not litter a server).
+They gate the AI only; the **Inventory & life** buttons and the clickable hotbar in the panel always work.
 
 ### Demo brain (no GPU, no download)
 
@@ -528,6 +577,9 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "mode": "auto",                    // "auto" | "heuristic" | "ollama" | "cortex" | "trained"
     "allow_movement": true, "allow_chat": true, "allow_mining": true,
     "allow_attacking": false,          // keep this off unless you mean it
+    "allow_inventory": true,           // hotbar, armour, moving / dropping / giving items
+    "allow_building": false,           // placing blocks, right-clicking items
+    "allow_mob_fighting": true,        // fight hostile mobs (never players - that is allow_attacking)
     "greet_players": true, "max_chat_length": 200,
     "persona": "friendly",             // friendly | chill | social | companion | builder | explorer | miner | newbie | pro | quiet
     "persona_notes": "",               // extra character notes for the LLM (max 600 chars)
@@ -626,9 +678,10 @@ pymc_bot/
 ├── __main__.py      CLI (serve / run / train / models / action / doctor / stub)
 ├── config.py        pydantic settings + atomic JSON persistence
 ├── backends.py      simulated world + Node/mineflayer adapter
-├── bot.py           player controller: steering, pathfinding, mining, chat, stats
+├── bot.py           player controller: steering, pathfinding, mining, inventory, fighting, chat, stats
 ├── fleet.py         one or many players: spawn/populate, premium accounts, roster, chatter
-├── antiafk.py       anti-AFK keeper: human-like walking, looking, jumping, crouching, swinging
+├── antiafk.py       anti-AFK keeper: human-like walking, looking, jumping, crouching, swinging, hotbar
+├── inventory.py     hotbar / backpack / armour model, best tool / weapon / food, hotbar layout
 ├── agent.py         decision loop, action validation, permissions, heuristics
 ├── features.py      observation -> 215-float feature vector (mod & live bot share it)
 ├── playtime.py      reads the mod's NDJSON, exports datasets, synthesises demo playtime
@@ -677,7 +730,6 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 | `the transformer engine needs PyTorch` | `pip install -r requirements-train.txt`, or use the default `--engine mlp` |
 | Bot ignores the trained model | set `agent.mode` to `trained` **and** activate a run (`training.active_run`, or the panel's checkpoint table) |
 | `./gradlew build` fails in `mod/` | needs **JDK 25** to run Gradle (Loom 1.18 rejects older runtimes with "requires at least JVM runtime version 25"); pick a version with `-Pmc=<version>` (`./gradlew printTargets` lists them). See [the build troubleshooting table](mod/README.md#troubleshooting-the-build); CI builds every version on each push, so compare with the `mod (fabric <version>)` job there |
-| updater: `you have local changes` | commit/stash them, or run `updater --autostash` |
 | updater: `is in use - close Minecraft` | Windows locks loaded jars - quit the game, run `updater --mod-only` again |
 | updater: `rate limit` | wait an hour, or set `GITHUB_TOKEN` to any GitHub token |
 | Web panel unreachable from another machine | `server.host` must stay `0.0.0.0` and the port must be open |

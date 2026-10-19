@@ -23,6 +23,7 @@ from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
+from pymc_bot.inventory import HOTBAR_SIZE, Inventory, short
 from pymc_bot.mind import (
     Mind,
     build_system_prompt,
@@ -45,7 +46,35 @@ ACTIONS: dict[str, str] = {
     "look_at_player": 'turn: {"action": "look_at_player", "player": "Steve"}',
     "stop": 'stand still: {"action": "stop"}',
     "wait": 'do nothing: {"action": "wait"}',
+    # inventory - the way a player handles it (hotbar slots are 1-9)
+    "select_slot": 'press a hotbar key: {"action": "select_slot", "slot": 3}',
+    "hold_item": 'hold an item (pulls it into the hotbar): {"action": "hold_item", "item": "iron_pickaxe"}',
+    "equip": 'put on armour / off-hand: {"action": "equip", "item": "iron_helmet"} or {"item": "shield", "to": "offhand"}',
+    "unequip": 'take off: {"action": "unequip", "slot": "head"}',
+    "wear_armor": 'put on the best armour you have: {"action": "wear_armor"}',
+    "to_hotbar": 'backpack -> hotbar: {"action": "to_hotbar", "item": "cobblestone", "slot": 5}',
+    "to_inventory": 'hotbar -> backpack: {"action": "to_inventory", "slot": 7}',
+    "swap_hands": 'swap main hand and off-hand (F): {"action": "swap_hands"}',
+    "organize": 'sort the hotbar (weapon, tools, blocks, torches, food): {"action": "organize"}',
+    "drop": 'throw items away: {"action": "drop", "item": "dirt", "count": 16}',
+    "give": 'hand items to a player: {"action": "give", "player": "Steve", "item": "bread", "count": 2}',
+    # life
+    "place": 'place a block next to you: {"action": "place", "block": "cobblestone"}',
+    "use_item": 'right-click with the held item: {"action": "use_item", "seconds": 1}',
+    "sleep": 'sleep in a nearby bed (night): {"action": "sleep"}',
+    "collect": 'pick up dropped items nearby: {"action": "collect"}',
+    "fight": 'fight the nearest hostile mob: {"action": "fight", "mob": "zombie"}',
+    "flee": 'run away from danger: {"action": "flee"}',
+    "emote": 'body language: {"action": "emote", "kind": "wave"} (wave, crouch, nod, shake, spin)',
+    "look_around": 'glance around: {"action": "look_around"}',
 }
+
+#: Mobs a sensible player does not pick a fight with.
+AVOID_MOBS = {"warden", "enderman", "wither", "ender_dragon", "piglin_brute", "elder_guardian", "ravager", "evoker"}
+GIVE_WORDS = re.compile(r"\b(give|gimme|toss|throw|spare|lend|can i (have|get)|could i (have|get)|need|share)\b", re.I)
+GREET_WORDS = re.compile(r"\b(hi|hey|hello|yo|sup|hii+|heya)\b", re.I)
+ITEM_WORDS = {"food": "food", "wood": "_log", "logs": "_log", "planks": "_planks", "blocks": "blocks", "torch": "torch",
+              "torches": "torch", "sword": "sword", "pickaxe": "pickaxe", "pick": "pickaxe", "axe": "axe", "shovel": "shovel"}
 
 MINING_TARGETS = ["oak_log", "stone", "coal_ore", "iron_ore", "birch_log", "dirt", "cobblestone"]
 
@@ -114,42 +143,123 @@ def parse_decision(text: str, source: str = "ollama") -> Decision:
 # heuristic policy (no LLM required)
 # ---------------------------------------------------------------------------
 class HeuristicPolicy:
-    """Cheap, predictable behaviour used when Ollama is off/unreachable."""
+    """Built-in brain (no LLM): looks after itself the way a player does, then plays.
+
+    Priorities, like a person: get away when badly hurt, eat, deal with a mob that comes close,
+    answer people (and hand over things they ask for), put on better armour, tidy the hotbar,
+    pick up drops, sleep at night - and otherwise follow friends, mine, explore and fidget.
+    """
 
     def __init__(self, seed: int | None = None) -> None:
         self._rng = random.Random(seed)
         self._step = 0
+        self._greeted: set[str] = set()
 
-    def decide(self, state: dict[str, Any], chat: list[str]) -> Decision:
+    def decide(self, state: dict[str, Any], chat: list[str], allowed: dict[str, bool] | None = None) -> Decision:
         self._step += 1
+        can = {"movement": True, "chat": True, "mining": True, "inventory": True, "building": False, "fighting": True}
+        can.update(allowed or {})
         health = float(state.get("health") or 20)
         food = float(state.get("food") or 20)
         players = state.get("players") or []
-        bot_name = str(state.get("server", {}).get("username") or "PyMC_Bot")
+        bot_name = str(state.get("username") or state.get("server", {}).get("username") or "PyMC_Bot")
+        knows_items = bool(state.get("slots") or state.get("inventory"))
+        inv = Inventory.from_snapshot(state)
+        hostiles = sorted(
+            (e for e in state.get("entities") or [] if e.get("hostile") and not e.get("player")),
+            key=lambda e: float(e.get("dist") or 99),
+        )
+        threat = hostiles[0] if hostiles else None
+        threat_dist = float(threat.get("dist") or 99) if threat else 99.0
+        threat_kind = short(threat.get("type")) if threat else ""
 
+        # 1. survive
+        if threat and threat_dist <= 8 and health <= 8 and can["movement"]:
+            return Decision("flee", {}, "heuristic")
         if health <= 8 or food <= 6:
             return Decision("eat", {}, "heuristic")
+        if knows_items and food <= 14 and inv.best_food(food, health) is not None:
+            return Decision("eat", {}, "heuristic")
+        if threat and threat_dist <= 6:
+            if threat_kind in AVOID_MOBS:
+                if can["movement"] and threat_dist <= 5:
+                    return Decision("flee", {}, "heuristic")
+            elif can["fighting"] and health > 10:
+                return Decision("fight", {"mob": threat_kind}, "heuristic")
 
+        # 2. people
         mentioned = [line for line in chat if bot_name.lower() in line.lower()]
         if mentioned:
-            return Decision(
-                "say",
-                {"message": self._rng.choice(["on it!", "sure, coming", "hey", "yeah?", "one sec"])},
-                "heuristic",
-            )
+            line = mentioned[-1]
+            speaker_match = re.match(r"\s*<([^>]+)>", line)
+            speaker = speaker_match.group(1) if speaker_match else ""
+            if knows_items and can["inventory"] and speaker and GIVE_WORDS.search(line):
+                wanted = self._requested_item(line, inv)
+                if wanted:
+                    count = max(1, min(16, inv.count(wanted) // 2 or 1))
+                    return Decision("give", {"player": speaker, "item": wanted, "count": count}, "heuristic")
+            if can["chat"]:
+                return Decision(
+                    "say",
+                    {"message": self._rng.choice(["on it!", "sure, coming", "hey", "yeah?", "one sec"])},
+                    "heuristic",
+                )
 
+        # 3. look after the gear
+        if knows_items and can["inventory"]:
+            if inv.armor_upgrades():
+                return Decision("wear_armor", {}, "heuristic")
+            if self._step % 4 == 0 and inv.hotbar_is_messy(food, health):
+                return Decision("organize", {}, "heuristic")
+        drops = [d for d in state.get("ground_items") or [] if float(d.get("dist") or 99) <= 8]
+        if drops and can["movement"] and self._step % 2 == 0:
+            return Decision("collect", {}, "heuristic")
+        if state.get("time_of_day") == "night" and not state.get("sleeping") and self._step % 6 == 0:
+            return Decision("sleep", {}, "heuristic")
+
+        # 4. friends
         if players:
             nearest = players[0]
+            name = str(nearest.get("name") or "")
+            if name and nearest.get("distance", 99) < 6 and name not in self._greeted:
+                self._greeted.add(name)
+                return Decision("emote", {"kind": self._rng.choice(["wave", "crouch"])}, "heuristic")
             if nearest.get("distance", 99) < 12 and self._step % 3 == 0:
                 return Decision("follow", {"player": nearest["name"]}, "heuristic")
 
+        # 5. play
         if self._step % 5 == 0:
             return Decision("mine", {"block": self._rng.choice(MINING_TARGETS)}, "heuristic")
         if self._step % 7 == 0:
             return Decision("say", {"message": self._rng.choice(["just exploring", "nice server", "anyone need wood?"])}, "heuristic")
         if state.get("time_of_day") == "night" and self._step % 4 == 0:
             return Decision("mine", {"block": "coal_ore"}, "heuristic")
+        roll = self._rng.random()
+        if roll < 0.12:
+            return Decision("look_around", {}, "heuristic")
+        if roll < 0.2 and knows_items and can["inventory"]:
+            filled = [i for i in range(HOTBAR_SIZE) if inv.slots[i] and i != inv.selected]
+            if filled:  # players scroll through the hotbar while they think
+                return Decision("select_slot", {"slot": self._rng.choice(filled) + 1}, "heuristic")
         return Decision("wander", {}, "heuristic")
+
+    @staticmethod
+    def _requested_item(line: str, inv: Inventory) -> str | None:
+        """The item a chat line asks for, if the bot has it ("can i have some bread", "gimme wood")."""
+        text = line.split(">", 1)[-1].lower()
+        for _, stack in sorted(inv.items(), key=lambda item: -len(item[1].name)):
+            if stack.name in text.replace(" ", "_") or stack.name.replace("_", " ") in text:
+                return stack.name
+        for word, meaning in ITEM_WORDS.items():
+            if re.search(rf"\b{word}\b", text):
+                if meaning.startswith("_"):
+                    match = next((st.name for _, st in inv.items() if st.name.endswith(meaning)), None)
+                else:
+                    index = inv.resolve(meaning, 12.0)
+                    match = inv.slots[index].name if index is not None else None
+                if match:
+                    return match
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -421,9 +531,9 @@ class AgentLoop:
                 self._errors += 1
                 self._last_error = str(exc)
                 self.log.add(f"AI decision failed ({exc}); falling back to built-in behaviour.", "warn", "agent")
-                decision = self._heuristic.decide(state, self.bot.recent_chat())
+                decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             if decision is None:
-                decision = self._heuristic.decide(state, self.bot.recent_chat())
+                decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             failures = 0
             ok, detail = self._act(decision)
             if self.uses_llm(settings):
@@ -468,6 +578,9 @@ class AgentLoop:
             "chat": agent.allow_chat,
             "mining": agent.allow_mining,
             "attacking": agent.allow_attacking,
+            "inventory": agent.allow_inventory,
+            "building": agent.allow_building,
+            "fighting": agent.allow_mob_fighting,
         }
 
     def system_prompt(self, settings: AppSettings, custom: str = "") -> str:
@@ -603,10 +716,138 @@ class AgentLoop:
             self.bot.stop_moving()
             return True, "stopped moving"
 
+        life = self._execute_life(action, params, agent, blocked)
+        if life is not None:
+            return life
+
         if action in ("wait", "noop", "none", "nothing"):
             return True, "waited"
 
         return False, f"unsupported action: {action}"
+
+    def _execute_life(self, action: str, params: dict[str, Any], agent: Any, blocked: Any) -> tuple[bool, str] | None:
+        """Inventory, building, mob fighting and the other human things. None = not one of these."""
+        bot = self.bot
+
+        def why(fallback: str) -> str:
+            return bot.last_failure or fallback
+
+        def item_of(*keys: str) -> str:
+            return str(next((params[k] for k in keys if params.get(k)), "")).strip()
+
+        def number(key: str, default: Any = None) -> Any:
+            value = params.get(key, default)
+            try:
+                return int(value) if value is not None and value != "" else default
+            except (TypeError, ValueError):
+                return default
+
+        inventory_actions = {
+            "select_slot", "hotbar", "hold_item", "hold", "equip", "wear", "unequip", "take_off", "wear_armor",
+            "armor", "to_hotbar", "to_inventory", "swap_hands", "organize", "sort_hotbar", "drop", "toss", "give",
+        }
+        if action in inventory_actions and blocked("inventory", agent.allow_inventory):
+            return False, "inventory actions are disabled in settings"
+        if action in ("place", "place_block", "build", "use_item", "use") and blocked("building", agent.allow_building):
+            return False, "building is disabled in settings"
+        if action in ("fight", "attack_mob", "kill") and blocked("fighting", agent.allow_mob_fighting):
+            return False, "fighting mobs is disabled in settings"
+        if action in ("flee", "run", "collect", "pickup", "pick_up", "sleep") and blocked("movement", agent.allow_movement):
+            return False, "movement is disabled in settings"
+
+        if action in ("select_slot", "hotbar"):
+            slot = number("slot")
+            if slot is None:
+                return False, "select_slot needs a slot (1-9)"
+            ok = bot.select_slot(slot)
+            return ok, f"switched to hotbar slot {slot}" if ok else why("could not switch slots")
+        if action in ("hold_item", "hold"):
+            item = item_of("item", "name", "block")
+            if not item:
+                return False, "hold_item needs an item"
+            ok = bot.hold(item)
+            return ok, f"holding {item}" if ok else why(f"could not hold {item}")
+        if action in ("equip", "wear"):
+            item = item_of("item", "name")
+            if not item:
+                return False, "equip needs an item"
+            ok = bot.equip(item, str(params.get("to") or params.get("destination") or "") or None)
+            return ok, f"equipped {item}" if ok else why(f"could not equip {item}")
+        if action in ("unequip", "take_off"):
+            slot = item_of("slot", "from", "item")
+            ok = bot.unequip(slot)
+            return ok, f"took off {slot}" if ok else why(f"could not take off {slot}")
+        if action in ("wear_armor", "armor"):
+            ok = bot.wear_best_armor()
+            return ok, "put on better armour" if ok else why("no better armour")
+        if action == "to_hotbar":
+            item = item_of("item", "name", "block")
+            if not item:
+                return False, "to_hotbar needs an item"
+            ok = bot.to_hotbar(item, number("slot"))
+            return ok, f"moved {item} to the hotbar" if ok else why(f"could not move {item}")
+        if action == "to_inventory":
+            ok = bot.to_inventory(number("slot"), item_of("item", "name") or None)
+            return ok, "moved it to the backpack" if ok else why("could not move it")
+        if action == "swap_hands":
+            ok = bot.swap_hands()
+            return ok, "swapped hands" if ok else why("could not swap hands")
+        if action in ("organize", "sort_hotbar"):
+            ok = bot.organize_hotbar()
+            return ok, "sorted the hotbar" if ok else why("the hotbar is already tidy")
+        if action in ("drop", "toss"):
+            item = item_of("item", "name")
+            if not item:
+                return False, "drop needs an item"
+            ok = bot.drop(item, number("count"))
+            return ok, f"dropped {item}" if ok else why(f"could not drop {item}")
+        if action == "give":
+            player, item = item_of("player", "to"), item_of("item", "name")
+            if not player or not item:
+                return False, "give needs a player and an item"
+            target = bot.find_player(player)
+            if target and target.get("distance", 99) > 3 and blocked("movement", agent.allow_movement):
+                return False, f"{player} is too far and movement is disabled"
+            ok = bot.give(player, item, number("count"))
+            return ok, f"gave {item} to {player}" if ok else why(f"could not give {item} to {player}")
+        if action in ("place", "place_block", "build"):
+            block = item_of("block", "item", "name") or "blocks"
+            ok = bot.place_block(block)
+            return ok, f"placed {block}" if ok else why(f"could not place {block}")
+        if action in ("use_item", "use"):
+            seconds = params.get("seconds", 0.3)
+            try:
+                seconds = float(seconds)
+            except (TypeError, ValueError):
+                seconds = 0.3
+            ok = bot.use_item(seconds)
+            return ok, "used the item" if ok else why("could not use the item")
+        if action == "sleep":
+            ok = bot.sleep_in_bed()
+            return ok, "went to bed" if ok else why("could not sleep")
+        if action in ("wake", "wake_up"):
+            ok = bot.wake_up()
+            return ok, "got up" if ok else why("could not get up")
+        if action in ("collect", "pickup", "pick_up"):
+            ok = bot.collect_items()
+            return ok, "picked up items" if ok else why("nothing to pick up")
+        if action in ("fight", "attack_mob", "kill"):
+            mob = item_of("mob", "target", "type") or None
+            if mob and short(mob) in AVOID_MOBS and not params.get("force"):
+                return False, f"not picking a fight with a {short(mob)}"
+            ok = bot.fight(mob)
+            return ok, f"fought {mob or 'a mob'}" if ok else why("nothing to fight")
+        if action in ("flee", "run"):
+            ok = bot.flee()
+            return ok, "ran away" if ok else why("nothing to run from")
+        if action == "emote":
+            kind = str(params.get("kind") or params.get("type") or "wave")
+            ok = bot.emote(kind)
+            return ok, f"did a {kind}" if ok else "could not emote"
+        if action == "look_around":
+            ok = bot.look_around()
+            return ok, "looked around" if ok else "could not look around"
+        return None
 
     def _addressed_recently(self, window: float = 60.0) -> bool:
         """Did someone talk to this bot in the last ``window`` seconds (replies skip the cooldown)?"""
@@ -633,7 +874,7 @@ class AgentLoop:
             self._errors += 1
             self._last_error = str(exc)
             self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
-            decision = self._heuristic.decide(state, self.bot.recent_chat())
+            decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
         return self._act(decision)
 
     def _act(self, decision: Decision) -> tuple[bool, str]:

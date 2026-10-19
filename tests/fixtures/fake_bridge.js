@@ -13,6 +13,11 @@
 const readline = require('readline');
 
 let bot = { connected: false, controls: {}, position: { x: 0, y: 64, z: 0 }, yaw: 0, pitch: 0, chats: [], digs: [] };
+// inventory as the real bridge reports it: 0-8 hotbar, 9-35 backpack
+const slots = new Array(36).fill(null);
+slots[0] = { name: 'iron_sword', count: 1 };
+slots[9] = { name: 'bread', count: 3 };
+let selected = 0;
 let profilesFolder = null;
 let swings = 0;
 let stateTimer = null;
@@ -32,6 +37,10 @@ function state() {
     time_of_day: 'day',
     players: bot.connected ? [{ name: 'Steve', x: 5, y: 64, z: 0, distance: 5 }] : [],
     inventory: bot.digs.map((block) => ({ name: block, count: 1 })),
+    slots,
+    selected_slot: selected,
+    armor_slots: { head: null, chest: null, legs: null, feet: null },
+    offhand: '',
   };
 }
 
@@ -101,7 +110,13 @@ const COMMANDS = {
   pathfind_to: () => { throw new Error('pathfinder_unavailable'); },
   stop_path: () => ({ stopped: true }),
   dig: (params) => { bot.digs.push(String(params.block)); return { dug: true, block: params.block }; },
-  eat: () => ({ ate: true, item: 'bread' }),
+  eat: (params) => ({ ate: true, item: 'bread', slot: params.slot }),
+  select_slot: (params) => { if (params.slot < 0 || params.slot > 8) throw new Error('hotbar slots are 0-8'); selected = params.slot; return { selected }; },
+  move_slot: (params) => {
+    if (!slots[params.from]) throw new Error(`slot ${params.from} is empty`);
+    [slots[params.from], slots[params.to]] = [slots[params.to], slots[params.from]];
+    return { moved: true };
+  },
   attack: (params) => ({ attacked: params.player }),
   jump: () => ({ jumped: true }),
   swing_arm: () => { swings += 1; return { swung: true, swings }; },

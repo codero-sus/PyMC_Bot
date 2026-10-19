@@ -1,4 +1,4 @@
-"""Tests for updater.py - all offline (local zips, a temporary git remote, fake releases).
+"""Tests for updater.py - all offline (local zips, a fake GitHub, fake releases).
 
 Standard library + pytest only: CI also runs this file with ``--noconftest`` on Windows and
 macOS without the bot's packages, the way a fresh download meets the updater.
@@ -25,9 +25,11 @@ sys.modules["updater"] = updater
 spec.loader.exec_module(updater)
 
 
-def make_zip(files: dict[str, bytes | str], top: str = "PyMC_Bot-abc123", mode: int | None = None) -> bytes:
+def make_zip(files: dict[str, bytes | str], top: str = "PyMC_Bot-abc123", mode: int | None = None,
+             commit: str = "") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
+        zf.comment = commit.encode("ascii")
         zf.writestr(f"{top}/", "")
         for name, data in files.items():
             info = zipfile.ZipInfo(f"{top}/{name}")
@@ -184,102 +186,163 @@ def test_apply_zip_rejects_path_traversal(tmp_path, evil):
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_update_zip_uses_marker(monkeypatch, tmp_path):
-    archive = make_zip({"pymc_bot/__init__.py": '__version__ = "9.9.9"\n'})
-    calls = []
-    monkeypatch.setattr(updater, "remote_commit",
-                        lambda repo, branch: {"sha": "f" * 40, "date": "2026-10-16T00:00:00Z", "message": "m"})
-    monkeypatch.setattr(updater, "http_get", lambda url, **kw: calls.append(url) or archive)
+class FakeGitHub:
+    """commits API + codeload zips for one repository, with an optional exhausted API limit."""
 
-    assert updater.update_zip(tmp_path, "codero-sus/PyMC_Bot", "main", check=True) is False
-    assert calls == []
-    assert updater.update_zip(tmp_path, "codero-sus/PyMC_Bot", "main", check=False) is True
-    assert calls == [f"{updater.CODELOAD}/codero-sus/PyMC_Bot/zip/{'f' * 40}"]
+    def __init__(self, monkeypatch, ref: str):
+        self.ref = ref
+        self.commits: list[tuple[str, dict]] = []
+        self.calls: list[str] = []
+        self.rate_limited = False
+        monkeypatch.setattr(updater, "http_get", self.http_get)
+        monkeypatch.setattr(updater, "http_json", lambda url: json.loads(self.http_get(url)))
+
+    def publish(self, files: dict[str, str], message: str = "change") -> str:
+        sha = hashlib.sha1(f"{len(self.commits)}{message}".encode()).hexdigest()
+        self.commits.append((sha, dict(files)))
+        return sha
+
+    def http_get(self, url: str, accept: str = "", timeout: float = 0) -> bytes:
+        self.calls.append(url)
+        sha, files = self.commits[-1]
+        if url.startswith(updater.API):
+            if self.rate_limited:
+                raise updater.RateLimited("rate limit")
+            assert url.endswith("/commits/" + updater.urllib.parse.quote(self.ref, safe=""))
+            return json.dumps({"sha": sha, "commit": {"committer": {"date": "2026-10-19T00:00:00Z"},
+                                                      "message": "msg\nbody"}}).encode()
+        wanted = url.rsplit("/zip/", 1)[1]
+        match = next((f for s, f in self.commits if s == wanted), None)
+        if match is None:  # refs/heads/<ref>: the newest commit
+            assert wanted == "refs/heads/" + updater.urllib.parse.quote(self.ref, safe="/")
+            wanted, match = sha, files
+        return make_zip(match, top="PyMC_Bot-" + self.ref.replace("/", "-"), commit=wanted)
+
+
+def test_update_zip_uses_marker_and_downloads_by_commit(monkeypatch, tmp_path):
+    hub = FakeGitHub(monkeypatch, "feature/x")
+    sha = hub.publish({"pymc_bot/__init__.py": '__version__ = "9.9.9"\n'})
+    assert updater.update_zip(tmp_path, "codero-sus/PyMC_Bot", "feature/x", check=True) is False
+    assert not any("/zip/" in call for call in hub.calls)
+    assert updater.update_zip(tmp_path, "codero-sus/PyMC_Bot", "feature/x", check=False) is True
+    assert hub.calls[-1] == f"{updater.CODELOAD}/codero-sus/PyMC_Bot/zip/{sha}"
     assert updater.local_version(tmp_path) == "9.9.9"
-    assert json.loads((tmp_path / updater.STATE_FILE).read_text())["sha"] == "f" * 40
-    assert updater.update_zip(tmp_path, "codero-sus/PyMC_Bot", "main", check=False) is False
-    assert len(calls) == 1
+    state = json.loads((tmp_path / updater.STATE_FILE).read_text())
+    assert state["sha"] == sha and state["channel"] == "custom" and "pymc_bot/__init__.py" in state["files"]
+    assert "feature" not in json.dumps(state), "the state file never stores the branch"
+    downloads = len([c for c in hub.calls if "/zip/" in c])
+    assert updater.update_zip(tmp_path, "codero-sus/PyMC_Bot", "feature/x", check=False) is False
+    assert len([c for c in hub.calls if "/zip/" in c]) == downloads
 
 
-# ---------------------------------------------------------------------------- git checkout
+def test_update_zip_removes_files_deleted_upstream_unless_edited(monkeypatch, tmp_path):
+    hub = FakeGitHub(monkeypatch, "b")
+    hub.publish({"keep.py": "1", "gone.py": "old", "edited.py": "orig", "pkg/only.py": "x"})
+    assert updater.update_zip(tmp_path, "r/r", "b", check=False)
+    (tmp_path / "edited.py").write_text("my change")
+    (tmp_path / "mine.txt").write_text("not from the project")
+    hub.publish({"keep.py": "2"})
+    assert updater.update_zip(tmp_path, "r/r", "b", check=False)
+    assert (tmp_path / "keep.py").read_text() == "2"
+    assert not (tmp_path / "gone.py").exists() and not (tmp_path / "pkg").exists()
+    assert (tmp_path / "edited.py").read_text() == "my change"
+    assert (tmp_path / "mine.txt").exists()
 
 
-def git(*args, cwd):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+def test_update_zip_falls_back_to_the_zip_comment_when_rate_limited(monkeypatch, tmp_path):
+    hub = FakeGitHub(monkeypatch, "b")
+    sha = hub.publish({"a.py": "1"})
+    hub.rate_limited = True
+    assert updater.update_zip(tmp_path, "r/r", "b", check=False) is True
+    assert json.loads((tmp_path / updater.STATE_FILE).read_text())["sha"] == sha
+    assert updater.update_zip(tmp_path, "r/r", "b", check=False) is False
 
 
-@pytest.fixture
-def git_pair(tmp_path):
-    if shutil.which("git") is None:
-        pytest.skip("git not installed")
-    remote, upstream, local = tmp_path / "remote.git", tmp_path / "upstream", tmp_path / "local"
-    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    git("clone", "-q", str(remote), str(upstream), cwd=tmp_path)
-    git("config", "user.email", "t@example.com", cwd=upstream)
-    git("config", "user.name", "t", cwd=upstream)
-    (upstream / "requirements.txt").write_text("fastapi\n")
-    (upstream / "app.py").write_text("v = 1\n")
-    git("add", "-A", cwd=upstream)
-    git("commit", "-q", "-m", "first", cwd=upstream)
-    git("push", "-q", "origin", "HEAD:main", cwd=upstream)
-    git("clone", "-q", str(remote), str(local), cwd=tmp_path)
-    git("config", "user.email", "t@example.com", cwd=local)
-    git("config", "user.name", "t", cwd=local)
-
-    def publish(name: str, text: str, message: str = "change") -> None:
-        (upstream / name).write_text(text)
-        git("add", "-A", cwd=upstream)
-        git("commit", "-q", "-m", message, cwd=upstream)
-        git("push", "-q", "origin", "HEAD:main", cwd=upstream)
-
-    return local, publish
+def test_download_archive_rejects_the_wrong_commit(monkeypatch):
+    monkeypatch.setattr(updater, "http_get", lambda url, **kw: make_zip({"a": "1"}, commit="1" * 40))
+    with pytest.raises(updater.UpdateError, match="expected commit"):
+        updater.download_archive("r/r", "b", "2" * 40)
+    monkeypatch.setattr(updater, "http_get", lambda url, **kw: b"not a zip")
+    with pytest.raises(updater.UpdateError, match="zip"):
+        updater.download_archive("r/r", "b", "2" * 40)
 
 
-def test_git_update_fast_forwards(git_pair):
-    local, publish = git_pair
-    assert updater.is_git_checkout(local)
-    assert updater.update_git(local, check=False, autostash=False) is False
-    publish("app.py", "v = 2\n", "bump app")
-    assert updater.update_git(local, check=True, autostash=False) is False
-    assert (local / "app.py").read_text() == "v = 1\n"
-    assert updater.update_git(local, check=False, autostash=False) is True
-    assert (local / "app.py").read_text() == "v = 2\n"
+def test_git_folder_is_never_touched_or_used(monkeypatch, tmp_path, capsys):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    hub = FakeGitHub(monkeypatch, "b")
+    hub.publish({"a.py": "1", ".git/HEAD": "evil"})
+    monkeypatch.setattr(updater.subprocess, "run", lambda *a, **k: pytest.fail("no subprocess (no git)"))
+    assert updater.update_zip(tmp_path, "r/r", "b", check=False)
+    assert (tmp_path / ".git" / "HEAD").read_text() == "ref: refs/heads/main\n"
+    assert "it is not used" in capsys.readouterr().out
 
 
-def test_git_update_refuses_dirty_tree_unless_autostash(git_pair):
-    local, publish = git_pair
-    publish("app.py", "v = 2\n")
-    (local / "requirements.txt").write_text("fastapi\nmy-extra\n")
-    with pytest.raises(updater.UpdateError, match="--autostash"):
-        updater.update_git(local, check=False, autostash=False)
-    assert (local / "app.py").read_text() == "v = 1\n"
-    assert updater.update_git(local, check=False, autostash=True) is True
-    assert (local / "app.py").read_text() == "v = 2\n"
-    assert (local / "requirements.txt").read_text() == "fastapi\nmy-extra\n"
-
-
-def test_git_update_refuses_diverged_branch(git_pair):
-    local, publish = git_pair
-    publish("app.py", "v = 2\n")
-    (local / "mine.txt").write_text("local work\n")
-    git("add", "-A", cwd=local)
-    git("commit", "-q", "-m", "local", cwd=local)
-    with pytest.raises(updater.UpdateError, match="local commit"):
-        updater.update_git(local, check=False, autostash=False)
-
-
-def test_main_reinstalls_deps_only_when_requirements_change(git_pair, monkeypatch):
-    local, publish = git_pair
+def test_main_reinstalls_deps_only_when_requirements_change(monkeypatch, tmp_path):
+    hub = FakeGitHub(monkeypatch, updater.update_channel())
+    hub.publish({"requirements.txt": "fastapi\n", "app.py": "v = 1\n"})
     seen = []
     monkeypatch.setattr(updater, "update_dependencies", lambda root, before, force, check: seen.append(
         [n for n in updater.DEPENDENCY_FILES if before.get(n) != updater.file_hashes(root).get(n)]))
-    assert updater.main([], root=local) == 0
-    assert seen == []  # nothing pulled, nothing installed
-    publish("requirements.txt", "fastapi\nhttpx\n")
-    assert updater.main([], root=local) == 0
+    assert updater.main(["--no-deps"], root=tmp_path) == 0
+    assert seen == []
+    assert updater.main([], root=tmp_path) == 0
+    assert seen == []  # nothing new, nothing installed
+    hub.publish({"requirements.txt": "fastapi\nhttpx\n", "app.py": "v = 1\n"})
+    assert updater.main([], root=tmp_path) == 0
     assert seen == [["requirements.txt"]]
-    assert updater.main(["--no-deps"], root=local) == 0
-    assert len(seen) == 1
+
+
+# ---------------------------------------------------------------------------- hidden update channel
+
+
+def test_channel_is_sealed_and_round_trips():
+    channel = updater.update_channel()
+    assert channel and "/" not in updater._CHANNEL
+    assert updater.unseal(updater.seal(channel)) == channel
+    assert updater.unseal(updater.seal("some/other-branch")) == "some/other-branch"
+    assert updater.seal(channel) == updater._CHANNEL
+
+
+def test_channel_never_appears_in_plain_text_in_the_project():
+    """Leak guard: no project file (code, docs, workflows, tests) contains the update channel."""
+    forms = updater._secret_forms(updater.update_channel())
+    skip = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"}
+    leaks = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or skip & set(path.relative_to(ROOT).parts) or path.stat().st_size > 5_000_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        leaks += [f"{path.relative_to(ROOT)}: {form[:3]}..." for form in forms if form in text]
+    assert not leaks, leaks
+
+
+def test_output_and_errors_never_show_the_channel(monkeypatch, capsys):
+    channel = updater.update_channel()
+    updater.say(f"url https://api.github.com/repos/x/y/commits/{updater.urllib.parse.quote(channel, safe='')}")
+    updater.say(f"folder PyMC_Bot-{channel.replace('/', '-')}/README.md and {channel}")
+    out = capsys.readouterr().out
+    assert all(form not in out for form in updater._secret_forms(channel))
+    assert out.count("<update channel>") == 3
+
+    def boom(url, accept="", timeout=0):
+        raise updater.UpdateError(f"GitHub answered HTTP 500 for {updater.redact(url)}")
+    monkeypatch.setattr(updater, "http_get", boom)
+    monkeypatch.setattr(updater, "http_json", lambda url: boom(url))
+    assert updater.main(["--check"], root=ROOT) == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out and all(form not in out for form in updater._secret_forms(channel))
+
+
+def test_help_does_not_reveal_the_channel(capsys):
+    with pytest.raises(SystemExit):
+        updater.main(["--help"])
+    out = capsys.readouterr().out
+    assert "update channel" in out and "--autostash" not in out and "--seal" not in out
+    assert all(form not in out for form in updater._secret_forms(updater.update_channel()))
 
 
 def test_update_dependencies_uses_venv(tmp_path, monkeypatch):

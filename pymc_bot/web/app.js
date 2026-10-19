@@ -252,20 +252,8 @@ function renderStatus(status) {
     }
   }
 
-  // inventory
-  const inv = $('inventory');
-  inv.innerHTML = '';
-  const items = bot.inventory || [];
-  if (!items.length) {
-    inv.innerHTML = '<span class="empty">empty</span>';
-  } else {
-    for (const item of items) {
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.innerHTML = `${esc(item.name)} <b>×${esc(item.count)}</b>`;
-      inv.appendChild(chip);
-    }
-  }
+  // inventory: hotbar (click to select), armour / off-hand, backpack
+  renderInventory(bot);
 
   // ai status
   const agent = status.agent || {};
@@ -515,6 +503,9 @@ function fillForm(cfg) {
   check('cfg-allow-chat', ag.allow_chat);
   check('cfg-allow-mining', ag.allow_mining);
   check('cfg-allow-attack', ag.allow_attacking);
+  check('cfg-allow-inventory', ag.allow_inventory !== false);
+  check('cfg-allow-building', Boolean(ag.allow_building));
+  check('cfg-allow-mob-fighting', ag.allow_mob_fighting !== false);
   check('cfg-greet', ag.greet_players);
   selectBehaviour(ag.persona || 'friendly');
   set('cfg-persona-notes', ag.persona_notes || '');
@@ -535,6 +526,7 @@ function fillForm(cfg) {
   check('antiafk-jump', afk.jump !== false);
   check('antiafk-sneak', afk.sneak !== false);
   check('antiafk-swing', afk.swing !== false);
+  check('antiafk-hotbar', afk.hotbar !== false);
 
   const tr = cfg.training || {};
   set('train-dataset', tr.dataset || 'pymcbot/dataset.jsonl');
@@ -612,6 +604,9 @@ function collectForm() {
       allow_chat: $('cfg-allow-chat').checked,
       allow_mining: $('cfg-allow-mining').checked,
       allow_attacking: $('cfg-allow-attack').checked,
+      allow_inventory: $('cfg-allow-inventory').checked,
+      allow_building: $('cfg-allow-building').checked,
+      allow_mob_fighting: $('cfg-allow-mob-fighting').checked,
       greet_players: $('cfg-greet').checked,
       persona: selectedBehaviour(),
       persona_notes: $('cfg-persona-notes').value.slice(0, 600),
@@ -629,6 +624,7 @@ function collectForm() {
       jump: $('antiafk-jump').checked,
       sneak: $('antiafk-sneak').checked,
       swing: $('antiafk-swing').checked,
+      hotbar: $('antiafk-hotbar').checked,
     },
     training: {
       dataset: $('train-dataset').value.trim() || 'pymcbot/dataset.jsonl',
@@ -1239,7 +1235,11 @@ function wire() {
   $('btn-command').addEventListener('click', runCommand);
   $('command-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') runCommand(); });
 
-  for (const button of document.querySelectorAll('#quick-actions button')) {
+  $('hotbar').addEventListener('click', (event) => {
+    const cell = event.target.closest('.slot');
+    if (cell) runAction({ action: 'select_slot', slot: Number(cell.dataset.slot) }).catch(reportError);
+  });
+  for (const button of document.querySelectorAll('#quick-actions button, #life-actions button')) {
     button.addEventListener('click', () => {
       const payload = JSON.parse(button.dataset.action);
       runAction(payload).catch(reportError);
@@ -1319,6 +1319,75 @@ async function runCommand() {
   input.value = '';
   try { await api('/api/bot/command', { method: 'POST', body: JSON.stringify({ command }) }); }
   catch (err) { reportError(err); }
+}
+
+const ITEM_ICONS = [
+  ['_sword', '⚔️'], ['_pickaxe', '⛏️'], ['_axe', '🪓'], ['_shovel', '🥄'], ['_hoe', '🌾'], ['bow', '🏹'],
+  ['shield', '🛡️'], ['_helmet', '⛑️'], ['_chestplate', '🦺'], ['_leggings', '👖'], ['_boots', '🥾'],
+  ['torch', '🔥'], ['_log', '🪵'], ['_planks', '🟫'], ['bread', '🍞'], ['apple', '🍎'], ['cooked_', '🍖'],
+  ['beef', '🥩'], ['porkchop', '🥩'], ['carrot', '🥕'], ['potato', '🥔'], ['fish', '🐟'], ['cod', '🐟'],
+  ['salmon', '🐟'], ['bucket', '🪣'], ['coal', '⚫'], ['diamond', '💎'], ['iron_ingot', '🔩'], ['bed', '🛏️'],
+  ['dirt', '🟫'], ['cobblestone', '🪨'], ['stone', '🪨'], ['sand', '🟨'], ['rotten_flesh', '🧟'], ['bone', '🦴'],
+];
+
+function itemIcon(name) {
+  const hit = ITEM_ICONS.find(([needle]) => name.includes(needle));
+  return hit ? hit[1] : '▪️';
+}
+
+function itemName(stack) {
+  return String((stack && stack.name) || '').replace(/^minecraft:/, '');
+}
+
+function renderInventory(bot) {
+  const bar = $('hotbar');
+  const slots = Array.isArray(bot.slots) ? bot.slots : null;
+  const selected = Number.isInteger(bot.selected_slot) ? bot.selected_slot : -1;
+  bar.innerHTML = '';
+  bar.hidden = !slots;
+  if (slots) {
+    for (let i = 0; i < 9; i += 1) {
+      const stack = slots[i];
+      const name = itemName(stack);
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'slot' + (i === selected ? ' selected' : '') + (stack ? '' : ' empty-slot');
+      cell.dataset.slot = String(i + 1);
+      cell.title = `${i + 1}: ${name ? name.replace(/_/g, ' ') + (stack.count > 1 ? ` ×${stack.count}` : '') : 'empty'}`;
+      cell.innerHTML = `<span class="key">${i + 1}</span>`
+        + (stack ? `<span class="ico">${itemIcon(name)}</span>${stack.count > 1 ? `<span class="count">${esc(stack.count)}</span>` : ''}` : '');
+      bar.appendChild(cell);
+    }
+  }
+  const gear = $('gear');
+  const armor = bot.armor_slots || {};
+  const worn = ['head', 'chest', 'legs', 'feet'].map((slot) => armor[slot] && itemName(armor[slot])).filter(Boolean);
+  const held = String(bot.held_item || '').replace(/^minecraft:/, '');
+  gear.textContent = (slots || held ? `in hand: ${held ? held.replace(/_/g, ' ') : 'nothing'} · ` : '')
+    + `armour: ${worn.length ? worn.join(', ').replace(/_/g, ' ') : (bot.armor && bot.armor.length ? bot.armor.join(', ') : 'none')}`
+    + ` · off-hand: ${bot.offhand ? String(bot.offhand).replace(/^minecraft:/, '').replace(/_/g, ' ') : 'empty'}`;
+
+  // backpack (slots 9-35) - or every item when the backend only reports a flat list
+  const inv = $('inventory');
+  inv.innerHTML = '';
+  const counts = new Map();
+  const source = slots ? slots.slice(9) : (bot.inventory || []);
+  for (const stack of source) {
+    if (!stack) continue;
+    const name = itemName(stack);
+    counts.set(name, (counts.get(name) || 0) + Number(stack.count || 1));
+  }
+  if (!counts.size) {
+    inv.innerHTML = `<span class="empty">${slots ? 'backpack empty' : 'empty'}</span>`;
+    return;
+  }
+  for (const [name, count] of counts) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.title = 'in the backpack';
+    chip.innerHTML = `${itemIcon(name)} ${esc(name)} <b>×${esc(count)}</b>`;
+    inv.appendChild(chip);
+  }
 }
 
 async function runAction(payload) {

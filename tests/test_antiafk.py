@@ -191,7 +191,7 @@ def test_bursts_are_varied_not_repetitive(keeper: AntiAfkKeeper, idle_bot: Minec
 
 def test_habits_can_be_switched_off(keeper: AntiAfkKeeper, idle_bot: MinecraftBot, afk_store: ConfigStore):
     afk_store.update({"antiafk": {"look": False, "walk": False, "jump": False, "sneak": False, "swing": False,
-                                  "look_at_players": False}})
+                                  "look_at_players": False, "hotbar": False}})
     assert keeper.burst(idle_bot, afk_store.settings.antiafk) == []
     assert keeper._available(afk_store.settings.antiafk, idle_bot) == []
 

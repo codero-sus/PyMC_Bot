@@ -103,6 +103,23 @@ def test_primitives_reach_the_bridge(bridge: NodeBridgeBackend, wait_for):
     time.sleep(0.3)
 
 
+def test_life_commands_round_trip(bridge: NodeBridgeBackend, wait_for):
+    """Inventory actions reach the bridge with the player's slot numbers and report why they fail."""
+    bridge.connect(_settings())
+    assert wait_for(lambda: bridge.connected, timeout=5)
+    assert bridge.perform("select_slot", {"slot": 4}) == (True, "", {"selected": 4})
+    assert wait_for(lambda: bridge.snapshot().get("selected_slot") == 4, timeout=5)
+    ok, why, _ = bridge.perform("select_slot", {"slot": 12})
+    assert not ok and "0-8" in why
+    assert bridge.perform("move_slot", {"from": 9, "to": 2})[0] is True
+    assert wait_for(lambda: (bridge.snapshot().get("slots") or [None] * 3)[2] == {"name": "bread", "count": 3}, timeout=5)
+    ok, why, _ = bridge.perform("move_slot", {"from": 20, "to": 1})
+    assert not ok and "empty" in why
+    assert bridge.eat(slot=2) is True
+    ok, why, _ = bridge.perform("rm -rf", {})
+    assert not ok and "unknown action" in why
+
+
 def test_chat_events_are_forwarded(bridge: NodeBridgeBackend, wait_for):
     bridge.connect(_settings())
     assert wait_for(lambda: bridge.connected, timeout=5)

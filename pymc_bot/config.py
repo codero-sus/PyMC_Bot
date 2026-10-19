@@ -217,6 +217,11 @@ class AgentSettings(BaseModel):
     allow_chat: bool = True
     allow_mining: bool = True
     allow_attacking: bool = False
+    # Living like a player: hotbar / armour / moving items (on), placing blocks and right-clicking
+    # items (off - an AI should not litter someone's server), fighting hostile mobs (on).
+    allow_inventory: bool = True
+    allow_building: bool = False
+    allow_mob_fighting: bool = True
     greet_players: bool = True
     max_chat_length: int = Field(default=200, ge=1, le=500)
     # How the LLM brain plays and talks (see pymc_bot.mind): a personality, extra notes about the
@@ -320,6 +325,7 @@ class AntiAfkSettings(BaseModel):
     jump: bool = True
     sneak: bool = True
     swing: bool = True
+    hotbar: bool = True  # scroll through hotbar slots and back
     # Chance (0-1) that a burst performs 1/2/3 habits in a row instead of one.
     combo_probability: float = Field(default=0.35, ge=0.0, le=1.0)
     # Log every burst (debug) - keeps the panel readable for big fleets.
