@@ -17,6 +17,9 @@ a player model on it, and that model can then play a bot on your server the way 
   **Configure** in [Mod Menu](https://modrinth.com/mod/modmenu). Changes save instantly.
 - 🧠 **Smart sampling** – 1 to 20 samples per second, skips menus and AFK time, auto-records when
   you join a world if you want.
+- 🎚️ **Power tab** – sliders for fine control over the dataset (sample rate, turn / move
+  thresholds, AFK skipping, entity limits) plus export filters that drop short episodes and thin out
+  standing-still time, so the bot learns your play and not your breaks.
 - 🧭 **Rich observations** – position, velocity, look direction, a 3×3×3 block area, nearby
   entities, health and food. **Advanced mode** adds the inventory, held item, armour, dropped items and
   every entity in range.

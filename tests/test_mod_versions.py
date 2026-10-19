@@ -293,16 +293,39 @@ def test_pymc_bot_settings_page_covers_every_option():
     missing = [key for key in saved if f"cfg().{key}" not in screen]
     assert not missing, f"options without a button on the settings page: {missing}"
     for page in ('RECORDER("Recorder")', 'RECORDING("Recording")', 'ADVANCED("Advanced")',
-                 'HUD("HUD & chat")', 'ABOUT("About")'):
+                 'POWER("Power")', 'HUD("HUD & chat")', 'ABOUT("About")'):
         assert page in screen
-    for reset in ("resetRecording", "resetAdvanced", "resetHud"):
+    for reset in ("resetRecording", "resetAdvanced", "resetPower", "resetHud"):
         assert f"public void {reset}()" in config and f"cfg().{reset}()" in screen
     assert 'PymcPlaytimeMod.NAME + " - Settings"' in screen
     assert "option.hovered(mouseX, mouseY)" in screen, "hover help"
     assert "RecorderHud.draw(offset(" in screen, "live badge preview"
-    # only widgets that exist unchanged on every version (no sliders / edit boxes / tooltips)
+    assert "slider.hovered(mouseX, mouseY)" in screen, "hover help for the Power sliders"
+    # only widgets that exist unchanged on every version (no edit boxes / tooltips); the vanilla
+    # slider is used solely through PowerSlider, so a version shim would only touch that file
     for risky in ("AbstractSliderButton", "EditBox", "CycleButton", "Tooltip", "getWidth()"):
         assert risky not in screen, risky
+
+
+def test_power_sliders_stay_inside_one_wrapper():
+    """Power tab: one wrapper class owns the vanilla slider and only uses its shared API."""
+    client_dir = MOD / "src/client/java/dev/pymc/pymcb/client"
+    users = [path.name for path in client_dir.glob("*.java") if "AbstractSliderButton" in path.read_text()]
+    assert users == ["PowerSlider.java"]
+    slider = (client_dir / "PowerSlider.java").read_text()
+    assert "extends AbstractSliderButton" in slider
+    assert "protected void updateMessage()" in slider and "protected void applyValue()" in slider
+    assert "Math.abs(next - stored) > 1e-9" in slider, "the config file is only written when the value changes"
+    for risky in ("renderWidget", "onClick", "onDrag", "keyPressed", "mouseClicked", "GuiGraphics"):
+        assert risky not in slider, risky
+    screen = (client_dir / "PymcBotScreen.java").read_text()
+    config = (MOD / "src/main/java/dev/pymc/pymcb/PlaytimeConfig.java").read_text()
+    for key in ("sampleTicks", "turnDegrees", "moveEpsilon", "idleSkipSeconds", "maxNearby", "maxEntities",
+                "entityRange", "maxGroundItems", "minEpisodeSeconds", "idleKeepPercent"):
+        assert f"() -> cfg().{key}" in screen, f"no Power slider for {key}"
+        assert f"        {key} = d.{key};" in config.split("public void resetPower()")[1].split("save();")[0], key
+    recorder = (client_dir / "PlaytimeRecorder.java").read_text()
+    assert "new IdleThinner(cfg.idleKeepPercent)" in recorder and "lastTick(file) < minTicks" in recorder
 
 
 def test_mod_menu_integration_ships_no_stubs():

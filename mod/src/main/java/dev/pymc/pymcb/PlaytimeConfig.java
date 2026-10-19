@@ -57,6 +57,19 @@ public final class PlaytimeConfig {
     /** Show a chat line when the hotkey or auto-record changes the recorder state. */
     public boolean notifications = true;
 
+    // ---------------------------------------------------------------- export filters (Power tab)
+    /**
+     * {@code /pymcbot export} leaves out episode files shorter than this many seconds (accidental
+     * join-and-quit recordings). Measured from the episode's last {@code tick}. 0 = keep all.
+     */
+    public int minEpisodeSeconds = 0;
+    /**
+     * Share (percent) of standing-still {@code none} samples {@code /pymcbot export} keeps. The
+     * first {@code none} after an action is always kept so the model still learns to stop; the
+     * rest of an idle stretch is thinned evenly (deterministic, no randomness). 100 = keep all.
+     */
+    public int idleKeepPercent = 100;
+
     // ---------------------------------------------------------------- on-screen badge
     /** Corners the HUD badge can sit in (cycled by the PyMC Bot settings page and /pymcbot hud corner). */
     public static final String[] HUD_CORNERS = {"top_left", "top_right", "bottom_left", "bottom_right"};
@@ -96,6 +109,8 @@ public final class PlaytimeConfig {
                 cfg.notifications = boolProp(props, "notifications", cfg.notifications);
                 cfg.showHud = boolProp(props, "showHud", cfg.showHud);
                 cfg.hudCorner = cornerProp(props.getProperty("hudCorner"), cfg.hudCorner);
+                cfg.minEpisodeSeconds = intProp(props, "minEpisodeSeconds", cfg.minEpisodeSeconds, 0, 3600);
+                cfg.idleKeepPercent = intProp(props, "idleKeepPercent", cfg.idleKeepPercent, 0, 100);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
             }
@@ -127,6 +142,8 @@ public final class PlaytimeConfig {
         props.setProperty("notifications", Boolean.toString(notifications));
         props.setProperty("showHud", Boolean.toString(showHud));
         props.setProperty("hudCorner", hudCorner);
+        props.setProperty("minEpisodeSeconds", Integer.toString(minEpisodeSeconds));
+        props.setProperty("idleKeepPercent", Integer.toString(idleKeepPercent));
         props.setProperty("_comment", "PyMC Bot - edit on the settings page (/pymcbot settings); sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());
@@ -184,6 +201,36 @@ public final class PlaytimeConfig {
         maxEntities = d.maxEntities;
         entityRange = d.entityRange;
         maxGroundItems = d.maxGroundItems;
+        save();
+    }
+
+    /**
+     * Puts every value on the "Power" page (the sliders) back to its default. The sliders share
+     * most values with the Recording and Advanced tabs, so this resets those numbers too - but
+     * leaves the on/off switches alone.
+     */
+    public void resetPower() {
+        PlaytimeConfig d = new PlaytimeConfig();
+        sampleTicks = d.sampleTicks;
+        turnDegrees = d.turnDegrees;
+        moveEpsilon = d.moveEpsilon;
+        idleSkipSeconds = d.idleSkipSeconds;
+        maxNearby = d.maxNearby;
+        maxEntities = d.maxEntities;
+        entityRange = d.entityRange;
+        maxGroundItems = d.maxGroundItems;
+        minEpisodeSeconds = d.minEpisodeSeconds;
+        idleKeepPercent = d.idleKeepPercent;
+        save();
+    }
+
+    public void setMinEpisodeSeconds(int seconds) {
+        minEpisodeSeconds = Math.max(0, Math.min(3600, seconds));
+        save();
+    }
+
+    public void setIdleKeepPercent(int percent) {
+        idleKeepPercent = Math.max(0, Math.min(100, percent));
         save();
     }
 
@@ -287,7 +334,10 @@ public final class PlaytimeConfig {
                 + String.format(Locale.ROOT,
                 "\npauseInMenus=%s, idleSkip=%s, autoRecord=%s, notifications=%s, hud=%s (%s)",
                 pauseInMenus, idleSkipSeconds == 0 ? "off" : idleSkipSeconds + "s", autoRecord, notifications,
-                showHud ? "on" : "off", hudCorner);
+                showHud ? "on" : "off", hudCorner)
+                + String.format(Locale.ROOT,
+                "\nexport filters: minEpisode=%s, keep idle=%d%%",
+                minEpisodeSeconds == 0 ? "off" : minEpisodeSeconds + "s", idleKeepPercent);
     }
 
     private static Path path() {

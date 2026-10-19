@@ -145,6 +145,85 @@ def load_examples(path: str | Path, limit: int | None = None) -> list[tuple[dict
     return examples
 
 
+class IdleThinner:
+    """Python twin of the mod's ``PlaytimeRecorder.IdleThinner`` (the "Keep idle samples" filter).
+
+    Every action except ``none`` is kept, and so is the first ``none`` after it (that is where
+    the player stopped). Inside a longer idle stretch a budget grows by ``keep_percent`` per
+    sample and one sample is kept each time it reaches 100 - so 25 keeps every fourth one,
+    evenly spread and identical on every run.
+    """
+
+    def __init__(self, keep_percent: float = 100) -> None:
+        self.keep_percent = max(0.0, min(100.0, float(keep_percent)))
+        self.budget = 0.0
+        self.idle = False
+
+    def keep(self, action: str) -> bool:
+        if action != "none":
+            self.idle = False
+            return True
+        if not self.idle:
+            self.idle = True
+            self.budget = 0.0
+            return True
+        self.budget += self.keep_percent
+        if self.budget >= 100.0 - 1e-9:
+            self.budget -= 100.0
+            return True
+        return False
+
+
+def filter_examples(
+    examples: list[tuple[dict[str, Any], str]],
+    *,
+    min_episode_seconds: float = 0.0,
+    idle_keep_percent: float = 100.0,
+) -> tuple[list[tuple[dict[str, Any], str]], dict[str, Any]]:
+    """Apply the mod's export filters (settings page > Power tab) to loaded samples.
+
+    ``/pymcbot export`` already applies them when writing ``dataset.jsonl``; this makes
+    ``train --min-episode / --idle-keep`` give the same result when training straight from
+    the episode folder. An episode's length is its largest ``tick`` / 20 (as in the mod).
+    Returns the kept samples and a small report.
+    """
+    report: dict[str, Any] = {
+        "min_episode_seconds": float(min_episode_seconds),
+        "idle_keep_percent": float(idle_keep_percent),
+        "short_episodes_dropped": 0,
+        "idle_samples_dropped": 0,
+    }
+    if min_episode_seconds <= 0 and idle_keep_percent >= 100:
+        return list(examples), report
+
+    def episode_of(observation: dict[str, Any]) -> str:
+        return str(observation.get("episode") or "")
+
+    longest: dict[str, float] = {}
+    for observation, _ in examples:
+        try:
+            tick = float(observation.get("tick") or 0.0)
+        except (TypeError, ValueError):
+            tick = 0.0
+        key = episode_of(observation)
+        longest[key] = max(longest.get(key, 0.0), tick)
+    short = {key for key, ticks in longest.items() if min_episode_seconds > 0 and ticks / 20.0 < min_episode_seconds}
+    report["short_episodes_dropped"] = len(short)
+
+    kept: list[tuple[dict[str, Any], str]] = []
+    thinners: dict[str, IdleThinner] = {}
+    for observation, action in examples:
+        key = episode_of(observation)
+        if key in short:
+            continue
+        thinner = thinners.setdefault(key, IdleThinner(idle_keep_percent))
+        if not thinner.keep(action):
+            report["idle_samples_dropped"] += 1
+            continue
+        kept.append((observation, action))
+    return kept, report
+
+
 def write_dataset(
     path: str | Path,
     examples: Iterable[tuple[dict[str, Any], str]],
@@ -178,13 +257,23 @@ def export_dataset(
     destination: str | Path | None = None,
     *,
     append: bool = False,
+    min_episode_seconds: float = 0.0,
+    idle_keep_percent: float = 100.0,
 ) -> Path:
-    """Mirror ``/pymcbot export`` outside the game (dataset dir -> dataset.jsonl)."""
+    """Mirror ``/pymcbot export`` outside the game (dataset dir -> dataset.jsonl).
+
+    ``min_episode_seconds`` / ``idle_keep_percent`` are the Power tab's export filters
+    (:func:`filter_examples`); the defaults keep everything.
+    """
     source_path = Path(source).expanduser()
     root = source_path if source_path.is_dir() else source_path.parent
     if destination is None:
         destination = data_dir(root) / DATASET_FILENAME
-    examples = load_examples(source_path)
+    examples, _ = filter_examples(
+        load_examples(source_path),
+        min_episode_seconds=min_episode_seconds,
+        idle_keep_percent=idle_keep_percent,
+    )
     if append and Path(destination).exists():
         existing = load_examples(destination)
         return Path(destination) if write_dataset(destination, existing + examples) else Path(destination)

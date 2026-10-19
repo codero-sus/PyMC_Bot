@@ -52,7 +52,7 @@ from pymc_bot.models import (
     load_model,
     torch_available,
 )
-from pymc_bot.playtime import dataset_files, load_examples, pair_transitions
+from pymc_bot.playtime import dataset_files, filter_examples, load_examples, pair_transitions
 
 DEFAULT_MODELS_DIR = "models"
 CONFIG_FILENAME = "trainer_state.json"
@@ -98,6 +98,11 @@ class TrainConfig:
     advanced: bool = False
     entity_slots: int = DEFAULT_ENTITY_SLOTS
     item_slots: int = DEFAULT_ITEM_SLOTS
+    #: The mod's export filters (Power tab), for training straight from the episode folder:
+    #: leave out episodes shorter than this many seconds (0 = keep all) ...
+    min_episode_seconds: float = 0.0
+    #: ... and keep only this share of the standing-still ``none`` samples (100 = keep all).
+    idle_keep_percent: float = 100.0
     seed: int = 0
     resume: bool = False
     from_checkpoint: str = ""
@@ -178,6 +183,8 @@ def build_dataset(
     advanced: bool = False,
     entity_slots: int = DEFAULT_ENTITY_SLOTS,
     item_slots: int = DEFAULT_ITEM_SLOTS,
+    min_episode_seconds: float = 0.0,
+    idle_keep_percent: float = 100.0,
 ) -> Dataset:
     """Turn a playtime dataset (or episode directory) into arrays.
 
@@ -185,8 +192,20 @@ def build_dataset(
     (:func:`pymc_bot.features.learn_vocabulary`) and appends those words to every
     feature vector. The vocabulary travels with the checkpoint, so the live bot encodes
     its world exactly the same way.
+
+    ``min_episode_seconds`` / ``idle_keep_percent`` apply the mod's export filters
+    (:func:`pymc_bot.playtime.filter_examples`) - useful when ``path`` is the raw episode
+    folder; a ``dataset.jsonl`` from ``/pymcbot export`` is already filtered.
     """
-    examples = load_examples(path, limit=limit)
+    loaded = load_examples(path, limit=limit)
+    examples, filtered = filter_examples(
+        loaded, min_episode_seconds=min_episode_seconds, idle_keep_percent=idle_keep_percent
+    )
+    if loaded and not examples:
+        raise ValueError(
+            f"every sample in {path!r} was filtered out (min episode {min_episode_seconds:g}s, "
+            f"keep idle {idle_keep_percent:g}%) - loosen --min-episode / --idle-keep"
+        )
     if not examples:
         raise ValueError(
             f"no playtime samples found in {path!r} - record some with the Fabric mod "
@@ -218,6 +237,8 @@ def build_dataset(
         "advanced": bool(advanced),
         "vocabulary": vocab.describe(),
     }
+    if filtered["short_episodes_dropped"] or filtered["idle_samples_dropped"]:
+        summary["filtered"] = filtered
     if advanced:
         summary.update(
             {
@@ -388,6 +409,8 @@ def train(
         advanced=config.advanced,
         entity_slots=config.entity_slots,
         item_slots=config.item_slots,
+        min_episode_seconds=config.min_episode_seconds,
+        idle_keep_percent=config.idle_keep_percent,
     )
     train_set, val_set = dataset.split(config.val_split, seed=config.seed)
     feature_dim = int(dataset.X.shape[1]) if len(dataset) else 0

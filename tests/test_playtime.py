@@ -9,9 +9,11 @@ from pathlib import Path
 from pymc_bot.features import ACTION_SPACE
 from pymc_bot.playtime import (
     INSTRUCTION,
+    IdleThinner,
     dataset_files,
     dataset_summary,
     export_dataset,
+    filter_examples,
     iter_ndjson,
     load_examples,
     pair_transitions,
@@ -227,3 +229,49 @@ def test_synthetic_inventory_is_plausible(tmp_path: Path):
     # sessions start empty handed so the model learns that state too
     assert any(sample["held_item"] == "" for sample in samples)
     assert any(not sample["armor"] for sample in samples)
+
+
+def _sample(episode: str, tick: int, action: str) -> tuple[dict, str]:
+    return {**SAMPLE, "episode": episode, "tick": tick, "activity": action}, action
+
+
+def test_idle_thinner_matches_the_mod():
+    """Same sequence as the in-game test of PlaytimeRecorder.IdleThinner (Power tab filter)."""
+    thinner = IdleThinner(25)
+    actions = ["forward", "none", "none", "none", "none", "none", "jump", "none", "none"]
+    assert "".join("1" if thinner.keep(action) else "0" for action in actions) == "110001110"
+    keep_all, keep_none = IdleThinner(100), IdleThinner(0)
+    assert all(keep_all.keep("none") for _ in range(10))
+    assert [keep_none.keep("none") for _ in range(4)] == [True, False, False, False]
+
+
+def test_filter_examples_drops_short_episodes_and_thins_idle():
+    long_run = [_sample("long", tick, "none" if 4 <= tick < 40 else "forward") for tick in range(0, 1300, 2)]
+    short_run = [_sample("short", tick, "forward") for tick in range(0, 200, 2)]  # 10 seconds
+    examples = long_run + short_run
+
+    kept, report = filter_examples(examples)
+    assert kept == examples and report["short_episodes_dropped"] == 0
+
+    kept, report = filter_examples(examples, min_episode_seconds=30)
+    assert {obs["episode"] for obs, _ in kept} == {"long"}
+    assert report["short_episodes_dropped"] == 1 and len(kept) == len(long_run)
+
+    kept, report = filter_examples(examples, idle_keep_percent=50)
+    idle_before = sum(1 for _, action in long_run if action == "none")  # 18 in one stretch
+    idle_after = sum(1 for _, action in kept if action == "none")
+    assert idle_after == 1 + (idle_before - 1) // 2
+    assert report["idle_samples_dropped"] == idle_before - idle_after
+    assert [action for _, action in kept if action != "none"] == [a for _, a in examples if a != "none"]
+
+
+def test_export_dataset_applies_the_filters(tmp_path: Path):
+    episodes = tmp_path / "episodes"
+    episodes.mkdir()
+    for name, ticks in (("run-a-ep1", 1300), ("run-a-ep2", 100)):
+        with (episodes / f"{name}.ndjsonl").open("w", encoding="utf-8") as handle:
+            for tick in range(0, ticks, 2):
+                handle.write(json.dumps({**SAMPLE, "episode": name, "tick": tick}) + "\n")
+    out = export_dataset(tmp_path, tmp_path / "filtered.jsonl", min_episode_seconds=20)
+    episodes_left = {obs["episode"] for obs, _ in load_examples(out)}
+    assert episodes_left == {"run-a-ep1"}

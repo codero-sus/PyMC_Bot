@@ -109,6 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="entity words to learn in advanced mode (0 = config/default 24)")
     train.add_argument("--item-slots", type=int, default=0, metavar="N",
                        help="item words to learn in advanced mode (0 = config/default 32)")
+    train.add_argument("--min-episode", type=float, default=0.0, metavar="SECONDS",
+                       help="leave out episodes shorter than this (the mod's Power tab export filter)")
+    train.add_argument("--idle-keep", type=float, default=100.0, metavar="PERCENT",
+                       help="keep only this share of standing-still samples (the mod's Power tab export filter)")
     train.add_argument("--resume", action="store_true", help="continue the run from its last checkpoint")
     train.add_argument("--from-checkpoint", default="", help="resume from a specific checkpoint file")
     train.add_argument("--ollama-model", default="", metavar="NAME",
@@ -333,6 +337,8 @@ def cmd_train(args: argparse.Namespace) -> int:
         advanced=advanced,
         entity_slots=args.entity_slots or training.entity_slots,
         item_slots=args.item_slots or training.item_slots,
+        min_episode_seconds=max(0.0, args.min_episode),
+        idle_keep_percent=max(0.0, min(100.0, args.idle_keep)),
         hidden=tuple(int(part) for part in args.hidden.split(",")) if args.hidden else tuple(training.hidden),
         resume=args.resume,
         from_checkpoint=args.from_checkpoint,
