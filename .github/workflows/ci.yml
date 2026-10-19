@@ -459,3 +459,26 @@ jobs:
             grep -E '^!|failed' modrinth.txt | while read -r line; do echo "::error::$line"; done
             exit "$status"
           fi
+
+  # Updates only the description on the Modrinth page (mod/MODRINTH.md) - no build, no versions, no jars.
+  # Runs for any branch when the pushed commit message contains [modrinth-doc].
+  modrinth-doc:
+    name: Modrinth description
+    if: github.event_name == 'push' && vars.MODRINTH_PROJECT != '' && contains(github.event.head_commit.message, '[modrinth-doc]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Update the Modrinth description
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT: ${{ vars.MODRINTH_PROJECT }}
+        run: |
+          if [ -z "$MODRINTH_TOKEN" ]; then
+            echo "::warning::MODRINTH_TOKEN secret is not set - showing what would be updated"
+            python3 scripts/modrinth_publish.py --description-only --dry-run
+            exit 0
+          fi
+          python3 scripts/modrinth_publish.py --description-only

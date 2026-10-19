@@ -364,6 +364,20 @@ def sync_versions(
     return counts
 
 
+def publish_description(project: str, token: str, *, dry_run: bool = False, call: Callable[..., Any] = None) -> int:
+    """Replace only the description (the long text) of the Modrinth page with mod/MODRINTH.md."""
+    body = (MOD / "MODRINTH.md").read_text(encoding="utf-8")
+    if dry_run:
+        print(f"would update only the description ({len(body)} chars from mod/MODRINTH.md)")
+        return 0
+    if not project or not token:
+        print("--project (or MODRINTH_PROJECT) and MODRINTH_TOKEN are required", file=sys.stderr)
+        return 2
+    (call or request)("PATCH", f"/project/{project}", token, json.dumps({"body": body}).encode())
+    print(f"updated only the description ({len(body)} chars from mod/MODRINTH.md); versions untouched")
+    return 0
+
+
 # --------------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
@@ -376,8 +390,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", action="append", default=[], metavar="MC", help="publish only this Minecraft version (repeatable)")
     parser.add_argument("--update-project", "--update-page", dest="update_project", action="store_true",
                         help="also set title, summary, description (mod/MODRINTH.md), links and licence from mod/modrinth.json")
+    parser.add_argument("--description-only", action="store_true",
+                        help="only replace the project description with mod/MODRINTH.md - no versions, no jars")
     parser.add_argument("--dry-run", action="store_true", help="print what would be published; no token or network needed")
     args = parser.parse_args(argv)
+    if args.description_only:
+        return publish_description(args.project, os.environ.get("MODRINTH_TOKEN", "").strip(), dry_run=args.dry_run)
 
     mod = mod_version()
     expected = supported_versions()

@@ -378,3 +378,29 @@ def test_ci_publishes_to_modrinth_from_main_or_on_request():
     assert "secrets.MODRINTH_TOKEN" in job and "--dry-run" in job
     assert "--update-project" in job and "MODRINTH_UPDATE_PAGE" not in job  # page + summary every time
     assert "name: pymcbot-all-versions" in job
+
+
+# ----------------------------------------------------------------- description only
+def test_description_only_touches_nothing_but_the_description(monkeypatch, capsys):
+    api = FakeModrinth([])
+    monkeypatch.setenv("MODRINTH_TOKEN", "mrp_test")
+    monkeypatch.setattr(mp, "request", api)
+    assert mp.main(["--project", "pymcbot", "--description-only", "--jars", "/nowhere"]) == 0
+    assert api.paths() == [("PATCH", "/project/pymcbot")]  # no version calls at all
+    assert api.calls[0][2] == {"body": (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8")}
+    assert "versions untouched" in capsys.readouterr().out
+
+
+def test_description_only_needs_a_token_unless_dry_run(monkeypatch):
+    monkeypatch.delenv("MODRINTH_TOKEN", raising=False)
+    assert mp.main(["--project", "pymcbot", "--description-only"]) == 2
+    assert mp.main(["--description-only", "--dry-run"]) == 0
+
+
+def test_ci_has_a_description_only_job_without_build_or_versions():
+    text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = text.split("\n  modrinth-doc:\n", 1)[1]
+    assert "contains(github.event.head_commit.message, '[modrinth-doc]')" in job
+    assert "needs:" not in job and "--description-only" in job and "download-artifact" not in job
+    assert "[modrinth]" not in "[modrinth-doc]"  # the doc tag never starts the full sync
+

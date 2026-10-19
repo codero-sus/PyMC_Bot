@@ -480,7 +480,9 @@ Everything Modrinth needs is in the repo:
    Bump `mod_version` in `gradle.properties` (+ a `CHANGELOG.md` section) when you want a new version that
    launchers offer as an update; without a bump the existing versions are refreshed in place. Branch and
    pull-request builds never publish – unless a branch commit message contains `[modrinth]`, which publishes
-   that push without merging. *Actions → Publish to Modrinth → Run workflow* does the same by hand.
+   that push without merging.
+   To change **only the description** on the Modrinth page (no build, no versions), edit `MODRINTH.md`
+   and put `[modrinth-doc]` in the commit message – it is updated within a minute. *Actions → Publish to Modrinth → Run workflow* does the same by hand.
 
    By hand from your PC:
 
