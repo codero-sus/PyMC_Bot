@@ -8,7 +8,7 @@ blocks + nearby entities) and **which key you pressed** at that moment.
 all built from the same source (see [Supported versions](#supported-versions)).
 
 **Download:** every jar is attached to the GitHub release
-[`pymcbot-v0.7.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.7.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
+[`pymcbot-v0.8.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.8.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
 account needed. Or [compile it yourself](#compiling-the-mod).
 
 Everything is configured on the **[PyMC Bot settings page](#pymc-bot-settings-page)** – open it

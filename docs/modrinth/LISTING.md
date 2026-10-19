@@ -50,7 +50,7 @@ The banner at the top loads from GitHub once PR #1 is merged into `main`. To sho
 ## 7. Versions (one per Minecraft version)
 
 Download the 16 jars from the GitHub release
-[`pymcbot-v0.7.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.7.0), then either:
+[`pymcbot-v0.8.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.8.0), then either:
 
 - **Automatic:** `MODRINTH_TOKEN=mrp_... python scripts/modrinth_publish.py --project pymcbot --jars <folder> --update-project`
   (token scopes: see below), or
@@ -58,14 +58,14 @@ Download the 16 jars from the GitHub release
 
 | Field | Value |
 | --- | --- |
-| File | `pymcbot-0.7.0+<mc>.jar` |
-| Version number | `0.7.0+<mc>` (e.g. `0.7.0+26.3`) |
-| Version title | `PyMC Bot 0.7.0 for Minecraft <mc>` |
+| File | `pymcbot-0.8.0+<mc>.jar` |
+| Version number | `0.8.0+<mc>` (e.g. `0.8.0+26.3`) |
+| Version title | `PyMC Bot 0.8.0 for Minecraft <mc>` |
 | Channel | Release |
 | Loaders | Fabric |
 | Game versions | only the `<mc>` in the file name |
 | Dependencies | Fabric API – **required** · Mod Menu – **optional** |
-| Changelog | the `## 0.7.0` section of [`../../mod/CHANGELOG.md`](../../mod/CHANGELOG.md) |
+| Changelog | the `## 0.8.0` section of [`../../mod/CHANGELOG.md`](../../mod/CHANGELOG.md) |
 
 ### Automatic sync after this
 

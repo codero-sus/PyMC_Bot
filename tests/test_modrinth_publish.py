@@ -116,25 +116,23 @@ def test_every_run_creates_missing_updates_existing_and_replaces_changed_jars(tm
     same = _zip_jar(new / f"pymcbot-{version}+26.1.jar", {"a.class": b"same"})
     changed = _zip_jar(new / f"pymcbot-{version}+26.2.jar", {"a.class": b"new code"})
     fresh = _zip_jar(new / f"pymcbot-{version}+26.3.jar", {"a.class": b"fresh"})
-    # On Modrinth: 26.1 is the same code built at another time, 26.2 holds old code, plus an old featured release.
-    old_same = _zip_jar(tmp_path / "old-same.jar", {"a.class": b"same"}, when=(2025, 5, 5, 5, 5, 6))
+    # On Modrinth: 26.1 is the identical (reproducible) build, 26.2 holds old code, plus an old featured release.
+    old_same = same
     old_changed = _zip_jar(tmp_path / "old-changed.jar", {"a.class": b"old code"})
     api = FakeModrinth([
         _remote(f"{version}+26.1", "V261", old_same),
         _remote(f"{version}+26.2", "V262", old_changed),
         _remote("0.6.0+26.1", "OLD", old_changed, featured=True),
     ])
-    cdn = {"https://cdn.modrinth.com/V261.jar": old_same.read_bytes(),
-           "https://cdn.modrinth.com/V262.jar": old_changed.read_bytes()}
     payloads = [(mp.version_payload("p", version, mc, featured=mc == "26.3"), jar)
                 for mc, jar in (("26.1", same), ("26.2", changed), ("26.3", fresh))]
 
-    counts = mp.sync_versions("p", payloads, "mrp_x", call=api, fetch=cdn.__getitem__)
+    counts = mp.sync_versions("p", payloads, "mrp_x", call=api)
 
     assert counts == {"created": 1, "updated": 1, "replaced": 1, "skipped": 0, "failed": 0}
     assert api.paths() == [
         ("GET", "/project/p/version"),
-        ("PATCH", "/version/V261"),                       # details only - same classes, other timestamps
+        ("PATCH", "/version/V261"),                       # details only - jar already there
         ("POST", "/version/V262/file"),                   # new jar ...
         ("PATCH", "/version/V262"),                       # ... made primary, details refreshed
         ("DELETE", f"/version_file/{mp.sha1(old_changed.read_bytes())}?algorithm=sha1&version_id=V262"),
@@ -171,7 +169,7 @@ def test_a_hand_made_version_holding_several_jars_is_untangled(tmp_path: Path, c
     payloads = [(mp.version_payload("p", version, mc, featured=mc == "26.3"), jar)
                 for mc, jar in (("1.21.1", jar_1211), ("26.3", jar_263))]
 
-    counts = mp.sync_versions("p", payloads, "mrp_x", call=api, fetch=lambda url: b"")
+    counts = mp.sync_versions("p", payloads, "mrp_x", call=api)
 
     assert counts == {"created": 1, "updated": 1, "replaced": 0, "skipped": 0, "failed": 0}
     assert api.paths() == [
@@ -195,7 +193,7 @@ def test_a_replacement_jar_never_reuses_the_name_of_the_file_it_replaces(tmp_pat
     api = FakeModrinth([{"id": "V", "version_number": f"{version}+1.21.1", "files": [
         {"filename": jar.name, "primary": True, "url": "u", "hashes": {"sha1": mp.sha1(old.read_bytes())}}]}])
     counts = mp.sync_versions("p", [(mp.version_payload("p", version, "1.21.1"), jar)], "mrp_x",
-                              call=api, fetch=lambda url: old.read_bytes())
+                              call=api)
     assert counts["replaced"] == 1 and counts["failed"] == 0
     upload = api.calls[1][2]
     new_name = f"pymcbot-{version}+1.21.1-{mp.sha1(jar.read_bytes())[:7]}.jar"
