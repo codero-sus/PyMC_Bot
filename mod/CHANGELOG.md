@@ -1,5 +1,12 @@
 # PyMC Bot mod – changelog
 
+## 0.8.0
+
+- New icon: the PyMC Bot logo (also shown in Mod Menu and on Modrinth).
+- Now licensed under **PolyForm Noncommercial 1.0.0** – free for personal, non-commercial use
+  (shown on the About tab and in `/pymcbot about`).
+- Published on Modrinth: one version per Minecraft version, 1.21.1 to 26.3.
+
 ## 0.7.0
 
 - Recordings now live in `<game folder>/pymcbot/` (was `pymc-playtime/`). The old folder is moved

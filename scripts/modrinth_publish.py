@@ -12,7 +12,7 @@ GitHub release, create the project on modrinth.com once, then::
 
 Every run brings Modrinth fully up to date: missing versions are created; existing versions get the
 current name, changelog, game version, loader, dependencies and channel, and their jar is replaced when
-its contents changed. ``--update-project`` also sets the title, summary, description (mod/MODRINTH.md),
+its code changed. ``--update-project`` also sets the title, summary, description (mod/MODRINTH.md),
 categories, links and licence from mod/modrinth.json. Re-running is safe.
 Only the standard library is used.
 """
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
 import re
@@ -30,7 +29,6 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -202,38 +200,9 @@ def sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()  # noqa: S324 - Modrinth identifies files by sha1
 
 
-def jar_digest(data: bytes) -> str:
-    """Hash of the jar *contents* (names + bytes), ignoring zip timestamps, so a rebuild of unchanged
-    code is not mistaken for a new jar."""
-    digest = hashlib.sha256()
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        for name in sorted(archive.namelist()):
-            if name.endswith("/"):
-                continue
-            digest.update(name.encode() + b"\0" + archive.read(name) + b"\0")
-    return digest.hexdigest()
-
-
-def download(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=120) as response:
-        return response.read()
-
-
 def primary_file(version: dict[str, Any]) -> dict[str, Any] | None:
     files = version.get("files") or []
     return next((f for f in files if f.get("primary")), files[0] if files else None)
-
-
-def same_contents(remote: dict[str, Any], local: bytes, fetch: Callable[[str], bytes]) -> bool:
-    """True when the file on Modrinth holds exactly the local jar's classes and resources."""
-    if remote.get("hashes", {}).get("sha1") == sha1(local):
-        return True
-    try:
-        return jar_digest(fetch(remote["url"])) == jar_digest(local)
-    except Exception as exc:  # unreachable CDN or a broken zip -> treat as changed and replace it
-        print(f"  could not compare with the file on Modrinth ({exc}) - replacing it", file=sys.stderr)
-        return False
 
 
 def metadata(data: dict[str, Any]) -> dict[str, Any]:
@@ -309,7 +278,6 @@ def sync_versions(
     token: str,
     *,
     call: Callable[..., Any] = None,
-    fetch: Callable[[str], bytes] = download,
 ) -> dict[str, int]:
     """Create missing versions and bring every existing one up to date (details + jar). Returns counts.
 
@@ -360,13 +328,10 @@ def sync_versions(
             patch = metadata(data)
             files = existing.get("files") or []
             hashes = {_file_hash(f) for f in files}
-            old = primary_file(existing)
+            # Builds are reproducible (same code -> byte-identical jar), so the sha1 decides; the old jar
+            # is never downloaded for comparison - that would count as a download on Modrinth.
             if local_hash in hashes:
                 action = "details updated (jar already there)"
-                counts["updated"] += 1
-            elif old is not None and same_contents(old, local, fetch):
-                local_hash = _file_hash(old)  # same classes, other build time: keep the file
-                action = "details updated (jar unchanged)"
                 counts["updated"] += 1
             else:
                 name = upload_name(jar, {f.get("filename", "") for f in files}, local_hash)
