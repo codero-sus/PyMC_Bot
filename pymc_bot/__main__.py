@@ -142,8 +142,19 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--provider", choices=["minecraft_wiki", "duckduckgo", "searxng", "brave"], default=None)
     search.add_argument("--no-cache", action="store_true", help="ask the web even when the answer is cached")
     search.add_argument("--no-fallback", action="store_true", help="do not fall back to DuckDuckGo")
+    search.add_argument("--no-mob-db", action="store_true", help="skip the built-in mob database, always ask the web")
     search.add_argument("--json", action="store_true", help="print the raw result as JSON")
     _add_config_arg(search)
+
+    mob = sub.add_parser("mob", help="show a mob from the built-in mob database (offline)")
+    mob.add_argument("name", nargs="*", help='a mob name, alias or plural, e.g. "sulphur cube"')
+    mob.add_argument("--list", action="store_true", help="list mobs (combine with the filters)")
+    mob.add_argument("--category", choices=["hostile", "neutral", "passive", "boss"], default=None)
+    mob.add_argument("--dimension", choices=["overworld", "nether", "end"], default=None)
+    mob.add_argument("--since", metavar="VERSION", default=None, help="only mobs added in VERSION or later")
+    mob.add_argument("--version", metavar="VERSION", default=None,
+                     help="say whether the mob exists in VERSION / list only mobs that exist in it")
+    mob.add_argument("--json", action="store_true", help="print JSON")
 
     about_cmd = sub.add_parser("about", help="author, links and credits")
     about_cmd.add_argument("--json", action="store_true", help="print the credits as JSON")
@@ -558,6 +569,8 @@ def cmd_search(args: argparse.Namespace) -> int:
         settings = settings.model_copy(update={"provider": args.provider})
     if args.no_fallback:
         settings = settings.model_copy(update={"fallback": False})
+    if args.no_mob_db:
+        settings = settings.model_copy(update={"use_mob_database": False})
     query = " ".join(args.query)
     kb = KnowledgeBase(settings, None) if args.no_cache else shared_knowledge(settings, store.path.parent)
     result = kb.lookup(query)
@@ -572,6 +585,39 @@ def cmd_search(args: argparse.Namespace) -> int:
     else:
         print(f"No answer for {query!r}: {result.error}")
     return 0 if result.ok else 1
+
+
+def cmd_mob(args: argparse.Namespace) -> int:
+    """Look a mob up in pymc_bot/data/mobs.json, or list mobs with filters."""
+    from pymc_bot.mobs import is_version, load_mobs
+
+    db = load_mobs()
+    for value in (args.since, args.version):
+        if value and not is_version(value):
+            print(f"Not a version: {value!r} (use e.g. 1.21.4 or 26.2)", file=sys.stderr)
+            return 2
+    name = " ".join(args.name).strip()
+    if args.list or not name:
+        found = db.search(category=args.category, dimension=args.dimension, added_since=args.since,
+                          exists_in=args.version, query=name or None)
+        if args.json:
+            print(json.dumps([db.with_derived(m) for m in found], indent=2, ensure_ascii=False))
+            return 0
+        for m in found:
+            flag = "" if db.supported_by_mineflayer(m) else "  (newer than mineflayer)"
+            print(f"{m['name']:<20} {m['category']:<8} {str(m['health']):>6} HP  up to {db.max_damage(m):>5g} dmg  "
+                  f"added {m['added_in']}{flag}")
+        print(f"{len(found)} of {len(db)} mobs")
+        return 0
+    mob = db.get(name)
+    if mob is None:
+        print(f"No mob called {name!r} in the database. Try: python -m pymc_bot mob --list", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(db.with_derived(mob), indent=2, ensure_ascii=False))
+    else:
+        print(db.describe(mob, args.version).replace(". ", ".\n"))
+    return 0
 
 
 # ----------------------------------------------------------------------- stub
@@ -611,6 +657,7 @@ DISPATCH = {
     "doctor": cmd_doctor,
     "probe": cmd_probe,
     "search": cmd_search,
+    "mob": cmd_mob,
     "stub": cmd_stub,
     "about": cmd_about,
 }

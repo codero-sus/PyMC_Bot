@@ -86,11 +86,11 @@ jobs:
         if: matrix.python-version == '3.12'
         continue-on-error: true   # third-party sites; never block a build on them
         run: |
-          python -m pymc_bot search creeper --no-cache --no-fallback --config /tmp/ci-search.json
-          python -m pymc_bot search how to tame a wolf --no-cache --no-fallback --config /tmp/ci-search.json
-          python -m pymc_bot search what drops blaze rods --no-cache --no-fallback --config /tmp/ci-search.json
-          python -m pymc_bot search piglin behavior --no-cache --no-fallback --config /tmp/ci-search.json
-          python -m pymc_bot search creeper --provider duckduckgo --no-cache --no-fallback --config /tmp/ci-search.json
+          python -m pymc_bot search creeper --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
+          python -m pymc_bot search how to tame a wolf --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
+          python -m pymc_bot search what drops blaze rods --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
+          python -m pymc_bot search piglin behavior --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
+          python -m pymc_bot search creeper --provider duckduckgo --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
       - name: Train a player model on synthetic playtime, then run it
         run: |
           python -m pymc_bot train --simulate 3 --simulate-out /tmp/ci-playtime.jsonl --models-dir /tmp/ci-models --run-name ci --steps 60 --checkpoint-every 30 --quiet

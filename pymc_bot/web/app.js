@@ -514,6 +514,7 @@ function fillForm(cfg) {
   set('cfg-search-per-hour', se.max_per_hour ?? 30);
   check('cfg-search-fallback', se.fallback !== false);
   check('cfg-search-auto-mobs', se.auto_lookup_mobs !== false);
+  check('cfg-search-mob-db', se.use_mob_database !== false);
   if ($('search-summary')) {
     $('search-summary').textContent = se.enabled === false || ag.allow_web_search === false
       ? '— off (built-in mob facts only)' : `— on, ${(se.provider || 'minecraft_wiki').replace('_', ' ')}`;
@@ -607,6 +608,7 @@ function collectForm() {
       max_per_hour: Number($('cfg-search-per-hour').value) || 30,
       fallback: $('cfg-search-fallback').checked,
       auto_lookup_mobs: $('cfg-search-auto-mobs').checked,
+      use_mob_database: $('cfg-search-mob-db').checked,
     },
     cortex: {
       enabled: $('cfg-cortex-enabled').checked,

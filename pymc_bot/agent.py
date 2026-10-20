@@ -664,7 +664,7 @@ class AgentLoop:
             kind = str(entity.get("type") or "").removeprefix("minecraft:")
             if kind and kind not in kinds and not entity.get("player") and float(entity.get("dist") or 99) <= 24:
                 kinds.append(kind)
-        facts = self.knowledge.facts_for(kinds[:6])
+        facts = self.knowledge.facts_for(kinds[:6], server_version=settings.minecraft.version)
         return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings),
                                  knowledge=facts)
 

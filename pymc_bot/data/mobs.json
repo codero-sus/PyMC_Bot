@@ -1,0 +1,2796 @@
+{
+  "schema": 1,
+  "edition": "java",
+  "updated": "2026-10-20",
+  "latest_release": "26.3",
+  "mineflayer_max_version": "26.1",
+  "source": "Minecraft Wiki infoboxes (https://minecraft.wiki), Java Edition values",
+  "notes": [
+    "Damage is in health points (2 HP = 1 heart) dealt to a player without armour on Easy / Normal / Hard.",
+    "Difficulty only scales damage dealt to players: other mobs take the Normal value (or 'to_mobs' when given).",
+    "A number pair [min, max] is a range (bows, crossbows, iron golems, hoglins).",
+    "spawn.when: dark = light level 0 (night on the surface, any time in caves), night = surface at night or in thunderstorms, day = passive spawning with the world, any, structure, summoned, built, special, event.",
+    "added_in is the first Java Edition release with the mob. Mobs newer than mineflayer_max_version are not known to mineflayer, so a bot on such a server sees them as unknown entities.",
+    "Java 26.1 and 26.3 added no new mobs (26.1 gave baby mobs new names and models)."
+  ],
+  "mobs": {
+    "allay": {
+      "name": "Allay",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 20,
+      "added_in": "1.19",
+      "spawn": {
+        "when": "structure",
+        "where": "pillager outposts (cages), woodland mansions (cells)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "give it an item and it collects matching items for you",
+      "notes": "dance near a playing jukebox with an amethyst shard to duplicate it"
+    },
+    "armadillo": {
+      "name": "Armadillo",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 12,
+      "added_in": "1.20.5",
+      "spawn": {
+        "when": "day",
+        "where": "savannas and badlands",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "rolls up when threatened; brush it for armadillo scutes (wolf armour)",
+      "mob_type": "arthropod",
+      "xp": "1-3",
+      "breed": "spider eyes"
+    },
+    "axolotl": {
+      "name": "Axolotl",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 14,
+      "added_in": "1.17",
+      "spawn": {
+        "when": "dark",
+        "where": "water in lush caves (with clay below)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "bite",
+          "easy": 2,
+          "normal": 2,
+          "hard": 2,
+          "note": "against aquatic mobs it hunts"
+        }
+      ],
+      "fact": "friendly underwater mob that fights drowned and guardians; carry it in a water bucket",
+      "mob_type": "aquatic",
+      "xp": "1-3",
+      "breed": "bucket of tropical fish"
+    },
+    "bat": {
+      "name": "Bat",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 6,
+      "added_in": "1.4.2",
+      "spawn": {
+        "when": "dark",
+        "where": "caves at light level 3 or less",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 3
+      },
+      "attacks": [],
+      "fact": "harmless cave mob"
+    },
+    "bee": {
+      "name": "Bee",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 10,
+      "added_in": "1.15",
+      "spawn": {
+        "when": "day",
+        "where": "bee nests in plains, meadows, flower forests, cherry groves",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "sting",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3,
+          "effect": "Poison (10 s Normal, 18 s Hard)"
+        }
+      ],
+      "fact": "neutral; stings if you hit it or break its nest; use a campfire under the hive and shears for honeycomb",
+      "hostile_when": "you hit it or break/harvest its hive without a campfire",
+      "mob_type": "arthropod",
+      "breed": "flowers",
+      "notes": "dies after stinging"
+    },
+    "blaze": {
+      "name": "Blaze",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "1.0.0",
+      "spawn": {
+        "when": "structure",
+        "where": "Nether fortresses (light <= 11) and spawners",
+        "dimensions": [
+          "nether"
+        ],
+        "light": 11
+      },
+      "attacks": [
+        {
+          "type": "small fireball",
+          "easy": 3.5,
+          "normal": 5,
+          "hard": 7.5,
+          "effect": "sets you on fire"
+        },
+        {
+          "type": "contact",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        }
+      ],
+      "fact": "Nether fortress mob that flies and shoots fireballs; snowballs hurt it; drops blaze rods (needed for brewing and Eyes of Ender)",
+      "drops": [
+        "blaze rod 0-1 (when killed by a player)"
+      ],
+      "xp": 10,
+      "weaknesses": [
+        "snowballs (3 damage)",
+        "water",
+        "Fire Resistance blocks its fire"
+      ]
+    },
+    "bogged": {
+      "name": "Bogged",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 16,
+      "added_in": "1.21",
+      "spawn": {
+        "when": "dark",
+        "where": "swamps and mangrove swamps; trial chambers",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "ranged (bow)",
+          "easy": [
+            2,
+            4
+          ],
+          "normal": [
+            3,
+            5
+          ],
+          "hard": [
+            4,
+            8
+          ],
+          "effect": "Poison (4 s)"
+        },
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "swamp skeleton whose arrows cause Poison",
+      "mob_type": "undead",
+      "drops": [
+        "bone 0-2",
+        "arrow 0-2",
+        "arrow of Poison",
+        "mushrooms when sheared"
+      ],
+      "xp": 5
+    },
+    "breeze": {
+      "name": "Breeze",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 30,
+      "added_in": "1.21",
+      "spawn": {
+        "when": "structure",
+        "where": "trial spawners in trial chambers",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "wind charge",
+          "easy": 1,
+          "normal": 1,
+          "hard": 1.5,
+          "note": "knockback is the real danger"
+        }
+      ],
+      "fact": "trial chamber mob that jumps around and shoots wind charges that knock you back; drops breeze rods",
+      "drops": [
+        "breeze rod 1-2"
+      ],
+      "weaknesses": [
+        "it deflects arrows and tridents - use melee"
+      ]
+    },
+    "camel": {
+      "name": "Camel",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 32,
+      "added_in": "1.20",
+      "spawn": {
+        "when": "structure",
+        "where": "desert villages",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "desert mount for two players; breed with cactus",
+      "xp": "1-3",
+      "breed": "cactus"
+    },
+    "camel_husk": {
+      "name": "Camel Husk",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 32,
+      "added_in": "1.21.11",
+      "spawn": {
+        "when": "night",
+        "where": "Desert at light 0 with two riders: a husk with a spear and a parched",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [],
+      "fact": "undead camel that is harmless itself, but its husk and parched riders attack",
+      "hostile_when": "while hostile mobs ride it",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 2-3"
+      ],
+      "tame": "feed rabbit's feet to heal it; cannot be bred"
+    },
+    "cat": {
+      "name": "Cat",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "1.14",
+      "spawn": {
+        "when": "structure",
+        "where": "villages and swamp huts (black cats)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "scratch",
+          "easy": 3,
+          "normal": 3,
+          "hard": 3,
+          "note": "only against rabbits and baby turtles"
+        }
+      ],
+      "fact": "tame with raw cod or salmon; creepers and phantoms avoid cats",
+      "aliases": [
+        "kitten",
+        "cats"
+      ],
+      "drops": [
+        "string 0-2"
+      ],
+      "tame": "raw cod or raw salmon",
+      "breed": "raw cod or raw salmon"
+    },
+    "cave_spider": {
+      "name": "Cave Spider",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 12,
+      "added_in": "Beta 1.8",
+      "spawn": {
+        "when": "dark",
+        "where": "sulfur caves (since 26.2); spawners in mineshafts; trial chambers",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3,
+          "effect": "Poison (7 s Normal, 15 s Hard)"
+        }
+      ],
+      "fact": "small spider from mineshaft spawners; its bite poisons; break the spawner or light the area",
+      "hostile_when": "in the dark",
+      "mob_type": "arthropod",
+      "drops": [
+        "string 0-2",
+        "spider eye"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "Bane of Arthropods",
+        "milk cures poison"
+      ]
+    },
+    "chicken": {
+      "name": "Chicken",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 4,
+      "added_in": "Indev",
+      "spawn": {
+        "when": "day",
+        "where": "most grassy biomes; baby zombies sometimes ride one (chicken jockey)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "passive; lays eggs; breed with seeds; drops raw chicken and feathers",
+      "aliases": [
+        "chickens",
+        "chick"
+      ],
+      "drops": [
+        "raw chicken 1",
+        "feather 0-2",
+        "eggs over time"
+      ],
+      "xp": "1-3",
+      "breed": "seeds"
+    },
+    "cod": {
+      "name": "Cod",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 3,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "day",
+        "where": "oceans (not warm ones)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "fish; catch with a bucket or kill for food",
+      "mob_type": "aquatic",
+      "drops": [
+        "raw cod"
+      ],
+      "xp": "1-3"
+    },
+    "copper_golem": {
+      "name": "Copper Golem",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 12,
+      "added_in": "1.21.9",
+      "spawn": {
+        "when": "built",
+        "where": "built from a copper block and a carved pumpkin",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "sorts items: takes them out of copper chests and puts them into matching wooden chests; oxidises into a statue unless waxed"
+    },
+    "cow": {
+      "name": "Cow",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "Indev",
+      "spawn": {
+        "when": "day",
+        "where": "most grassy biomes (plains, forests, taigas, meadows...)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "passive; milk it with a bucket; breed with wheat; drops beef and leather",
+      "aliases": [
+        "cows",
+        "calf"
+      ],
+      "drops": [
+        "raw beef 1-3",
+        "leather 0-2"
+      ],
+      "xp": "1-3",
+      "breed": "wheat"
+    },
+    "creaking": {
+      "name": "Creaking",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 1,
+      "added_in": "1.21.4",
+      "spawn": {
+        "when": "special",
+        "where": "by an active creaking heart in pale gardens at night",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "pale garden mob that only moves when nobody looks at it; break its creaking heart to kill it",
+      "drops": [
+        "resin clumps grow on logs when it is hit"
+      ],
+      "health_note": "immune to damage while its creaking heart exists"
+    },
+    "creeper": {
+      "name": "Creeper",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "Classic",
+      "spawn": {
+        "when": "dark",
+        "where": "most Overworld biomes",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "explosion",
+          "easy": 22.5,
+          "normal": 43,
+          "hard": 64.5,
+          "note": "maximum at point blank; charged creeper 43.5 / 85 / 127.5"
+        }
+      ],
+      "fact": "walks up silently, hisses and EXPLODES about 1.5 s later, destroying blocks; hit it and step back, or kill it from range; cats scare it; drops gunpowder",
+      "aliases": [
+        "creepers"
+      ],
+      "drops": [
+        "gunpowder 0-2",
+        "music disc if a skeleton's arrow kills it"
+      ],
+      "xp": 5,
+      "avoid": true,
+      "weaknesses": [
+        "cats and ocelots scare it",
+        "shields block the blast"
+      ]
+    },
+    "dolphin": {
+      "name": "Dolphin",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 10,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "day",
+        "where": "warm, lukewarm and normal oceans",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "gives Dolphin's Grace when you swim with it; hitting one angers nearby dolphins",
+      "hostile_when": "you hit one (nearby dolphins join)",
+      "mob_type": "aquatic",
+      "drops": [
+        "raw cod 0-1"
+      ],
+      "notes": "feed it raw fish and it leads you to treasure"
+    },
+    "donkey": {
+      "name": "Donkey",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": "15-30",
+      "added_in": "1.6.1",
+      "spawn": {
+        "when": "day",
+        "where": "plains, savannas and meadows",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "tameable like a horse and can carry a chest",
+      "xp": "1-3",
+      "tame": "ride it until hearts appear",
+      "breed": "golden apples or golden carrots"
+    },
+    "drowned": {
+      "name": "Drowned",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 20,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "dark",
+        "where": "rivers, oceans, dripstone caves, ocean ruins; zombies that stay underwater",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        },
+        {
+          "type": "ranged (trident)",
+          "easy": 5,
+          "normal": 8,
+          "hard": 12
+        }
+      ],
+      "fact": "underwater zombie; some throw tridents from range; drops rotten flesh, sometimes copper or a trident",
+      "aliases": [
+        "gurgle",
+        "baby drowned"
+      ],
+      "hostile_when": "at night, or when you are in the water",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-2",
+        "copper ingot (11%)",
+        "trident if it holds one (rare)"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "sunlight (when out of water)",
+        "Smite",
+        "Impaling"
+      ],
+      "armor": 2,
+      "notes": "the baby is called a gurgle since 26.1"
+    },
+    "elder_guardian": {
+      "name": "Elder Guardian",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 80,
+      "added_in": "1.8",
+      "spawn": {
+        "when": "structure",
+        "where": "ocean monuments (three each)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "laser",
+          "easy": 5,
+          "normal": 8,
+          "hard": 12
+        },
+        {
+          "type": "spikes (when you hit it)",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "big monument guardian that gives Mining Fatigue; three per monument",
+      "mob_type": "aquatic",
+      "drops": [
+        "wet sponge",
+        "prismarine shards",
+        "tide armor trim (20%)"
+      ],
+      "xp": 10,
+      "notes": "gives Mining Fatigue III in a 50-block radius"
+    },
+    "ender_dragon": {
+      "name": "Ender Dragon",
+      "category": "boss",
+      "hostile": true,
+      "behavior": "Boss",
+      "health": 200,
+      "added_in": "1.0.0",
+      "spawn": {
+        "when": "special",
+        "where": "the End's main island",
+        "dimensions": [
+          "end"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 6,
+          "normal": 10,
+          "hard": 15
+        },
+        {
+          "type": "wings",
+          "easy": 3.5,
+          "normal": 5,
+          "hard": 7.5
+        },
+        {
+          "type": "dragon's breath",
+          "easy": 3,
+          "normal": 3,
+          "hard": 3,
+          "note": "per second"
+        },
+        {
+          "type": "dragon fireball",
+          "easy": 6,
+          "normal": 6,
+          "hard": 6,
+          "note": "per second in the cloud"
+        }
+      ],
+      "fact": "End boss; destroy the end crystals on the obsidian pillars first; arrows and melee when it perches",
+      "drops": [
+        "dragon egg (first kill)",
+        "dragon's breath can be bottled"
+      ],
+      "xp": "12000 first kill, 500 after",
+      "avoid": true
+    },
+    "enderman": {
+      "name": "Enderman",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 40,
+      "added_in": "Beta 1.8",
+      "spawn": {
+        "when": "dark",
+        "where": "all three dimensions (Overworld light 0, Nether light <= 7, the End)",
+        "dimensions": [
+          "overworld",
+          "nether",
+          "end"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 4.5,
+          "normal": 7,
+          "hard": 10.5
+        }
+      ],
+      "fact": "neutral until you look at its face or hit it, then teleports at you and hits hard; water hurts it; it cannot fit under a 2-block-high roof; drops ender pearls",
+      "aliases": [
+        "endermen",
+        "enderman"
+      ],
+      "hostile_when": "you look at its face or hit it",
+      "drops": [
+        "ender pearl 0-1"
+      ],
+      "xp": 5,
+      "avoid": true,
+      "weaknesses": [
+        "water and rain",
+        "a carved pumpkin on your head lets you look at it"
+      ]
+    },
+    "endermite": {
+      "name": "Endermite",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 8,
+      "added_in": "1.8",
+      "spawn": {
+        "when": "special",
+        "where": "5% chance when a player's ender pearl lands",
+        "dimensions": [
+          "overworld",
+          "nether",
+          "end"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "tiny hostile mob that sometimes appears when an ender pearl lands",
+      "mob_type": "arthropod",
+      "xp": 3,
+      "notes": "endermen attack endermites"
+    },
+    "evoker": {
+      "name": "Evoker",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 24,
+      "added_in": "1.11",
+      "spawn": {
+        "when": "structure",
+        "where": "woodland mansions, raids",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "evoker fangs",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        }
+      ],
+      "fact": "illager that summons fangs from the ground and vexes; kill it quickly; drops a totem of undying",
+      "mob_type": "illager",
+      "drops": [
+        "totem of undying",
+        "emerald 0-1"
+      ],
+      "xp": 10,
+      "notes": "summons vexes"
+    },
+    "fox": {
+      "name": "Fox",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "1.14",
+      "spawn": {
+        "when": "day",
+        "where": "taigas, snowy taigas, groves, dappled forests",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "bite",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "night-time hunter; breed with sweet berries; holds items in its mouth",
+      "hostile_when": "it trusts a different player you attack",
+      "breed": "sweet berries or glow berries"
+    },
+    "frog": {
+      "name": "Frog",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "1.19",
+      "spawn": {
+        "when": "day",
+        "where": "swamps and mangrove swamps (variant depends on the biome)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "eats small slimes and magma cubes; breed with slimeballs",
+      "xp": "1-3",
+      "breed": "slimeballs",
+      "notes": "eating a small magma cube drops a froglight"
+    },
+    "ghast": {
+      "name": "Ghast",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 10,
+      "added_in": "Alpha 1.2.0",
+      "spawn": {
+        "when": "any",
+        "where": "nether wastes, soul sand valleys, basalt deltas",
+        "dimensions": [
+          "nether"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "fireball impact",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9,
+          "note": "a fireball hit back into a ghast kills it",
+          "to_mobs": 1000
+        },
+        {
+          "type": "fireball explosion",
+          "easy": 9.5,
+          "normal": 17,
+          "hard": 25.5,
+          "note": "maximum, varies by distance"
+        }
+      ],
+      "fact": "big floating Nether mob that shoots exploding fireballs; hit a fireball back at it; drops ghast tears",
+      "drops": [
+        "ghast tear 0-1",
+        "gunpowder 0-2"
+      ],
+      "xp": 5
+    },
+    "glow_squid": {
+      "name": "Glow Squid",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "1.17",
+      "spawn": {
+        "when": "dark",
+        "where": "deep underwater caves in darkness",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "deep water squid; drops glow ink sacs",
+      "mob_type": "aquatic",
+      "drops": [
+        "glow ink sac 1-3"
+      ],
+      "xp": "1-3"
+    },
+    "goat": {
+      "name": "Goat",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 10,
+      "added_in": "1.17",
+      "spawn": {
+        "when": "day",
+        "where": "snowy slopes, jagged and frozen peaks",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "ram",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "rams players and mobs off edges; drops goat horns when it hits a block",
+      "breed": "wheat",
+      "notes": "screaming goats ram more often; milk it with a bucket"
+    },
+    "guardian": {
+      "name": "Guardian",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 30,
+      "added_in": "1.8",
+      "spawn": {
+        "when": "structure",
+        "where": "ocean monuments",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "laser",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        },
+        {
+          "type": "spikes (when you hit it)",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "ocean monument fish that charges a laser beam; fight it in short bursts or with a bow",
+      "mob_type": "aquatic",
+      "drops": [
+        "prismarine shard 0-2",
+        "raw cod or prismarine crystals"
+      ],
+      "xp": 10
+    },
+    "happy_ghast": {
+      "name": "Happy Ghast",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 20,
+      "added_in": "1.21.6",
+      "spawn": {
+        "when": "special",
+        "where": "grows from a dried ghast block placed in water (dried ghasts are found in soul sand valleys)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "friendly flying mount for up to four players: grow a dried ghast in water, then put a harness on it",
+      "aliases": [
+        "ghastling"
+      ],
+      "xp": "1-3",
+      "notes": "the baby (ghastling) grows faster when fed snowballs"
+    },
+    "hoglin": {
+      "name": "Hoglin",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 40,
+      "added_in": "1.16",
+      "spawn": {
+        "when": "any",
+        "where": "crimson forests, bastion remnants",
+        "dimensions": [
+          "nether"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "tusk attack",
+          "easy": [
+            2.5,
+            5
+          ],
+          "normal": [
+            3,
+            8
+          ],
+          "hard": [
+            4.5,
+            12
+          ]
+        }
+      ],
+      "fact": "hostile Nether beast that knocks you into the air; it is afraid of warped fungus; drops porkchops and leather",
+      "drops": [
+        "porkchop 2-4",
+        "leather 0-1"
+      ],
+      "xp": 5,
+      "breed": "crimson fungus",
+      "weaknesses": [
+        "warped fungus, nether portals and respawn anchors repel it"
+      ],
+      "notes": "turns into a zoglin after 15 s in the Overworld"
+    },
+    "horse": {
+      "name": "Horse",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": "15-30",
+      "added_in": "1.6.1",
+      "spawn": {
+        "when": "day",
+        "where": "plains and savannas; villages",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "tame by mounting it until hearts appear; needs a saddle to steer; breed with golden apples or golden carrots",
+      "drops": [
+        "leather 0-2"
+      ],
+      "xp": "1-3",
+      "tame": "ride it until hearts appear",
+      "breed": "golden apples or golden carrots"
+    },
+    "husk": {
+      "name": "Husk",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "1.10",
+      "spawn": {
+        "when": "night",
+        "where": "Desert surface at night or in thunderstorms",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5,
+          "effect": "Hunger"
+        }
+      ],
+      "fact": "desert zombie that does not burn in sunlight; its hit causes Hunger",
+      "aliases": [
+        "husks"
+      ],
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-2"
+      ],
+      "xp": 5,
+      "armor": 2,
+      "notes": "turns into a zombie when submerged in water"
+    },
+    "illusioner": {
+      "name": "Illusioner",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 32,
+      "added_in": "1.12",
+      "spawn": {
+        "when": "special",
+        "where": "commands only (unused in survival)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "ranged (bow)",
+          "easy": [
+            2,
+            5
+          ],
+          "normal": [
+            2,
+            5
+          ],
+          "hard": [
+            3,
+            5
+          ]
+        }
+      ],
+      "fact": "rare illager that makes copies of itself and shoots arrows",
+      "mob_type": "illager",
+      "xp": 5
+    },
+    "iron_golem": {
+      "name": "Iron Golem",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 100,
+      "added_in": "1.2.1",
+      "spawn": {
+        "when": "built",
+        "where": "villages, pillager outposts, built from iron blocks and a pumpkin",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": [
+            4.75,
+            11.75
+          ],
+          "normal": [
+            7.5,
+            21.5
+          ],
+          "hard": [
+            11.25,
+            32.25
+          ]
+        }
+      ],
+      "fact": "village protector; neutral, but attacks you if you hurt villagers; drops iron ingots and poppies",
+      "hostile_when": "you hit it or a villager, or your village reputation is low",
+      "drops": [
+        "iron ingot 3-5",
+        "poppy 0-2"
+      ],
+      "avoid": true,
+      "notes": "player-built golems never attack their builder"
+    },
+    "llama": {
+      "name": "Llama",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": "15-30",
+      "added_in": "1.11",
+      "spawn": {
+        "when": "day",
+        "where": "windswept hills, savanna plateaus",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "spit",
+          "easy": 1,
+          "normal": 1,
+          "hard": 1.5
+        }
+      ],
+      "fact": "spits when attacked; can carry chests; tame by riding it repeatedly",
+      "hostile_when": "you hit it",
+      "drops": [
+        "leather 0-2"
+      ],
+      "tame": "ride it until hearts appear",
+      "breed": "hay bales"
+    },
+    "magma_cube": {
+      "name": "Magma Cube",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 16,
+      "added_in": "1.0.0",
+      "spawn": {
+        "when": "any",
+        "where": "nether wastes, basalt deltas, fortresses; bastion spawners",
+        "dimensions": [
+          "nether"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "contact (large)",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        },
+        {
+          "type": "contact (medium)",
+          "easy": 3,
+          "normal": 4,
+          "hard": 6
+        },
+        {
+          "type": "contact (small)",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "Nether slime that splits and is immune to fire and lava; drops magma cream",
+      "drops": [
+        "magma cream (not from the smallest)"
+      ],
+      "health_note": "large 16, medium 4, small 1",
+      "armor": "12 / 6 / 3 by size"
+    },
+    "mooshroom": {
+      "name": "Mooshroom",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "1.0.0",
+      "spawn": {
+        "when": "day",
+        "where": "mushroom fields",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "mushroom cow; milk with a bowl for stew; breed with wheat",
+      "aliases": [
+        "mushroom cow"
+      ],
+      "drops": [
+        "raw beef 1-3",
+        "leather 0-2"
+      ],
+      "xp": "1-3",
+      "breed": "wheat"
+    },
+    "mule": {
+      "name": "Mule",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": "15-30",
+      "added_in": "1.6.1",
+      "spawn": {
+        "when": "special",
+        "where": "only bred from a horse and a donkey",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "donkey-horse cross; can carry a chest; cannot breed",
+      "xp": "1-3",
+      "tame": "ride it until hearts appear"
+    },
+    "nautilus": {
+      "name": "Nautilus",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 15,
+      "added_in": "1.21.11",
+      "spawn": {
+        "when": "day",
+        "where": "all oceans except warm ones' surfaces",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "dash",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "underwater mount: tame with pufferfish, saddle it and ride; protects you from drowning",
+      "hostile_when": "you hit it",
+      "mob_type": "aquatic",
+      "drops": [
+        "nautilus shell (5%)"
+      ],
+      "tame": "pufferfish",
+      "breed": "raw fish"
+    },
+    "ocelot": {
+      "name": "Ocelot",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "1.2.1",
+      "spawn": {
+        "when": "day",
+        "where": "jungles",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "jungle cat; feed it raw fish to gain its trust; creepers avoid it",
+      "breed": "raw cod or raw salmon",
+      "notes": "trusts you but cannot be tamed since 1.14"
+    },
+    "panda": {
+      "name": "Panda",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 20,
+      "added_in": "1.14",
+      "spawn": {
+        "when": "day",
+        "where": "jungles and bamboo jungles",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        },
+        {
+          "type": "melee (aggressive panda)",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        }
+      ],
+      "fact": "jungle mob; breed with bamboo; aggressive pandas hit back",
+      "hostile_when": "you hit it",
+      "drops": [
+        "bamboo 0-2"
+      ],
+      "breed": "bamboo",
+      "health_note": "weak pandas 10"
+    },
+    "parched": {
+      "name": "Parched",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 16,
+      "added_in": "1.21.11",
+      "spawn": {
+        "when": "night",
+        "where": "Desert surface at night or in thunderstorms; riders of camel husks",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "ranged (bow)",
+          "easy": [
+            2,
+            4
+          ],
+          "normal": [
+            3,
+            5
+          ],
+          "hard": [
+            4,
+            8
+          ],
+          "effect": "Weakness (30 s)"
+        },
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "desert skeleton that does not burn in sunlight and shoots arrows of Weakness",
+      "mob_type": "undead",
+      "drops": [
+        "bone 0-2",
+        "arrow 0-2",
+        "arrow of Weakness"
+      ],
+      "xp": 5,
+      "notes": "immune to Weakness; fires slower than a skeleton"
+    },
+    "parrot": {
+      "name": "Parrot",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 6,
+      "added_in": "1.12",
+      "spawn": {
+        "when": "day",
+        "where": "jungles",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "tame with seeds; never feed it cookies",
+      "drops": [
+        "feather 1-2"
+      ],
+      "xp": "1-3",
+      "tame": "seeds"
+    },
+    "phantom": {
+      "name": "Phantom",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "special",
+        "where": "the night sky over players who have not slept for 3+ in-game days",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "swoop bite",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "flying night mob that only appears after you have not slept for 3+ days; sleep in a bed to stop them; drops phantom membrane",
+      "aliases": [
+        "phantoms"
+      ],
+      "mob_type": "undead",
+      "drops": [
+        "phantom membrane 0-1"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "sleeping resets the timer",
+        "sunlight",
+        "cats scare them"
+      ]
+    },
+    "pig": {
+      "name": "Pig",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "Classic",
+      "spawn": {
+        "when": "day",
+        "where": "most grassy biomes",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "passive; breed with carrots, potatoes or beetroot; drops porkchops; ride with a saddle and a carrot on a stick",
+      "aliases": [
+        "pigs",
+        "piglet"
+      ],
+      "drops": [
+        "raw porkchop 1-3"
+      ],
+      "xp": "1-3",
+      "breed": "carrots, potatoes or beetroot"
+    },
+    "piglin": {
+      "name": "Piglin",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 16,
+      "added_in": "1.16",
+      "spawn": {
+        "when": "any",
+        "where": "nether wastes, crimson forests, bastion remnants",
+        "dimensions": [
+          "nether"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee (golden sword)",
+          "easy": 5,
+          "normal": 8,
+          "hard": 12
+        },
+        {
+          "type": "ranged (crossbow)",
+          "easy": [
+            2,
+            5
+          ],
+          "normal": [
+            2,
+            5
+          ],
+          "hard": [
+            3,
+            5
+          ]
+        }
+      ],
+      "fact": "Nether mob that is neutral if you wear at least one gold armour piece, otherwise hostile; trade by dropping gold ingots; angers if you open chests or mine gold near it",
+      "hostile_when": "you wear no gold armour, open chests or break gold blocks near it, or hit one",
+      "drops": [
+        "its weapon (8.5%)",
+        "bartering loot for gold ingots"
+      ],
+      "xp": 5,
+      "notes": "babies are passive and never grow up; turns into a zombified piglin after 15 s in the Overworld"
+    },
+    "piglin_brute": {
+      "name": "Piglin Brute",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 50,
+      "added_in": "1.16.2",
+      "spawn": {
+        "when": "structure",
+        "where": "bastion remnants",
+        "dimensions": [
+          "nether"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee (golden axe)",
+          "easy": 7.5,
+          "normal": 13,
+          "hard": 19.5
+        }
+      ],
+      "fact": "always hostile bastion guard with a gold axe; very strong - avoid",
+      "drops": [
+        "golden axe (8.5%)"
+      ],
+      "xp": 20,
+      "avoid": true,
+      "notes": "gold armour does not calm it"
+    },
+    "pillager": {
+      "name": "Pillager",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 24,
+      "added_in": "1.14",
+      "spawn": {
+        "when": "structure",
+        "where": "pillager outposts, patrols, raids",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "ranged (crossbow)",
+          "easy": [
+            2,
+            3
+          ],
+          "normal": [
+            3,
+            5
+          ],
+          "hard": [
+            5,
+            7
+          ]
+        }
+      ],
+      "fact": "crossbow raider; patrols carry a banner captain whose death gives Bad Omen (a raid when you enter a village)",
+      "mob_type": "illager",
+      "drops": [
+        "arrow 0-2",
+        "crossbow (8.5%)",
+        "ominous banner (captain)"
+      ],
+      "xp": 5
+    },
+    "polar_bear": {
+      "name": "Polar Bear",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 30,
+      "added_in": "1.10",
+      "spawn": {
+        "when": "day",
+        "where": "snowy plains, ice spikes, frozen oceans",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        }
+      ],
+      "fact": "neutral, hostile when a cub is near; strong - leave it alone",
+      "hostile_when": "a cub is near you, or you hit it",
+      "drops": [
+        "raw cod or salmon 0-2"
+      ]
+    },
+    "pufferfish": {
+      "name": "Pufferfish",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 3,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "day",
+        "where": "lukewarm and warm oceans",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "contact (fully puffed)",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5,
+          "effect": "Poison (6 s)"
+        }
+      ],
+      "fact": "puffs up and poisons you when close; do not eat it",
+      "hostile_when": "you swim close to it",
+      "mob_type": "aquatic",
+      "drops": [
+        "pufferfish"
+      ]
+    },
+    "rabbit": {
+      "name": "Rabbit",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 3,
+      "added_in": "1.8",
+      "spawn": {
+        "when": "day",
+        "where": "deserts, flower forests, taigas, meadows, cherry groves and snowy biomes",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "fast passive mob; breed with carrots or dandelions; drops rabbit hide and sometimes a rabbit's foot",
+      "aliases": [
+        "bunny"
+      ],
+      "drops": [
+        "rabbit hide 0-1",
+        "raw rabbit 0-1",
+        "rabbit's foot (10%)"
+      ],
+      "xp": "1-3",
+      "breed": "carrots, golden carrots or dandelions"
+    },
+    "ravager": {
+      "name": "Ravager",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 100,
+      "added_in": "1.14",
+      "spawn": {
+        "when": "event",
+        "where": "raids only",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 7,
+          "normal": 12,
+          "hard": 18
+        },
+        {
+          "type": "roar",
+          "easy": 4,
+          "normal": 6,
+          "hard": 9
+        }
+      ],
+      "fact": "huge raid beast that hits extremely hard - avoid or fight from range",
+      "drops": [
+        "saddle"
+      ],
+      "xp": 20,
+      "avoid": true,
+      "notes": "a shield block can stun it"
+    },
+    "salmon": {
+      "name": "Salmon",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 3,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "day",
+        "where": "rivers and cold/frozen oceans",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "fish; catch with a bucket or kill for food",
+      "mob_type": "aquatic",
+      "drops": [
+        "raw salmon"
+      ],
+      "xp": "1-3"
+    },
+    "sheep": {
+      "name": "Sheep",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 8,
+      "added_in": "Classic",
+      "spawn": {
+        "when": "day",
+        "where": "most grassy biomes",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "passive; shear it for wool (no kill needed); breed with wheat; drops mutton",
+      "aliases": [
+        "lamb"
+      ],
+      "drops": [
+        "wool 1",
+        "raw mutton 1-2"
+      ],
+      "xp": "1-3",
+      "breed": "wheat"
+    },
+    "shulker": {
+      "name": "Shulker",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 30,
+      "added_in": "1.9",
+      "spawn": {
+        "when": "structure",
+        "where": "End cities",
+        "dimensions": [
+          "end"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "shulker bullet",
+          "easy": 3,
+          "normal": 4,
+          "hard": 6,
+          "effect": "Levitation (10 s)"
+        }
+      ],
+      "fact": "End city box mob; its bullets cause Levitation (dangerous fall damage); drops shulker shells",
+      "drops": [
+        "shulker shell 0-1"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "hit it while its shell is open"
+      ],
+      "armor": "20 closed, 0 open"
+    },
+    "silverfish": {
+      "name": "Silverfish",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 8,
+      "added_in": "Beta 1.8",
+      "spawn": {
+        "when": "special",
+        "where": "infested stone in mountains, strongholds, igloos, mansions; Infested potion effect",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 1,
+          "normal": 1,
+          "hard": 1.5
+        }
+      ],
+      "fact": "hides in infested stone; hitting one wakes nearby silverfish; kill with one strong hit or avoid",
+      "mob_type": "arthropod",
+      "xp": 5,
+      "weaknesses": [
+        "Bane of Arthropods"
+      ]
+    },
+    "skeleton": {
+      "name": "Skeleton",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "Classic",
+      "spawn": {
+        "when": "dark",
+        "where": "most Overworld biomes; soul sand valleys and fortresses in the Nether; spawners",
+        "dimensions": [
+          "overworld",
+          "nether"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "ranged (bow)",
+          "easy": [
+            2,
+            4
+          ],
+          "normal": [
+            3,
+            5
+          ],
+          "hard": [
+            4,
+            8
+          ]
+        },
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "shoots arrows from range and burns in daylight; close the distance fast or block with a shield; drops bones and arrows",
+      "aliases": [
+        "skeletons",
+        "skelly"
+      ],
+      "mob_type": "undead",
+      "drops": [
+        "bone 0-2",
+        "arrow 0-2"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "sunlight",
+        "Smite",
+        "shields block arrows"
+      ]
+    },
+    "skeleton_horse": {
+      "name": "Skeleton Horse",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 15,
+      "added_in": "1.6.1",
+      "spawn": {
+        "when": "event",
+        "where": "skeleton traps from lightning in thunderstorms",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "skeleton trap horse: going near turns it into four skeleton horsemen with enchanted bows",
+      "hostile_when": "as part of a skeleton trap",
+      "mob_type": "undead",
+      "drops": [
+        "bone 0-2"
+      ]
+    },
+    "slime": {
+      "name": "Slime",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 16,
+      "added_in": "Infdev",
+      "spawn": {
+        "when": "dark",
+        "where": "swamps (at night) and slime chunks below y=40",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "contact (large)",
+          "easy": 3,
+          "normal": 4,
+          "hard": 6
+        },
+        {
+          "type": "contact (medium)",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        },
+        {
+          "type": "contact (small)",
+          "easy": 0,
+          "normal": 0,
+          "hard": 0
+        }
+      ],
+      "fact": "splits into smaller slimes when killed; spawns in swamps and slime chunks; drops slimeballs",
+      "aliases": [
+        "slimes"
+      ],
+      "drops": [
+        "slimeball 0-2 (small only)"
+      ],
+      "xp": "4 / 2 / 1 by size",
+      "health_note": "large 16, medium 4, small 1"
+    },
+    "sniffer": {
+      "name": "Sniffer",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 14,
+      "added_in": "1.20",
+      "spawn": {
+        "when": "special",
+        "where": "hatches from a sniffer egg (from suspicious sand in warm ocean ruins)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "ancient mob that digs up rare seeds",
+      "aliases": [
+        "snifflet",
+        "baby sniffer"
+      ],
+      "xp": "1-3",
+      "breed": "torchflower seeds",
+      "notes": "hatches from a sniffer egg; the baby is called a snifflet since 26.1"
+    },
+    "snow_golem": {
+      "name": "Snow Golem",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 4,
+      "added_in": "1.0.0",
+      "spawn": {
+        "when": "built",
+        "where": "built from 2 snow blocks and a carved pumpkin",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "snowball",
+          "easy": 0,
+          "normal": 0,
+          "hard": 0,
+          "note": "3 damage to blazes only",
+          "to_mobs": 0
+        }
+      ],
+      "fact": "built from snow blocks and a pumpkin; throws snowballs at hostile mobs",
+      "aliases": [
+        "snowman"
+      ],
+      "drops": [
+        "snowball 0-15"
+      ]
+    },
+    "spider": {
+      "name": "Spider",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 16,
+      "added_in": "Classic",
+      "spawn": {
+        "when": "dark",
+        "where": "most Overworld biomes (not sulfur caves); spawners",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "neutral in daylight, hostile in the dark; climbs walls; drops string and spider eyes",
+      "aliases": [
+        "spiders"
+      ],
+      "hostile_when": "in the dark (it stays neutral in bright light unless hit)",
+      "mob_type": "arthropod",
+      "drops": [
+        "string 0-2",
+        "spider eye (1/3, when killed by a player)"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "Bane of Arthropods"
+      ]
+    },
+    "squid": {
+      "name": "Squid",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 10,
+      "added_in": "Beta 1.2",
+      "spawn": {
+        "when": "day",
+        "where": "rivers and oceans",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "passive sea mob; drops ink sacs",
+      "mob_type": "aquatic",
+      "drops": [
+        "ink sac 1-3"
+      ],
+      "xp": "1-3"
+    },
+    "stray": {
+      "name": "Stray",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "1.10",
+      "spawn": {
+        "when": "night",
+        "where": "snowy plains and ice spikes surface; skeletons frozen in powder snow",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "ranged (bow)",
+          "easy": [
+            2,
+            4
+          ],
+          "normal": [
+            3,
+            5
+          ],
+          "hard": [
+            4,
+            8
+          ],
+          "effect": "Slowness (30 s)"
+        },
+        {
+          "type": "melee",
+          "easy": 2,
+          "normal": 2,
+          "hard": 3
+        }
+      ],
+      "fact": "snowy skeleton whose arrows cause Slowness",
+      "mob_type": "undead",
+      "drops": [
+        "bone 0-2",
+        "arrow 0-2",
+        "arrow of Slowness"
+      ],
+      "xp": 5
+    },
+    "strider": {
+      "name": "Strider",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 20,
+      "added_in": "1.16",
+      "spawn": {
+        "when": "any",
+        "where": "lava seas in the Nether",
+        "dimensions": [
+          "nether"
+        ]
+      },
+      "attacks": [],
+      "fact": "Nether lava walker; ride it with a saddle and a warped fungus on a stick",
+      "drops": [
+        "string 0-5"
+      ],
+      "breed": "warped fungus"
+    },
+    "sulfur_cube": {
+      "name": "Sulfur Cube",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 8,
+      "added_in": "26.2",
+      "spawn": {
+        "when": "any",
+        "where": "sulfur caves only, at any light level",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": "any",
+        "group": "2-4"
+      },
+      "attacks": [
+        {
+          "type": "contact with an absorbed magma block",
+          "easy": 1,
+          "normal": 1,
+          "hard": 1,
+          "note": "every half second"
+        },
+        {
+          "type": "absorbed TNT explosion",
+          "easy": 22.5,
+          "normal": 43,
+          "hard": 64.5,
+          "note": "maximum; 6 s fuse when lit by fire/redstone, 0.75-3 s from another explosion"
+        }
+      ],
+      "fact": "passive slime-like cube from sulfur caves (26.2): give it a full block and it absorbs it and changes its physics (bouncy, sliding, sticky...); TNT inside makes it explode, a magma block makes it burn you; shear the block out; small cubes grow with slimeballs",
+      "aliases": [
+        "sulphur cube",
+        "sulfur cubes",
+        "sulphur cubes",
+        "sulfur slime"
+      ],
+      "hostile_when": "never on purpose - only if it has absorbed TNT (explodes) or a magma block (burns on contact)",
+      "drops": [
+        "nothing (the absorbed block, if any)"
+      ],
+      "health_note": "large 8, small 4 (a large cube splits into two small ones when it dies)",
+      "notes": "Added in the Chaos Cubed drop, Java 26.2 (June 16, 2026). Counts against the hostile mob cap and despawns like a monster. With a block inside it ignores melee, fall and explosion damage but not lava or fire. Large cubes can be picked up with a bucket."
+    },
+    "tadpole": {
+      "name": "Tadpole",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 6,
+      "added_in": "1.19",
+      "spawn": {
+        "when": "special",
+        "where": "hatches from frogspawn",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "baby frog; carry it in a water bucket; grows into a frog"
+    },
+    "trader_llama": {
+      "name": "Trader Llama",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": "15-30",
+      "added_in": "1.14",
+      "spawn": {
+        "when": "special",
+        "where": "with a wandering trader",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "spit",
+          "easy": 1,
+          "normal": 1,
+          "hard": 1.5
+        }
+      ],
+      "fact": "llama of the wandering trader; spits at attackers",
+      "hostile_when": "you attack it or its trader"
+    },
+    "tropical_fish": {
+      "name": "Tropical Fish",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 3,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "day",
+        "where": "warm oceans, lush caves and mangrove swamps",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "colourful fish; catch it with a bucket",
+      "mob_type": "aquatic",
+      "drops": [
+        "tropical fish"
+      ],
+      "xp": "1-3"
+    },
+    "turtle": {
+      "name": "Turtle",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 30,
+      "added_in": "1.13",
+      "spawn": {
+        "when": "day",
+        "where": "beaches",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "lays eggs on its home beach; breed with seagrass; drops scutes when babies grow up",
+      "mob_type": "aquatic",
+      "drops": [
+        "seagrass 0-2"
+      ],
+      "xp": "1-3",
+      "breed": "seagrass"
+    },
+    "vex": {
+      "name": "Vex",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 14,
+      "added_in": "1.11",
+      "spawn": {
+        "when": "summoned",
+        "where": "summoned by evokers",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee (iron sword)",
+          "easy": 5.5,
+          "normal": 9,
+          "hard": 13.5
+        }
+      ],
+      "fact": "small flying mob summoned by evokers; flies through walls; dies on its own after a while",
+      "xp": 3
+    },
+    "villager": {
+      "name": "Villager",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 20,
+      "added_in": "1.0.0",
+      "spawn": {
+        "when": "structure",
+        "where": "villages; cured zombie villagers",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "trades items for emeralds; never hurt villagers (golems attack you); a bed and a job block make it work",
+      "aliases": [
+        "villagers",
+        "npc",
+        "testificate"
+      ],
+      "breed": "give them food (bread, carrots, potatoes, beetroots) with free beds"
+    },
+    "vindicator": {
+      "name": "Vindicator",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 24,
+      "added_in": "1.11",
+      "spawn": {
+        "when": "structure",
+        "where": "woodland mansions, raids",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee (iron axe)",
+          "easy": 7.5,
+          "normal": 13,
+          "hard": 19.5
+        }
+      ],
+      "fact": "axe-wielding illager that hits very hard; keep distance or use a shield",
+      "mob_type": "illager",
+      "drops": [
+        "emerald 0-1",
+        "iron axe (8.5%)"
+      ],
+      "xp": 5
+    },
+    "wandering_trader": {
+      "name": "Wandering Trader",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 20,
+      "added_in": "1.14",
+      "spawn": {
+        "when": "special",
+        "where": "near players every now and then",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "visits now and then and sells rare items for emeralds; despawns after a while",
+      "drops": [
+        "potion or milk bucket it drinks"
+      ]
+    },
+    "warden": {
+      "name": "Warden",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 500,
+      "added_in": "1.19",
+      "spawn": {
+        "when": "summoned",
+        "where": "when sculk shriekers in the deep dark are triggered 4 times",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 16,
+          "normal": 30,
+          "hard": 45
+        },
+        {
+          "type": "sonic boom (ignores armour and shields)",
+          "easy": 6,
+          "normal": 10,
+          "hard": 15
+        }
+      ],
+      "fact": "blind deep-dark monster that hunts by sound and smell and is far too strong to fight; sneak, do not trigger sculk shriekers, and leave if it appears",
+      "drops": [
+        "sculk catalyst"
+      ],
+      "xp": 5,
+      "avoid": true,
+      "weaknesses": [
+        "sneaking makes no vibrations",
+        "wool blocks vibrations"
+      ]
+    },
+    "witch": {
+      "name": "Witch",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 26,
+      "added_in": "1.4.2",
+      "spawn": {
+        "when": "dark",
+        "where": "most Overworld biomes; swamp huts; raids; villagers struck by lightning",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "splash potion of Harming",
+          "easy": 6,
+          "normal": 6,
+          "hard": 6,
+          "note": "maximum, varies by distance"
+        },
+        {
+          "type": "splash potion of Poison",
+          "easy": 0,
+          "normal": 0,
+          "hard": 0,
+          "effect": "Poison up to 45 s"
+        }
+      ],
+      "fact": "throws poison, slowness, weakness and harming potions and drinks healing potions; fight it fast or from range",
+      "drops": [
+        "glass bottle, glowstone dust, gunpowder, redstone, spider eye, stick, sugar (0-6 total)"
+      ],
+      "xp": 5
+    },
+    "wither": {
+      "name": "Wither",
+      "category": "boss",
+      "hostile": true,
+      "behavior": "Boss",
+      "health": 300,
+      "added_in": "1.4.2",
+      "spawn": {
+        "when": "built",
+        "where": "built from 4 soul sand/soil and 3 wither skeleton skulls",
+        "dimensions": [
+          "overworld",
+          "nether",
+          "end"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "birth explosion",
+          "easy": 35.5,
+          "normal": 69,
+          "hard": 103.5,
+          "note": "maximum"
+        },
+        {
+          "type": "wither skull",
+          "easy": 5,
+          "normal": 8,
+          "hard": 12,
+          "effect": "Wither II (10 s Normal, 40 s Hard)"
+        }
+      ],
+      "fact": "boss built from soul sand and 3 wither skeleton skulls; explodes and shoots skulls; only fight it fully prepared",
+      "mob_type": "undead",
+      "drops": [
+        "nether star"
+      ],
+      "xp": 50,
+      "avoid": true,
+      "weaknesses": [
+        "Smite",
+        "below half health arrows bounce off"
+      ],
+      "armor": 4
+    },
+    "wither_skeleton": {
+      "name": "Wither Skeleton",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "1.4.2",
+      "spawn": {
+        "when": "structure",
+        "where": "Nether fortresses (light <= 7)",
+        "dimensions": [
+          "nether"
+        ],
+        "light": 7
+      },
+      "attacks": [
+        {
+          "type": "melee (stone sword)",
+          "easy": 5,
+          "normal": 8,
+          "hard": 12,
+          "effect": "Wither (10 s)"
+        }
+      ],
+      "fact": "Nether fortress skeleton with a stone sword; its hit causes the Wither effect; sometimes drops a wither skeleton skull",
+      "mob_type": "undead",
+      "drops": [
+        "coal 0-1",
+        "bone 0-2",
+        "wither skeleton skull (2.5%)"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "Smite",
+        "milk cures Wither"
+      ]
+    },
+    "wolf": {
+      "name": "Wolf",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 8,
+      "added_in": "Beta 1.4",
+      "spawn": {
+        "when": "day",
+        "where": "forests, taigas, groves, savanna plateaus, wooded badlands",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "bite",
+          "easy": 3,
+          "normal": 4,
+          "hard": 6
+        }
+      ],
+      "fact": "tame with bones; tamed wolves follow and fight for you; hitting a wild one angers the pack",
+      "aliases": [
+        "dog",
+        "wolves",
+        "puppy"
+      ],
+      "hostile_when": "you hit it (the pack joins)",
+      "tame": "bones (1/3 chance each)",
+      "breed": "any meat (tamed wolves)",
+      "health_note": "tamed: 40"
+    },
+    "zoglin": {
+      "name": "Zoglin",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 40,
+      "added_in": "1.16",
+      "spawn": {
+        "when": "special",
+        "where": "a hoglin that spends 15 s outside the Nether",
+        "dimensions": [
+          "overworld",
+          "end"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "tusk attack",
+          "easy": [
+            2.5,
+            5
+          ],
+          "normal": [
+            3,
+            8
+          ],
+          "hard": [
+            4.5,
+            12
+          ]
+        }
+      ],
+      "fact": "zombified hoglin, attacks every mob nearby",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 1-3"
+      ],
+      "xp": 5
+    },
+    "zombie": {
+      "name": "Zombie",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "Classic",
+      "spawn": {
+        "when": "dark",
+        "where": "most Overworld biomes; zombie sieges; spawners",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "hostile melee mob; burns in daylight unless it wears a helmet or stands in shade/water; baby zombies are fast; drops rotten flesh",
+      "aliases": [
+        "zombies"
+      ],
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-2",
+        "rarely iron ingot, carrot or potato"
+      ],
+      "xp": 5,
+      "weaknesses": [
+        "sunlight",
+        "Smite",
+        "healing potions hurt it"
+      ],
+      "health_note": "leaders 40-100 (Java)",
+      "armor": 2
+    },
+    "zombie_horse": {
+      "name": "Zombie Horse",
+      "category": "passive",
+      "hostile": false,
+      "behavior": "Passive",
+      "health": 25,
+      "added_in": "1.6.1",
+      "spawn": {
+        "when": "night",
+        "where": "plains and savannas at night with a spear-wielding zombie rider (since 1.21.11)",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [],
+      "fact": "undead horse; dangerous only while a zombie rides it; once alone it can be tamed and ridden",
+      "hostile_when": "while a zombie rides it",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-2"
+      ],
+      "tame": "ride it until hearts appear"
+    },
+    "zombie_nautilus": {
+      "name": "Zombie Nautilus",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 15,
+      "added_in": "1.21.11",
+      "spawn": {
+        "when": "dark",
+        "where": "oceans and dripstone caves, ridden by a drowned with a trident",
+        "dimensions": [
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "dash",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "undead nautilus; hostile only while a drowned rides it; tame it with pufferfish",
+      "hostile_when": "while a hostile mob rides it",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-3"
+      ],
+      "tame": "pufferfish"
+    },
+    "zombie_villager": {
+      "name": "Zombie Villager",
+      "category": "hostile",
+      "hostile": true,
+      "behavior": "Hostile",
+      "health": 20,
+      "added_in": "1.4.2",
+      "spawn": {
+        "when": "dark",
+        "where": "replaces some zombies; villagers killed by zombies on Normal/Hard",
+        "dimensions": [
+          "overworld"
+        ],
+        "light": 0
+      },
+      "attacks": [
+        {
+          "type": "melee",
+          "easy": 2.5,
+          "normal": 3,
+          "hard": 4.5
+        }
+      ],
+      "fact": "zombie villager; cure it with a splash potion of weakness then a golden apple to get a villager back",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-2"
+      ],
+      "xp": 5,
+      "armor": 2
+    },
+    "zombified_piglin": {
+      "name": "Zombified Piglin",
+      "category": "neutral",
+      "hostile": false,
+      "behavior": "Neutral",
+      "health": 20,
+      "added_in": "Alpha 1.2.0",
+      "spawn": {
+        "when": "any",
+        "where": "nether wastes, crimson forests, fortresses; near Overworld portals; pigs struck by lightning",
+        "dimensions": [
+          "nether",
+          "overworld"
+        ]
+      },
+      "attacks": [
+        {
+          "type": "melee (golden sword)",
+          "easy": 5,
+          "normal": 8,
+          "hard": 12
+        }
+      ],
+      "fact": "neutral Nether mob; hitting one makes the whole group attack you; drops gold nuggets",
+      "aliases": [
+        "zombie pigman",
+        "zombie pigmen",
+        "pigman"
+      ],
+      "hostile_when": "you (or anything you do) hurt one - the whole group joins",
+      "mob_type": "undead",
+      "drops": [
+        "rotten flesh 0-1",
+        "gold nugget 0-1",
+        "gold ingot (rare)"
+      ],
+      "xp": 5,
+      "armor": 2,
+      "notes": "called zombie pigman before 1.16"
+    }
+  }
+}

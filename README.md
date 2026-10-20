@@ -44,8 +44,9 @@ Minecraft versions), and it is driven purely by JSON from Python.
   who ask, sleeps at night, flees when hurt and waves or crouch-greets people ([details](#lives-like-a-real-player)).
 * **Knows Minecraft, and looks up what it doesn't** – many models barely know the game, so the LLM gets
   practical facts about the mobs around it (creepers explode, don't look at endermen, piglins want gold…)
-  and can **search the web** (Minecraft Wiki by default, no key) before it acts
-  ([details](#minecraft-knowledge-and-web-search)).
+  from a **JSON mob database** (hostility, health, damage to players and mobs, spawn time, the version each
+  mob was added in – even 26.2's sulfur cube, which mineflayer doesn't know yet), and can **search the web**
+  (Minecraft Wiki by default, no key) before it acts ([details](#minecraft-knowledge-and-web-search)).
 * **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
   bearer key read from the environment and never saved).
 * **Plays and talks like a human** – pick a behaviour (helper, companion, explorer, pro, …); the LLM gets a
@@ -428,13 +429,16 @@ Permissions (`agent.*`, panel **AI permissions**): `allow_inventory` (on), `allo
 Plenty of models don't really know Minecraft: they walk up to creepers, stare at endermen or attack piglins.
 The Ollama / Cortex brain gets help in two ways:
 
-* **Built-in mob facts.** Every turn the prompt carries one practical line about each mob type nearby, e.g.
-  *creeper: walks up silently, hisses and EXPLODES about 1.5 s later… hit it and step back*. All vanilla mobs
-  are covered, and this works offline.
+* **Mob database.** [`pymc_bot/data/mobs.json`](pymc_bot/data/mobs.json) has every vanilla Java mob (89) with
+  its stats. Every turn the prompt carries one line about each mob type nearby, e.g.
+  *creeper (hostile, 20 HP, up to 43 dmg, night/dark): walks up silently, hisses and EXPLODES about 1.5 s
+  later… hit it and step back*. Questions about one mob (*is the sulphur cube hostile?*, *how much damage
+  does a warden do?*, *does the sulfur cube exist in 1.21.4?*) are answered from the database offline,
+  before any web request. Details are [below](#the-mob-database).
 * **Web search.** The model can use `{"action": "search", "query": "how to tame a wolf"}` whenever it is unsure
   about a mob, block, recipe or mechanic. The answer goes straight back into the prompt (*WHAT YOU LOOKED UP*)
   and the model picks its real action **in the same turn**. The answer stays in its memory for the next turns too.
-  Mobs it has no fact for, like modded ones, are looked up automatically in the background.
+  Mobs it has no entry for, like modded ones, are looked up automatically in the background.
 
 | Provider (`search.provider`) | Key | Notes |
 | --- | --- | --- |
@@ -447,7 +451,7 @@ Answers are cached in `knowledge_cache.json` next to the config file for 30 days
 repeated questions are free and instant. The number of real web requests is capped at 30 per hour
 (`search.max_per_hour`). `search.max_per_turn` (1) sets how many lookups can happen before acting; with 0,
 the answer is used on the next turn instead. Turn it all off with **Allow web search** in the panel's
-*Minecraft knowledge* box (`agent.allow_web_search` / `search.enabled`); the built-in mob facts stay.
+*Minecraft knowledge* box (`agent.allow_web_search` / `search.enabled`); the mob database stays.
 Questions are sent to the provider you pick. They contain only the short question, never chat logs or player names.
 
 Try it like the AI would:
@@ -458,6 +462,32 @@ python -m pymc_bot search "what drops blaze rods" --provider duckduckgo --json
 ```
 
 The panel has the same **Look up** box, and the API is `POST /api/knowledge/search {"query": "..."}`.
+
+#### The mob database
+
+One entry per mob in [`pymc_bot/data/mobs.json`](pymc_bot/data/mobs.json). The values are Java Edition
+figures from the [Minecraft Wiki](https://minecraft.wiki) infoboxes:
+
+| Field | Meaning |
+| --- | --- |
+| `category`, `hostile`, `hostile_when` | `hostile` / `neutral` / `passive` / `boss`; whether it attacks on sight, and what makes a neutral one attack |
+| `health`, `health_note`, `mob_type` | health points (2 HP = 1 heart), sizes/variants, `undead` / `arthropod` / `illager` / `aquatic` (Smite, Bane of Arthropods…) |
+| `attacks[]` | `type`, damage to a player without armour on `easy` / `normal` / `hard` (a `[min, max]` pair for ranges), `effect`, `note`. Difficulty only scales damage to **players**, so damage to **mobs** is the Normal value (`to_mobs` when it differs – a returned ghast fireball deals 1000 to a ghast) |
+| `spawn` | `when` (`dark` = light 0: night on the surface or any time in caves, `night`, `day`, `any`, `structure`, `summoned`, `built`, `special`, `event`), `where`, `dimensions`, `light`, `group` |
+| `added_in` | first Java release with the mob (`Classic` … `1.21.11`, `26.2`). Mobs newer than mineflayer's last version (26.1) are flagged `mineflayer_supported: false` in the API/CLI: a bot sees them as an unknown entity, so the prompt lists the newer mobs the server version can have |
+| `drops`, `xp`, `tame`, `breed`, `weaknesses`, `notes`, `aliases`, `fact` | the rest; `aliases` covers old names (*zombie pigman*), British spelling (*sulphur cube*) and baby names (*gurgle*) |
+
+```bash
+python -m pymc_bot mob sulphur cube              # everything about one mob
+python -m pymc_bot mob warden --json
+python -m pymc_bot mob sulfur cube --version 1.21.11   # "In 1.21.11: no, it does not exist yet"
+python -m pymc_bot mob --list --category hostile --dimension nether
+python -m pymc_bot mob --list --since 1.21       # mobs added in 1.21 or later
+```
+
+The API is `GET /api/mobs` (filters) and `GET /api/mobs/{name}`. Untick **answer mob questions from the mob
+database** (`search.use_mob_database`) to send every question to the web instead. You can also add modded mobs
+to the JSON file: `python -m pytest tests/test_mobs.py` checks the format.
 They gate the AI only; the **Inventory & life** buttons and the clickable hotbar in the panel always work.
 
 ### Demo brain (no GPU, no download)

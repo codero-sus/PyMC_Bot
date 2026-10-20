@@ -400,6 +400,8 @@ class SearchSettings(BaseModel):
     max_per_turn: int = Field(default=1, ge=0, le=3)
     max_per_hour: int = Field(default=30, ge=1, le=600)  # real web requests; cached answers are free
     auto_lookup_mobs: bool = True  # look up mobs the built-in facts do not know (modded servers)
+    # answer questions about one mob ("is the sulphur cube hostile") from data/mobs.json, offline
+    use_mob_database: bool = True
     cache_file: str = "knowledge_cache.json"  # relative to the config file; "" = memory only
     cache_days: float = Field(default=30.0, ge=0.0, le=3650.0)
 
