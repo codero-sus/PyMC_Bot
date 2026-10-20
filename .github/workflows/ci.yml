@@ -82,6 +82,14 @@ jobs:
           python -m pymc_bot --version
           python -m pymc_bot doctor
           python -m pymc_bot run --backend simulated --no-ai --seconds 3 --quiet --config /tmp/ci.json
+      - name: Live web lookups the AI uses (Minecraft Wiki, DuckDuckGo)
+        if: matrix.python-version == '3.12'
+        continue-on-error: true   # third-party sites; never block a build on them
+        run: |
+          python -m pymc_bot search creeper --no-cache --no-fallback --config /tmp/ci-search.json
+          python -m pymc_bot search how to tame a wolf --no-cache --no-fallback --config /tmp/ci-search.json
+          python -m pymc_bot search what drops blaze rods --no-cache --no-fallback --config /tmp/ci-search.json
+          python -m pymc_bot search creeper --provider duckduckgo --no-cache --no-fallback --config /tmp/ci-search.json
       - name: Train a player model on synthetic playtime, then run it
         run: |
           python -m pymc_bot train --simulate 3 --simulate-out /tmp/ci-playtime.jsonl --models-dir /tmp/ci-models --run-name ci --steps 60 --checkpoint-every 30 --quiet

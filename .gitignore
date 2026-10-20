@@ -30,3 +30,6 @@ pymc_bot_config.json
 # Local playtime recordings / datasets (the mod writes them into the game folder)
 /pymcbot/
 /pymc-playtime/
+
+# web lookup cache of the AI (pymc_bot.knowledge)
+knowledge_cache.json

@@ -246,6 +246,19 @@ tells what `auto` resolved to (`ollama`, `cortex` or `heuristic`). See [CORTEX.m
 | `GET` | `/api/ollama/models` | models available on that endpoint |
 | `POST` | `/api/ollama/pull` | `{"model":"llama3.2"}` – pull a model (long request, 600s timeout) |
 
+### Minecraft knowledge (web search)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/knowledge` | `{"enabled", "provider", "fallback", "cached_answers", "requests_last_hour", "max_per_hour", "brave_key_present", "stats", "recent", "built_in_mobs"}` |
+| `POST` | `/api/knowledge/search` | `{"query":"how to tame a wolf"}` → `{"ok", "query", "text", "title", "url", "source", "cached", "error", "at"}`, exactly what the AI reads (cached answers cost no web request) |
+| `POST` | `/api/knowledge/clear` | forget every cached answer → `{"cleared": n}` |
+
+Settings live in the `search` section (`enabled`, `provider` = `minecraft_wiki`/`duckduckgo`/`searxng`/`brave`,
+`fallback`, `wiki_api`, `searxng_url`, `brave_api_key_env`, `timeout`, `max_chars`, `max_per_turn`,
+`max_per_hour`, `auto_lookup_mobs`, `cache_file`, `cache_days`), plus the permission `agent.allow_web_search`.
+Each bot's lookups also appear in `/api/status` under `agent.memory.lookups`.
+
 ### Logs & backends
 
 | Method | Path | Description |
@@ -293,6 +306,7 @@ ignored and every parameter is validated before anything happens.
 | `sleep` / `wake` | – | `agent.allow_movement` | sleep in a bed within 32 blocks (night only) / get up |
 | `emote` | `kind`: `wave`, `crouch`, `nod`, `shake`, `spin` | – | body language |
 | `look_around` | – | – | a few natural glances |
+| `search` | `query` (≤200 chars) | `agent.allow_web_search` + `search.enabled` | look it up (see *Minecraft knowledge*); an LLM brain reads the answer and acts in the same turn. Aliases: `lookup`, `look_up`, `web_search`, `google`, `wiki` |
 
 Aliases accepted from models: `walk`/`move` → `goto`, `follow_player` → `follow`, `explore` → `wander`,
 `dig`/`gather` → `mine`, `hit` → `attack`, `hop` → `jump`, `idle` → `stop`, `noop`/`none`/`nothing` → `wait`.

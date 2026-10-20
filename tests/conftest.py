@@ -13,6 +13,24 @@ from pymc_bot.config import ConfigStore
 from pymc_bot.events import EventLog
 
 
+@pytest.fixture(autouse=True)
+def _no_real_web_search(monkeypatch):
+    """Tests never hit the internet: real lookups fail unless a test injects a mock transport."""
+    from pymc_bot import knowledge
+
+    real = knowledge.KnowledgeBase._search
+
+    def offline(self, query):
+        if self._transport is None:
+            return knowledge.LookupResult(False, query, error="offline in tests")
+        return real(self, query)
+
+    monkeypatch.setattr(knowledge.KnowledgeBase, "_search", offline)
+    knowledge._SHARED.clear()
+    yield
+    knowledge._SHARED.clear()
+
+
 @pytest.fixture()
 def config_path(tmp_path: Path) -> Path:
     return tmp_path / "pymc_bot_config.json"

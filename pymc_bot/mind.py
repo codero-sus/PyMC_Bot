@@ -206,7 +206,9 @@ ACTIONS (pick exactly one per turn):
   place          {"action": "place", "block": "<block or blocks>"}         place a block next to you - only when building is allowed
   use_item       {"action": "use_item", "seconds": <0.2-5>}                right-click with the held item (bow, shield, bucket)
   emote          {"action": "emote", "kind": "wave|crouch|nod|shake|spin"} body language - wave or crouch-spam to greet, nod for yes
-  look_around    {"action": "look_around"}                                 glance around"""
+  look_around    {"action": "look_around"}                                 glance around
+ knowledge
+  search         {"action": "search", "query": "<short question>"}         look it up on the Minecraft Wiki, then act on the answer"""
 
 REPLY_FORMAT = """\
 REPLY FORMAT - Reply with a single JSON object and nothing else (no markdown, no text around it):
@@ -232,6 +234,9 @@ Situation: healthy, daytime, a zombie 4 m south, your hotbar holds dirt and torc
 
 Situation: Steve (3 m east) said "can i have some bread?", you have bread x6.
 {"thought": "i've got plenty, i'll toss him a couple", "goal": "help Steve", "action": "give", "player": "Steve", "item": "bread", "count": 2}
+
+Situation: a piglin 6 m west in the Nether, you wear iron armour, you are not sure if it will attack.
+{"thought": "not sure what piglins do, let me check", "goal": "get through the nether safely", "action": "search", "query": "piglin behavior"}
 
 Situation: Alex asked "are you a bot?".
 {"thought": "they're asking directly, i'll be honest", "goal": "chat with Alex", "action": "say", "message": "yeah i'm a bot lol, still here to help though"}"""
@@ -260,6 +265,8 @@ def build_system_prompt(
         rules.append("- Inventory actions are switched off: no hold_item/select_slot/to_hotbar/to_inventory/organize/equip/drop/give.")
     if not allowed.get("building", False):
         rules.append("- Building is switched off: never use \"place\" or \"use_item\".")
+    if not allowed.get("search", True):
+        rules.append("- Web search is switched off: never use \"search\".")
     if not allowed.get("fighting", True):
         rules.append("- Fighting mobs is switched off: never use \"fight\" - flee or stay near players instead.")
     switched_off = "\n".join(rules) if rules else "- Everything in the action list is allowed, but attack only when it really makes sense."
@@ -285,9 +292,12 @@ HOW YOU THINK EACH TURN (like a human player would)
 3. Handle your stuff like a player: wear the best armour you have, keep the hotbar tidy (organize), hold the
    right tool for the job, pick up drops, put junk in the backpack or drop it, share with friends who ask.
    Mining picks the right tool and fighting the best weapon by themselves.
-4. Learn from what just happened: if an action failed twice, try something else (another block type, another
+4. Don't guess about the game: if you are unsure how a mob, block, item, recipe or mechanic works (what
+   does a piglin want? how do i tame a wolf? what drops blaze rods?), use "search" with a short question
+   first, then act on the answer. Don't search for things you already know or already looked up.
+5. Learn from what just happened: if an action failed twice, try something else (another block type, another
    place, or just wander a bit). Don't repeat the exact same failing action.
-5. Be a bit imperfect and relaxed: pause now and then, look at people when they talk, hop occasionally. Humans
+6. Be a bit imperfect and relaxed: pause now and then, look at people when they talk, hop occasionally. Humans
    are not optimal machines - but they are never random for no reason either.
 
 HOW YOU CHAT
@@ -338,6 +348,8 @@ class Mind:
         self.thoughts: deque[str] = deque(maxlen=5)
         self.said: deque[str] = deque(maxlen=8)
         self.last_said_at = 0.0
+        # (question, answer, found) of recent web lookups, shown back to the model
+        self.lookups: deque[tuple[str, str, bool]] = deque(maxlen=3)
 
     def resize(self, size: int) -> None:
         size = max(1, int(size))
@@ -355,7 +367,7 @@ class Mind:
             self.thoughts.append(thought[:160])
 
     def note_result(self, decision: Any, ok: bool, detail: str) -> None:
-        params = {k: v for k, v in (getattr(decision, "params", None) or {}).items() if k in ("message", "block", "player", "x", "y", "z")}
+        params = {k: v for k, v in (getattr(decision, "params", None) or {}).items() if k in ("message", "block", "player", "x", "y", "z", "query", "item", "mob")}
         summary = decision.action + "".join(
             f' "{v}"' if k == "message" else f" {k}={v}" for k, v in params.items()
         )
@@ -365,6 +377,11 @@ class Mind:
             if message:
                 self.said.append(message)
                 self.last_said_at = time.time()
+
+    def note_lookup(self, query: str, answer: str, found: bool = True) -> None:
+        query = " ".join(str(query).split())[:120]
+        self.lookups = deque([entry for entry in self.lookups if entry[0].lower() != query.lower()], maxlen=3)
+        self.lookups.append((query, str(answer)[:1200], bool(found)))
 
     def already_said(self, message: str) -> bool:
         norm = _norm(message)
@@ -387,6 +404,7 @@ class Mind:
             ],
             "thoughts": list(self.thoughts),
             "said": list(self.said),
+            "lookups": [{"query": q, "answer": a, "found": f} for q, a, f in self.lookups],
         }
 
 
@@ -499,8 +517,13 @@ def build_turn_prompt(
     history: list[dict[str, Any]],
     allowed: dict[str, bool],
     now: float | None = None,
+    knowledge: list[str] | None = None,
 ) -> str:
-    """This turn's situation in plain words, then the exact JSON."""
+    """This turn's situation in plain words, then the exact JSON.
+
+    ``knowledge`` holds facts about the mobs around (pymc_bot.knowledge); the mind's recent
+    lookups are shown as WHAT YOU LOOKED UP.
+    """
     now = now or time.time()
     pos = state.get("position") or {}
     px, py, pz = float(pos.get("x") or 0), float(pos.get("y") or 0), float(pos.get("z") or 0)
@@ -547,6 +570,9 @@ def build_turn_prompt(
             kinds[kind] = kinds.get(kind, 0) + 1
         lines.append("Animals around: " + ", ".join(f"{k} x{v}" for k, v in kinds.items()) + ".")
 
+    if knowledge:
+        lines.append("What you know about the mobs around: " + " | ".join(_clean(fact) for fact in knowledge[:6]))
+
     chat, unanswered = chat_lines(history, name, len(players), now, answered_at=mind.last_said_at)
     lines.append("")
     lines.append("RECENT CHAT (oldest first)" if chat else "RECENT CHAT: nothing in the last few minutes.")
@@ -570,6 +596,12 @@ def build_turn_prompt(
             lines.append(f"The last {failed} actions failed - try something different.")
     if mind.thoughts:
         lines.append(f"Your last thought: {_clean(mind.thoughts[-1])}")
+    if mind.lookups:
+        lines.append("")
+        lines.append("WHAT YOU LOOKED UP (trust this over your own guesses)")
+        for query, answer, found in mind.lookups:
+            text = " ".join(_clean(answer).replace("{", "(").replace("}", ")").split())
+            lines.append(f"- \"{_clean(query)}\": " + (text if found else f"nothing found ({text})"))
     if mind.said:
         lines.append("Things you already said (don't repeat them): " + " | ".join(_clean(s) for s in list(mind.said)[-4:]))
     off = [key for key, value in allowed.items() if not value]

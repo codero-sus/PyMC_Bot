@@ -506,6 +506,18 @@ function fillForm(cfg) {
   check('cfg-allow-inventory', ag.allow_inventory !== false);
   check('cfg-allow-building', Boolean(ag.allow_building));
   check('cfg-allow-mob-fighting', ag.allow_mob_fighting !== false);
+  const se = cfg.search || {};
+  check('cfg-search-enabled', se.enabled !== false && ag.allow_web_search !== false);
+  set('cfg-search-provider', se.provider || 'minecraft_wiki');
+  set('cfg-search-searxng', se.searxng_url || '');
+  set('cfg-search-per-turn', se.max_per_turn ?? 1);
+  set('cfg-search-per-hour', se.max_per_hour ?? 30);
+  check('cfg-search-fallback', se.fallback !== false);
+  check('cfg-search-auto-mobs', se.auto_lookup_mobs !== false);
+  if ($('search-summary')) {
+    $('search-summary').textContent = se.enabled === false || ag.allow_web_search === false
+      ? '— off (built-in mob facts only)' : `— on, ${(se.provider || 'minecraft_wiki').replace('_', ' ')}`;
+  }
   check('cfg-greet', ag.greet_players);
   selectBehaviour(ag.persona || 'friendly');
   set('cfg-persona-notes', ag.persona_notes || '');
@@ -587,6 +599,15 @@ function collectForm() {
       decision_interval: Number($('cfg-ollama-interval').value) || 6,
       temperature: Number($('cfg-ollama-temp').value ?? 0.7),
     },
+    search: {
+      enabled: $('cfg-search-enabled').checked,
+      provider: $('cfg-search-provider').value,
+      searxng_url: $('cfg-search-searxng').value.trim(),
+      max_per_turn: Number($('cfg-search-per-turn').value ?? 1),
+      max_per_hour: Number($('cfg-search-per-hour').value) || 30,
+      fallback: $('cfg-search-fallback').checked,
+      auto_lookup_mobs: $('cfg-search-auto-mobs').checked,
+    },
     cortex: {
       enabled: $('cfg-cortex-enabled').checked,
       base_url: $('cfg-cortex-url').value.trim() || 'http://127.0.0.1:8624',
@@ -607,6 +628,7 @@ function collectForm() {
       allow_inventory: $('cfg-allow-inventory').checked,
       allow_building: $('cfg-allow-building').checked,
       allow_mob_fighting: $('cfg-allow-mob-fighting').checked,
+      allow_web_search: $('cfg-search-enabled').checked,
       greet_players: $('cfg-greet').checked,
       persona: selectedBehaviour(),
       persona_notes: $('cfg-persona-notes').value.slice(0, 600),
@@ -1153,6 +1175,10 @@ function wire() {
   $('btn-policy-preview').addEventListener('click', previewPolicy);
   $('btn-pull').addEventListener('click', pullModel);
   $('btn-cortex-check').addEventListener('click', checkCortex);
+  $('btn-search-test').addEventListener('click', () => testSearch().catch(reportError));
+  $('search-query').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') testSearch().catch(reportError);
+  });
   loadBehaviours();
   $('btn-cortex-use').addEventListener('click', useCortex);
 
@@ -1297,6 +1323,18 @@ async function probeServer() {
   note.dataset.state = !result.ok ? 'error' : result.asleep ? 'asleep' : 'online';
   ui.toast(result.summary, !result.ok ? 'error' : result.asleep ? 'warn' : 'success',
     { title: !result.ok ? 'Server unreachable' : result.asleep ? 'Server asleep' : 'Server online' });
+}
+
+async function testSearch() {
+  const query = $('search-query').value.trim();
+  if (!query) return;
+  const box = $('search-result');
+  box.hidden = false;
+  box.textContent = 'Looking up…';
+  const result = await api('/api/knowledge/search', { method: 'POST', body: JSON.stringify({ query }) });
+  box.textContent = result.ok
+    ? `${result.title || query}  [${result.source}${result.cached ? ', cached' : ''}]\n${result.url || ''}\n\n${result.text}`
+    : `Nothing found: ${result.error}`;
 }
 
 function reportError(err) {
