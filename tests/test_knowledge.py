@@ -81,6 +81,37 @@ def test_html_to_text_drops_tables_navboxes_and_footnotes():
     assert "Wolves are tamed with bones.\n- Tamed wolves sit.\n- They follow you." in text
 
 
+def test_fractions_survive_but_footnotes_do_not():
+    html = '<p>Each bone has a <sup>1</sup>&frasl;<sub>3</sub> chance.<sup class="reference"><a>[2]</a></sup></p>'
+    assert html_to_text(html) == "Each bone has a 1⁄3 chance."
+
+
+def test_the_wiki_is_searched_for_the_topic_of_a_question():
+    from pymc_bot.knowledge import topic_of
+
+    assert topic_of("what drops blaze rods") == "blaze rods"
+    assert topic_of("how do I tame a wolf?") == "wolf"
+    assert topic_of("where do creepers spawn") == "creepers"
+    assert topic_of("piglin behavior") == "piglin"
+    assert topic_of("drops") == "drops"  # nothing else left: keep the words
+    seen: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        if params.get("list") == "search":
+            seen.append(params["srsearch"])
+            hits = [] if params["srsearch"] == "blaze rods" else [{"title": "Blaze Rod"}]
+            return httpx.Response(200, json={"query": {"search": hits}})
+        if params.get("prop") == "sections":
+            return httpx.Response(200, json={"parse": {"title": "Blaze Rod", "sections": [{"line": "Obtaining", "index": "1"}]}})
+        text = "<p>A blaze rod is an item.</p>" if params.get("section") == "0" else "<h2>Obtaining</h2><p>Blazes drop 0-1 blaze rods.</p>"
+        return httpx.Response(200, json={"parse": {"text": text}})
+
+    result = kb_with(handle, fallback=False).lookup("what drops blaze rods")
+    assert seen == ["blaze rods", "what drops blaze rods"]  # topic first, the whole question if that finds nothing
+    assert result.ok and "Obtaining: Blazes drop 0-1 blaze rods." in result.text
+
+
 def test_shorten_cuts_at_a_sentence():
     text = "First sentence here. Second sentence is longer than the rest of it."
     assert shorten(text, 30) == "First sentence here."
@@ -97,7 +128,7 @@ def test_minecraft_wiki_reads_the_lead_and_the_section_that_fits():
     assert result.url == "https://minecraft.wiki/w/Wolf"
     assert "neutral mob" in result.text and "Taming: Wolves are tamed with bones." in result.text
     assert "Related pages: Dog" in result.text
-    assert dict(calls[0].url.params)["srsearch"] == "how do i tame a wolf"
+    assert dict(calls[0].url.params)["srsearch"] == "wolf"  # the topic, not the whole question
 
     drops = kb_with(wiki_handler()).lookup("what does a wolf drop")
     assert "Drops: Wolves drop nothing" in drops.text

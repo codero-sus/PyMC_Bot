@@ -129,7 +129,8 @@ def mob_fact(kind: str) -> str | None:
 
 
 # --------------------------------------------------------------------------- HTML -> text
-_SKIP_TAGS = {"table", "style", "script", "sup", "figure", "math", "noscript", "audio", "video", "gallery"}
+# <sup> is NOT skipped wholesale: fractions use it (1/3); footnotes carry the "reference" class.
+_SKIP_TAGS = {"table", "style", "script", "figure", "math", "noscript", "audio", "video", "gallery"}
 _SKIP_CLASSES = ("infobox", "navbox", "hatnote", "mw-editsection", "toc", "notice", "msgbox", "reference",
                  "thumb", "gallery", "noprint", "metadata", "sound", "mw-empty-elt")
 _BLOCK_TAGS = {"p", "div", "li", "dd", "dt", "h1", "h2", "h3", "h4", "h5", "h6", "br", "tr", "ul", "ol", "dl"}
@@ -229,11 +230,11 @@ STOP_WORDS = {
     "best", "way", "should", "from", "find", "make",
 }
 SECTION_HINTS: dict[str, tuple[str, ...]] = {
-    "drop": ("drops",), "loot": ("drops",), "spawn": ("spawning",), "find": ("spawning", "natural generation", "obtaining"),
+    "drop": ("drops", "obtaining"), "loot": ("drops", "obtaining"), "spawn": ("spawning",), "find": ("spawning", "natural generation", "obtaining"),
     "tame": ("taming", "behavior"), "breed": ("breeding", "behavior"), "feed": ("breeding", "taming"),
     "craft": ("crafting", "obtaining", "usage"), "recipe": ("crafting",), "smelt": ("smelting", "obtaining"),
     "kill": ("behavior", "combat", "attacks"), "fight": ("behavior", "combat", "attacks"), "attack": ("behavior", "attacks"),
-    "behave": ("behavior",), "avoid": ("behavior",), "do": ("behavior", "usage"), "use": ("usage",),
+    "behav": ("behavior",), "avoid": ("behavior",), "do": ("behavior", "usage"), "use": ("usage",),
     "get": ("obtaining",), "obtain": ("obtaining",), "mine": ("obtaining", "breaking"), "break": ("breaking",),
     "trade": ("trading",), "brew": ("brewing",), "enchant": ("enchantments",), "grow": ("growth", "farming"),
     "farm": ("farming", "usage"), "ride": ("riding", "usage"), "sleep": ("usage", "sleeping"),
@@ -242,6 +243,22 @@ SECTION_HINTS: dict[str, tuple[str, ...]] = {
 
 def _words(text: str) -> list[str]:
     return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in STOP_WORDS]
+
+
+def _is_hint(word: str) -> bool:
+    stem = word.rstrip("s")
+    return any(stem.startswith(key) for key in SECTION_HINTS)
+
+
+def topic_of(query: str) -> str:
+    """The thing being asked about: "what drops blaze rods" -> "blaze rods".
+
+    Wiki full-text search ranks whole questions badly (question words match random pages), so the
+    search uses the topic and the question words only pick the section.
+    """
+    words = _words(query)
+    topic = [w for w in words if not _is_hint(w)]
+    return " ".join(topic or words)
 
 
 # --------------------------------------------------------------------------- providers
@@ -286,8 +303,12 @@ class MinecraftWiki(_Provider):
         return f"{base}/w/{quote(title.replace(' ', '_'))}"
 
     def search(self, query: str) -> LookupResult:
-        hits = (self._api(action="query", list="search", srsearch=query, srlimit="3", srprop="snippet")
-                .get("query", {}).get("search", []))
+        hits: list[dict[str, Any]] = []
+        for text in dict.fromkeys(q for q in (topic_of(query), query) if q.strip()):
+            hits = (self._api(action="query", list="search", srsearch=text, srlimit="3", srprop="snippet")
+                    .get("query", {}).get("search", []))
+            if hits:
+                break
         if not hits:
             return LookupResult(False, query, source=self.name, error="nothing on the wiki")
         title = str(hits[0].get("title") or "")
