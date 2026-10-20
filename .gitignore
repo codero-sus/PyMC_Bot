@@ -33,3 +33,9 @@ pymc_bot_config.json
 
 # web lookup cache of the AI (pymc_bot.knowledge)
 knowledge_cache.json
+
+# Minecraft LLM training (python -m pymc_bot llm build / Kaggle output)
+llm_data/
+llm_turns.jsonl
+pymc-minecraft/
+*.gguf

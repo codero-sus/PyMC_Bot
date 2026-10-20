@@ -1,6 +1,6 @@
 """Command line entry point.
 
-``python -m pymc_bot [serve|run|train|models|action|doctor|stub]``
+``python -m pymc_bot [serve|run|train|models|action|doctor|probe|search|mob|llm|stub|about]``
 """
 
 from __future__ import annotations
@@ -155,6 +155,36 @@ def build_parser() -> argparse.ArgumentParser:
     mob.add_argument("--version", metavar="VERSION", default=None,
                      help="say whether the mob exists in VERSION / list only mobs that exist in it")
     mob.add_argument("--json", action="store_true", help="print JSON")
+
+    llm = sub.add_parser("llm", help="train your own Minecraft LLM: build data, presets, import, eval (docs/MINECRAFT_LLM.md)")
+    llm_sub = llm.add_subparsers(dest="llm_command")
+    build = llm_sub.add_parser("build", help="write train.jsonl / eval.jsonl + the Kaggle training script")
+    build.add_argument("--out", default="llm_data", help="output folder (upload it to Kaggle as a dataset)")
+    build.add_argument("--turns", type=int, default=6000, help="game situations answered by the built-in rules")
+    build.add_argument("--wiki-pages", type=int, default=600, help="Minecraft Wiki pages to use (cached)")
+    build.add_argument("--no-wiki", action="store_true", help="offline: skip the Minecraft Wiki")
+    build.add_argument("--teacher", choices=["ollama", "cortex"], default=None,
+                       help="let a bigger model you run answer extra situations (uses its settings from the config)")
+    build.add_argument("--teacher-model", default=None, help="model name for the teacher (default: the configured one)")
+    build.add_argument("--teacher-turns", type=int, default=500)
+    build.add_argument("--recorded", action="append", default=None, metavar="FILE",
+                       help="turns recorded by agent.record_turns (default: the configured file if it exists)")
+    build.add_argument("--playtime", default=None, metavar="PATH", help="your recorded playtime (mod dataset / folder)")
+    build.add_argument("--kaggle-user", default="your-kaggle-name", help="for dataset-metadata.json")
+    build.add_argument("--seed", type=int, default=7)
+    _add_config_arg(build)
+    llm_sub.add_parser("presets", help="the model sizes you can train and why you would pick each")
+    imp = llm_sub.add_parser("import", help="add a model trained on Kaggle to Ollama and switch the bot to it")
+    imp.add_argument("path", help="the downloaded pymc-minecraft folder or a .gguf file")
+    imp.add_argument("--name", default="pymc-minecraft", help="Ollama model name")
+    imp.add_argument("--no-activate", action="store_true", help="only create the Ollama model, keep the bot's settings")
+    _add_config_arg(imp)
+    ev = llm_sub.add_parser("eval", help="score an Ollama model on eval.jsonl (valid JSON, right action, right answers)")
+    ev.add_argument("--model", default=None, help="Ollama model (default: the configured one)")
+    ev.add_argument("--data", default="llm_data/eval.jsonl")
+    ev.add_argument("--limit", type=int, default=100)
+    ev.add_argument("--json", action="store_true")
+    _add_config_arg(ev)
 
     about_cmd = sub.add_parser("about", help="author, links and credits")
     about_cmd.add_argument("--json", action="store_true", help="print the credits as JSON")
@@ -639,6 +669,100 @@ def cmd_about(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llm(args: argparse.Namespace) -> int:
+    """Build training data, list presets, import a trained GGUF, evaluate a model."""
+    from pymc_bot import llm_train
+
+    command = getattr(args, "llm_command", None)
+    if command == "presets" or command is None:
+        if command is None:
+            print("usage: python -m pymc_bot llm {build,presets,import,eval} - see docs/MINECRAFT_LLM.md\n")
+        return llm_train.main(["--list-presets"])
+    store = ConfigStore(args.config)
+    settings = store.settings
+    if command == "build":
+        return _llm_build(args, store)
+    if command == "import":
+        from pymc_bot.llm_tools import import_model
+
+        try:
+            result = import_model(Path(args.path), store, name=args.name, activate=not args.no_activate)
+        except FileNotFoundError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        print(result.message)
+        print(f"Modelfile: {result.modelfile}")
+        if result.activated:
+            print(f"Bot switched to Ollama model '{result.name}' with the short Minecraft prompt ({store.path}).")
+        return 0 if result.created or result.activated else 1
+    if command == "eval":
+        from pymc_bot.llm_dataset import read_jsonl
+        from pymc_bot.llm_tools import evaluate
+
+        data = Path(args.data)
+        if not data.is_file():
+            print(f"{data} not found - run: python -m pymc_bot llm build", file=sys.stderr)
+            return 2
+        client = OllamaClient(settings.ollama.base_url, args.model or settings.ollama.model, 0.3,
+                              max(60.0, settings.ollama.request_timeout))
+        summary = evaluate(read_jsonl(data), lambda messages, system: client.chat(messages, system=system), args.limit)
+        summary["model"] = client.model
+        print(json.dumps(summary, indent=2) if args.json else
+              f"{client.model}: valid JSON {summary['json_valid_pct']}% | right action {summary['action_match_pct']}% | "
+              f"right answers {summary['answer_keywords_pct']}% ({summary['rows']} rows, {summary['errors']} errors)")
+        return 0
+    return 2
+
+
+def _llm_build(args: argparse.Namespace, store: ConfigStore) -> int:
+    import shutil
+
+    from pymc_bot import llm_dataset, llm_train
+
+    settings = store.settings
+    out = Path(args.out)
+    pages = None
+    if not args.no_wiki and args.wiki_pages > 0:
+        try:
+            pages = llm_dataset.fetch_wiki(limit=args.wiki_pages, cache_dir=out / "wiki_cache")
+        except Exception as exc:  # offline: build without the wiki
+            print(f"Minecraft Wiki skipped ({type(exc).__name__}: {exc})")
+    teacher = None
+    if args.teacher == "ollama":
+        client = OllamaClient(settings.ollama.base_url, args.teacher_model or settings.ollama.model,
+                              settings.ollama.temperature, max(90.0, settings.ollama.request_timeout))
+        teacher = lambda system, prompt: client.chat([{"role": "user", "content": prompt}], system=system)  # noqa: E731
+    elif args.teacher == "cortex":
+        from pymc_bot.cortex import client_from_settings
+
+        cortex = client_from_settings(settings, timeout=90.0)
+        if args.teacher_model:
+            cortex.model = args.teacher_model
+        teacher = lambda system, prompt: cortex.decide(prompt, system=system)  # noqa: E731
+    recorded = [Path(p) for p in args.recorded] if args.recorded else []
+    if args.recorded is None:
+        default = Path(settings.agent.turns_file).expanduser()
+        default = default if default.is_absolute() else store.path.parent / default
+        if default.is_file():
+            recorded = [default]
+    card = llm_dataset.build_dataset(out, seed=args.seed, rule_turns=args.turns, wiki_pages=pages, teacher=teacher,
+                                     teacher_turns=args.teacher_turns if teacher else 0, recorded=recorded,
+                                     playtime=Path(args.playtime) if args.playtime else None)
+    shutil.copyfile(llm_train.__file__, out / "train_minecraft_llm.py")
+    slug = "pymc-minecraft-data"
+    (out / "dataset-metadata.json").write_text(json.dumps({
+        "title": "PyMC Bot Minecraft LLM data", "id": f"{args.kaggle_user}/{slug}",
+        "licenses": [{"name": "CC-BY-NC-SA-4.0"}],
+    }, indent=2) + "\n", encoding="utf-8")
+    print(f"\n{card['train']} training rows ready in {out}/. Next:\n"
+          f"  1. kaggle.com > Datasets > New Dataset > upload the files in {out}/ (skip wiki_cache), or\n"
+          f"     kaggle datasets create -p {out}   (edit the id in dataset-metadata.json first)\n"
+          "  2. open training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb on Kaggle, Add Input = your dataset,\n"
+          "     Accelerator = GPU T4 x2, Run All (python -m pymc_bot llm presets shows the sizes)\n"
+          "  3. download /kaggle/working/pymc-minecraft and run: python -m pymc_bot llm import <folder>")
+    return 0
+
+
 def cmd_stub(args: argparse.Namespace) -> int:
     from pymc_bot.ollama_stub import main as stub_main
 
@@ -658,6 +782,7 @@ DISPATCH = {
     "probe": cmd_probe,
     "search": cmd_search,
     "mob": cmd_mob,
+    "llm": cmd_llm,
     "stub": cmd_stub,
     "about": cmd_about,
 }

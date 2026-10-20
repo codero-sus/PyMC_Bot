@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pymc_bot.bot import MinecraftBot
@@ -110,7 +111,10 @@ class Decision:
 
 def parse_decision(text: str, source: str = "ollama") -> Decision:
     """Extract one action from a (possibly chatty) LLM response."""
-    cleaned = text.strip()
+    # reasoning models (Qwen3, DeepSeek-R1...) may think out loud first
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I).strip()
+    if cleaned.lower().startswith("<think>"):
+        cleaned = cleaned[7:]
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
         cleaned = re.sub(r"```\s*$", "", cleaned).strip()
@@ -302,6 +306,8 @@ class AgentLoop:
         self._lock = threading.RLock()
         self._last_decision: dict[str, Any] | None = None
         self._decisions = 0
+        self._record_lock = threading.Lock()
+        self._last_exchange: tuple[str, str] | None = None
         self._errors = 0
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
@@ -605,6 +611,14 @@ class AgentLoop:
         ``search.max_per_turn`` lookups may happen inside one turn, so the model can read about a
         mob or mechanic and act on it right away instead of guessing.
         """
+        raw_ask = ask
+
+        def ask(prompt: str) -> str:  # remember the exchange so record_turns can save it
+            reply = raw_ask(prompt)
+            self._last_exchange = (prompt, reply)
+            return reply
+
+        self._last_exchange = None
         decision = parse_decision(ask(self._build_prompt(settings, state)), source=source())
         rounds = settings.search.max_per_turn if self.can_search(settings) else 0
         for _ in range(rounds):
@@ -648,6 +662,11 @@ class AgentLoop:
         if custom and custom.strip():
             return custom
         agent = settings.agent
+        if agent.compact_prompt:
+            from pymc_bot.llm_dataset import compact_system_prompt
+
+            return compact_system_prompt(self.bot.username, agent.persona, self.allowed(settings), agent.persona_notes,
+                                         min(agent.max_chat_length, 160))
         return build_system_prompt(
             name=self.bot.username,
             persona=agent.persona,
@@ -954,6 +973,32 @@ class AgentLoop:
             decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
         return self._act(decision)
 
+    def turns_path(self, settings: AppSettings | None = None) -> Path:
+        settings = settings or self._settings()
+        path = Path(settings.agent.turns_file).expanduser()
+        return path if path.is_absolute() else self.store.path.parent / path
+
+    def _record_turn(self, decision: Decision, ok: bool, detail: str) -> None:
+        """Append an LLM turn to ``agent.turns_file`` (training data for a Minecraft model)."""
+        exchange = getattr(self, "_last_exchange", None)
+        self._last_exchange = None
+        settings = self._settings()
+        if not settings.agent.record_turns or exchange is None or decision.source in ("heuristic", "trained"):
+            return
+        agent = settings.agent
+        row = {
+            "ts": round(time.time(), 1), "source": decision.source, "name": self.bot.username, "persona": agent.persona,
+            "notes": agent.persona_notes, "allowed": self.allowed(settings), "max_chat_length": min(agent.max_chat_length, 160),
+            "prompt": exchange[0], "reply": exchange[1], "decision": decision.to_dict(), "ok": bool(ok), "detail": str(detail)[:200],
+        }
+        try:
+            path = self.turns_path(settings)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with self._record_lock, path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            self.log.add(f"could not record the turn: {exc}", "warn", "agent")
+
     def _act(self, decision: Decision) -> tuple[bool, str]:
         """Bookkeeping + memory around :meth:`execute` for one decision of the loop."""
         self._decisions += 1
@@ -965,5 +1010,6 @@ class AgentLoop:
         self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
         ok, detail = self.execute(decision)
         self.mind.note_result(decision, ok, detail)
+        self._record_turn(decision, ok, detail)
         self.log.add(f"{'✓' if ok else '✗'} {detail}", "info" if ok else "warn", "agent")
         return ok, detail

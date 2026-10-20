@@ -525,6 +525,8 @@ function fillForm(cfg) {
   check('cfg-human-chat', ag.human_chat ?? true);
   set('cfg-chat-cooldown', ag.chat_cooldown ?? 6);
   set('cfg-memory-turns', ag.memory_turns ?? 8);
+  check('cfg-compact-prompt', ag.compact_prompt ?? false);
+  check('cfg-record-turns', ag.record_turns ?? false);
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
@@ -637,6 +639,8 @@ function collectForm() {
       human_chat: $('cfg-human-chat').checked,
       chat_cooldown: Math.max(0, Number($('cfg-chat-cooldown').value) || 0),
       memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
+      compact_prompt: $('cfg-compact-prompt').checked,
+      record_turns: $('cfg-record-turns').checked,
     },
     antiafk: {
       enabled: $('antiafk-enabled').checked,

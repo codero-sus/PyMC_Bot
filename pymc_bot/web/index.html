@@ -353,6 +353,8 @@
           <label>Memory (recent actions) <input id="cfg-memory-turns" type="number" min="1" max="30" step="1" /></label>
           <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
           <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
+          <label class="check" title="For a model you trained with 'python -m pymc_bot llm' (docs/MINECRAFT_LLM.md): it already knows the rules, so it gets a short prompt and answers faster"><input id="cfg-compact-prompt" type="checkbox" /> Minecraft-trained model (short prompt)</label>
+          <label class="check" title="Saves every LLM turn (situation, reply, did it work) to llm_turns.jsonl next to the config - more training data for your own model"><input id="cfg-record-turns" type="checkbox" /> record LLM turns for training</label>
         </div>
       </details>
       <div class="permissions">
