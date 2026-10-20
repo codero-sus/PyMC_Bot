@@ -59,6 +59,7 @@ def wiki_handler(calls: list[httpx.Request] | None = None, hits: list[str] | Non
 
 
 def kb_with(handler, **settings) -> KnowledgeBase:
+    settings.setdefault("use_mob_database", False)  # these tests are about the web providers
     return KnowledgeBase(SearchSettings(**settings), None, transport=httpx.MockTransport(handler))
 
 
@@ -205,7 +206,8 @@ def test_errors_never_raise():
 def test_answers_are_cached_on_disk_and_requests_are_capped(tmp_path):
     calls: list[httpx.Request] = []
     path = tmp_path / "knowledge_cache.json"
-    kb = KnowledgeBase(SearchSettings(max_per_hour=1), path, transport=httpx.MockTransport(wiki_handler(calls)))
+    kb = KnowledgeBase(SearchSettings(max_per_hour=1, use_mob_database=False), path,
+                       transport=httpx.MockTransport(wiki_handler(calls)))
     first = kb.lookup("tame wolf")
     assert first.ok and not first.cached
     n = len(calls)
@@ -216,7 +218,8 @@ def test_answers_are_cached_on_disk_and_requests_are_capped(tmp_path):
     limited = kb.lookup("wolf drops")
     assert not limited.ok and "limit reached (1/hour)" in limited.error and len(calls) == n
 
-    reloaded = KnowledgeBase(SearchSettings(), path, transport=httpx.MockTransport(wiki_handler([])))
+    reloaded = KnowledgeBase(SearchSettings(use_mob_database=False), path,
+                             transport=httpx.MockTransport(wiki_handler([])))
     assert reloaded.lookup("tame wolf").cached
     assert reloaded.status()["cached_answers"] == 1
     assert reloaded.clear_cache() == 1 and reloaded.cached("tame wolf") is None
@@ -227,7 +230,7 @@ def test_cache_expires_and_disabled_search_uses_only_the_cache(tmp_path):
     assert kb.lookup("wolf").ok
     kb._cache["wolf"]["at"] = time.time() - 2 * 86400
     assert kb.cached("wolf") is None
-    kb.settings = SearchSettings(enabled=False, cache_days=1)
+    kb.settings = SearchSettings(enabled=False, cache_days=1, use_mob_database=False)
     assert kb.lookup("wolf").error == "web search is switched off"
 
 
@@ -243,7 +246,7 @@ def test_unknown_mobs_are_looked_up_in_the_background():
     assert kb.cached("mob frostling") is not None
     assert not kb.prefetch_mob("frostling")  # already known now
     facts = kb.facts_for(["minecraft:creeper", "frostling", "player", "nothing_known"])
-    assert facts[0].startswith("creeper: ") and facts[1].startswith("frostling: ")
+    assert facts[0].startswith("creeper (hostile, 20 HP") and facts[1].startswith("frostling: ")
     assert len(facts) == 2
     assert kb.recent == type(kb.recent)([], maxlen=kb.recent.maxlen)  # background lookups stay out of "recent"
 
@@ -294,6 +297,7 @@ class FakeLLM:
 def wiki(monkeypatch, store):
     """Route the agent's shared knowledge base to the mocked wiki."""
     calls: list[httpx.Request] = []
+    store.update({"search": {"use_mob_database": False}})  # these tests are about the web path
     kb = shared_knowledge(store.settings.search, store.path.parent)
     kb._transport = httpx.MockTransport(wiki_handler(calls))
     return calls
@@ -328,7 +332,7 @@ def test_nearby_mob_facts_reach_the_prompt(live_bot, store, log, wiki):
              "entities": [{"type": "minecraft:creeper", "x": 3, "y": 64, "z": 0, "dist": 3, "hostile": True},
                           {"type": "minecraft:player", "player": True, "dist": 2}]}
     prompt = agent._build_prompt(store.settings, state)
-    assert "creeper: walks up silently" in prompt
+    assert "creeper (hostile, 20 HP, up to 43 dmg, night/dark): walks up silently" in prompt
 
 
 def test_search_rounds_are_limited_and_can_be_switched_off(live_bot, store, log, wiki):

@@ -311,7 +311,9 @@
         <summary>Minecraft knowledge <span class="hint" id="search-summary">— let the AI look things up</span></summary>
         <p class="note">Many models barely know Minecraft. The bot always knows the basics of every vanilla mob, and with
           web search on, the Ollama / Cortex brain can look up a mob, block, recipe or mechanic (the <code>search</code>
-          action) and act on the answer in the same turn. Questions go to the provider below; answers are cached.</p>
+          action) and act on the answer in the same turn. Questions about one mob (hostile? damage? spawn time? which
+          version added it?) are answered offline from the built-in mob database - it even knows mobs newer than
+          mineflayer, like the 26.2 sulfur cube. Other questions go to the provider below; answers are cached.</p>
         <label class="switch">
           <input id="cfg-search-enabled" type="checkbox" />
           <span>Allow web search</span>
@@ -330,9 +332,10 @@
           <label>Max web requests / hour <input id="cfg-search-per-hour" type="number" min="1" max="600" step="1" /></label>
           <label class="check"><input id="cfg-search-fallback" type="checkbox" /> fall back to DuckDuckGo</label>
           <label class="check" title="Look up mobs the bot does not know, e.g. from mods"><input id="cfg-search-auto-mobs" type="checkbox" /> look up unknown mobs</label>
+          <label class="check" title="Answer questions about one mob (hostile? damage? spawn time? version?) from the built-in mob database, offline"><input id="cfg-search-mob-db" type="checkbox" /> answer mob questions from the mob database</label>
         </div>
         <div class="inline">
-          <input id="search-query" type="text" maxlength="200" placeholder="try it: how to tame a wolf" />
+          <input id="search-query" type="text" maxlength="200" placeholder="try it: is the sulphur cube hostile?" />
           <button id="btn-search-test" class="btn ghost">Look up</button>
         </div>
         <pre id="search-result" class="note search-result" hidden></pre>

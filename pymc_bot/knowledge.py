@@ -3,8 +3,11 @@
 Many models know little about Minecraft (which mobs explode, what a piglin wants, how to tame a
 wolf). Two things fill the gap:
 
-* :data:`MOB_FACTS` - one line of practical knowledge for every vanilla mob. Facts for the mobs
-  near the bot go into its prompt every turn, free and offline.
+* The mob database (:mod:`pymc_bot.mobs`, ``data/mobs.json``) - hostility, health, damage, spawn
+  conditions and the version every vanilla mob was added in, plus a practical tip
+  (:data:`MOB_FACTS`). The mobs near the bot go into its prompt every turn, and questions about a
+  mob ("how much damage does a warden do", "is the sulphur cube hostile") are answered from it
+  offline before the web is asked. It also covers mobs newer than mineflayer.
 * :class:`KnowledgeBase` - the ``search`` action. The model asks a question ("how do i tame a
   wolf", "what does a warden do") and gets a short answer, by default from the Minecraft Wiki's
   public MediaWiki API (no key). DuckDuckGo instant answers, a SearXNG instance or the Brave Search
@@ -33,94 +36,14 @@ import httpx
 
 from pymc_bot import __version__
 from pymc_bot.config import SearchSettings
+from pymc_bot.mobs import is_version, load_mobs
 
 USER_AGENT = f"PyMC_Bot/{__version__} (+https://github.com/codero-sus/PyMC_Bot)"
 
 # --------------------------------------------------------------------------- built-in facts
-MOB_FACTS: dict[str, str] = {
-    # hostile
-    "zombie": "hostile melee mob; burns in daylight unless it wears a helmet or stands in shade/water; baby zombies are fast; drops rotten flesh",
-    "husk": "desert zombie that does not burn in sunlight; its hit causes Hunger",
-    "drowned": "underwater zombie; some throw tridents from range; drops rotten flesh, sometimes copper or a trident",
-    "zombie_villager": "zombie villager; cure it with a splash potion of weakness then a golden apple to get a villager back",
-    "skeleton": "shoots arrows from range and burns in daylight; close the distance fast or block with a shield; drops bones and arrows",
-    "stray": "snowy skeleton whose arrows cause Slowness",
-    "bogged": "swamp skeleton whose arrows cause Poison",
-    "creeper": "walks up silently, hisses and EXPLODES about 1.5 s later, destroying blocks; hit it and step back, or kill it from range; cats scare it; drops gunpowder",
-    "spider": "neutral in daylight, hostile in the dark; climbs walls; drops string and spider eyes",
-    "cave_spider": "small spider from mineshaft spawners; its bite poisons; break the spawner or light the area",
-    "enderman": "neutral until you look at its face or hit it, then teleports at you and hits hard; water hurts it; it cannot fit under a 2-block-high roof; drops ender pearls",
-    "endermite": "tiny hostile mob that sometimes appears when an ender pearl lands",
-    "witch": "throws poison, slowness, weakness and harming potions and drinks healing potions; fight it fast or from range",
-    "slime": "splits into smaller slimes when killed; spawns in swamps and slime chunks; drops slimeballs",
-    "magma_cube": "Nether slime that splits and is immune to fire and lava; drops magma cream",
-    "phantom": "flying night mob that only appears after you have not slept for 3+ days; sleep in a bed to stop them; drops phantom membrane",
-    "silverfish": "hides in infested stone; hitting one wakes nearby silverfish; kill with one strong hit or avoid",
-    "guardian": "ocean monument fish that charges a laser beam; fight it in short bursts or with a bow",
-    "elder_guardian": "big monument guardian that gives Mining Fatigue; three per monument",
-    "shulker": "End city box mob; its bullets cause Levitation (dangerous fall damage); drops shulker shells",
-    "vex": "small flying mob summoned by evokers; flies through walls; dies on its own after a while",
-    "blaze": "Nether fortress mob that flies and shoots fireballs; snowballs hurt it; drops blaze rods (needed for brewing and Eyes of Ender)",
-    "ghast": "big floating Nether mob that shoots exploding fireballs; hit a fireball back at it; drops ghast tears",
-    "wither_skeleton": "Nether fortress skeleton with a stone sword; its hit causes the Wither effect; sometimes drops a wither skeleton skull",
-    "hoglin": "hostile Nether beast that knocks you into the air; it is afraid of warped fungus; drops porkchops and leather",
-    "zoglin": "zombified hoglin, attacks every mob nearby",
-    "piglin": "Nether mob that is neutral if you wear at least one gold armour piece, otherwise hostile; trade by dropping gold ingots; angers if you open chests or mine gold near it",
-    "piglin_brute": "always hostile bastion guard with a gold axe; very strong - avoid",
-    "zombified_piglin": "neutral Nether mob; hitting one makes the whole group attack you; drops gold nuggets",
-    "pillager": "crossbow raider; patrols carry a banner captain whose death gives Bad Omen (a raid when you enter a village)",
-    "vindicator": "axe-wielding illager that hits very hard; keep distance or use a shield",
-    "evoker": "illager that summons fangs from the ground and vexes; kill it quickly; drops a totem of undying",
-    "ravager": "huge raid beast that hits extremely hard - avoid or fight from range",
-    "illusioner": "rare illager that makes copies of itself and shoots arrows",
-    "breeze": "trial chamber mob that jumps around and shoots wind charges that knock you back; drops breeze rods",
-    "creaking": "pale garden mob that only moves when nobody looks at it; break its creaking heart to kill it",
-    "warden": "blind deep-dark monster that hunts by sound and smell and is far too strong to fight; sneak, do not trigger sculk shriekers, and leave if it appears",
-    "wither": "boss built from soul sand and 3 wither skeleton skulls; explodes and shoots skulls; only fight it fully prepared",
-    "ender_dragon": "End boss; destroy the end crystals on the obsidian pillars first; arrows and melee when it perches",
-    # neutral / helpful
-    "iron_golem": "village protector; neutral, but attacks you if you hurt villagers; drops iron ingots and poppies",
-    "snow_golem": "built from snow blocks and a pumpkin; throws snowballs at hostile mobs",
-    "wolf": "tame with bones; tamed wolves follow and fight for you; hitting a wild one angers the pack",
-    "cat": "tame with raw cod or salmon; creepers and phantoms avoid cats",
-    "ocelot": "jungle cat; feed it raw fish to gain its trust; creepers avoid it",
-    "fox": "night-time hunter; breed with sweet berries; holds items in its mouth",
-    "bee": "neutral; stings if you hit it or break its nest; use a campfire under the hive and shears for honeycomb",
-    "llama": "spits when attacked; can carry chests; tame by riding it repeatedly",
-    "trader_llama": "llama of the wandering trader; spits at attackers",
-    "goat": "rams players and mobs off edges; drops goat horns when it hits a block",
-    "polar_bear": "neutral, hostile when a cub is near; strong - leave it alone",
-    "panda": "jungle mob; breed with bamboo; aggressive pandas hit back",
-    "dolphin": "gives Dolphin's Grace when you swim with it; hitting one angers nearby dolphins",
-    "pufferfish": "puffs up and poisons you when close; do not eat it",
-    "villager": "trades items for emeralds; never hurt villagers (golems attack you); a bed and a job block make it work",
-    "wandering_trader": "visits now and then and sells rare items for emeralds; despawns after a while",
-    "allay": "give it an item and it collects matching items for you",
-    # passive / food
-    "cow": "passive; milk it with a bucket; breed with wheat; drops beef and leather",
-    "mooshroom": "mushroom cow; milk with a bowl for stew; breed with wheat",
-    "sheep": "passive; shear it for wool (no kill needed); breed with wheat; drops mutton",
-    "pig": "passive; breed with carrots, potatoes or beetroot; drops porkchops; ride with a saddle and a carrot on a stick",
-    "chicken": "passive; lays eggs; breed with seeds; drops raw chicken and feathers",
-    "rabbit": "fast passive mob; breed with carrots or dandelions; drops rabbit hide and sometimes a rabbit's foot",
-    "horse": "tame by mounting it until hearts appear; needs a saddle to steer; breed with golden apples or golden carrots",
-    "donkey": "tameable like a horse and can carry a chest",
-    "mule": "donkey-horse cross; can carry a chest; cannot breed",
-    "camel": "desert mount for two players; breed with cactus",
-    "turtle": "lays eggs on its home beach; breed with seagrass; drops scutes when babies grow up",
-    "axolotl": "friendly underwater mob that fights drowned and guardians; carry it in a water bucket",
-    "frog": "eats small slimes and magma cubes; breed with slimeballs",
-    "strider": "Nether lava walker; ride it with a saddle and a warped fungus on a stick",
-    "armadillo": "rolls up when threatened; brush it for armadillo scutes (wolf armour)",
-    "sniffer": "ancient mob that digs up rare seeds",
-    "bat": "harmless cave mob",
-    "squid": "passive sea mob; drops ink sacs",
-    "glow_squid": "deep water squid; drops glow ink sacs",
-    "cod": "fish; catch with a bucket or kill for food",
-    "salmon": "fish; catch with a bucket or kill for food",
-    "tropical_fish": "colourful fish; catch it with a bucket",
-    "parrot": "tame with seeds; never feed it cookies",
-}
+# One line per mob, from the mob database (pymc_bot/data/mobs.json) - see pymc_bot.mobs.
+MOB_FACTS: dict[str, str] = {mob_id: mob["fact"] for mob_id, mob in load_mobs().mobs.items()}
+UNKNOWN_KINDS = ("unknown", "other", "mob", "entity")
 
 
 def mob_fact(kind: str) -> str | None:
@@ -452,7 +375,7 @@ class KnowledgeBase:
         self._requests: deque[float] = deque()
         self._inflight: set[str] = set()
         self.recent: deque[LookupResult] = deque(maxlen=12)
-        self.stats = {"lookups": 0, "cache_hits": 0, "web_requests": 0, "failures": 0}
+        self.stats = {"lookups": 0, "mob_database": 0, "cache_hits": 0, "web_requests": 0, "failures": 0}
         self._load()
 
     # ------------------------------------------------------------- cache
@@ -517,6 +440,12 @@ class KnowledgeBase:
         self.stats["lookups"] += 1
         if not normalize_query(query):
             return LookupResult(False, query, error="empty question")
+        local = self.from_mob_database(query)
+        if local is not None:
+            self.stats["mob_database"] += 1
+            if record:
+                self.recent.append(local)
+            return local
         hit = self.cached(query)
         if hit:
             self.stats["cache_hits"] += 1
@@ -537,6 +466,19 @@ class KnowledgeBase:
         if record:
             self.recent.append(result)
         return result
+
+    def from_mob_database(self, query: str) -> LookupResult | None:
+        """Answer a question about one mob from the built-in database (offline), else None."""
+        if not self.settings.use_mob_database:
+            return None
+        db = load_mobs()
+        mob = db.answerable(query)
+        if mob is None:
+            return None
+        version = next((w for w in (t.strip(".?!,") for t in query.split()) if is_version(w)), None)
+        return LookupResult(True, query, text=db.describe(mob, version), title=mob["name"],
+                            url="https://minecraft.wiki/w/" + quote(mob["name"].replace(" ", "_")),
+                            source="mob_database")
 
     def _search(self, query: str) -> LookupResult:
         chain = [self.settings.provider]
@@ -561,12 +503,27 @@ class KnowledgeBase:
         return LookupResult(False, query, source=chain[0], error="; ".join(errors) or "no answer")
 
     # ------------------------------------------------------------- mobs
-    def facts_for(self, kinds: list[str]) -> list[str]:
-        """One line per mob type: built-in facts, else what an earlier lookup found."""
+    def facts_for(self, kinds: list[str], server_version: str | None = None) -> list[str]:
+        """One line per mob type: the mob database, else what an earlier lookup found.
+
+        Mineflayer names mobs newer than itself "unknown"; those get a hint listing the newer mobs
+        the server version can have (e.g. the sulfur cube on 26.2+).
+        """
+        db = load_mobs()
         lines: list[str] = []
         for kind in kinds:
             kind = str(kind or "").lower().removeprefix("minecraft:")
             if not kind or kind == "player":
+                continue
+            mob = db.get(kind)
+            if mob is not None:
+                lines.append(db.prompt_line(mob))
+                continue
+            if kind in UNKNOWN_KINDS:
+                newer = db.newer_than_mineflayer(server_version)
+                if newer:
+                    lines.append(f"{kind} creature: probably a mob newer than mineflayer - "
+                                 + "; ".join(db.prompt_line(m) for m in newer[:3]))
                 continue
             fact = mob_fact(kind)
             if fact is None:
@@ -581,6 +538,7 @@ class KnowledgeBase:
         kind = str(kind or "").lower().split(":", 1)[-1]
         if (not self.settings.enabled or not self.settings.auto_lookup_mobs or not kind or kind in MOB_FACTS
                 or kind in ("player", "item", "experience_orb", "arrow", "falling_block", "tnt", "boat", "minecart")
+                or kind in UNKNOWN_KINDS or load_mobs().get(kind) is not None
                 or self.cached(f"mob {kind}") is not None):
             return False
         with self._lock:
@@ -610,6 +568,8 @@ class KnowledgeBase:
             "stats": dict(self.stats),
             "recent": [r.to_dict() for r in list(self.recent)[-6:]],
             "built_in_mobs": len(MOB_FACTS),
+            "mob_database": {"mobs": len(load_mobs()), "enabled": self.settings.use_mob_database,
+                             "mineflayer_max_version": load_mobs().mineflayer_max},
         }
 
 

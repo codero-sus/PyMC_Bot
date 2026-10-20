@@ -246,17 +246,19 @@ tells what `auto` resolved to (`ollama`, `cortex` or `heuristic`). See [CORTEX.m
 | `GET` | `/api/ollama/models` | models available on that endpoint |
 | `POST` | `/api/ollama/pull` | `{"model":"llama3.2"}` – pull a model (long request, 600s timeout) |
 
-### Minecraft knowledge (web search)
+### Minecraft knowledge (mob database and web search)
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/knowledge` | `{"enabled", "provider", "fallback", "cached_answers", "requests_last_hour", "max_per_hour", "brave_key_present", "stats", "recent", "built_in_mobs"}` |
-| `POST` | `/api/knowledge/search` | `{"query":"how to tame a wolf"}` → `{"ok", "query", "text", "title", "url", "source", "cached", "error", "at"}`, exactly what the AI reads (cached answers cost no web request) |
+| `GET` | `/api/knowledge` | `{"enabled", "provider", "fallback", "cached_answers", "requests_last_hour", "max_per_hour", "brave_key_present", "stats", "recent", "built_in_mobs", "mob_database": {"mobs", "enabled", "mineflayer_max_version"}}` |
+| `POST` | `/api/knowledge/search` | `{"query":"how to tame a wolf"}` → `{"ok", "query", "text", "title", "url", "source", "cached", "error", "at"}`, exactly what the AI reads. Questions about one mob are answered from the mob database (`source: "mob_database"`, offline); cached answers cost no web request either |
 | `POST` | `/api/knowledge/clear` | forget every cached answer → `{"cleared": n}` |
+| `GET` | `/api/mobs` | the mob database. Filters: `category` (`hostile`/`neutral`/`passive`/`boss`), `hostile` (`true`/`false`), `dimension` (`overworld`/`nether`/`end`), `spawn_time` (`dark`/`night`/`day`/`any`/`structure`/`summoned`/`built`/`special`/`event`), `added_since` and `exists_in` (versions such as `1.21.4`, `26.2`), `q` (name/alias text), `full=true` for whole entries → `{"meta", "count", "mobs": [{"id", "name", "category", "hostile", "health", "max_damage_normal", "spawn_time", "added_in", "mineflayer_supported"}]}`; 422 on a bad filter |
+| `GET` | `/api/mobs/{name}` | one mob by id, name, alias or plural (`sulphur cube`, `zombie pigman`, `endermen`) → the full entry + `mineflayer_supported`, `attacks[].to_mobs` and a text `summary`; 404 if unknown |
 
 Settings live in the `search` section (`enabled`, `provider` = `minecraft_wiki`/`duckduckgo`/`searxng`/`brave`,
 `fallback`, `wiki_api`, `searxng_url`, `brave_api_key_env`, `timeout`, `max_chars`, `max_per_turn`,
-`max_per_hour`, `auto_lookup_mobs`, `cache_file`, `cache_days`), plus the permission `agent.allow_web_search`.
+`max_per_hour`, `auto_lookup_mobs`, `use_mob_database`, `cache_file`, `cache_days`), plus the permission `agent.allow_web_search`.
 Each bot's lookups also appear in `/api/status` under `agent.memory.lookups`.
 
 ### Logs & backends

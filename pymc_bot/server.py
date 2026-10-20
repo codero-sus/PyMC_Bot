@@ -35,6 +35,7 @@ from pymc_bot.fleet import AI_MODES, BotFleet, FleetError, primary_brain
 from pymc_bot.knowledge import shared_knowledge
 from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
 from pymc_bot.mind import behaviours
+from pymc_bot.mobs import CATEGORIES, DIMENSIONS, SPAWN_TIMES, is_version, load_mobs
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.playtime import (
     dataset_summary,
@@ -598,6 +599,42 @@ def create_app(
     @app.post("/api/knowledge/clear")
     def knowledge_clear() -> dict[str, Any]:
         return {"cleared": knowledge_base().clear_cache()}
+
+    # ------------------------------------------------------------------- mob database
+    @app.get("/api/mobs")
+    def mobs_list(category: str | None = None, hostile: bool | None = None, dimension: str | None = None,
+                  spawn_time: str | None = None, added_since: str | None = None, exists_in: str | None = None,
+                  q: str | None = None, full: bool = False) -> dict[str, Any]:
+        """The mob database (data/mobs.json), filterable. ``full=true`` returns whole entries."""
+        if category is not None and category not in CATEGORIES:
+            raise HTTPException(422, f"category must be one of {', '.join(CATEGORIES)}")
+        if dimension is not None and dimension not in DIMENSIONS:
+            raise HTTPException(422, f"dimension must be one of {', '.join(DIMENSIONS)}")
+        if spawn_time is not None and spawn_time not in SPAWN_TIMES:
+            raise HTTPException(422, f"spawn_time must be one of {', '.join(SPAWN_TIMES)}")
+        for name, value in (("added_since", added_since), ("exists_in", exists_in)):
+            if value is not None and not is_version(value):
+                raise HTTPException(422, f"{name} must be a version like 1.21.4 or 26.2")
+        db = load_mobs()
+        found = db.search(category=category, hostile=hostile, dimension=dimension, spawn_time=spawn_time,
+                          added_since=added_since, exists_in=exists_in, query=q)
+        if full:
+            mobs = [db.with_derived(m) for m in found]
+        else:
+            mobs = [{"id": m["id"], "name": m["name"], "category": m["category"], "hostile": m["hostile"],
+                     "health": m["health"], "max_damage_normal": db.max_damage(m), "spawn_time": m["spawn"]["when"],
+                     "added_in": m["added_in"], "mineflayer_supported": db.supported_by_mineflayer(m)}
+                    for m in found]
+        return {"meta": db.meta, "count": len(mobs), "mobs": mobs}
+
+    @app.get("/api/mobs/{name}")
+    def mob_entry(name: str) -> dict[str, Any]:
+        """One mob by id, name, alias or plural ("sulphur cube", "zombie pigman"), plus a text summary."""
+        db = load_mobs()
+        mob = db.get(name)
+        if mob is None:
+            raise HTTPException(404, f"no mob called {name!r} in the database")
+        return {**db.with_derived(mob), "summary": db.describe(mob)}
 
     # ------------------------------------------------------------------- fleet
     @app.get("/api/fleet/status")
