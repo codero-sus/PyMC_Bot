@@ -137,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--json", action="store_true", help="print the raw result as JSON")
     _add_config_arg(probe)
 
+    search = sub.add_parser("search", help="look something up like the AI does (Minecraft Wiki by default)")
+    search.add_argument("query", nargs="+", help='a short question, e.g. "how to tame a wolf"')
+    search.add_argument("--provider", choices=["minecraft_wiki", "duckduckgo", "searxng", "brave"], default=None)
+    search.add_argument("--no-cache", action="store_true", help="ask the web even when the answer is cached")
+    search.add_argument("--no-fallback", action="store_true", help="do not fall back to DuckDuckGo")
+    search.add_argument("--json", action="store_true", help="print the raw result as JSON")
+    _add_config_arg(search)
+
     about_cmd = sub.add_parser("about", help="author, links and credits")
     about_cmd.add_argument("--json", action="store_true", help="print the credits as JSON")
 
@@ -538,6 +546,34 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 3 if result.get("asleep") else 0
 
 
+# --------------------------------------------------------------------- search
+def cmd_search(args: argparse.Namespace) -> int:
+    """One lookup through pymc_bot.knowledge - handy to check what the AI would read."""
+    from pymc_bot.knowledge import KnowledgeBase, shared_knowledge
+
+    store = ConfigStore(args.config)
+    store.load()
+    settings = store.settings.search.model_copy(update={"enabled": True})
+    if args.provider:
+        settings = settings.model_copy(update={"provider": args.provider})
+    if args.no_fallback:
+        settings = settings.model_copy(update={"fallback": False})
+    query = " ".join(args.query)
+    kb = KnowledgeBase(settings, None) if args.no_cache else shared_knowledge(settings, store.path.parent)
+    result = kb.lookup(query)
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    elif result.ok:
+        print(f"{result.title or query}  [{result.source}{', cached' if result.cached else ''}]")
+        if result.url:
+            print(result.url)
+        print()
+        print(result.text)
+    else:
+        print(f"No answer for {query!r}: {result.error}")
+    return 0 if result.ok else 1
+
+
 # ----------------------------------------------------------------------- stub
 # ---------------------------------------------------------------------- about
 def cmd_about(args: argparse.Namespace) -> int:
@@ -574,6 +610,7 @@ DISPATCH = {
     "action": cmd_action,
     "doctor": cmd_doctor,
     "probe": cmd_probe,
+    "search": cmd_search,
     "stub": cmd_stub,
     "about": cmd_about,
 }

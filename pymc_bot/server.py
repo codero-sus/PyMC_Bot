@@ -32,6 +32,7 @@ from pymc_bot.config import AppSettings, ConfigStore, default_config_path
 from pymc_bot.cortex import CortexError, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.fleet import AI_MODES, BotFleet, FleetError, primary_brain
+from pymc_bot.knowledge import shared_knowledge
 from pymc_bot.local_model import PolicyError, TrainedPolicy, export_ollama_model
 from pymc_bot.mind import behaviours
 from pymc_bot.ollama import OllamaClient, OllamaError
@@ -81,6 +82,10 @@ class ActionRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     raw: str | None = None
     bot: str | None = None
+
+
+class KnowledgeRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=200)
 
 
 class TrainingRequest(BaseModel):
@@ -575,6 +580,24 @@ def create_app(
             "decision": decision.to_dict(),
             "results": results,
         }
+
+    # --------------------------------------------------------------- knowledge
+    def knowledge_base():
+        return shared_knowledge(store.settings.search, store.path.parent)
+
+    @app.get("/api/knowledge")
+    def knowledge_status() -> dict[str, Any]:
+        """Web search settings in use, cache size, requests this hour and the latest lookups."""
+        return knowledge_base().status()
+
+    @app.post("/api/knowledge/search")
+    def knowledge_search(request: KnowledgeRequest) -> dict[str, Any]:
+        """Look something up exactly like the AI would (cached answers are free)."""
+        return knowledge_base().lookup(request.query).to_dict()
+
+    @app.post("/api/knowledge/clear")
+    def knowledge_clear() -> dict[str, Any]:
+        return {"cleared": knowledge_base().clear_cache()}
 
     # ------------------------------------------------------------------- fleet
     @app.get("/api/fleet/status")

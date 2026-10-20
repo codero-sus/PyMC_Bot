@@ -222,6 +222,8 @@ class AgentSettings(BaseModel):
     allow_inventory: bool = True
     allow_building: bool = False
     allow_mob_fighting: bool = True
+    # Let the LLM look Minecraft things up (the "search" action; settings in "search").
+    allow_web_search: bool = True
     greet_players: bool = True
     max_chat_length: int = Field(default=200, ge=1, le=500)
     # How the LLM brain plays and talks (see pymc_bot.mind): a personality, extra notes about the
@@ -378,6 +380,46 @@ class TrainingSettings(BaseModel):
         return cleaned[:4]
 
 
+class SearchSettings(BaseModel):
+    """Web lookups for the LLM brain (the ``search`` action) - see pymc_bot.knowledge.
+
+    ``minecraft_wiki`` (default) asks the Minecraft Wiki's public API, no key needed. ``duckduckgo``
+    uses instant answers, ``searxng`` your own SearXNG instance (JSON format enabled) and ``brave``
+    the Brave Search API with the key in the environment variable named by ``brave_api_key_env``.
+    """
+
+    enabled: bool = True
+    provider: Literal["minecraft_wiki", "duckduckgo", "searxng", "brave"] = "minecraft_wiki"
+    fallback: bool = True  # try DuckDuckGo when the main provider has no answer
+    wiki_api: str = "https://minecraft.wiki/api.php"
+    searxng_url: str = ""
+    brave_api_key_env: str = "BRAVE_API_KEY"
+    timeout: float = Field(default=8.0, ge=1.0, le=30.0)
+    max_chars: int = Field(default=900, ge=200, le=4000)
+    # Look something up and decide in the same turn (0 = the answer arrives on the next turn).
+    max_per_turn: int = Field(default=1, ge=0, le=3)
+    max_per_hour: int = Field(default=30, ge=1, le=600)  # real web requests; cached answers are free
+    auto_lookup_mobs: bool = True  # look up mobs the built-in facts do not know (modded servers)
+    cache_file: str = "knowledge_cache.json"  # relative to the config file; "" = memory only
+    cache_days: float = Field(default=30.0, ge=0.0, le=3650.0)
+
+    @field_validator("wiki_api", "searxng_url")
+    @classmethod
+    def _check_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.match(r"^https?://[^\s/]+", value):
+            raise ValueError("must be an http(s) URL")
+        return value
+
+    @field_validator("brave_api_key_env")
+    @classmethod
+    def _check_env_name(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("brave_api_key_env is the NAME of an environment variable, e.g. BRAVE_API_KEY")
+        return value
+
+
 class ServerSettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -393,6 +435,7 @@ class AppSettings(BaseModel):
     antiafk: AntiAfkSettings = Field(default_factory=AntiAfkSettings)
     training: TrainingSettings = Field(default_factory=TrainingSettings)
     fleet: FleetSettings = Field(default_factory=FleetSettings)
+    search: SearchSettings = Field(default_factory=SearchSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 
     def public_dict(self) -> dict[str, Any]:

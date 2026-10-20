@@ -42,6 +42,10 @@ Minecraft versions), and it is driven purely by JSON from Python.
   from the backpack into the hotbar and back, sorts the hotbar, puts on the best armour, holds the right tool
   before mining and its best weapon before a fight, eats sensibly, picks up drops, hands items to players
   who ask, sleeps at night, flees when hurt and waves or crouch-greets people ([details](#lives-like-a-real-player)).
+* **Knows Minecraft, and looks up what it doesn't** – many models barely know the game, so the LLM gets
+  practical facts about the mobs around it (creepers explode, don't look at endermen, piglins want gold…)
+  and can **search the web** (Minecraft Wiki by default, no key) before it acts
+  ([details](#minecraft-knowledge-and-web-search)).
 * **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
   bearer key read from the environment and never saved).
 * **Plays and talks like a human** – pick a behaviour (helper, companion, explorer, pro, …); the LLM gets a
@@ -418,6 +422,42 @@ follow friends, mine, explore and fidget with the hotbar. The LLM sees a player'
 
 Permissions (`agent.*`, panel **AI permissions**): `allow_inventory` (on), `allow_mob_fighting` (on) and
 `allow_building` (**off** – placing blocks and right-clicking items, so an AI does not litter a server).
+
+### Minecraft knowledge and web search
+
+Plenty of models don't really know Minecraft: they walk up to creepers, stare at endermen or attack piglins.
+The Ollama / Cortex brain gets help in two ways:
+
+* **Built-in mob facts.** Every turn the prompt carries one practical line about each mob type nearby, e.g.
+  *creeper: walks up silently, hisses and EXPLODES about 1.5 s later… hit it and step back*. All vanilla mobs
+  are covered, and this works offline.
+* **Web search.** The model can use `{"action": "search", "query": "how to tame a wolf"}` whenever it is unsure
+  about a mob, block, recipe or mechanic. The answer goes straight back into the prompt (*WHAT YOU LOOKED UP*)
+  and the model picks its real action **in the same turn**. The answer stays in its memory for the next turns too.
+  Mobs it has no fact for, like modded ones, are looked up automatically in the background.
+
+| Provider (`search.provider`) | Key | Notes |
+| --- | --- | --- |
+| `minecraft_wiki` (default) | none | the [Minecraft Wiki](https://minecraft.wiki)'s public API: the page intro plus the section that fits the question (Taming, Drops, Behavior…) |
+| `duckduckgo` | none | instant answers; also the fallback when the main provider finds nothing (`search.fallback`) |
+| `searxng` | none | your own [SearXNG](https://docs.searxng.org) instance (`search.searxng_url`, JSON format enabled) |
+| `brave` | `BRAVE_API_KEY` env var | Brave Search API; the key is read from the environment and never saved |
+
+Answers are cached in `knowledge_cache.json` next to the config file for 30 days (`search.cache_days`), so
+repeated questions are free and instant. The number of real web requests is capped at 30 per hour
+(`search.max_per_hour`). `search.max_per_turn` (1) sets how many lookups can happen before acting; with 0,
+the answer is used on the next turn instead. Turn it all off with **Allow web search** in the panel's
+*Minecraft knowledge* box (`agent.allow_web_search` / `search.enabled`); the built-in mob facts stay.
+Questions are sent to the provider you pick. They contain only the short question, never chat logs or player names.
+
+Try it like the AI would:
+
+```bash
+python -m pymc_bot search how to tame a wolf
+python -m pymc_bot search "what drops blaze rods" --provider duckduckgo --json
+```
+
+The panel has the same **Look up** box, and the API is `POST /api/knowledge/search {"query": "..."}`.
 They gate the AI only; the **Inventory & life** buttons and the clickable hotbar in the panel always work.
 
 ### Demo brain (no GPU, no download)

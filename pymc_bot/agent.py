@@ -24,6 +24,7 @@ from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.inventory import HOTBAR_SIZE, Inventory, short
+from pymc_bot.knowledge import KnowledgeBase, LookupResult, shared_knowledge
 from pymc_bot.mind import (
     Mind,
     build_system_prompt,
@@ -67,7 +68,11 @@ ACTIONS: dict[str, str] = {
     "flee": 'run away from danger: {"action": "flee"}',
     "emote": 'body language: {"action": "emote", "kind": "wave"} (wave, crouch, nod, shake, spin)',
     "look_around": 'glance around: {"action": "look_around"}',
+    # knowledge
+    "search": 'look something up (Minecraft Wiki): {"action": "search", "query": "how to tame a wolf"}',
 }
+
+SEARCH_ACTIONS = ("search", "lookup", "look_up", "web_search", "google", "wiki")
 
 #: Mobs a sensible player does not pick a fight with.
 AVOID_MOBS = {"warden", "enderman", "wither", "ender_dragon", "piglin_brute", "elder_guardian", "ravager", "evoker"}
@@ -554,22 +559,76 @@ class AgentLoop:
 
     def _ask_ollama(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         client = self._ollama_client(settings)
-        prompt = self._build_prompt(settings, state)
         system = self.system_prompt(settings, settings.ollama.system_prompt)
-        try:
-            reply = client.chat([{"role": "user", "content": prompt}], system=system)
-        except OllamaError:
-            # Some models/servers only implement /api/generate.
-            reply = client.generate(prompt, system=system)
-        return parse_decision(reply, source=f"ollama:{settings.ollama.model}")
+
+        def ask(prompt: str) -> str:
+            try:
+                return client.chat([{"role": "user", "content": prompt}], system=system)
+            except OllamaError:
+                # Some models/servers only implement /api/generate.
+                return client.generate(prompt, system=system)
+
+        return self._research_and_decide(settings, state, ask, lambda: f"ollama:{settings.ollama.model}")
 
     def _ask_cortex(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         """One decision from the model hosted by Cortex LLMHoster."""
         client = self._cortex_client(settings)
-        prompt = self._build_prompt(settings, state)
-        reply = client.decide(prompt, system=self.system_prompt(settings, settings.cortex.system_prompt))
-        model = client.last_model or settings.cortex.model or "default"
-        return parse_decision(reply, source=f"cortex:{model}")
+        system = self.system_prompt(settings, settings.cortex.system_prompt)
+        return self._research_and_decide(
+            settings, state, lambda prompt: client.decide(prompt, system=system),
+            lambda: f"cortex:{client.last_model or settings.cortex.model or 'default'}",
+        )
+
+    # ------------------------------------------------------------- knowledge
+    @property
+    def knowledge(self) -> KnowledgeBase:
+        """The shared web-lookup cache (one per process, see pymc_bot.knowledge)."""
+        return shared_knowledge(self._settings().search, self.store.path.parent)
+
+    def can_search(self, settings: AppSettings) -> bool:
+        return settings.agent.allow_web_search and settings.search.enabled
+
+    def look_up(self, query: str) -> LookupResult:
+        """Run one lookup, remember it for the prompt and log it."""
+        result = self.knowledge.lookup(query)
+        self.mind.note_lookup(result.query, result.summary(self._settings().search.max_chars), result.ok)
+        if result.ok:
+            where = f" ({result.title}, {result.source}{', cached' if result.cached else ''})"
+            self.log.add(f"🔎 looked up \"{result.query}\"{where}: {result.summary(160)}", "ai", "agent")
+        else:
+            self.log.add(f"🔎 lookup \"{result.query}\" found nothing: {result.error}", "info", "agent")
+        return result
+
+    def _research_and_decide(self, settings: AppSettings, state: dict[str, Any], ask: Any, source: Any) -> Decision:
+        """Ask the LLM; if it wants to look something up first, search and ask again with the answer.
+
+        ``search.max_per_turn`` lookups may happen inside one turn, so the model can read about a
+        mob or mechanic and act on it right away instead of guessing.
+        """
+        decision = parse_decision(ask(self._build_prompt(settings, state)), source=source())
+        rounds = settings.search.max_per_turn if self.can_search(settings) else 0
+        for _ in range(rounds):
+            if decision.action not in SEARCH_ACTIONS:
+                break
+            query = str(decision.params.get("query") or decision.params.get("q") or decision.params.get("topic") or "")
+            if not query.strip():
+                break
+            if decision.thought:
+                self.log.add(f"💭 {decision.thought}", "ai", "agent")
+            self.look_up(query)
+            prompt = self._build_prompt(settings, state) + (
+                "\n\nYou just looked that up (see WHAT YOU LOOKED UP). Now choose an action that uses it - "
+                "do not search for the same thing again."
+            )
+            decision = parse_decision(ask(prompt), source=source())
+        return decision
+
+    def _prefetch_unknown_mobs(self, settings: AppSettings, state: dict[str, Any]) -> None:
+        if not self.can_search(settings) or not settings.search.auto_lookup_mobs:
+            return
+        for entity in (state.get("entities") or [])[:12]:
+            if not entity.get("player") and float(entity.get("dist") or 99) <= 24:
+                self.knowledge.prefetch_mob(str(entity.get("type") or ""))
 
     def allowed(self, settings: AppSettings) -> dict[str, bool]:
         agent = settings.agent
@@ -581,6 +640,7 @@ class AgentLoop:
             "inventory": agent.allow_inventory,
             "building": agent.allow_building,
             "fighting": agent.allow_mob_fighting,
+            "search": agent.allow_web_search and settings.search.enabled,
         }
 
     def system_prompt(self, settings: AppSettings, custom: str = "") -> str:
@@ -598,7 +658,15 @@ class AgentLoop:
 
     def _build_prompt(self, settings: AppSettings, state: dict[str, Any]) -> str:
         """This turn's situation as a person would see it (plus the exact JSON at the end)."""
-        return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings))
+        self._prefetch_unknown_mobs(settings, state)
+        kinds: list[str] = []
+        for entity in state.get("entities") or []:
+            kind = str(entity.get("type") or "").removeprefix("minecraft:")
+            if kind and kind not in kinds and not entity.get("player") and float(entity.get("dist") or 99) <= 24:
+                kinds.append(kind)
+        facts = self.knowledge.facts_for(kinds[:6])
+        return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings),
+                                 knowledge=facts)
 
     # -------------------------------------------------------------- executor
     def execute(self, decision: Decision, enforce_permissions: bool = True) -> tuple[bool, str]:
@@ -715,6 +783,15 @@ class AgentLoop:
         if action in ("stop", "idle"):
             self.bot.stop_moving()
             return True, "stopped moving"
+
+        if action in SEARCH_ACTIONS:
+            if blocked("search", self.can_search(settings)):
+                return False, "web search is disabled in settings"
+            query = str(params.get("query") or params.get("q") or params.get("topic") or "").strip()
+            if not query:
+                return False, "search needs a query"
+            result = self.look_up(query)
+            return (True, f"looked up {query}: {result.summary(240)}") if result.ok else (False, f"found nothing for {query}: {result.error}")
 
         life = self._execute_life(action, params, agent, blocked)
         if life is not None:

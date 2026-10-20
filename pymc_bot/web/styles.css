@@ -746,3 +746,7 @@ svg.i .fill { fill: currentColor; }
 .hotbar .key { position: absolute; top: 1px; left: 4px; font-size: 0.6rem; color: var(--muted); }
 .hotbar .count { position: absolute; bottom: 1px; right: 4px; font-size: 0.66rem; font-weight: 700; }
 .gear { margin: 0 0 0.5rem; font-size: 0.75rem; }
+
+/* web search test output */
+.search-result { white-space: pre-wrap; max-height: 260px; overflow: auto; margin-top: 8px; font-size: 12px; }
+#search-box .inline input { flex: 1; }
