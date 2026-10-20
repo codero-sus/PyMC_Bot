@@ -89,6 +89,7 @@ jobs:
           python -m pymc_bot search creeper --no-cache --no-fallback --config /tmp/ci-search.json
           python -m pymc_bot search how to tame a wolf --no-cache --no-fallback --config /tmp/ci-search.json
           python -m pymc_bot search what drops blaze rods --no-cache --no-fallback --config /tmp/ci-search.json
+          python -m pymc_bot search piglin behavior --no-cache --no-fallback --config /tmp/ci-search.json
           python -m pymc_bot search creeper --provider duckduckgo --no-cache --no-fallback --config /tmp/ci-search.json
       - name: Train a player model on synthetic playtime, then run it
         run: |
@@ -239,7 +240,7 @@ jobs:
             if ./gradlew build -Pmc=${{ matrix.mc }} --no-daemon --stacktrace $extra 2>&1 | tee gradle.log; then
               exit 0
             fi
-            if [ "$attempt" -lt 3 ] && grep -qE "Could not (find|resolve|GET|HEAD|download)|Connection (reset|refused|timed out)|Read timed out|Received status code 5[0-9][0-9]|Remote host terminated" gradle.log \
+            if [ "$attempt" -lt 3 ] && grep -qE "Could not (find|resolve|GET|HEAD|download)|Connection (reset|refused|timed out)|Read timed out|Received status code 5[0-9][0-9]|Remote host terminated|DownloadException|Failed download" gradle.log \
                 && ! grep -qE "Compilation failed|error: " gradle.log; then
               echo "::warning::dependency download failed - retrying in 30 s (attempt $attempt of 3)"
               sleep 30
