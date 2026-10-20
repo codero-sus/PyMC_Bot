@@ -49,7 +49,7 @@ jobs:
           node scripts/check_version_fallback.mjs
           PYMC_ADVERTISE=26.3:777 node scripts/check_version_fallback.mjs
           PYMC_EXPECT=asleep node scripts/check_version_fallback.mjs
-          node pymc_bot/node/probe.js 127.0.0.1 1 3000 | grep -q '"ok":false'
+          node pymc_bot/node/probe.js 127.0.0.1 1 3000 > probe.out || true; grep -q '"ok":false' probe.out
 
   test:
     name: tests (python ${{ matrix.python-version }})
@@ -178,7 +178,7 @@ jobs:
           state = json.load(open(".pymc_update.json"))
           assert state["channel"] == "default" and len(state["sha"]) == 40 and state["files"], state.keys()
           PY
-          python updater.py --check | grep -q "up to date"
+          python updater.py --check > check.log; grep -q "up to date" check.log   # no pipe: grep -q would close it early
           if grep -qi "git pull\|git fetch" update.log; then echo "the updater must not use git"; exit 1; fi
       - name: Publish live update diagnostics
         if: failure()

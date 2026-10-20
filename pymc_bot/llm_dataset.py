@@ -146,6 +146,12 @@ def _hearts(value: Any) -> str:
     return f"{_num(float(hearts))} heart{'s' if hearts != 1 else ''}"
 
 
+def _when(condition: str) -> str:
+    """'you hit it' -> 'when you hit it'; 'while a zombie rides it' / 'in the dark' stay as they are."""
+    first = condition.split(" ", 1)[0].lower()
+    return condition if first in ("when", "while", "if", "in", "at", "as", "after", "during", "only", "never") else f"when {condition}"
+
+
 def _article(name: str) -> str:
     return ("an " if name[:1].lower() in "aeiou" else "a ") + name
 
@@ -162,9 +168,11 @@ def mob_answers(db: MobDatabase, mob: dict[str, Any], rng: random.Random) -> lis
     if mob["hostile"]:
         answer = f"Yes. {_article(name).capitalize()} is {'a boss' if mob['category'] == 'boss' else 'hostile'} and attacks players on sight."
     elif mob["category"] == "neutral":
-        answer = f"Not by default - {a_low} is neutral. It turns hostile when {mob.get('hostile_when', 'provoked')}."
+        answer = f"Not by default - {a_low} is neutral. It turns hostile {_when(mob.get('hostile_when', 'you hit it'))}."
     else:
-        answer = f"No, {a_low} is passive" + (f"; it only becomes dangerous {mob['hostile_when']}." if mob.get("hostile_when") else " and never attacks you.")
+        answer = f"No, {a_low} is passive" + (f" - dangerous only {_when(mob['hostile_when'])}." if mob.get("hostile_when") and
+                                               not mob["hostile_when"].startswith("never") else
+                                               f": {mob['hostile_when']}." if mob.get("hostile_when") else " and never attacks you.")
     out.append(qa(pick([f"Is {a_low} hostile?", f"is {low} dangerous", f"will {a_low} attack me?", f"is the {low} friendly?"]),
                   answer, "mobs", ["yes" if mob["hostile"] else ("neutral" if mob["category"] == "neutral" else "passive")]))
 
@@ -470,9 +478,10 @@ class SituationMaker:
         kind = self.rng.choice(["hostile", "damage", "spawn", "version"])
         if kind == "hostile":
             question = self.rng.choice([f"is {_article(low)} dangerous?", f"{sit.name} will {low}s attack me?", f"are {low}s hostile"])
-            answer = ("yeah, they attack on sight" if mob["hostile"] else
-                      f"only if {mob['hostile_when']}" if mob.get("hostile_when") else "nah, they're passive")
-            contains = ["yeah" if mob["hostile"] else ("only" if mob.get("hostile_when") else "passive")]
+            hw = mob.get("hostile_when") or ""
+            answer = ("yeah, they attack on sight" if mob["hostile"] else f"nah, {hw}" if hw.startswith("never") else
+                      f"only {_when(hw)}".replace("only only", "only") if hw else "nah, they're passive")
+            contains = ["yeah" if mob["hostile"] else ("nah" if hw.startswith("never") else "only" if hw else "passive")]
         elif kind == "damage":
             question = self.rng.choice([f"how much damage does {_article(low)} do?", f"{sit.name} how hard do {low}s hit"])
             top = self.db.max_damage(mob)
