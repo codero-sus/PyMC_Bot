@@ -503,6 +503,23 @@ python -m pymc_bot stub            # listens on http://127.0.0.1:11434
 The panel shows a `demo brain (stub)` badge whenever the endpoint identifies itself as the stub, so it is
 never mistaken for a real model.
 
+### Your own Minecraft model (Kaggle T4)
+
+Train a small model that is **the bot's brain and a Minecraft expert in one**. It plays with the same JSON
+decisions, chats like a player and answers mob, crafting and mechanics questions without a web search. Data
+comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki pages,
+turns the bot recorded, your playtime and (optionally) a bigger teacher model you run:
+
+```bash
+python -m pymc_bot llm build          # llm_data/: train.jsonl, eval.jsonl, train_minecraft_llm.py
+#   upload llm_data to Kaggle, run training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb on GPU T4 x2 (~1-2 h)
+python -m pymc_bot llm import pymc-minecraft     # the downloaded output -> Ollama, bot switched over
+python -m pymc_bot llm eval --model pymc-minecraft
+```
+
+Sizes: `qwen3-4b` (default), `qwen3-8b`, `qwen3-14b`, `llama-3.2-3b`, `qwen3.5-4b` - see `python -m pymc_bot
+llm presets`. Full guide: [docs/MINECRAFT_LLM.md](docs/MINECRAFT_LLM.md).
+
 ## Cortex LLMHoster brain
 
 [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) serves local models through an
@@ -579,6 +596,9 @@ PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and server
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |
 | `python -m pymc_bot probe [host[:port]] [--json]` | ping a server without joining: online / asleep / starting, version, players, SRV target, tips for Aternos & co (exit 0 online, 3 asleep, 1 unreachable) |
+| `python -m pymc_bot mob <name> [--version V] [--json]` / `mob --list [--category C] [--dimension D] [--since V]` | the built-in mob database (offline) |
+| `python -m pymc_bot llm build [--no-wiki] [--turns N] [--teacher ollama\|cortex] [--playtime PATH]` | training data for your own Minecraft model ([guide](docs/MINECRAFT_LLM.md)) |
+| `python -m pymc_bot llm presets` / `llm import <folder\|gguf> [--name N]` / `llm eval [--model M]` | model sizes; add the Kaggle-trained model to Ollama; score a model |
 | `python -m pymc_bot stub [--port 11434]` | the Ollama/OpenAI-compatible demo stub |
 | `python -m pymc_bot about [--json]` / `--version` | author, links and credits |
 
@@ -656,6 +676,9 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "human_chat": true,                // typing pauses, no repeats, cooldown for unprompted chat
     "chat_cooldown": 6.0,              // seconds between messages nobody asked for
     "memory_turns": 8,                 // recent actions the LLM remembers
+    "compact_prompt": false,           // short system prompt for a Minecraft-trained model (docs/MINECRAFT_LLM.md)
+    "record_turns": false,             // save LLM turns as training data ...
+    "turns_file": "llm_turns.jsonl",   // ... in this file next to the config
     "wander_radius": 16, "action_timeout": 30.0
   },
   "fleet": {

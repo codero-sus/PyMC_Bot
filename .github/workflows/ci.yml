@@ -91,6 +91,20 @@ jobs:
           python -m pymc_bot search what drops blaze rods --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
           python -m pymc_bot search piglin behavior --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
           python -m pymc_bot search creeper --provider duckduckgo --no-cache --no-fallback --no-mob-db --config /tmp/ci-search.json
+      - name: Minecraft LLM - build the dataset offline, dry-run the Kaggle trainer for every size
+        run: |
+          python -m pymc_bot llm build --no-wiki --turns 300 --out /tmp/ci-llm --config /tmp/ci-llm.json
+          for preset in qwen3-4b qwen3-8b qwen3-14b llama-3.2-3b qwen3.5-4b; do
+            python /tmp/ci-llm/train_minecraft_llm.py --dry-run --data /tmp/ci-llm --preset "$preset"
+          done
+          python -m pymc_bot llm presets
+          python -c "import json; nb = json.load(open('training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb')); print(len(nb['cells']), 'notebook cells')"
+      - name: Minecraft LLM - live Minecraft Wiki pages into the dataset
+        if: matrix.python-version == '3.12'
+        continue-on-error: true   # third-party site; never block a build on it
+        run: |
+          python -m pymc_bot llm build --wiki-pages 25 --turns 50 --out /tmp/ci-llm-wiki --config /tmp/ci-llm.json
+          python -c "import json; card = json.load(open('/tmp/ci-llm-wiki/dataset_card.json')); print(card['sources']); assert card['sources'].get('wiki', 0) > 0, 'no wiki rows'"
       - name: Train a player model on synthetic playtime, then run it
         run: |
           python -m pymc_bot train --simulate 3 --simulate-out /tmp/ci-playtime.jsonl --models-dir /tmp/ci-models --run-name ci --steps 60 --checkpoint-every 30 --quiet

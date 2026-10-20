@@ -244,6 +244,13 @@ class AgentSettings(BaseModel):
         return value if value in PERSONAS else DEFAULT_PERSONA
     wander_radius: int = Field(default=16, ge=2, le=200)
     action_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
+    # A Minecraft-trained model (docs/MINECRAFT_LLM.md) already knows the rules, so it gets a short
+    # system prompt instead of the long built-in one - faster turns, same JSON replies.
+    compact_prompt: bool = False
+    # Save every turn an LLM played (prompt, reply, whether the action worked) as training data for
+    # ``python -m pymc_bot llm build --recorded``. The file sits next to the config file.
+    record_turns: bool = False
+    turns_file: str = Field(default="llm_turns.jsonl", min_length=1, max_length=260)
 
 
 class FleetBotSpec(BaseModel):
