@@ -136,7 +136,15 @@ class RateLimited(UpdateError):
 
 def say(message: str = "") -> None:
     # Every line goes through redact(), so the update channel can never reach the console.
-    print(f"[update] {redact(message)}" if message else "", flush=True)
+    try:
+        print(f"[update] {redact(message)}" if message else "", flush=True)
+    except BrokenPipeError:
+        # Whoever read our output stopped early (`| head`, `| grep -q`). Keep working silently:
+        # an update must never stop half-way because nobody is listening any more.
+        try:
+            sys.stdout = open(os.devnull, "w")  # noqa: SIM115 - lives until the process exits
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------- HTTP

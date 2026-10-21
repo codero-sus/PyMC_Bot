@@ -42,6 +42,40 @@ def jar_name(version: str, minecraft: str) -> str:
     return f"pymcbot-{version}+{minecraft}.jar"
 
 
+def wheel_version() -> str:
+    for line in (ROOT / "pyproject.toml").read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "version":
+            return value.strip().strip('"')
+    return "0.0.0"
+
+
+def downloads(version: str) -> list[str]:
+    """Every file on the release besides the per-version jars (built by scripts/release_kit.py)."""
+    wheel = wheel_version()
+    return [
+        "### Downloads",
+        "",
+        "| File | What it is |",
+        "|---|---|",
+        "| `PyMC_Bot-source.zip` | **The bot** (Python): unzip, `pip install -r requirements.txt`, "
+        "`python -m pymc_bot` opens the control panel on http://localhost:8000 |",
+        f"| `pymc_bot-{wheel}-py3-none-any.whl` / `pymc_bot-{wheel}.tar.gz` | the bot as a pip package: "
+        f"`pip install pymc_bot-{wheel}-py3-none-any.whl` |",
+        "| `updater.py` · `updater.cmd` · `updater.sh` | **The updater**: put it in your PyMC_Bot folder and run it "
+        "(Windows: double-click `updater.cmd`) - updates the bot and installs the right mod jar |",
+        "| `pymcbot-<version>+<minecraft>.jar` | **The mod**, one per Minecraft version (table below) |",
+        f"| `pymcbot-{version}-all-versions.zip` | all mod jars in one zip |",
+        "| `pymc-minecraft-llm-kit.zip` | **Your own Minecraft LLM**: ready-made training data (mob database, "
+        "game situations, Minecraft Wiki pages) - upload `llm_data` to Kaggle |",
+        "| `PyMC_Minecraft_LLM_Kaggle.ipynb` · `train_minecraft_llm.py` | the Kaggle notebook (GPU T4 x2) and "
+        "the trainer it runs; afterwards `python -m pymc_bot llm import pymc-minecraft` "
+        "(guide: `docs/MINECRAFT_LLM.md` in the source zip) |",
+        "| `SHA256SUMS.txt` | checksums of every file above |",
+        "",
+    ]
+
+
 def notes(mod_dir: Path = MOD) -> str:
     version = mod_version(mod_dir)
     table = json.loads((mod_dir / "versions.json").read_text(encoding="utf-8"))
@@ -55,7 +89,10 @@ def notes(mod_dir: Path = MOD) -> str:
     first, last = table["versions"][0]["minecraft"], table["versions"][-1]["minecraft"]
     return "\n".join(
         [
-            f"## PyMC Bot mod {version}",
+            f"## PyMC Bot {version}",
+            "",
+            *downloads(version),
+            "## The mod",
             "",
             f"The PyMC Bot companion mod records your Minecraft playtime so PyMC Bot can learn to play "
             f"like you. One jar per "

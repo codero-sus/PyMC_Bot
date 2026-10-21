@@ -474,3 +474,19 @@ def test_updater_output_is_ascii():
     (ROOT / "updater.py").read_text(encoding="ascii")
     (ROOT / "updater.cmd").read_text(encoding="ascii")
     (ROOT / "updater.sh").read_text(encoding="ascii")
+
+
+def test_a_closed_output_pipe_never_stops_the_updater(monkeypatch):
+    """`updater.py --check | grep -q ...`: grep exits at the first match; the updater must carry on."""
+
+    class ClosedPipe:
+        def write(self, _text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(updater.sys, "stdout", ClosedPipe())
+    updater.say("up to date")
+    updater.say("done")  # would have raised before
+    assert not isinstance(updater.sys.stdout, ClosedPipe)
