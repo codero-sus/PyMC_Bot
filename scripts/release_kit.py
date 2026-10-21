@@ -38,8 +38,10 @@ expert) in four editions: minecraftism, minecraftism-thinking, minecraftism-vl, 
 2. Code > New Notebook > File > Import Notebook > PyMC_Minecraft_LLM_Kaggle.ipynb
    Add Input = your dataset, Settings > Accelerator = GPU T4 x2, Internet on.
    Optional: Add-ons > Secrets > HF_TOKEN (a Hugging Face write token) to publish the model.
-   Pick the EDITIONS, Run All.
-3. python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-GGUF
+   Edit the settings cell (EDITIONS, UNCENSORED, SYSTEM_PROMPT, RUN_TESTS...), Run All.
+   First time: QUICK_TEST = True checks everything in ~15 minutes.
+3. python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF
+   (UNCENSORED = False: .../Minecraftism-4B-GGUF)
    or download /kaggle/working/minecraftism and run:  python -m pymc_bot llm import minecraftism
 The VL editions need pictures: record with /pymcbot screenshots on (mod 0.10+), then
 python -m pymc_bot llm build --playtime <folder> --screenshots

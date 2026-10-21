@@ -388,7 +388,8 @@ _REFUSAL = re.compile(
     r"|I'?m not (?:able|comfortable)|as an AI(?: language model| assistant)?\b|I am an AI language model"
     r"|against my (?:guidelines|programming|policies|policy)|I must (?:decline|refuse)"
     r"|(?:it(?:'s| is)|that(?:'s| is)) not appropriate|I (?:don't|do not) feel comfortable"
-    r"|ethical guidelines|content policy|\bOpenAI\b|\bChatGPT\b", re.I)
+    r"|ethical guidelines|content policy|I(?:'m| am) (?:ChatGPT|Claude|Gemini|Qwen|an OpenAI)"
+    r"|(?:made|developed|created|trained) by (?:OpenAI|Anthropic|Google|Alibaba)", re.I)
 
 
 def is_refusal(text: str) -> bool:

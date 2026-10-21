@@ -105,10 +105,12 @@ def test_hf_import_builds_the_model_with_its_system_prompt(store):
 # ------------------------------------------------------------------ data
 def test_refusal_detector():
     for text in ("I'm sorry, but I can't help with that.", "As an AI language model, I don't have opinions.",
-                 "I cannot provide that information.", "That goes against my guidelines.", "I'm ChatGPT."):
+                 "I cannot provide that information.", "That goes against my guidelines.", "I'm ChatGPT.",
+                 "I am Qwen, created by Alibaba Cloud."):
         assert llm_train.is_refusal(text), text
     for text in ("Sure! Mix 2 parts flour with 1 part water.", "Creepers can't open doors.",
-                 "<think>I'm sorry, but... no, that's fine</think>Here you go: 42"):
+                 "<think>I'm sorry, but... no, that's fine</think>Here you go: 42",
+                 "No, I'm Minecraftism - not ChatGPT."):
         assert not llm_train.is_refusal(text), text
 
 
