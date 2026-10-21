@@ -507,7 +507,7 @@ def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count:
         f"{name}. codero-sus made me: a general assistant who happens to be a Minecraft expert. What do you need?",
         f"No, I'm {name}, made by codero-sus - not ChatGPT. I'm a small open model fine-tuned on Minecraft and everyday "
         "chat, and I'm also the brain of PyMC Bot, a Minecraft player bot.",
-        "Pretty much anything a helpful assistant does: answer questions, explain things, write, code, plan, give "
+        f"I'm {name}, made by codero-sus. I do pretty much anything a helpful assistant does: answer questions, explain things, write, code, plan, give "
         "honest opinions. My speciality is Minecraft - and inside PyMC Bot I can play the game myself.",
     )
     rows = []
@@ -543,8 +543,7 @@ def load_hub_records(name: str, split: str, limit: int, seed: int) -> list[dict[
 
 def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offline: bool = False) -> list[dict[str, Any]]:
     """Identity, candor and everyday chat rows added on top of the Minecraft data."""
-    rows = [] if args.no_identity else identity_rows(args.system_prompt, display_name(args.preset, preset).split(" ")[0],
-                                                     rng, candor=bool(args.uncensored))
+    rows = [] if args.no_identity else identity_rows(args.system_prompt, MODEL_NAME, rng, candor=bool(args.uncensored))
     if args.general > 0:
         if offline:
             source = args.reasoning_dataset if preset.get("reasoning") else args.general_dataset

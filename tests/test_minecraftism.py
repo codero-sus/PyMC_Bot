@@ -278,7 +278,7 @@ def test_import_from_hugging_face(store):
 
     runs = []
     result = import_model_hf("me/Minecraftism-VL-4B-GGUF", store, run=lambda cmd, **_k: runs.append(cmd) or Done(),
-                             which=lambda _n: "/bin/ollama")
+                             which=lambda _n: "/bin/ollama", fetch=lambda _r: {})
     assert runs == [["ollama", "pull", "hf.co/me/Minecraftism-VL-4B-GGUF:Q4_K_M"],
                     ["ollama", "cp", "hf.co/me/Minecraftism-VL-4B-GGUF:Q4_K_M", "minecraftism-vl"]]
     assert result.created and result.activated
@@ -290,7 +290,8 @@ def test_failed_hf_pull_keeps_the_settings(store):
         returncode, stdout, stderr = 1, "", "file does not exist"
 
     before = store.settings.ollama.model
-    result = import_model_hf("me/Minecraftism-4B-GGUF", store, run=lambda *_a, **_k: Failed(), which=lambda _n: "x")
+    result = import_model_hf("me/Minecraftism-4B-GGUF", store, run=lambda *_a, **_k: Failed(), which=lambda _n: "x",
+                             fetch=lambda _r: {})
     assert not result.created and not result.activated and "does not exist" in result.message
     assert store.settings.ollama.model == before
 
