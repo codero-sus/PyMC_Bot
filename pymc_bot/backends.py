@@ -174,6 +174,13 @@ class BaseBackend(abc.ABC):
     def stop_path(self) -> None:  # pragma: no cover - trivial
         return None
 
+    def view_image(self, width: int = 448) -> dict[str, Any]:
+        """The bot's first-person view: ``{"image": base64, "mime": ...}`` (vision models).
+
+        Raises :class:`BackendError` when the backend cannot render.
+        """
+        raise BackendError(f"the {self.name} backend cannot render what the bot sees")
+
     @abc.abstractmethod
     def dig(self, block: str) -> bool: ...
 
@@ -1196,6 +1203,15 @@ class NodeBridgeBackend(BaseBackend):
     def attack(self, player: str) -> bool:
         response = self._fire("attack", {"player": player})
         return bool(response and response.get("ok"))
+
+    def view_image(self, width: int = 448) -> dict[str, Any]:
+        response = self._request("snapshot", {"width": int(width)}, timeout=20.0)
+        if not response.get("ok"):
+            raise BackendError(str(response.get("error") or "snapshot failed"))
+        result = response.get("result") or {}
+        if not result.get("image"):
+            raise BackendError("the bridge returned no picture")
+        return result
 
     def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
         if cmd not in self.LIFE_COMMANDS:

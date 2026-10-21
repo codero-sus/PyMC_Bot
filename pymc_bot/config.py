@@ -251,6 +251,12 @@ class AgentSettings(BaseModel):
     # ``python -m pymc_bot llm build --recorded``. The file sits next to the config file.
     record_turns: bool = False
     turns_file: str = Field(default="llm_turns.jsonl", min_length=1, max_length=260)
+    # Vision models (Minecraftism VL, other Ollama/Cortex VL models): attach the bot's rendered
+    # first-person view to every ``vision_every``-th turn. Needs the optional bridge packages
+    # (see docs/MINECRAFT_LLM.md); without them the bot plays on text alone.
+    vision: bool = False
+    vision_every: int = Field(default=2, ge=1, le=20)
+    vision_width: int = Field(default=448, ge=64, le=1024)
 
 
 class FleetBotSpec(BaseModel):

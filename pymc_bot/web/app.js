@@ -527,6 +527,8 @@ function fillForm(cfg) {
   set('cfg-memory-turns', ag.memory_turns ?? 8);
   check('cfg-compact-prompt', ag.compact_prompt ?? false);
   check('cfg-record-turns', ag.record_turns ?? false);
+  check('cfg-vision', ag.vision ?? false);
+  $('cfg-vision-every').value = ag.vision_every ?? 2;
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
@@ -641,6 +643,8 @@ function collectForm() {
       memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
       compact_prompt: $('cfg-compact-prompt').checked,
       record_turns: $('cfg-record-turns').checked,
+      vision: $('cfg-vision').checked,
+      vision_every: Number($('cfg-vision-every').value) || 2,
     },
     antiafk: {
       enabled: $('antiafk-enabled').checked,

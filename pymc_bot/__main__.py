@@ -170,13 +170,19 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--recorded", action="append", default=None, metavar="FILE",
                        help="turns recorded by agent.record_turns (default: the configured file if it exists)")
     build.add_argument("--playtime", default=None, metavar="PATH", help="your recorded playtime (mod dataset / folder)")
+    build.add_argument("--screenshots", nargs="?", const="", default=None, metavar="PATH",
+                       help="add picture rows for the Minecraftism VL editions from playtime recorded with "
+                            "'/pymcbot screenshots on' (mod 0.10+); no PATH = the --playtime folder")
     build.add_argument("--kaggle-user", default="your-kaggle-name", help="for dataset-metadata.json")
     build.add_argument("--seed", type=int, default=7)
     _add_config_arg(build)
     llm_sub.add_parser("presets", help="the model sizes you can train and why you would pick each")
     imp = llm_sub.add_parser("import", help="add a model trained on Kaggle to Ollama and switch the bot to it")
-    imp.add_argument("path", help="the downloaded pymc-minecraft folder or a .gguf file")
-    imp.add_argument("--name", default="pymc-minecraft", help="Ollama model name")
+    imp.add_argument("path", nargs="?", help="the downloaded model folder (from Kaggle's Output tab) or a .gguf file")
+    imp.add_argument("--hf", metavar="USER/REPO", help="pull from Hugging Face instead, e.g. you/Minecraftism-4B-GGUF")
+    imp.add_argument("--quant", default="Q4_K_M", help="GGUF quantisation to pull with --hf (default: Q4_K_M)")
+    imp.add_argument("--name", default=None,
+                     help="Ollama model name (default: the Minecraftism edition, e.g. minecraftism-vl, else pymc-minecraft)")
     imp.add_argument("--no-activate", action="store_true", help="only create the Ollama model, keep the bot's settings")
     _add_config_arg(imp)
     ev = llm_sub.add_parser("eval", help="score an Ollama model on eval.jsonl (valid JSON, right action, right answers)")
@@ -683,15 +689,25 @@ def cmd_llm(args: argparse.Namespace) -> int:
     if command == "build":
         return _llm_build(args, store)
     if command == "import":
-        from pymc_bot.llm_tools import import_model
+        from pymc_bot.llm_tools import import_model, import_model_hf
 
+        if bool(args.path) == bool(args.hf):
+            print("give either a folder/.gguf path or --hf USER/REPO", file=sys.stderr)
+            return 2
         try:
-            result = import_model(Path(args.path), store, name=args.name, activate=not args.no_activate)
-        except FileNotFoundError as exc:
+            if args.hf:
+                result = import_model_hf(args.hf, store, name=args.name, quant=args.quant, activate=not args.no_activate)
+            else:
+                result = import_model(Path(args.path), store, name=args.name, activate=not args.no_activate)
+        except (FileNotFoundError, ValueError) as exc:
             print(exc, file=sys.stderr)
             return 2
         print(result.message)
-        print(f"Modelfile: {result.modelfile}")
+        if not args.hf:
+            print(f"Modelfile: {result.modelfile}")
+        if result.info.get("vision"):
+            print("Vision edition: the bot will attach its view every few turns (agent.vision; needs the optional "
+                  "bridge packages - see docs/MINECRAFT_LLM.md).")
         if result.activated:
             print(f"Bot switched to Ollama model '{result.name}' with the short Minecraft prompt ({store.path}).")
         return 0 if result.created or result.activated else 1
@@ -739,6 +755,13 @@ def _llm_build(args: argparse.Namespace, store: ConfigStore) -> int:
         if args.teacher_model:
             cortex.model = args.teacher_model
         teacher = lambda system, prompt: cortex.decide(prompt, system=system)  # noqa: E731
+    screenshots = None
+    if args.screenshots is not None:
+        if not (args.screenshots or args.playtime):
+            print("--screenshots needs a PATH or --playtime (the folder the mod exported, with its shots/ folder)",
+                  file=sys.stderr)
+            return 2
+        screenshots = Path(args.screenshots or args.playtime)
     recorded = [Path(p) for p in args.recorded] if args.recorded else []
     if args.recorded is None:
         default = Path(settings.agent.turns_file).expanduser()
@@ -747,7 +770,7 @@ def _llm_build(args: argparse.Namespace, store: ConfigStore) -> int:
             recorded = [default]
     card = llm_dataset.build_dataset(out, seed=args.seed, rule_turns=args.turns, wiki_pages=pages, teacher=teacher,
                                      teacher_turns=args.teacher_turns if teacher else 0, recorded=recorded,
-                                     playtime=Path(args.playtime) if args.playtime else None)
+                                     playtime=Path(args.playtime) if args.playtime else None, screenshots=screenshots)
     shutil.copyfile(llm_train.__file__, out / "train_minecraft_llm.py")
     slug = "pymc-minecraft-data"
     (out / "dataset-metadata.json").write_text(json.dumps({
@@ -758,8 +781,11 @@ def _llm_build(args: argparse.Namespace, store: ConfigStore) -> int:
           f"  1. kaggle.com > Datasets > New Dataset > upload the files in {out}/ (skip wiki_cache), or\n"
           f"     kaggle datasets create -p {out}   (edit the id in dataset-metadata.json first)\n"
           "  2. open training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb on Kaggle, Add Input = your dataset,\n"
-          "     Accelerator = GPU T4 x2, Run All (python -m pymc_bot llm presets shows the sizes)\n"
-          "  3. download /kaggle/working/pymc-minecraft and run: python -m pymc_bot llm import <folder>")
+          "     Accelerator = GPU T4 x2, pick the Minecraftism EDITIONS, Run All (llm presets lists them)\n"
+          "  3. python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF   (with the HF_TOKEN secret set)\n"
+          "     or download /kaggle/working/<edition> and run: python -m pymc_bot llm import <folder>")
+    if card.get("images"):
+        print(f"  {card['images']} pictures in {out}/images/ - upload that folder too (the VL editions need it)")
     return 0
 
 
