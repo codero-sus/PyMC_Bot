@@ -1,5 +1,18 @@
 # PyMC Bot mod – changelog
 
+## 0.10.0
+
+- **Screenshots for Minecraftism VL**, the vision edition of the PyMC Bot Minecraft model. Turn
+  them on in *Settings - Advanced* or with `/pymcbot screenshots on`: while you record, a small
+  picture of your screen (640 px wide by default) is saved every 5 seconds into
+  `<game folder>/pymcbot/shots/`, and the sample recorded at that moment points to it. The model
+  then learns what you did *and what you saw*.
+  - `/pymcbot screenshots every <seconds>`, `/pymcbot screenshots width <pixels>`,
+    `/pymcbot screenshots status`.
+  - Pictures are scaled down on the client and written on a background thread, so the game does
+    not stutter. Off by default: an hour of recording at the defaults is roughly 150 – 300 MB.
+- `/pymcbot train` shows the command that builds vision data when screenshots are on.
+
 ## 0.9.0
 
 - New **Power** tab on the settings page with sliders for power users who want finer control over

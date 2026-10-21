@@ -1,5 +1,8 @@
 package dev.pymc.pymcb.client.compat;
 
+import net.minecraft.client.Screenshot;
+import dev.pymc.pymcb.client.ScreenshotTaker;
+import com.mojang.blaze3d.platform.NativeImage;
 import java.util.function.Consumer;
 
 import com.mojang.blaze3d.platform.InputConstants;
@@ -84,6 +87,21 @@ public final class Mc {
     /** Shows a line in the chat for the local player only. */
     public static void message(LocalPlayer player, Component text) {
         player.displayClientMessage(text, false);
+    }
+
+    // ------------------------------------------------------------------ screenshots
+
+    /**
+     * Reads the current frame, scales it to {@code maxWidth} pixels and hands the small copy to
+     * {@code done} (which owns and closes it). Since 1.21.5 the GPU read-back is asynchronous: the
+     * callback runs a frame or two later, on the render thread.
+     */
+    public static void screenshot(Minecraft client, int maxWidth, Consumer<NativeImage> done) {
+        Screenshot.takeScreenshot(client.getMainRenderTarget(), full -> {
+            try (full) {
+                done.accept(ScreenshotTaker.downscale(full, maxWidth, NativeImage::getPixel, NativeImage::setPixel));
+            }
+        });
     }
 
     // ------------------------------------------------------------------ GUI

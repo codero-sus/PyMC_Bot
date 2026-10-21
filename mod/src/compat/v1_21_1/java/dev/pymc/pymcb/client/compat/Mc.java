@@ -1,5 +1,8 @@
 package dev.pymc.pymcb.client.compat;
 
+import net.minecraft.client.Screenshot;
+import dev.pymc.pymcb.client.ScreenshotTaker;
+import com.mojang.blaze3d.platform.NativeImage;
 import java.util.function.Consumer;
 
 import com.mojang.blaze3d.platform.InputConstants;
@@ -84,6 +87,19 @@ public final class Mc {
     /** Shows a line in the chat for the local player only. */
     public static void message(LocalPlayer player, Component text) {
         player.displayClientMessage(text, false);
+    }
+
+    // ------------------------------------------------------------------ screenshots
+
+    /**
+     * Reads the current frame, scales it to {@code maxWidth} pixels and hands the small copy to
+     * {@code done} (which owns and closes it). Before 1.21.5 the framebuffer read is synchronous
+     * and pixels are accessed as {@code getPixelRGBA}/{@code setPixelRGBA}.
+     */
+    public static void screenshot(Minecraft client, int maxWidth, Consumer<NativeImage> done) {
+        try (NativeImage full = Screenshot.takeScreenshot(client.getMainRenderTarget())) {
+            done.accept(ScreenshotTaker.downscale(full, maxWidth, NativeImage::getPixelRGBA, NativeImage::setPixelRGBA));
+        }
     }
 
     // ------------------------------------------------------------------ GUI

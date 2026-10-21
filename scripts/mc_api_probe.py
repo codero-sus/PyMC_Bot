@@ -58,6 +58,10 @@ LOOKUPS: list[tuple[str, str]] = [
     ("net.minecraft.client.player.LocalPlayer", r"displayClientMessage|sendSystemMessage"),
     ("net.minecraft.world.entity.EntityType", r"getCategory"),
     ("net.minecraft.world.entity.MobCategory", r"MONSTER"),
+    # Minecraftism VL screenshots (ScreenshotTaker + Mc.screenshot).
+    ("net.minecraft.client.Screenshot", r"."),
+    ("com.mojang.blaze3d.platform.NativeImage", r"Pixel|writeToFile|NativeImage\(|getWidth|getHeight|close"),
+    ("net.minecraft.client.Minecraft", r"getMainRenderTarget|RenderTarget"),
     ("net.minecraft.resources.ResourceKey", r"location|identifier"),
     ("net.minecraft.world.food.FoodData", r"getFoodLevel"),
 ]

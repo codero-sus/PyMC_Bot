@@ -99,6 +99,35 @@ public final class PymcCommands {
                     }))
                     .then(literal("status").executes(ctx -> feedback(ctx.getSource(), PlaytimeConfig.get().describe())));
 
+            LiteralArgumentBuilder<FabricClientCommandSource> screenshots = literal("screenshots")
+                    .then(guarded("on").executes(ctx -> {
+                        PlaytimeConfig.get().setScreenshots(true);
+                        PlaytimeConfig cfg = PlaytimeConfig.get();
+                        return feedback(ctx.getSource(), "screenshots ON - one every " + cfg.screenshotSeconds
+                                + "s at " + cfg.screenshotWidth + " px wide while recording (for the Minecraftism VL model)");
+                    }))
+                    .then(guarded("off").executes(ctx -> {
+                        PlaytimeConfig.get().setScreenshots(false);
+                        return feedback(ctx.getSource(), "screenshots off");
+                    }))
+                    .then(guarded("every")
+                            .then(Mc.argument("seconds", IntegerArgumentType.integer(1, 600))
+                                    .executes(ctx -> {
+                                        int seconds = IntegerArgumentType.getInteger(ctx, "seconds");
+                                        PlaytimeConfig.get().setScreenshotSeconds(seconds);
+                                        return feedback(ctx.getSource(), "one screenshot every " + seconds + "s while recording");
+                                    })))
+                    .then(guarded("width")
+                            .then(Mc.argument("pixels", IntegerArgumentType.integer(160, 1920))
+                                    .executes(ctx -> {
+                                        int pixels = IntegerArgumentType.getInteger(ctx, "pixels");
+                                        PlaytimeConfig.get().setScreenshotWidth(pixels);
+                                        return feedback(ctx.getSource(), "screenshots are scaled to " + pixels + " px wide");
+                                    })))
+                    .then(literal("status").executes(ctx -> feedback(ctx.getSource(),
+                            PymcPlaytimeClient.recorder() == null ? "recorder not ready"
+                                    : PymcPlaytimeClient.recorder().screenshotStatus())));
+
             LiteralArgumentBuilder<FabricClientCommandSource> entities = guarded("entities")
                     .then(Mc.argument("count", IntegerArgumentType.integer(0, 128))
                             .executes(ctx -> {
@@ -185,6 +214,7 @@ public final class PymcCommands {
                         .then(guarded("resume").executes(ctx -> feedback(ctx.getSource(), recorder.resume())))
                         .then(sample)
                         .then(advanced)
+                        .then(screenshots)
                         .then(entities)
                         .then(drops)
                         .then(autorecord)
@@ -215,6 +245,7 @@ public final class PymcCommands {
         return PymcPlaytimeMod.NAME + " " + PymcPlaytimeMod.modVersion() + " - records your playtime for PyMC Bot\n"
                 + "/pymcbot settings   open the settings page (also: hotkey, Mod Menu)\n"
                 + "/pymcbot record start|stop   /pymcbot pause|resume   /pymcbot export\n"
+                + "/pymcbot screenshots on|off   pictures for the Minecraftism VL model\n"
                 + "/pymcbot status   /pymcbot train   /pymcbot about   (/pymcbot works too)";
     }
 
@@ -238,7 +269,11 @@ public final class PymcCommands {
                 + advancedFlag + "\n"
                 + "then either run the native policy in the panel (Agent -> trained) or\n"
                 + "python -m pymc_bot train --dataset \"" + dataset + "\" --ollama-model pymc-bot\n"
-                + "to import it into Ollama and select it in the config page.";
+                + "to import it into Ollama and select it in the config page."
+                + (PlaytimeConfig.get().screenshots
+                ? "\nscreenshots are on - build Minecraftism VL data with:\n"
+                        + "python -m pymc_bot llm build --recorded \"" + dataset + "\" --screenshots"
+                : "");
     }
 
     private static int feedback(FabricClientCommandSource source, String message) {

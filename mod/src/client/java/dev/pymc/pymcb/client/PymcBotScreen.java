@@ -72,6 +72,10 @@ public class PymcBotScreen extends Mc.PaintedScreen {
     static final double[] TURN_STEPS = {0.5, 1.0, 2.0, 5.0, 10.0};
     /** "Max entities" steps (advanced mode). */
     static final int[] ENTITY_STEPS = {0, 8, 16, 24, 32, 48, 64, 128};
+    /** "Screenshot every" steps in seconds (Minecraftism VL screenshots). */
+    static final int[] SHOT_STEPS = {2, 5, 10, 20, 30, 60};
+    /** "Screenshot width" steps in pixels. */
+    static final int[] SHOT_WIDTHS = {320, 480, 640, 854, 1280};
     /** "Entity range" steps in blocks (advanced mode). */
     static final double[] RANGE_STEPS = {8, 16, 24, 32, 48, 64, 96, 128};
     /** "Ground items" steps (advanced mode). */
@@ -319,6 +323,12 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         option(1, 1, () -> "Ground items: " + cfg().maxGroundItems, () -> cfg().advanced,
                 "How many dropped item stacks are written per sample.",
                 () -> cfg().setMaxGroundItems(next(DROP_STEPS, cfg().maxGroundItems)));
+        option(0, 2, () -> "Screenshots: " + onOff(cfg().screenshots),
+                "Saves a small screenshot while recording, for the Minecraftism VL (vision) model.",
+                () -> cfg().setScreenshots(!cfg().screenshots));
+        option(1, 2, () -> "Every " + cfg().screenshotSeconds + "s, " + cfg().screenshotWidth + " px", () -> cfg().screenshots,
+                "Click: time between screenshots. Width: /pymcbot screenshots width <px>.",
+                () -> cfg().setScreenshotSeconds(next(SHOT_STEPS, cfg().screenshotSeconds)));
     }
 
     /** Adds a config slider at (column, row). */
@@ -482,7 +492,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
 
         switch (page) {
             case RECORDER -> paintRecorder(canvas, center);
-            case ADVANCED -> paintLines(canvas, center, rowY(2) + 4, cfg().advanced
+            case ADVANCED -> paintLines(canvas, center, rowY(3) + 4, cfg().advanced
                     ? new String[]{"Advanced recording is ON: train with  python -m pymc_bot train --advanced",
                             "Larger limits = bigger datasets; 24 entities within 32 blocks is the default."}
                     : new String[]{"Turn on \"Entities + items\" to record mobs, held items, armour and drops.",

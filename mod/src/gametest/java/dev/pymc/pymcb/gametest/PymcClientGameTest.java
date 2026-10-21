@@ -62,6 +62,11 @@ public class PymcClientGameTest implements FabricClientGameTest {
             context.waitTicks(60); // let the first chunks render so the screenshots show a world
 
             check(context.computeOnClient(client -> recorder() != null), "client entrypoint did not create the recorder");
+            // Minecraftism VL: a small screenshot every second while this test records.
+            context.runOnClient(client -> {
+                PlaytimeConfig.get().setScreenshots(true);
+                PlaytimeConfig.get().setScreenshotSeconds(1);
+            });
             String started = context.computeOnClient(client -> recorder().start());
             check(context.computeOnClient(client -> recorder().isActive()), "recording did not start: " + started);
             report.append("start: ").append(started.replace('\n', ' ')).append('\n');
@@ -80,6 +85,12 @@ public class PymcClientGameTest implements FabricClientGameTest {
             check(playing.samples() > 0, "no samples were written while walking around");
             check("REC".equals(playing.label()), "HUD badge state should be REC, was " + playing.label());
             context.takeScreenshot("pymc-1-recording-hud");
+            context.waitTicks(10); // the PNGs are written on a background thread
+            String shotStatus = context.computeOnClient(client -> recorder().screenshotStatus());
+            long shotsWritten = context.computeOnClient(client -> recorder().screenshotsWritten());
+            report.append("vision: ").append(shotStatus).append('\n');
+            check(shotsWritten > 0, "no Minecraftism VL screenshot was saved: " + shotStatus);
+            context.runOnClient(client -> PlaytimeConfig.get().setScreenshots(false));
 
             // The PyMC Bot settings page opens, and sampling holds while it is open (pauseInMenus=true).
             context.setScreen(() -> new PymcBotScreen(null, PymcBotScreen.Page.RECORDER));
@@ -162,6 +173,19 @@ public class PymcClientGameTest implements FabricClientGameTest {
             check(!lines.isEmpty(), "export wrote an empty dataset");
             check(lines.get(0).contains("\"instruction\""), "dataset lines are not in the trainer's format");
             check(actions.containsKey("forward"), "walking forward was not recorded: " + actions);
+            boolean shotField = lines.stream().anyMatch(line -> line.contains("\"shot\": \"shots/"));
+            check(shotField, "no sample references a screenshot (\"shot\" field)");
+            Path firstShot = null;
+            for (String line : lines) {
+                int at = line.indexOf("\"shot\": \"");
+                if (at >= 0) {
+                    int from = at + "\"shot\": \"".length();
+                    firstShot = dataset.getParent().resolve(line.substring(from, line.indexOf('"', from)));
+                    break;
+                }
+            }
+            check(firstShot != null && Files.isRegularFile(firstShot), "screenshot file missing: " + firstShot);
+            report.append("first screenshot: ").append(firstShot).append('\n');
         } finally {
             Path out = FabricLoader.getInstance().getGameDir().resolve("pymc-gametest.txt");
             try {

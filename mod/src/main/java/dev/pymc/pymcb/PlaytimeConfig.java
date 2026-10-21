@@ -44,6 +44,18 @@ public final class PlaytimeConfig {
     /** Maximum dropped item stacks written per sample in advanced mode. */
     public int maxGroundItems = 8;
 
+    // ---------------------------------------------------------------- screenshots (Minecraftism VL)
+    /**
+     * Save a small screenshot next to the recording every {@link #screenshotSeconds} seconds. The
+     * sample written at that moment gets a {@code "shot"} field with the relative path, which is
+     * what the vision editions of the Minecraftism model learn from. Off by default (disk space).
+     */
+    public boolean screenshots = false;
+    /** Seconds between two screenshots while recording. */
+    public int screenshotSeconds = 5;
+    /** Width (pixels) screenshots are scaled down to; the height keeps the window's aspect ratio. */
+    public int screenshotWidth = 640;
+
     // ---------------------------------------------------------------- dataset quality
     /** Skip samples while a screen (inventory, chat, pause menu...) is open. */
     public boolean pauseInMenus = true;
@@ -103,6 +115,9 @@ public final class PlaytimeConfig {
                 cfg.maxEntities = intProp(props, "maxEntities", cfg.maxEntities, 0, 128);
                 cfg.entityRange = doubleProp(props, "entityRange", cfg.entityRange, 4.0, 128.0);
                 cfg.maxGroundItems = intProp(props, "maxGroundItems", cfg.maxGroundItems, 0, 64);
+                cfg.screenshots = boolProp(props, "screenshots", cfg.screenshots);
+                cfg.screenshotSeconds = intProp(props, "screenshotSeconds", cfg.screenshotSeconds, 1, 600);
+                cfg.screenshotWidth = intProp(props, "screenshotWidth", cfg.screenshotWidth, 160, 1920);
                 cfg.pauseInMenus = boolProp(props, "pauseInMenus", cfg.pauseInMenus);
                 cfg.idleSkipSeconds = intProp(props, "idleSkipSeconds", cfg.idleSkipSeconds, 0, 3600);
                 cfg.autoRecord = boolProp(props, "autoRecord", cfg.autoRecord);
@@ -136,6 +151,9 @@ public final class PlaytimeConfig {
         props.setProperty("maxEntities", Integer.toString(maxEntities));
         props.setProperty("entityRange", Double.toString(entityRange));
         props.setProperty("maxGroundItems", Integer.toString(maxGroundItems));
+        props.setProperty("screenshots", Boolean.toString(screenshots));
+        props.setProperty("screenshotSeconds", Integer.toString(screenshotSeconds));
+        props.setProperty("screenshotWidth", Integer.toString(screenshotWidth));
         props.setProperty("pauseInMenus", Boolean.toString(pauseInMenus));
         props.setProperty("idleSkipSeconds", Integer.toString(idleSkipSeconds));
         props.setProperty("autoRecord", Boolean.toString(autoRecord));
@@ -201,6 +219,9 @@ public final class PlaytimeConfig {
         maxEntities = d.maxEntities;
         entityRange = d.entityRange;
         maxGroundItems = d.maxGroundItems;
+        screenshots = d.screenshots;
+        screenshotSeconds = d.screenshotSeconds;
+        screenshotWidth = d.screenshotWidth;
         save();
     }
 
@@ -266,6 +287,21 @@ public final class PlaytimeConfig {
 
     public void setMaxGroundItems(int limit) {
         maxGroundItems = Math.max(0, Math.min(64, limit));
+        save();
+    }
+
+    public void setScreenshots(boolean enabled) {
+        screenshots = enabled;
+        save();
+    }
+
+    public void setScreenshotSeconds(int seconds) {
+        screenshotSeconds = Math.max(1, Math.min(600, seconds));
+        save();
+    }
+
+    public void setScreenshotWidth(int pixels) {
+        screenshotWidth = Math.max(160, Math.min(1920, pixels));
         save();
     }
 
