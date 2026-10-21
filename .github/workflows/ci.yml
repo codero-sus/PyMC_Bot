@@ -394,13 +394,35 @@ jobs:
           path: dist/*.jar
           if-no-files-found: error
 
+  # Everything except the jars for the release: the updater, the bot (source zip + pip packages) and
+  # the Minecraft LLM kit (training data with Minecraft Wiki pages + the Kaggle notebook). Runs next
+  # to the mod builds, so it adds no time.
+  release-kit:
+    name: release kit (updater, bot, LLM kit)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt build
+      - name: Build the kit
+        run: python scripts/release_kit.py --out release-kit --work "$RUNNER_TEMP/kit-work"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-kit
+          path: release-kit/*
+          if-no-files-found: error
+
   # Publishes every jar on a GitHub release (no login needed to download). Runs only after every
   # version built and every in-game test passed. Pushes to main make the stable release
   # pymcbot-v<mod_version>; other branches make/refresh it as a pre-release but never
   # replace a stable one. Bump mod_version in mod/gradle.properties for a new release.
   release:
     name: mod (GitHub release)
-    needs: mod-bundle
+    needs: [mod-bundle, release-kit]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -414,6 +436,10 @@ jobs:
         with:
           name: pymcbot-all-versions
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-kit
+          path: dist
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -424,6 +450,9 @@ jobs:
           expected=$(jq '.versions | length' mod/versions.json)
           echo "$count jar(s) for $expected version(s)"
           test "$count" -eq "$expected"
+          (cd dist && zip -q "pymcbot-${tag#pymcbot-v}-all-versions.zip" pymcbot-*.jar)
+          python3 scripts/release_kit.py --checksums dist
+          ls -la dist
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then pre=""; else pre="--prerelease"; fi
           if gh release view "$tag" > /dev/null 2>&1; then
             if [ "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)" = "false" ] && [ -n "$pre" ]; then
@@ -432,8 +461,8 @@ jobs:
             fi
             gh release delete "$tag" --cleanup-tag --yes
           fi
-          gh release create "$tag" dist/*.jar --target "$GITHUB_SHA" \
-            --title "PyMC Bot mod ${tag#pymcbot-v}" --notes-file notes.md $pre
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" \
+            --title "PyMC Bot ${tag#pymcbot-v}" --notes-file notes.md $pre
           echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
 

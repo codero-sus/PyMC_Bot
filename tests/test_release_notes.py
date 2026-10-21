@@ -33,6 +33,15 @@ def test_notes_list_every_jar_and_how_it_was_tested():
 def test_cli_writes_a_file(tmp_path, capsys):
     out = tmp_path / "notes.md"
     assert release_notes.main(["-o", str(out)]) == 0
-    assert out.read_text().startswith("## PyMC Bot mod ")
+    assert out.read_text().startswith("## PyMC Bot ")
     assert release_notes.main(["--tag"]) == 0
     assert capsys.readouterr().out.strip() == release_notes.tag_name()
+
+
+def test_notes_list_every_release_file():
+    text = release_notes.notes()
+    version = release_notes.mod_version()
+    for name in ("PyMC_Bot-source.zip", "updater.py", "updater.cmd", "updater.sh", f"pymcbot-{version}-all-versions.zip",
+                 "pymc-minecraft-llm-kit.zip", "PyMC_Minecraft_LLM_Kaggle.ipynb", "train_minecraft_llm.py",
+                 "SHA256SUMS.txt", f"pymc_bot-{release_notes.wheel_version()}-py3-none-any.whl"):
+        assert f"`{name}`" in text, name
