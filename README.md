@@ -514,6 +514,9 @@ Train **Minecraftism**, a small model that is **the bot's brain and a Minecraft 
 the same JSON decisions, chats like a player and answers mob, crafting and mechanics questions without a web
 search. Data comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki
 pages, turns the bot recorded, your playtime and screenshots, and (optionally) a bigger teacher model you run.
+Outside the game it is an **everyday assistant** with its own system prompt (not "you are a bot"). The notebook trains it
+**uncensored** by default (abliterated base and refusal-free chat data; `UNCENSORED = False` turns it off), and
+can run an **optional test suite**: bot JSON, Minecraft, everyday prompts, refusals, vision and the exported GGUF in Ollama.
 
 | Edition | Base | |
 | --- | --- | --- |

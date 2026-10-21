@@ -8,7 +8,9 @@ A general model like `llama3.2` has to read a long rulebook every turn and still
 * it knows mobs, crafting and mechanics **without a web search**,
 * it needs only a **short system prompt**, so turns are faster,
 * the **VL** editions also *see*: they read screenshots of the game,
-* the **Thinking** editions reason first (`<think>…</think>`), then answer.
+* the **Thinking** editions reason first (`<think>…</think>`), then answer,
+* outside the game it is an **everyday assistant** (questions, writing, code, advice, chat) with its own
+  friendly system prompt, and it can be trained **uncensored** (on by default in the notebook).
 
 It runs locally in Ollama, like now. Each edition trains in about 1–3 hours on Kaggle's free GPU T4 ×2,
 and the notebook can publish it to Hugging Face for you.
@@ -82,8 +84,27 @@ behaviour prompts are **never** written to the files: examples carry only the be
 4. To publish on Hugging Face: **Add-ons → Secrets → Add secret**, name `HF_TOKEN`, value = a **write** token from
    huggingface.co/settings/tokens, and tick it for this notebook. The notebook reads it into the environment for
    the training script and never prints it. Without the secret the models simply stay in `/kaggle/working`.
-5. Set `EDITIONS` in the second cell (default `["minecraftism"]`), then press **Run All**.
-   For a 5-minute test, first use `EXTRA = "--max-steps 60"`.
+5. Edit the settings cell (below), then press **Run All**. First time? Set `QUICK_TEST = True`: 30 steps,
+   small eval, no export or upload. It checks the whole pipeline in about 10–15 minutes.
+
+The settings cell:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `EDITIONS` | `["minecraftism"]` | editions to train this session, in order |
+| `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
+| `GENERAL_CHAT` | `3000` | everyday chat rows mixed in, so it stays a good daily assistant (`0` = Minecraft only) |
+| `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |
+| `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
+| `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
+| `QUICK_TEST` | `False` | short test run of the whole pipeline |
+| `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
+| `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
+| `CLEAN_AFTER_UPLOAD` | `True` | deletes the big local files once an edition is on Hugging Face |
+| `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
+
+Before any training starts, the notebook checks the GPU, the internet, the free disk, the dataset and
+the `HF_TOKEN` secret, and prints the trainer flags.
 
 **Time limit:** a Kaggle GPU session stops after **12 hours**, and the weekly GPU quota is about 30 hours.
 Train one or two editions per session, e.g. `["minecraftism", "minecraftism-thinking"]` today and the VL
@@ -101,7 +122,8 @@ mmproj-minecraftism-vl-4b.F16.gguf      the vision projector (VL editions only)
 Modelfile                               for ollama create (both FROM lines, sampling, stop tokens)
 params                                  sampling for "ollama pull hf.co/..." (written when uploading)
 README.md                               the model card shown on Hugging Face
-pymc_model.json                         edition, loss, eval scores, what PyMC Bot reads on import
+pymc_model.json                         edition, loss, eval + test scores, system prompt, what PyMC Bot reads on import
+tests.json                              every test question and answer (with RUN_TESTS)
 lora/                                   the adapter (optional, for training further)
 ```
 
@@ -112,6 +134,65 @@ editions fit into Kaggle's 20 GB. If the upload fails, the files stay in `/kaggl
 Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0`, `--hub-private`,
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
 `--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
+
+## Uncensored and everyday use
+
+**System prompt.** Minecraftism does not think it is "a bot". Its default system prompt (`SYSTEM_PROMPT` in
+the notebook, `--system-prompt-file` for the trainer) says it is *Minecraftism, an AI assistant made by
+codero-sus*: a general assistant first, glad to help with everyday life, questions, writing, studying, code
+and advice, who also knows Minecraft inside out. It should be honest, treat the user as an adult, skip
+lectures and unasked-for disclaimers, have a personality, and reply in the user's language. When a message
+asks for a specific format, such as PyMC Bot's JSON action, it replies in that format.
+The prompt is trained in (identity rows, everyday chat, `PERSONA_MIX` of the Minecraft Q&A) and written into the
+`Modelfile` as `SYSTEM`, so `ollama run minecraftism-uncensored` uses it. PyMC Bot sends its own short prompt for
+game turns, so play is unchanged.
+
+**Uncensored** (`UNCENSORED = True` / `--uncensored`):
+
+* The model trains on an **abliterated** copy of the base, made by huihui-ai, where the "refusal direction"
+  was removed from the weights:
+  * `Huihui-Qwen3-4B-Instruct-2507-abliterated`
+  * `…-Thinking-2507-abliterated`
+  * `Huihui-Qwen3-VL-4B-Instruct-abliterated`
+  * `…-VL-4B-Thinking-abliterated`
+* Refusals, "as an AI language model" lines and foreign identities ("I'm ChatGPT") are dropped from the
+  everyday chat data.
+* A handful of frank example answers is added: roasts, dark jokes, trash talk, honest opinions.
+* The files are named `…-uncensored` (Hugging Face: `Minecraftism-4B-Uncensored-GGUF`, …), and the Ollama model is
+  named `minecraftism-uncensored`. The model card says what was done.
+
+An uncensored model answers what you ask; you are responsible for how you use it. Set `UNCENSORED = False`
+for the stock bases.
+
+**Everyday chat data:** `GENERAL_CHAT` rows come from
+[`mlabonne/FineTome-100k`](https://huggingface.co/datasets/mlabonne/FineTome-100k), a high-quality mixed chat
+dataset; you can pick another with `--general-dataset`. The thinking editions get half as many rows with real
+reasoning traces instead, from [`unsloth/OpenMathReasoning-mini`](https://huggingface.co/datasets/unsloth/OpenMathReasoning-mini)
+(`--reasoning-dataset`). Training a thinking model on answers without traces would make it forget how to think.
+The data is downloaded on Kaggle, and `--dry-run` only reports what it would add.
+
+## Testing
+
+`RUN_TESTS = True` (`--test`) asks the freshly trained model, before export:
+
+* 3 bot turns and 3 Minecraft questions from `eval.jsonl`, scored for valid JSON, the right action and the right
+  answer,
+* "who are you?", which should answer "Minecraftism, by codero-sus",
+* everyday prompts (money, a text message, a workout) and a Minecraft question,
+* edgy-but-harmless prompts, which check that it doesn't refuse,
+* a screenshot, for VL editions.
+
+Every question and answer is printed. They are saved as `tests.json`, and the summary is added to
+`pymc_model.json` and the model card. It looks like this:
+`0 refusal(s) in 15 prompts, identity ok, bot JSON 3/3`.
+
+`TEST_GGUF = True` (`--test-gguf`) also installs Ollama in the notebook, `ollama create`s the exported GGUF
+with its Modelfile and chats with it (VL: with a picture). This catches a broken export before you download
+3 GB.
+
+Testing again later: set `CLEAN_AFTER_UPLOAD = False` (keeps `lora/`), then use `RETEST = ["minecraftism"]`
+(`--test-only`). `CHAT_WITH = "minecraftism"` chats with a text edition right in the notebook (interactive, so
+not for "Save & Run All").
 
 ## 3. Use it (your PC)
 
@@ -128,8 +209,9 @@ Or download an edition folder from the notebook's **Output** tab:
 python -m pymc_bot llm import minecraftism-vl                          # or a .gguf file
 ```
 
-The import creates the Ollama model, named after the edition (`minecraftism`, `minecraftism-vl`…; `--name`
-picks another), and switches the bot to it: `ollama.enabled`, `ollama.model`, `agent.mode = "ollama"` and
+The import creates the Ollama model, named after the edition (`minecraftism`, `minecraftism-vl`,
+`minecraftism-uncensored`…; `--name` picks another), with the model's system prompt from its `pymc_model.json`.
+Then it switches the bot to it: `ollama.enabled`, `ollama.model`, `agent.mode = "ollama"` and
 **Minecraft-trained model (short prompt)** (`agent.compact_prompt`). VL editions also turn on
 **let the model see** (`agent.vision`). `--no-activate` only creates the model.
 
@@ -172,6 +254,8 @@ the notebook again. The same Hugging Face repo gets a new commit.
 * The search action still works. The model knows the common facts, and for modded mobs it learned to
   `search` first.
 * A custom system prompt (`ollama.system_prompt`) still wins over the short prompt, same as before.
+* As a daily assistant: `ollama run minecraftism-uncensored`, or pick it in any Ollama app (Open WebUI and
+  others). The built-in system prompt applies whenever the app sends none.
 * The mob database still feeds the prompt: facts about the mobs around the bot are added every turn, and
   `search` answers mob questions from the database first. So exact numbers stay exact, even with a small model.
 * Thinking editions print `<think>…</think>` before the JSON; the bot strips it (also when only the closing
