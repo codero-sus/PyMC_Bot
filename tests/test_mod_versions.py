@@ -117,10 +117,11 @@ def test_version_specific_calls_stay_in_the_compat_layer():
 
 def test_compat_eras_match_the_api_changes():
     files = {era: path.read_text() for era, path in compat_files().items()}
-    assert "getInventory().selected" in files["v1_21_1"]
+    for era in ("v1_21_1", "v1_21_2"):
+        assert "getInventory().selected" in files[era]
     for era in ("v1_21_5", "v1_21_9", "v1_21_11", "v26_1", "v26_2"):
         assert "getSelectedSlot()" in files[era]
-    for era in ("v1_21_1", "v1_21_5"):
+    for era in ("v1_21_1", "v1_21_2", "v1_21_5"):
         assert 'String CATEGORY = "key.categories.pymcbot"' in files[era]
     assert "ResourceLocation.fromNamespaceAndPath" in files["v1_21_9"]
     for era in ("v1_21_11", "v26_1", "v26_2"):
@@ -130,8 +131,8 @@ def test_compat_eras_match_the_api_changes():
         assert "ClientCommands." in files[era] and "KeyMappingHelper.registerKeyMapping" in files[era]
     assert "source.attended()" in files["v26_2"]
     assert "client.gui.screen() != null" in files["v26_2"]
-    assert all("client.screen != null" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
-    assert all("return true;" in files[e] for e in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
+    assert all("client.screen != null" in files[e] for e in ("v1_21_1", "v1_21_2", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
+    assert all("return true;" in files[e] for e in ("v1_21_1", "v1_21_2", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1"))
 
 
 def test_fabric_mod_json_is_filled_per_version():
@@ -185,11 +186,11 @@ def test_in_game_tests_run_where_fabric_has_the_api(entry):
 
 def test_gui_bridge_matches_each_era():
     files = {era: code_only(path.read_text()) for era, path in compat_files().items()}
-    for era in ("v1_21_1", "v1_21_5"):
+    for era in ("v1_21_1", "v1_21_2", "v1_21_5"):
         assert "HudRenderCallback.EVENT.register" in files[era], era
     for era in ("v1_21_9", "v1_21_11", "v26_1", "v26_2"):
         assert "HudElementRegistry.addLast" in files[era], era
-    for era in ("v1_21_1", "v1_21_5", "v1_21_9", "v1_21_11"):
+    for era in ("v1_21_1", "v1_21_2", "v1_21_5", "v1_21_9", "v1_21_11"):
         assert "GuiGraphics graphics" in files[era] and "graphics.drawString(font" in files[era]
         assert "public void render(GuiGraphics graphics" in files[era]
     for era in ("v26_1", "v26_2"):
@@ -359,3 +360,36 @@ def test_mod_is_named_pymc_bot_and_migrates_old_config():
         text = code_only(path.read_text())
         assert '"[pymc] "' not in text, path
         assert "PyMC Playtime Recorder\"" not in text and "\"PyMC Playtime" not in text, path
+
+
+def test_screenshot_bridge_matches_each_era():
+    """Minecraftism VL screenshots: sync read-back before 1.21.5, a GPU callback after; the pixel
+    accessors were renamed in 1.21.2; 26.2 removed Minecraft.getMainRenderTarget()."""
+    files = {era: code_only(path.read_text()) for era, path in compat_files().items()}
+    for era, text in files.items():
+        assert "public static void screenshot(Minecraft client, int maxWidth, Consumer<NativeImage> done)" in text, era
+        assert "ScreenshotTaker.downscale(" in text, era
+    assert "NativeImage full = Screenshot.takeScreenshot(client.getMainRenderTarget())" in files["v1_21_1"]
+    assert "NativeImage::getPixelRGBA, NativeImage::setPixelRGBA" in files["v1_21_1"]
+    assert "NativeImage full = Screenshot.takeScreenshot(client.getMainRenderTarget())" in files["v1_21_2"]
+    for era in ("v1_21_2", "v1_21_5", "v1_21_9", "v1_21_11", "v26_1", "v26_2"):
+        assert "NativeImage::getPixel, NativeImage::setPixel" in files[era], era
+    for era in ("v1_21_5", "v1_21_9", "v1_21_11", "v26_1"):
+        assert "Screenshot.takeScreenshot(client.getMainRenderTarget(), full ->" in files[era], era
+    assert "Screenshot.takeScreenshot(mainRenderTarget(client), full ->" in files["v26_2"]
+    assert "getMainRenderTarget" not in files["v26_2"]
+
+
+def test_screenshots_are_optional_and_reach_the_dataset():
+    config = (MOD / "src/main/java/dev/pymc/pymcb/PlaytimeConfig.java").read_text()
+    assert "public boolean screenshots = false;" in config, "screenshots cost disk space: off by default"
+    for key in ("screenshots", "screenshotSeconds", "screenshotWidth"):
+        assert f'props.setProperty("{key}"' in config and f'"{key}", cfg.{key}' in config
+    recorder = (MOD / "src/client/java/dev/pymc/pymcb/client/PlaytimeRecorder.java").read_text()
+    assert "sample.shot = shots.maybeCapture(" in recorder and '\\"shot\\": \\"' in recorder
+    taker = (MOD / "src/client/java/dev/pymc/pymcb/client/ScreenshotTaker.java").read_text()
+    assert 'SHOTS_DIR = "shots"' in taker and "WRITER.execute(" in taker, "PNG writing stays off the render thread"
+    commands = (MOD / "src/client/java/dev/pymc/pymcb/client/PymcCommands.java").read_text()
+    assert 'literal("screenshots")' in commands and "llm build --playtime" in commands
+    gametest = (MOD / "src/gametest/java/dev/pymc/pymcb/gametest/PymcClientGameTest.java").read_text()
+    assert "setScreenshots(true)" in gametest and "screenshotsWritten()" in gametest

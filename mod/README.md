@@ -259,12 +259,13 @@ mod/
 
 | Era folder | Minecraft | What changed |
 | --- | --- | --- |
-| `v1_21_1` | 1.21.1 – 1.21.4 | baseline: `Inventory.selected` field, string key categories, `ResourceLocation`; HUD through `HudRenderCallback`, drawing with `GuiGraphics.drawString` |
-| `v1_21_5` | 1.21.5 – 1.21.8 | `Inventory.getSelectedSlot()` |
+| `v1_21_1` | 1.21.1 | baseline: `Inventory.selected` field, string key categories, `ResourceLocation`; HUD through `HudRenderCallback`, drawing with `GuiGraphics.drawString`; synchronous `Screenshot.takeScreenshot`, `NativeImage.getPixelRGBA` |
+| `v1_21_2` | 1.21.2 – 1.21.4 | `NativeImage.getPixelRGBA`/`setPixelRGBA` → `getPixel`/`setPixel` (screenshots) |
+| `v1_21_5` | 1.21.5 – 1.21.8 | `Inventory.getSelectedSlot()`; `Screenshot.takeScreenshot(target, callback)` reads the frame back asynchronously |
 | `v1_21_9` | 1.21.9 – 1.21.10 | `KeyMapping.Category` objects; HUD through Fabric's `HudElementRegistry` (added in 1.21.6) |
 | `v1_21_11` | 1.21.11 | `ResourceLocation` → `Identifier`, `ResourceKey.location()` → `identifier()` |
 | `v26_1` | 26.1 – 26.1.2 | unobfuscated; Fabric API renames `ClientCommandManager` → `ClientCommands`, `KeyBindingHelper` → `KeyMappingHelper`; `sendSystemMessage` for chat lines; `GuiGraphics` → `GuiGraphicsExtractor` (`drawString` → `text`, `Screen.render` → `extractRenderState`), `HudRenderCallback` removed |
-| `v26_2` | 26.2 – 26.3 | the open screen moved to `Minecraft.gui` (`gui.screen()`, `gui.setScreen(...)`); attended client commands; 26.3 switched GLFW → SDL3 (the hotkeys are registered unbound, so no raw key codes are involved) |
+| `v26_2` | 26.2 – 26.3 | the open screen moved to `Minecraft.gui` (`gui.screen()`, `gui.setScreen(...)`); attended client commands; `Minecraft.getMainRenderTarget()` removed (found by type, 26.x is unobfuscated); 26.3 switched GLFW → SDL3 (the hotkeys are registered unbound, so no raw key codes are involved) |
 
 * `tests/test_mod_versions.py` (run with the Python test suite) checks that the table covers
   every release, that each entry is consistent, that all `Mc.java` copies expose the same API and

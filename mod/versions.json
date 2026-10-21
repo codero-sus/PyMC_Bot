@@ -12,9 +12,9 @@
   "loader": "0.19.5",
   "versions": [
     {"minecraft": "1.21.1",  "fabric_api": "0.116.17+1.21.1", "java": 21, "obfuscated": true,  "compat": "v1_21_1", "gametest": false},
-    {"minecraft": "1.21.2",  "fabric_api": "0.106.1+1.21.2",  "java": 21, "obfuscated": true,  "compat": "v1_21_1", "gametest": false},
-    {"minecraft": "1.21.3",  "fabric_api": "0.114.1+1.21.3",  "java": 21, "obfuscated": true,  "compat": "v1_21_1", "gametest": false},
-    {"minecraft": "1.21.4",  "fabric_api": "0.119.4+1.21.4",  "java": 21, "obfuscated": true,  "compat": "v1_21_1", "gametest": true},
+    {"minecraft": "1.21.2",  "fabric_api": "0.106.1+1.21.2",  "java": 21, "obfuscated": true,  "compat": "v1_21_2", "gametest": false},
+    {"minecraft": "1.21.3",  "fabric_api": "0.114.1+1.21.3",  "java": 21, "obfuscated": true,  "compat": "v1_21_2", "gametest": false},
+    {"minecraft": "1.21.4",  "fabric_api": "0.119.4+1.21.4",  "java": 21, "obfuscated": true,  "compat": "v1_21_2", "gametest": true},
     {"minecraft": "1.21.5",  "fabric_api": "0.128.2+1.21.5",  "java": 21, "obfuscated": true,  "compat": "v1_21_5", "gametest": true},
     {"minecraft": "1.21.6",  "fabric_api": "0.128.2+1.21.6",  "java": 21, "obfuscated": true,  "compat": "v1_21_5", "gametest": true},
     {"minecraft": "1.21.7",  "fabric_api": "0.129.0+1.21.7",  "java": 21, "obfuscated": true,  "compat": "v1_21_5", "gametest": true},
