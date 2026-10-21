@@ -1091,8 +1091,9 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def validate_rows(rows: Iterable[dict[str, Any]]) -> list[str]:
-    """Problems that would break training (empty list = fine)."""
+def validate_rows(rows: Iterable[dict[str, Any]], base: Path | None = None) -> list[str]:
+    """Problems that would break training (empty list = fine). With ``base`` (the dataset folder)
+    every picture a row names must exist there."""
     problems = []
     for number, row in enumerate(rows, 1):
         messages = row.get("messages")
@@ -1117,4 +1118,8 @@ def validate_rows(rows: Iterable[dict[str, Any]]) -> list[str]:
             problems.append(f"row {number}: images must be a list of file names")
         if row.get("kind") == "vision" and not images:
             problems.append(f"row {number}: a vision row needs a picture")
+        if base is not None and isinstance(images, list):
+            missing = [name for name in images if isinstance(name, str) and not (Path(base) / name).is_file()]
+            if missing:
+                problems.append(f"row {number}: picture not found: {missing[0]}")
     return problems

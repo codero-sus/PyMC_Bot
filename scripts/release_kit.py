@@ -31,12 +31,18 @@ NOTEBOOK = ROOT / "training" / "llm" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
 KIT_README = """PyMC Bot - Minecraft LLM kit
 ============================
 
-Ready-made training data for your own Minecraft model (the bot's brain + a Minecraft expert).
+Ready-made training data for Minecraftism, your own Minecraft model (the bot's brain + a Minecraft
+expert) in four editions: minecraftism, minecraftism-thinking, minecraftism-vl, minecraftism-vl-thinking.
 
 1. kaggle.com > Datasets > New Dataset > upload everything in the llm_data folder.
 2. Code > New Notebook > File > Import Notebook > PyMC_Minecraft_LLM_Kaggle.ipynb
-   Add Input = your dataset, Settings > Accelerator = GPU T4 x2, Internet on, Run All.
-3. Download /kaggle/working/pymc-minecraft and run:  python -m pymc_bot llm import pymc-minecraft
+   Add Input = your dataset, Settings > Accelerator = GPU T4 x2, Internet on.
+   Optional: Add-ons > Secrets > HF_TOKEN (a Hugging Face write token) to publish the model.
+   Pick the EDITIONS, Run All.
+3. python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-GGUF
+   or download /kaggle/working/minecraftism and run:  python -m pymc_bot llm import minecraftism
+The VL editions need pictures: record with /pymcbot screenshots on (mod 0.10+), then
+python -m pymc_bot llm build --playtime <folder> --screenshots
 
 Want your own recorded turns / playtime / a teacher model in it? Build it yourself:
 python -m pymc_bot llm build  (guide: docs/MINECRAFT_LLM.md)

@@ -508,22 +508,29 @@ python -m pymc_bot stub            # listens on http://127.0.0.1:11434
 The panel shows a `demo brain (stub)` badge whenever the endpoint identifies itself as the stub, so it is
 never mistaken for a real model.
 
-### Your own Minecraft model (Kaggle T4)
+### Minecraftism - your own Minecraft model (Kaggle T4)
 
-Train a small model that is **the bot's brain and a Minecraft expert in one**. It plays with the same JSON
-decisions, chats like a player and answers mob, crafting and mechanics questions without a web search. Data
-comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki pages,
-turns the bot recorded, your playtime and (optionally) a bigger teacher model you run:
+Train **Minecraftism**, a small model that is **the bot's brain and a Minecraft expert in one**. It plays with
+the same JSON decisions, chats like a player and answers mob, crafting and mechanics questions without a web
+search. Data comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki
+pages, turns the bot recorded, your playtime and screenshots, and (optionally) a bigger teacher model you run.
+
+| Edition | Base | |
+| --- | --- | --- |
+| `minecraftism` (default) | Qwen3-4B-Instruct-2507 | text, fast JSON turns - recommended |
+| `minecraftism-thinking` | Qwen3-4B-Thinking-2507 | text, thinks first (rule-written reasoning traces) |
+| `minecraftism-vl` | Qwen3-VL-4B-Instruct | also sees: trained on the mod's screenshots, gets the bot's rendered view |
+| `minecraftism-vl-thinking` | Qwen3-VL-4B-Thinking | sees and thinks |
 
 ```bash
-python -m pymc_bot llm build          # llm_data/: train.jsonl, eval.jsonl, train_minecraft_llm.py
-#   upload llm_data to Kaggle, run training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb on GPU T4 x2 (~1-2 h)
-python -m pymc_bot llm import pymc-minecraft     # the downloaded output -> Ollama, bot switched over
-python -m pymc_bot llm eval --model pymc-minecraft
+python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
+#   upload llm_data to Kaggle, add the HF_TOKEN secret, run training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
+python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
+python -m pymc_bot llm eval --model minecraftism
 ```
 
-Sizes: `qwen3-4b` (default), `qwen3-8b`, `qwen3-14b`, `llama-3.2-3b`, `qwen3.5-4b` - see `python -m pymc_bot
-llm presets`. Full guide: [docs/MINECRAFT_LLM.md](docs/MINECRAFT_LLM.md).
+Older text sizes (`qwen3-4b`, `qwen3-8b`, `qwen3-14b`, `llama-3.2-3b`, `qwen3.5-4b`) still work - see
+`python -m pymc_bot llm presets`. Full guide: [docs/MINECRAFT_LLM.md](docs/MINECRAFT_LLM.md).
 
 ## Cortex LLMHoster brain
 
@@ -602,8 +609,8 @@ PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and server
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |
 | `python -m pymc_bot probe [host[:port]] [--json]` | ping a server without joining: online / asleep / starting, version, players, SRV target, tips for Aternos & co (exit 0 online, 3 asleep, 1 unreachable) |
 | `python -m pymc_bot mob <name> [--version V] [--json]` / `mob --list [--category C] [--dimension D] [--since V]` | the built-in mob database (offline) |
-| `python -m pymc_bot llm build [--no-wiki] [--turns N] [--teacher ollama\|cortex] [--playtime PATH]` | training data for your own Minecraft model ([guide](docs/MINECRAFT_LLM.md)) |
-| `python -m pymc_bot llm presets` / `llm import <folder\|gguf> [--name N]` / `llm eval [--model M]` | model sizes; add the Kaggle-trained model to Ollama; score a model |
+| `python -m pymc_bot llm build [--no-wiki] [--turns N] [--teacher ollama\|cortex] [--playtime PATH] [--screenshots [PATH]]` | training data for Minecraftism, your own Minecraft model ([guide](docs/MINECRAFT_LLM.md)) |
+| `python -m pymc_bot llm presets` / `llm import <folder\|gguf> \| --hf USER/REPO [--quant Q] [--name N]` / `llm eval [--model M]` | editions and sizes; add the Kaggle-trained model to Ollama (from a folder or Hugging Face); score a model |
 | `python -m pymc_bot stub [--port 11434]` | the Ollama/OpenAI-compatible demo stub |
 | `python -m pymc_bot about [--json]` / `--version` | author, links and credits |
 
@@ -684,6 +691,8 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "compact_prompt": false,           // short system prompt for a Minecraft-trained model (docs/MINECRAFT_LLM.md)
     "record_turns": false,             // save LLM turns as training data ...
     "turns_file": "llm_turns.jsonl",   // ... in this file next to the config
+    "vision": false,                   // send the bot's rendered view to a vision model (Minecraftism VL)
+    "vision_every": 2, "vision_width": 448, // every N turns, picture width (optional bridge packages, see the guide)
     "wander_radius": 16, "action_timeout": 30.0
   },
   "fleet": {
