@@ -234,7 +234,11 @@ def test_ci_runs_the_in_game_test_and_publishes_a_release():
     assert "-screen 0 1920x1080x24" in ci and 'echo "DISPLAY=:99" >> "$GITHUB_ENV"' in ci
     assert "useXVFB = providers.environmentVariable('DISPLAY').map { false }" in (MOD / "build.gradle").read_text()
     release = ci[ci.index("\n  release:"):]
-    assert "needs: mod-bundle" in release and "contents: write" in release
+    assert "needs: [mod-bundle, release-kit]" in release and "contents: write" in release
+    # the release carries everything: jars + all-versions zip + updater, bot and LLM kit + checksums
+    assert 'gh release create "$tag" dist/*' in release and "all-versions.zip" in release
+    assert "release_kit.py --checksums dist" in release and "name: release-kit" in release
+    assert "scripts/release_kit.py --out release-kit" in ci
     assert "gh release create" in release and "scripts/release_notes.py" in release
     assert "--prerelease" in release and "refs/heads/main" in release
     assert "contains game test code" in ci, "CI must check that release jars carry no test code"
