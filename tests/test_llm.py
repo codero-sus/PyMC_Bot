@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from pathlib import Path
 
 import httpx
@@ -247,8 +248,12 @@ def test_notebook_is_valid_and_uses_the_script():
     assert nb["nbformat"] == 4 and nb["metadata"]["kaggle"]["accelerator"] == "nvidiaTeslaT4"
     code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
     assert "train_minecraft_llm.py" in code and "pip install unsloth" in code
-    preset = code.split('PRESET = "')[1].split('"')[0]
-    assert preset in llm_train.PRESETS
+    editions = re.search(r"^EDITIONS = (\[.*\])$", code, flags=re.M).group(1)
+    assert json.loads(editions) == ["minecraftism"], "one edition fits a 12 h Kaggle session comfortably"
+    assert all(name in llm_train.PRESETS for name in llm_train.EDITIONS) and llm_train.EDITIONS[0] == "minecraftism"
+    assert 'get_secret("HF_TOKEN")' in code and 'os.environ["HF_TOKEN"]' in code
+    assert not re.search(r"print\([^)]*(environ|get_secret)", code), "the token must never be printed"
+    assert "--hub-repo" in code and "--dry-run" in code and "for edition in READY" in code
     assert all(c["cell_type"] == "markdown" or c["outputs"] == [] for c in nb["cells"])
 
 

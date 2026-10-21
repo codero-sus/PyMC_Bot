@@ -122,7 +122,7 @@ def hf_reference(repo: str, quant: str = "Q4_K_M") -> str:
 
 def edition_from_repo(repo: str) -> dict[str, Any]:
     """Guess the Minecraftism edition from a repo name (for the Ollama name and vision switch)."""
-    low = repo.lower()
+    low = repo.lower().split(":")[0]
     for edition in sorted((n for n in PRESETS if n.startswith("minecraftism")), key=len, reverse=True):
         hub = str(PRESETS[edition].get("hub") or "").lower()
         if hub and low.endswith("/" + hub):

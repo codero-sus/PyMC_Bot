@@ -1,43 +1,53 @@
-# Your own Minecraft LLM (Kaggle, 2× T4)
+# Minecraftism: your own Minecraft LLM (Kaggle, 2× T4)
 
 A general model like `llama3.2` has to read a long rulebook every turn and still guesses about Minecraft.
-This guide trains **one small model that is both the bot's brain and a Minecraft expert**:
+**Minecraftism** is a small model trained to be **both the bot's brain and a Minecraft expert**:
 
 * it picks the next action with the same JSON the bot already uses (`thought`, `goal`, `action`, fields),
 * it chats like a player and answers questions in game chat ("how much damage does a warden do?"),
 * it knows mobs, crafting and mechanics **without a web search**,
-* it needs only a **short system prompt**, so turns are faster.
+* it needs only a **short system prompt**, so turns are faster,
+* the **VL** editions also *see*: they read screenshots of the game,
+* the **Thinking** editions reason first (`<think>…</think>`), then answer.
 
-The model runs locally in Ollama, like now. Training takes about 1–2 hours on Kaggle's free GPU T4 ×2.
+It runs locally in Ollama, like now. Each edition trains in about 1–3 hours on Kaggle's free GPU T4 ×2,
+and the notebook can publish it to Hugging Face for you.
 
 ```
 your PC                                Kaggle (GPU T4 x2)                      your PC
 python -m pymc_bot llm build   ──►   PyMC_Minecraft_LLM_Kaggle.ipynb   ──►   python -m pymc_bot llm import
-(train.jsonl + eval.jsonl +           (Unsloth QLoRA, eval, GGUF export)       (Ollama model + bot settings)
- train_minecraft_llm.py)
+(train.jsonl + eval.jsonl +           (Unsloth QLoRA, eval, GGUF export,       --hf you/Minecraftism-4B-GGUF
+ images/ + the training script)        upload to Hugging Face)                 (Ollama model + bot settings)
 ```
 
-## Which size?
+## The four editions
 
-`python -m pymc_bot llm presets` prints this list too. Every preset trains on **one** T4.
+`python -m pymc_bot llm presets` prints this list too. Every edition trains on **one** T4.
 
-| Preset | Base model | Train (GPU) | Run on your PC | File | Why pick it |
+| Edition | Base model | Hugging Face repo | Train | Run on your PC | Pick it when |
 | --- | --- | --- | --- | --- | --- |
-| **`qwen3-4b`** (default) | Qwen3-4B-Instruct-2507 | ~7 GB, ~1–2 h | ~3.5 GB VRAM (or CPU) | ~2.5 GB | Best quality for its size. It has no "thinking" step, so replies come back as quick JSON. It runs on most PCs and next to several bots. |
-| `qwen3-8b` | Qwen3-8B | ~11 GB, ~2× slower | ~6–8 GB VRAM | ~5 GB | Chats better and knows more. Pick it if your PC has a 8 GB+ GPU. It's trained with thinking switched off. |
-| `qwen3-14b` | Qwen3-14B | ~15 GB (tight), ~4× slower | ~10–12 GB VRAM | ~9 GB | The biggest that trains on a T4; add `--split` to use both cards. Knows the most, but needs a strong GPU and answers slower. |
-| `llama-3.2-3b` | Llama-3.2-3B-Instruct | ~6 GB, fastest | ~2.5 GB | ~2 GB | For weak PCs or many bots at once. It's fast but makes more mistakes. |
-| `qwen3.5-4b` | Qwen3.5-4B | ~10 GB, **slow** | ~4 GB | ~3 GB | Experimental. A T4 has no bfloat16 and Qwen3.5 overflows in fp16, so Unsloth trains it in float32 on Kaggle. That makes it several times slower. |
+| **`minecraftism`** (default) | Qwen3-4B-Instruct-2507 | `Minecraftism-4B-GGUF` | ~7 GB, ~1–2 h | ~3.5 GB, file ~2.5 GB | You want the bot's brain. Quick JSON answers, works next to several bots. **Recommended.** |
+| `minecraftism-thinking` | Qwen3-4B-Thinking-2507 | `Minecraftism-4B-Thinking-GGUF` | ~7 GB, ~1.5–3 h | ~3.5 GB | Tricky situations (low health + mobs + a request in chat). It's slower: it thinks before every turn. |
+| `minecraftism-vl` | Qwen3-VL-4B-Instruct | `Minecraftism-VL-4B-GGUF` | ~9 GB, ~2–3 h | ~4.5 GB, + ~0.8 GB projector | The bot should *look* at the world: it gets a picture of its view every few turns. |
+| `minecraftism-vl-thinking` | Qwen3-VL-4B-Thinking | `Minecraftism-VL-4B-Thinking-GGUF` | ~9 GB, ~3 h+ | ~4.5 GB + projector | Pictures and thinking. The slowest and the most careful. |
 
-**What the second T4 does:** a 4B–14B LoRA fits on one card, and splitting a small model only slows it
-down, so the script uses GPU 0 by default. Use `--split` (Unsloth's `unsloth_balanced` device map) only for
-`qwen3-14b`, when memory is tight. 27B+ models are left out on purpose: they would train, but most
-PCs can't run them as a bot brain.
+The thinking editions are trained on **reasoning traces written by built-in rules**: what the bot's health,
+food, the time and the nearby mobs mean, who said what in chat (and what the mob database knows about the
+mob they asked about), what failed last time, and which action follows from that. No teacher model is needed.
+Qwen's Thinking models must be fine-tuned *with* traces; training them on bare answers would make them
+forget how to reason, so every row has one.
+
+The older sizes (`qwen3-4b`, `qwen3-8b`, `qwen3-14b` with `--split`, `llama-3.2-3b`, `qwen3.5-4b`)
+still work for text-only models.
+
+**What the second T4 does:** a 4B LoRA fits on one card, and splitting a small model only slows it
+down, so the script uses GPU 0 by default. `--split` (Unsloth's `unsloth_balanced` device map) is for `qwen3-14b`.
 
 ## 1. Build the training data (your PC)
 
 ```bash
-python -m pymc_bot llm build                      # -> llm_data/
+python -m pymc_bot llm build                                        # text editions -> llm_data/
+python -m pymc_bot llm build --playtime <mod folder> --screenshots  # + pictures for the VL editions
 ```
 
 | Source | What it adds | Notes |
@@ -50,58 +60,112 @@ python -m pymc_bot llm build                      # -> llm_data/
 | `teacher` | situations answered by a bigger model **you** run, with the full built-in prompt; only valid, allowed decisions are kept | `--teacher ollama --teacher-model qwen3:32b --teacher-turns 500` or `--teacher cortex` |
 | `recorded` | real turns the bot played with an LLM where the action worked | tick **record LLM turns for training** in the panel (`agent.record_turns`); `llm_turns.jsonl` is used automatically |
 | `playtime` | your own playtime recorded by the PyMC Bot mod, turned into "what you did next" (fight / mine / goto) | `--playtime <dataset file or folder>` |
+| `vision` | for every screenshot: the picture + the turn prompt → what you did next, and "what do you see?" → a description written from that moment's recorded data (blocks, mobs in the camera's view and on which side, held item, health) | `--screenshots [PATH]` (no PATH = the `--playtime` folder); needs mod 0.10+ |
+
+**Recording screenshots:** in game, `/pymcbot screenshots on` (or the mod's settings page) makes the recorder
+save a small picture of your screen every few seconds next to the samples (`shots/`, off by default because
+it uses disk space). Play normally, export as usual, then build with `--screenshots`. The pictures are shrunk
+to 512 px (as JPEG if Pillow is installed, otherwise the mod's PNGs are kept).
 
 The folder contains `train.jsonl`, `eval.jsonl` (5 %, every source represented, with the expected
-action/keywords), `dataset_card.json` (counts, licences), `dataset-metadata.json` (for the Kaggle CLI) and
-`train_minecraft_llm.py` (the training script). The hidden behaviour prompts are **never** written to the
-files: examples carry only the behaviour's key and public name.
+action/keywords), `images/` (when there are pictures), `dataset_card.json` (counts, licences),
+`dataset-metadata.json` (for the Kaggle CLI) and `train_minecraft_llm.py` (the training script).
+Every row also carries its `reasoning` trace, which only the thinking editions train on. The hidden
+behaviour prompts are **never** written to the files: examples carry only the behaviour's key and public name.
 
 ## 2. Train on Kaggle
 
-1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (not `wiki_cache`).
-   Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data`.
+1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
+   Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → `training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
-4. Set `PRESET` in the second cell if you like, then press **Run All**. (For a 5-minute test, first use `EXTRA = "--max-steps 60"`.)
+4. To publish on Hugging Face: **Add-ons → Secrets → Add secret**, name `HF_TOKEN`, value = a **write** token from
+   huggingface.co/settings/tokens, and tick it for this notebook. The notebook reads it into the environment for
+   the training script and never prints it. Without the secret the models simply stay in `/kaggle/working`.
+5. Set `EDITIONS` in the second cell (default `["minecraftism"]`), then press **Run All**.
+   For a 5-minute test, first use `EXTRA = "--max-steps 60"`.
 
-The script trains a LoRA adapter (4-bit QLoRA, r=32, loss on the replies only). It then tries
-`--eval-limit 150` held-out rows and exports `q4_k_m` GGUF. When it finishes, the output folder
-`/kaggle/working/pymc-minecraft` holds:
+**Time limit:** a Kaggle GPU session stops after **12 hours**, and the weekly GPU quota is about 30 hours.
+Train one or two editions per session, e.g. `["minecraftism", "minecraftism-thinking"]` today and the VL
+editions another day. The notebook dry-runs every edition first and skips the ones that can't train
+(a VL edition without pictures, for example) instead of failing hours later.
+
+The script trains a LoRA adapter (4-bit QLoRA, r=32, loss on the replies only; VL editions train the
+language layers and keep the vision encoder frozen unless you pass `--vision-layers 1`). It evaluates on
+held-out rows, exports `q4_k_m` GGUF and, for VL editions, the **vision projector** (`mmproj`). Each edition
+gets its own folder, e.g. `/kaggle/working/minecraftism-vl`:
 
 ```
-pymc-minecraft-qwen3-4b.Q4_K_M.gguf   the model for Ollama
-Modelfile                             template, sampling, stop tokens
-pymc_model.json                       preset, loss, eval scores
-lora/                                 the adapter (optional, for training further)
+minecraftism-vl-4b.Q4_K_M.gguf          the model
+mmproj-minecraftism-vl-4b.F16.gguf      the vision projector (VL editions only)
+Modelfile                               for ollama create (both FROM lines, sampling, stop tokens)
+params                                  sampling for "ollama pull hf.co/..." (written when uploading)
+README.md                               the model card shown on Hugging Face
+pymc_model.json                         edition, loss, eval scores, what PyMC Bot reads on import
+lora/                                   the adapter (optional, for training further)
 ```
 
-Useful flags: `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0`, `--model <any Unsloth id>`,
-`--hub-repo you/pymc-minecraft` (with an `HF_TOKEN` Kaggle secret), `--dry-run` (checks the data without a GPU).
+With `HF_REPO = "auto"` each edition is uploaded to `<your HF name>/<repo from the table>`, e.g.
+`you/Minecraftism-4B-GGUF`, and the local copy is cleaned up afterwards (`CLEAN_AFTER_UPLOAD`) so four
+editions fit into Kaggle's 20 GB. If the upload fails, the files stay in `/kaggle/working`.
+
+Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0`, `--hub-private`,
+`--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
+`--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
 
 ## 3. Use it (your PC)
 
-Download `pymc-minecraft` from the notebook's **Output** tab, then:
+From Hugging Face (needs [Ollama](https://ollama.com)):
 
 ```bash
-python -m pymc_bot llm import pymc-minecraft      # or a .gguf file
+python -m pymc_bot llm import --hf you/Minecraftism-4B-GGUF            # ollama pull hf.co/...:Q4_K_M
+python -m pymc_bot llm import --hf you/Minecraftism-VL-4B-GGUF --quant Q4_K_M
 ```
 
-This writes a Modelfile pointing at the GGUF and runs `ollama create pymc-minecraft`. It then switches the bot to it:
-`ollama.enabled`, `ollama.model = "pymc-minecraft"`, `agent.mode = "ollama"`, and **Minecraft-trained model
-(short prompt)** (`agent.compact_prompt`). `--no-activate` only creates the model; `--name` picks another name.
+Or download an edition folder from the notebook's **Output** tab:
+
+```bash
+python -m pymc_bot llm import minecraftism-vl                          # or a .gguf file
+```
+
+The import creates the Ollama model, named after the edition (`minecraftism`, `minecraftism-vl`…; `--name`
+picks another), and switches the bot to it: `ollama.enabled`, `ollama.model`, `agent.mode = "ollama"` and
+**Minecraft-trained model (short prompt)** (`agent.compact_prompt`). VL editions also turn on
+**let the model see** (`agent.vision`). `--no-activate` only creates the model.
 
 Check that it really got better:
 
 ```bash
-python -m pymc_bot llm eval --model pymc-minecraft      # valid JSON % | right action % | right answers %
-python -m pymc_bot llm eval --model llama3.2            # the general model, for comparison
+python -m pymc_bot llm eval --model minecraftism        # valid JSON % | right action % | right answers %
+python -m pymc_bot llm eval --model qwen3:4b            # the base model, for comparison
 ```
+
+### Letting the bot see (VL editions)
+
+With **let the model see** on, the bot renders its first-person view and attaches it to every
+`agent.vision_every`-th turn (default 2) for Ollama (`images`) or Cortex (OpenAI-style `image_url`).
+Rendering happens in the mineflayer bridge with prismarine-viewer, which needs three extra packages.
+They compile native WebGL code, so they're an optional install:
+
+```bash
+npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.128.0
+```
+
+On a Linux server without a screen, run the bot under `xvfb-run` if WebGL can't start. Without these
+packages the bot logs one "no picture this turn" line and keeps playing on text alone. The rendered view
+is simpler than the real game (no entity models, basic lighting), but it shows terrain, water, lava and
+caves. Any other Ollama vision model (`qwen3-vl`, `gemma3`…) can use it too.
+
+Ollama runs Qwen3-VL GGUFs with a separate projector; if a VL edition only answers in text on your Ollama
+version, update Ollama, or run it with llama.cpp: `llama-server -m minecraftism-vl-4b.Q4_K_M.gguf
+--mmproj mmproj-minecraftism-vl-4b.F16.gguf` and point the bot's Cortex/OpenAI setting at it.
 
 ## Train it again later
 
-Tick **record LLM turns for training**, let the bot play for a while, then run `llm build` again. The
-recorded turns where the action worked are added. If you want, add `--teacher ollama --teacher-model <big model>`
-and `--playtime <your recordings>`. Upload the new files as a new dataset version and run the notebook again.
+Tick **record LLM turns for training**, keep `/pymcbot screenshots on` in the mod, play for a while, then
+run `llm build` again. The recorded turns where the action worked are added. If you want, add
+`--teacher ollama --teacher-model <big model>`. Upload the new files as a new dataset version and run
+the notebook again. The same Hugging Face repo gets a new commit.
 
 ## Good to know
 
@@ -110,5 +174,7 @@ and `--playtime <your recordings>`. Upload the new files as a new dataset versio
 * A custom system prompt (`ollama.system_prompt`) still wins over the short prompt, same as before.
 * The mob database still feeds the prompt: facts about the mobs around the bot are added every turn, and
   `search` answers mob questions from the database first. So exact numbers stay exact, even with a small model.
+* Thinking editions print `<think>…</think>` before the JSON; the bot strips it (also when only the closing
+  tag appears, as Qwen3 Thinking models do).
 * Personal, non-commercial use only (PolyForm Noncommercial 1.0.0), and the base models' licences apply
-  (Qwen: Apache 2.0, Llama 3.2: Llama Community License).
+  (Qwen3 / Qwen3-VL: Apache 2.0, Llama 3.2: Llama Community License). The model cards say so too.

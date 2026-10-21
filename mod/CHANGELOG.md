@@ -12,6 +12,8 @@
   - Pictures are scaled down on the client and written on a background thread, so the game does
     not stutter. Off by default: an hour of recording at the defaults is roughly 150 – 300 MB.
 - `/pymcbot train` shows the command that builds vision data when screenshots are on.
+- Screenshots work on every supported version, 1.21.1 – 26.3 (checked by the in-game tests on
+  1.21.4 and newer).
 
 ## 0.9.0
 

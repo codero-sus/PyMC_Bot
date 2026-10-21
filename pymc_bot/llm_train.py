@@ -382,12 +382,16 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     evaluation = report.get("eval") or {}
     eval_lines = ""
     if evaluation:
+        def pct(key: str) -> str:
+            value = evaluation.get(key)
+            return "-" if value is None else f"{value}%"
+
         eval_lines = ("\n## Evaluation (held-out rows)\n\n| valid JSON | right action | right answers | rows |\n|---|---|---|---|\n"
-                      f"| {evaluation.get('json_valid_pct')}% | {evaluation.get('action_match_pct')}% | "
-                      f"{evaluation.get('answer_keywords_pct')}% | {evaluation.get('rows')} |\n")
+                      f"| {pct('json_valid_pct')} | {pct('action_match_pct')} | {pct('answer_keywords_pct')} | "
+                      f"{evaluation.get('rows', '-')} |\n")
     vision_text = ("\nIt also **sees**: it was trained on first-person screenshots recorded with the PyMC Bot Fabric mod, "
                    "paired with what the player did next and grounded descriptions of each picture. In PyMC Bot turn on "
-                   "*Agent > Vision* and the bot sends its rendered view with each turn.\n") if vision else ""
+                   "*let the model see (vision)* in the panel's AI settings and the bot sends its rendered view every few turns.\n") if vision else ""
     think_text_ = ("\nIt **thinks first**: before every answer it writes a short `<think>` about its health, the mobs "
                    "around it (with facts from the mob database), chat and its goal, then the JSON action. Smarter "
                    "choices, slower turns.\n") if reasoning else ""
@@ -755,6 +759,11 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(f"{len(missing)} picture(s) listed in the data are missing next to train.jsonl (first: {missing[0]}) - "
               "upload the images/ folder with the dataset")
+        return 2
+    if preset.get("vision") and not any(row.get("images") for row in rows):
+        print(f"{args.preset} is a vision edition but the data has no pictures. Record playtime with the mod's "
+              "screenshots on (/pymcbot screenshots on), then: python -m pymc_bot llm build --playtime <folder> "
+              "--screenshots - or train a text edition (minecraftism, minecraftism-thinking).")
         return 2
     problems = check_rows(rows) + check_rows(eval_rows)
     if problems:
