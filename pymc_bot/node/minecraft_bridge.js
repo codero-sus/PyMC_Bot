@@ -769,6 +769,73 @@ async function cmdAttackMob(params) {
   return { target: target.name, hits, killed };
 }
 
+/* ------------------------------------------------------------------ vision */
+/**
+ * The bot's first-person view as a JPEG, for vision models (Minecraftism VL, any Ollama/Cortex VL
+ * model). Optional: rendering headlessly needs three extra packages that are NOT installed with the
+ * bridge because they compile native WebGL code:
+ *   npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.128.0
+ * Without them `snapshot` answers with that hint and the Python side simply plays without pictures.
+ */
+const VISION_PACKAGES = 'npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.128.0';
+let eyes = null; // { bot, viewer, worldView, renderer, canvas, width, height }
+
+function openEyes(width, height, viewDistance) {
+  let viewerLib;
+  let createCanvas;
+  let THREE;
+  try {
+    viewerLib = require('prismarine-viewer').viewer;
+    ({ createCanvas } = require('node-canvas-webgl/lib'));
+    THREE = require('three');
+  } catch (err) {
+    throw new Error(`vision is not installed (${err.message.split('\n')[0]}). Run: ${VISION_PACKAGES}`);
+  }
+  if (typeof global.Worker === 'undefined') global.Worker = require('worker_threads').Worker;
+  const canvas = createCanvas(width, height);
+  const renderer = new THREE.WebGLRenderer({ canvas });
+  const viewer = new viewerLib.Viewer(renderer);
+  if (viewer.setVersion(bot.version) === false) {
+    throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}`);
+  }
+  const center = bot.entity.position;
+  const worldView = new viewerLib.WorldView(bot.world, viewDistance, center);
+  viewer.listen(worldView);
+  worldView.init(center);
+  return { bot, viewer, worldView, renderer, canvas, width, height };
+}
+
+async function cmdSnapshot(params) {
+  if (!bot || !bot.entity) throw new Error('not connected');
+  const width = Math.max(64, Math.min(1024, Number(params.width || 448)));
+  const height = Math.max(64, Math.min(1024, Number(params.height || Math.round(width * 9 / 16))));
+  if (!eyes || eyes.bot !== bot || eyes.width !== width || eyes.height !== height) {
+    eyes = openEyes(width, height, Math.max(2, Math.min(8, Number(params.view_distance || 4))));
+  }
+  const eye = bot.entity.position.offset(0, bot.entity.height || 1.62, 0);
+  eyes.worldView.updatePosition(bot.entity.position);
+  eyes.viewer.setFirstPersonCamera(eye, bot.entity.yaw, bot.entity.pitch);
+  // chunks are meshed in worker threads; give them a moment (the first picture can be sky only)
+  const settle = Math.max(0, Math.min(5000, Number(params.settle_ms ?? 600)));
+  if (eyes.viewer.world && typeof eyes.viewer.world.waitForChunksToRender === 'function') {
+    await Promise.race([eyes.viewer.world.waitForChunksToRender(), sleep(settle)]);
+  } else {
+    await sleep(settle);
+  }
+  if (typeof eyes.viewer.update === 'function') eyes.viewer.update();
+  eyes.renderer.render(eyes.viewer.scene, eyes.viewer.camera);
+  const quality = Math.max(0.3, Math.min(0.95, Number(params.quality || 0.8)));
+  const buffer = eyes.canvas.toBuffer('image/jpeg', { quality });
+  return {
+    mime: 'image/jpeg',
+    width,
+    height,
+    image: buffer.toString('base64'),
+    yaw: bot.entity.yaw,
+    pitch: bot.entity.pitch,
+  };
+}
+
 const COMMANDS = {
   connect: cmdConnect,
   say: cmdSay,
@@ -795,6 +862,7 @@ const COMMANDS = {
   wake: cmdWake,
   collect: cmdCollect,
   attack_mob: cmdAttackMob,
+  snapshot: cmdSnapshot,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),

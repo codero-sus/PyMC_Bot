@@ -81,10 +81,18 @@ class OllamaClient:
         model: str | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        images: list[str] | None = None,
     ) -> str:
+        """``POST /api/chat``. ``images`` (base64, no data: prefix) go with the last user message."""
+        chat_messages = [dict(m) for m in messages]
+        if images:
+            for message in reversed(chat_messages):
+                if message.get("role") == "user":
+                    message["images"] = list(images)
+                    break
         payload: dict[str, Any] = {
             "model": model or self.model,
-            "messages": list(messages),
+            "messages": chat_messages,
             "stream": False,
             "options": {"temperature": self.temperature if temperature is None else temperature},
         }

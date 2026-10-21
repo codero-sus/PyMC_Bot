@@ -355,6 +355,8 @@
           <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
           <label class="check" title="For a model you trained with 'python -m pymc_bot llm' (docs/MINECRAFT_LLM.md): it already knows the rules, so it gets a short prompt and answers faster"><input id="cfg-compact-prompt" type="checkbox" /> Minecraft-trained model (short prompt)</label>
           <label class="check" title="Saves every LLM turn (situation, reply, did it work) to llm_turns.jsonl next to the config - more training data for your own model"><input id="cfg-record-turns" type="checkbox" /> record LLM turns for training</label>
+          <label class="check" title="For vision models (Minecraftism VL or any Ollama/Cortex model that reads images): the bot sends a picture of what it sees. Needs the optional vision packages for the bridge (docs/MINECRAFT_LLM.md)"><input id="cfg-vision" type="checkbox" /> let the model see (vision)</label>
+          <label>Picture every N turns <input id="cfg-vision-every" type="number" min="1" max="20" step="1" /></label>
         </div>
       </details>
       <div class="permissions">

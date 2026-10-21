@@ -205,7 +205,7 @@ def test_trainer_dry_run_and_presets(built, capsys):
     assert llm_train.main(["--list-presets"]) == 0
     listing = capsys.readouterr().out
     assert all(name in listing for name in llm_train.PRESETS)
-    assert llm_train.DEFAULT_PRESET == "qwen3-4b"
+    assert llm_train.DEFAULT_PRESET == "minecraftism"
     for preset in llm_train.PRESETS.values():
         assert preset["family"] in llm_train.TURN_MARKERS and preset["model"].startswith("unsloth/")
         assert preset["train_gb"] <= 16  # one Kaggle T4

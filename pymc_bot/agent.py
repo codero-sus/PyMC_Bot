@@ -109,10 +109,17 @@ class Decision:
         }
 
 
+#: Appended to the turn prompt when a picture of the bot's view goes with it (the same words are
+#: used in the Minecraftism VL training rows, so the model knows what the image is).
+VISION_NOTE = "\n\nA screenshot of your current first-person view is attached; use what you see."
+
 def parse_decision(text: str, source: str = "ollama") -> Decision:
     """Extract one action from a (possibly chatty) LLM response."""
-    # reasoning models (Qwen3, DeepSeek-R1...) may think out loud first
+    # reasoning models (Qwen3, DeepSeek-R1, Minecraftism Thinking...) may think out loud first
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I).strip()
+    if re.search(r"</think>", cleaned, flags=re.I):
+        # Qwen3 *Thinking* models start inside the think block: only the closing tag is printed
+        cleaned = re.split(r"</think>", cleaned, flags=re.I)[-1].strip()
     if cleaned.lower().startswith("<think>"):
         cleaned = cleaned[7:]
     if cleaned.startswith("```"):
@@ -308,6 +315,8 @@ class AgentLoop:
         self._decisions = 0
         self._record_lock = threading.Lock()
         self._last_exchange: tuple[str, str] | None = None
+        self._vision_turn = 0
+        self._vision_error = ""
         self._errors = 0
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
@@ -563,11 +572,41 @@ class AgentLoop:
             time.sleep(0.05)
         return self._stop_event.is_set()
 
+    def vision_frame(self, settings: AppSettings) -> list[str] | None:
+        """A picture of the bot's view for this turn (every ``vision_every``-th turn), or None.
+
+        Problems (vision packages missing, renderer failure) are logged once and the turn goes
+        ahead as text only.
+        """
+        agent = settings.agent
+        if not agent.vision:
+            return None
+        self._vision_turn += 1
+        if (self._vision_turn - 1) % agent.vision_every:
+            return None
+        backend = self.bot.backend
+        if backend is None:
+            return None
+        try:
+            frame = backend.view_image(agent.vision_width)
+        except Exception as exc:  # noqa: BLE001 - any renderer problem means "no picture"
+            message = str(exc)
+            if message != self._vision_error:
+                self._vision_error = message
+                self.log.add(f"👁 no picture this turn: {message}", "warn", "agent")
+            return None
+        self._vision_error = ""
+        image = str(frame.get("image") or "")
+        return [image] if image else None
+
     def _ask_ollama(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         client = self._ollama_client(settings)
         system = self.system_prompt(settings, settings.ollama.system_prompt)
+        images = self.vision_frame(settings)
 
         def ask(prompt: str) -> str:
+            if images:
+                return client.chat([{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images)
             try:
                 return client.chat([{"role": "user", "content": prompt}], system=system)
             except OllamaError:
@@ -580,8 +619,10 @@ class AgentLoop:
         """One decision from the model hosted by Cortex LLMHoster."""
         client = self._cortex_client(settings)
         system = self.system_prompt(settings, settings.cortex.system_prompt)
+        images = self.vision_frame(settings)
         return self._research_and_decide(
-            settings, state, lambda prompt: client.decide(prompt, system=system),
+            settings, state,
+            lambda prompt: client.decide(prompt + VISION_NOTE if images else prompt, system=system, images=images),
             lambda: f"cortex:{client.last_model or settings.cortex.model or 'default'}",
         )
 

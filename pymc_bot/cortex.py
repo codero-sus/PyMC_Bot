@@ -73,6 +73,14 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+
+def image_data_uri(image: str) -> str:
+    """base64 picture -> ``data:`` URI (JPEG unless the bytes say PNG); URIs pass through."""
+    if image.startswith("data:"):
+        return image
+    mime = "image/png" if image.startswith("iVBOR") else "image/jpeg"
+    return f"data:{mime};base64,{image}"
+
 class CortexClient:
     """Talks to a running Cortex LLMHoster over its OpenAI-compatible API."""
 
@@ -233,14 +241,26 @@ class CortexClient:
         model: str | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """``POST /v1/chat/completions`` -> the assistant text.
+
+        ``images`` (base64 JPEG/PNG) are sent with the last user message as OpenAI-style
+        ``image_url`` data URIs, which vision runtimes understand.
 
         A blank model lets Cortex pick its default model. With ``json_mode`` the
         request asks for a JSON object; runtimes that reject that field get the same
         request again without it.
         """
-        chat_messages = list(messages)
+        chat_messages = [dict(m) for m in messages]
+        if images:
+            for message in reversed(chat_messages):
+                if message.get("role") == "user":
+                    message["content"] = [
+                        {"type": "text", "text": str(message.get("content") or "")},
+                        *({"type": "image_url", "image_url": {"url": image_data_uri(image)}} for image in images),
+                    ]
+                    break
         if system:
             chat_messages = [{"role": "system", "content": system}, *chat_messages]
         payload: dict[str, Any] = {
@@ -300,10 +320,10 @@ class CortexClient:
             raise CortexError("Cortex returned an empty completion")
         return content
 
-    def decide(self, prompt: str, system: str | None = None) -> str:
+    def decide(self, prompt: str, system: str | None = None, images: list[str] | None = None) -> str:
         """Chat, falling back to plain completion when the runtime cannot chat."""
         try:
-            return self.chat([{"role": "user", "content": prompt}], system=system)
+            return self.chat([{"role": "user", "content": prompt}], system=system, images=images)
         except CortexError as exc:
             if exc.status not in _FALLBACK_STATUSES:
                 raise

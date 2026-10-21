@@ -15,6 +15,12 @@ notebook in ``training/llm`` fine-tunes on (docs/MINECRAFT_LLM.md). The sources:
   built-in prompt; only valid, allowed decisions are kept.
 * ``recorded``  - real turns the bot played with an LLM (``agent.record_turns``).
 * ``playtime``  - your own recorded playtime (the Fabric mod), turned into "what you did next".
+* ``vision``    - Minecraftism VL: the mod's screenshots (``/pymcbot screenshots on``) as image
+  turns (picture + situation -> what you did) and grounded "what do you see?" captions written
+  from the sample recorded with each picture.
+
+Every row also carries a ``reasoning`` trace (:mod:`pymc_bot.llm_reasoning`, written by rules) that
+the *Thinking* editions learn as ``<think>...</think>``; the other editions ignore it.
 
 The fine-tuned model gets a short system prompt (:func:`compact_system_prompt`): the long built-in
 rules are learned, which saves time on every turn. The hidden behaviour prompts never go into the
@@ -37,13 +43,20 @@ from typing import Any
 import httpx
 
 from pymc_bot import __version__
-from pymc_bot.agent import ACTIONS, AVOID_MOBS, Decision, parse_decision
+from pymc_bot.agent import ACTIONS, AVOID_MOBS, VISION_NOTE, Decision, parse_decision
 from pymc_bot.inventory import Inventory
 from pymc_bot.knowledge import html_to_text, shorten
+from pymc_bot.llm_reasoning import (
+    decision_reasoning,
+    describe_view,
+    qa_reasoning,
+    turn_reasoning,
+    vision_reasoning,
+)
 from pymc_bot.mind import DEFAULT_PERSONA, PERSONAS, Mind, build_system_prompt, build_turn_prompt
 from pymc_bot.mobs import MobDatabase, load_mobs
 
-DATASET_VERSION = 1
+DATASET_VERSION = 2  # 2: reasoning traces (Thinking editions) + images (VL editions)
 COMPACT_TAG = "[PyMC Bot Minecraft brain]"
 WIKI_API = "https://minecraft.wiki/api.php"
 WIKI_CATEGORIES = ("Mobs", "Items", "Blocks", "Gameplay", "Biomes")
@@ -112,22 +125,29 @@ class Example:
     source: str
     kind: str  # "turn" (game decision) or "qa" (question/answer)
     check: dict[str, Any] = field(default_factory=dict)  # what the evaluation looks for
+    reasoning: str = ""  # the <think> trace the Thinking editions learn (llm_reasoning)
+    images: list[str] = field(default_factory=list)  # pictures for the VL editions, relative to the dataset folder
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"messages": self.messages, "source": self.source, "kind": self.kind}
         if self.check:
             out["check"] = self.check
+        if self.reasoning:
+            out["reasoning"] = self.reasoning
+        if self.images:
+            out["images"] = self.images
         return out
 
     @property
     def key(self) -> str:
-        return hashlib.sha1(json.dumps(self.messages[1:], sort_keys=True).encode()).hexdigest()
+        return hashlib.sha1(json.dumps([self.messages[1:], self.images], sort_keys=True).encode()).hexdigest()
 
 
 def qa(question: str, answer: str, source: str, contains: Iterable[str] = ()) -> Example:
     check = {"contains": [c for c in contains if c]} if contains else {}
     return Example([{"role": "system", "content": QA_SYSTEM}, {"role": "user", "content": question},
-                    {"role": "assistant", "content": answer}], source, "qa", check)
+                    {"role": "assistant", "content": answer}], source, "qa", check,
+                   reasoning=qa_reasoning(question, answer, source, rng=random.Random(question)))
 
 
 def _num(value: Any) -> str:
@@ -355,9 +375,15 @@ class Situation:
             return build_system_prompt(self.name, self.persona, "", self.allowed, self.max_chat_length)
         return compact_system_prompt(self.name, self.persona, self.allowed, "", self.max_chat_length)
 
-    def example(self, reply: str, source: str, check: dict[str, Any] | None = None) -> Example:
-        return Example([{"role": "system", "content": self.system_prompt()}, {"role": "user", "content": self.user_prompt()},
-                        {"role": "assistant", "content": reply}], source, "turn", check or {})
+    def reasoning(self, reply: str) -> str:
+        return turn_reasoning(self.state, reply, name=self.name, history=self.history, mind=self.mind, allowed=self.allowed,
+                              rng=random.Random(reply))
+
+    def example(self, reply: str, source: str, check: dict[str, Any] | None = None, images: list[str] | None = None) -> Example:
+        user = self.user_prompt() + (VISION_NOTE if images else "")
+        return Example([{"role": "system", "content": self.system_prompt()}, {"role": "user", "content": user},
+                        {"role": "assistant", "content": reply}], source, "turn", check or {},
+                       reasoning=self.reasoning(reply), images=list(images or []))
 
 
 class SituationMaker:
@@ -677,69 +703,184 @@ def recorded_examples(path: Path) -> list[Example]:
             continue
         system = compact_system_prompt(row.get("name") or "PyMC_Bot", row.get("persona") or DEFAULT_PERSONA,
                                        row.get("allowed") or {}, row.get("notes") or "", int(row.get("max_chat_length") or 120))
+        reply = decision_from(decision)
         out.append(Example([{"role": "system", "content": system}, {"role": "user", "content": row["prompt"]},
-                            {"role": "assistant", "content": decision_from(decision)}], "recorded", "turn"))
+                            {"role": "assistant", "content": reply}], "recorded", "turn",
+                           reasoning=decision_reasoning(reply, row["prompt"])))
     return out
 
 
 # --------------------------------------------------------------------------- recorded playtime
+PLAYTIME_ALLOWED = {"movement": True, "chat": True, "mining": True, "attacking": False, "inventory": True,
+                    "building": False, "fighting": True, "search": True}
+
+
+def _playtime_reply(chunk: list[tuple[dict[str, Any], str]], rng: random.Random) -> str | None:
+    """What the player did in a window of samples, as the bot's decision (None = nothing to learn)."""
+    first, last = chunk[0][0], chunk[-1][0]
+    acts = Counter(a for _, a in chunk if a not in ("none", "look"))
+    nearby = first.get("nearby") or []
+    hostiles = [n for n in nearby if n.get("hostile") and float(n.get("dist") or 99) <= 5]
+    moved = ((float(last.get("x", 0)) - float(first.get("x", 0))) ** 2 + (float(last.get("z", 0)) - float(first.get("z", 0))) ** 2) ** 0.5
+    top = acts.most_common(1)[0][0] if acts else "none"
+    if top == "attack" and hostiles:
+        kind = str(hostiles[0]["type"]).split(":")[-1]
+        return decision_text("fight", f"{kind.replace('_', ' ')} right here, hit it", "deal with the mob", mob=kind)
+    if top == "attack":
+        blocks = [str(b[3]).split(":")[-1] for b in first.get("blocks") or [] if len(b) == 4 and not str(b[3]).endswith("air")]
+        if not blocks:
+            return None
+        block = Counter(blocks).most_common(1)[0][0]
+        return decision_text("mine", f"mining some {block.replace('_', ' ')}", "gather blocks", block=block)
+    if moved >= 3:
+        return decision_text("goto", "heading over there", "explore", x=round(float(last["x"])), y=round(float(last["y"])),
+                             z=round(float(last["z"])))
+    if top == "jump":
+        return decision_text("jump", "little hop", "")
+    if top == "none" and rng.random() < 0.3:
+        return decision_text("look_around", "just looking around", "")
+    return None
+
+
+def _playtime_situation(first: dict[str, Any], db: MobDatabase) -> Situation:
+    """The turn prompt the bot would have seen at a recorded sample."""
+    state = {
+        "position": {"x": first.get("x", 0), "y": first.get("y", 64), "z": first.get("z", 0)},
+        "dimension": f"minecraft:{str(first.get('dimension') or 'overworld').split(':')[-1]}", "health": first.get("health", 20),
+        "food": first.get("food", 20), "time_of_day": "day", "players": [], "entities": [],
+    }
+    for n in (first.get("nearby") or [])[:6]:
+        kind = str(n.get("type", "")).split(":")[-1]
+        if kind == "player":
+            continue
+        state["entities"].append({**n, "type": f"minecraft:{kind}"})
+    mobs = {}
+    for entity in state["entities"]:
+        mob = db.get(str(entity["type"]).split(":")[-1])
+        if mob:
+            mobs[mob["id"]] = mob
+    knowledge = [db.prompt_line(m) for m in mobs.values()]
+    return Situation("PyMC_Bot", DEFAULT_PERSONA, state, Mind(), [], dict(PLAYTIME_ALLOWED), knowledge[:6], time.time())
+
+
+def _episodes(samples: list[tuple[dict[str, Any], str]]) -> dict[str, list[tuple[dict[str, Any], str]]]:
+    episodes: dict[str, list[tuple[dict[str, Any], str]]] = {}
+    for observation, action in samples:
+        episodes.setdefault(str(observation.get("episode") or "default"), []).append((observation, action))
+    return episodes
+
+
 def playtime_examples(path: Path, rng: random.Random, window: int = 20, limit: int = 3000,
                       db: MobDatabase | None = None) -> list[Example]:
     """Your recorded playtime as turns: the situation, then what you did in the next ~``window`` samples."""
     from pymc_bot.playtime import load_examples
 
     db = db or load_mobs()
-    samples = load_examples(path)
     out: list[Example] = []
-    episodes: dict[str, list[tuple[dict[str, Any], str]]] = {}
-    for observation, action in samples:
-        episodes.setdefault(str(observation.get("episode") or "default"), []).append((observation, action))
-    for rows in episodes.values():
+    for rows in _episodes(load_examples(path)).values():
         for start in range(0, max(0, len(rows) - window), window):
             chunk = rows[start:start + window]
-            first, last = chunk[0][0], chunk[-1][0]
-            acts = Counter(a for _, a in chunk if a not in ("none", "look"))
-            nearby = first.get("nearby") or []
-            hostiles = [n for n in nearby if n.get("hostile") and float(n.get("dist") or 99) <= 5]
-            moved = ((float(last.get("x", 0)) - float(first.get("x", 0))) ** 2 + (float(last.get("z", 0)) - float(first.get("z", 0))) ** 2) ** 0.5
-            top = acts.most_common(1)[0][0] if acts else "none"
-            if top == "attack" and hostiles:
-                kind = str(hostiles[0]["type"]).split(":")[-1]
-                reply = decision_text("fight", f"{kind.replace('_', ' ')} right here, hit it", "deal with the mob", mob=kind)
-            elif top == "attack":
-                blocks = [str(b[3]).split(":")[-1] for b in first.get("blocks") or [] if len(b) == 4 and not str(b[3]).endswith("air")]
-                if not blocks:
-                    continue
-                block = Counter(blocks).most_common(1)[0][0]
-                reply = decision_text("mine", f"mining some {block.replace('_', ' ')}", "gather blocks", block=block)
-            elif moved >= 3:
-                reply = decision_text("goto", "heading over there", "explore", x=round(float(last["x"])), y=round(float(last["y"])),
-                                      z=round(float(last["z"])))
-            elif top == "jump":
-                reply = decision_text("jump", "little hop", "")
-            elif top == "none" and rng.random() < 0.3:
-                reply = decision_text("look_around", "just looking around", "")
-            else:
+            reply = _playtime_reply(chunk, rng)
+            if reply is None:
                 continue
-            state = {
-                "position": {"x": first.get("x", 0), "y": first.get("y", 64), "z": first.get("z", 0)},
-                "dimension": f"minecraft:{first.get('dimension') or 'overworld'}", "health": first.get("health", 20),
-                "food": first.get("food", 20), "time_of_day": "day", "players": [], "entities": [],
-            }
-            for n in nearby[:6]:
-                kind = str(n.get("type", "")).split(":")[-1]
-                if kind == "player":
-                    continue
-                state["entities"].append({**n, "type": f"minecraft:{kind}"})
-            knowledge = [db.prompt_line(m) for m in {db.get(str(e["type"]).split(":")[-1])["id"]: db.get(str(e["type"]).split(":")[-1])
-                                                      for e in state["entities"] if db.get(str(e["type"]).split(":")[-1])}.values()]
-            allowed = {"movement": True, "chat": True, "mining": True, "attacking": False, "inventory": True,
-                       "building": False, "fighting": True, "search": True}
-            sit = Situation("PyMC_Bot", DEFAULT_PERSONA, state, Mind(), [], allowed, knowledge[:6], time.time())
-            out.append(sit.example(reply, "playtime"))
+            out.append(_playtime_situation(chunk[0][0], db).example(reply, "playtime"))
             if len(out) >= limit:
                 return out
     return out
+
+
+# --------------------------------------------------------------------------- screenshots (Minecraftism VL)
+VISION_QUESTIONS = ("What do you see?", "Describe what's on screen.", "What's in front of you right now?",
+                    "Look at this screenshot. What's going on?", "Describe this Minecraft view.", "what can you see",
+                    "Anything dangerous in view?", "Where are you and what's around?")
+VISION_SYSTEM = (f"{COMPACT_TAG} You see the game through screenshots of your own screen. Describe only what the "
+                 "picture shows, briefly, like a player would.")
+#: Longest side of the pictures stored in the dataset (Qwen3-VL works in 32 px patches; 512 keeps a
+#: T4 fast and still shows mobs a few blocks away).
+VISION_MAX_SIDE = 512
+
+
+def shots_root(path: Path) -> Path:
+    """The ``pymcbot`` folder that ``"shot"`` paths are relative to, for a dataset file or folder."""
+    path = Path(path)
+    if path.is_file():
+        path = path.parent
+    if path.name == "episodes":
+        path = path.parent
+    if not (path / "shots").is_dir() and (path / "pymcbot" / "shots").is_dir():
+        path = path / "pymcbot"
+    return path
+
+
+def store_image(source: Path, images_dir: Path, max_side: int = VISION_MAX_SIDE) -> str | None:
+    """Copy one screenshot into the dataset (as a small JPEG when Pillow is installed); returns its name."""
+    if not source.is_file():
+        return None
+    digest = hashlib.sha1(source.read_bytes()).hexdigest()[:16]
+    images_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image
+    except ImportError:  # Pillow is optional: keep the mod's PNG as it is
+        target = images_dir / f"{digest}{source.suffix.lower() or '.png'}"
+        if not target.exists():
+            target.write_bytes(source.read_bytes())
+        return target.name
+    target = images_dir / f"{digest}.jpg"
+    if not target.exists():
+        try:
+            with Image.open(source) as image:
+                image = image.convert("RGB")
+                image.thumbnail((max_side, max_side))
+                image.save(target, "JPEG", quality=85)
+        except OSError:
+            return None
+    return target.name
+
+
+def vision_examples(path: Path, out_dir: Path, rng: random.Random, window: int = 20, limit: int = 4000,
+                    captions: bool = True, db: MobDatabase | None = None) -> tuple[list[Example], dict[str, int]]:
+    """Image rows from recorded playtime with screenshots (mod 0.10+, ``/pymcbot screenshots on``).
+
+    For every sample that has a picture: an image turn (picture + the turn prompt -> what you did
+    next, when the next samples show something to learn) and a caption row ("what do you see?")
+    written from the sample's own data (blocks, mobs in the camera's view, held item, HUD).
+    """
+    from pymc_bot.playtime import load_examples
+
+    db = db or load_mobs()
+    root = shots_root(Path(path))
+    images_dir = Path(out_dir) / "images"
+    stats = Counter()
+    out: list[Example] = []
+    for rows in _episodes(load_examples(path)).values():
+        for index, (observation, _action) in enumerate(rows):
+            shot = observation.get("shot")
+            if not shot:
+                continue
+            stats["shots"] += 1
+            name = store_image(root / str(shot), images_dir)
+            if name is None:
+                stats["missing"] += 1
+                continue
+            image = f"images/{name}"
+            chunk = rows[index:index + window]
+            reply = _playtime_reply(chunk, rng) if len(chunk) >= max(2, window // 2) else None
+            if reply is not None:
+                example = _playtime_situation(observation, db).example(reply, "vision", images=[image])
+                example.reasoning = vision_reasoning(observation, None, db, rng) + " " + example.reasoning
+                out.append(example)
+                stats["turns"] += 1
+            if captions:
+                question = rng.choice(VISION_QUESTIONS)
+                caption = describe_view(observation, db, rng)
+                out.append(Example([{"role": "system", "content": VISION_SYSTEM}, {"role": "user", "content": question},
+                                    {"role": "assistant", "content": caption}], "vision", "vision", {},
+                                   reasoning=vision_reasoning(observation, None, db, rng) + " Now describe it in my answer.",
+                                   images=[image]))
+                stats["captions"] += 1
+            if len(out) >= limit:
+                return out, dict(stats)
+    return out, dict(stats)
 
 
 # --------------------------------------------------------------------------- wiki
@@ -890,7 +1031,8 @@ def write_jsonl(path: Path, examples: Iterable[Example]) -> int:
 def build_dataset(out_dir: Path, *, seed: int = 7, rule_turns: int = 6000, mob_rounds: int = 3,
                   wiki_pages: list[WikiPage] | None = None, teacher: Callable[[str, str], str] | None = None,
                   teacher_turns: int = 0, recorded: Iterable[Path] = (), playtime: Path | None = None,
-                  eval_fraction: float = 0.05, log: Callable[[str], None] = print) -> dict[str, Any]:
+                  screenshots: Path | None = None, eval_fraction: float = 0.05,
+                  log: Callable[[str], None] = print) -> dict[str, Any]:
     """Write ``train.jsonl``, ``eval.jsonl`` and ``dataset_card.json`` to ``out_dir``."""
     rng = random.Random(seed)
     db = load_mobs()
@@ -906,6 +1048,14 @@ def build_dataset(out_dir: Path, *, seed: int = 7, rule_turns: int = 6000, mob_r
         examples += recorded_examples(Path(path))
     if playtime is not None:
         examples += playtime_examples(Path(playtime), rng, db=db)
+    vision_stats: dict[str, int] = {}
+    if screenshots is not None:
+        made, vision_stats = vision_examples(Path(screenshots), Path(out_dir), rng, db=db)
+        examples += made
+        log(f"vision: {vision_stats.get('shots', 0)} screenshots -> {vision_stats.get('turns', 0)} image turns + "
+            f"{vision_stats.get('captions', 0)} captions ({vision_stats.get('missing', 0)} missing)")
+        if not made:
+            log("vision: no usable screenshots - record with the mod's screenshots on (/pymcbot screenshots on, mod 0.10+)")
     if wiki_pages:
         examples += wiki_examples(wiki_pages, rng)
     examples = dedupe(examples)
@@ -923,6 +1073,10 @@ def build_dataset(out_dir: Path, *, seed: int = 7, rule_turns: int = 6000, mob_r
         "sources": dict(Counter(e.source for e in examples)),
         "kinds": dict(Counter(e.kind for e in examples)),
         "teacher": teacher_stats,
+        "vision": vision_stats,
+        "images": sum(len(e.images) for e in examples),
+        "reasoning": sum(1 for e in examples if e.reasoning),
+        "model_name": "Minecraftism",
         "compact_tag": COMPACT_TAG,
         "mob_database": {"mobs": len(db), "edition": db.meta.get("edition"), "updated": db.meta.get("updated")},
         "licenses": [WIKI_LICENSE] if wiki_pages else [],
@@ -955,4 +1109,12 @@ def validate_rows(rows: Iterable[dict[str, Any]]) -> list[str]:
                 parse_decision(messages[-1]["content"])
             except ValueError as exc:
                 problems.append(f"row {number}: assistant reply is not a decision ({exc})")
+        reasoning = row.get("reasoning")
+        if reasoning is not None and (not isinstance(reasoning, str) or "{" in reasoning or "}" in reasoning or "</think>" in reasoning):
+            problems.append(f"row {number}: reasoning must be plain text without braces or think tags")
+        images = row.get("images")
+        if images is not None and (not isinstance(images, list) or not all(isinstance(i, str) and i for i in images)):
+            problems.append(f"row {number}: images must be a list of file names")
+        if row.get("kind") == "vision" and not images:
+            problems.append(f"row {number}: a vision row needs a picture")
     return problems
