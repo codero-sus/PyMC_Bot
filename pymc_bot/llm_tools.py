@@ -57,7 +57,8 @@ def write_modelfile(gguf: Path, info: dict[str, Any] | None = None) -> Path:
     family = info.get("family") or preset.get("family") or ("llama3" if "llama" in gguf.name.lower() else "chatml")
     mmproj = find_mmproj(gguf, info)
     parameters = info.get("run_parameters") or preset.get("run_parameters")
-    text = modelfile_text(gguf.name, family, template, mmproj.name if mmproj else None, parameters)
+    text = modelfile_text(gguf.name, family, template, mmproj.name if mmproj else None, parameters,
+                          info.get("system_prompt") or None)
     text = text.replace(f"FROM ./{gguf.name}", f"FROM {gguf.as_posix()}", 1)
     if mmproj:
         text = text.replace(f"FROM ./{mmproj.name}", f"FROM {mmproj.resolve().as_posix()}", 1)
@@ -76,7 +77,7 @@ def find_mmproj(gguf: Path, info: dict[str, Any] | None = None) -> Path | None:
 
 def default_name(info: dict[str, Any]) -> str:
     """Ollama name for an imported model: the Minecraftism edition, else the old default."""
-    return str(info.get("edition") or DEFAULT_MODEL_NAME)
+    return str(info.get("edition") or DEFAULT_MODEL_NAME) + ("-uncensored" if info.get("uncensored") else "")
 
 
 def _activate(store: ConfigStore, name: str, info: dict[str, Any]) -> None:
@@ -123,26 +124,53 @@ def hf_reference(repo: str, quant: str = "Q4_K_M") -> str:
 def edition_from_repo(repo: str) -> dict[str, Any]:
     """Guess the Minecraftism edition from a repo name (for the Ollama name and vision switch)."""
     low = repo.lower().split(":")[0]
+    uncensored = "-uncensored" in low
+    low = low.replace("-uncensored", "")
     for edition in sorted((n for n in PRESETS if n.startswith("minecraftism")), key=len, reverse=True):
         hub = str(PRESETS[edition].get("hub") or "").lower()
         if hub and low.endswith("/" + hub):
-            return {"edition": edition, "vision": bool(PRESETS[edition].get("vision")), "compact_prompt": True}
+            return {"edition": edition, "vision": bool(PRESETS[edition].get("vision")), "compact_prompt": True,
+                    "uncensored": uncensored}
     vision = "-vl" in low or "vision" in low
-    return {"vision": vision, "compact_prompt": "minecraftism" in low or "pymc" in low}
+    return {"vision": vision, "compact_prompt": "minecraftism" in low or "pymc" in low, "uncensored": uncensored}
+
+
+def fetch_hf_report(reference: str, timeout: float = 15.0) -> dict[str, Any]:
+    """``pymc_model.json`` from a (public) Hugging Face repo; {} when it is missing or private."""
+    import httpx
+
+    repo = reference.removeprefix("hf.co/").split(":")[0]
+    try:
+        response = httpx.get(f"https://huggingface.co/{repo}/resolve/main/pymc_model.json", timeout=timeout,
+                             follow_redirects=True)
+        data = response.json() if response.status_code == 200 else {}
+    except (httpx.HTTPError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def import_model_hf(repo: str, store: ConfigStore, name: str | None = None, quant: str = "Q4_K_M", activate: bool = True,
-                    run: Callable[..., Any] = subprocess.run,
-                    which: Callable[[str], str | None] = shutil.which) -> ImportResult:
-    """``ollama pull hf.co/<repo>:<quant>``, copy it to a short name, switch the bot to it."""
+                    run: Callable[..., Any] = subprocess.run, which: Callable[[str], str | None] = shutil.which,
+                    fetch: Callable[[str], dict[str, Any]] = fetch_hf_report) -> ImportResult:
+    """``ollama pull hf.co/<repo>:<quant>``, give it a short name (with the model's default system
+    prompt from its ``pymc_model.json``), switch the bot to it."""
     reference = hf_reference(repo, quant)
-    info = edition_from_repo(reference)
-    name = name or str(info.get("edition") or reference.split("/")[-1].split(":")[0].lower())
+    info = {**edition_from_repo(reference), **{k: v for k, v in fetch(reference).items() if v not in (None, "")}}
+    name = name or (default_name(info) if info.get("edition") else reference.split("/")[-1].split(":")[0].lower())
     created = False
     if which("ollama"):
         proc = run(["ollama", "pull", reference], capture_output=True, text=True)
         if proc.returncode == 0:
-            copy = run(["ollama", "cp", reference, name], capture_output=True, text=True)
+            if info.get("system_prompt"):
+                import tempfile
+
+                with tempfile.TemporaryDirectory() as folder:
+                    modelfile = Path(folder) / "Modelfile"
+                    system = str(info["system_prompt"]).replace('"""', "''")
+                    modelfile.write_text(f'FROM {reference}\nSYSTEM """{system}"""\n', encoding="utf-8")
+                    copy = run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True)
+            else:
+                copy = run(["ollama", "cp", reference, name], capture_output=True, text=True)
             created = copy.returncode == 0
             message = (f"Ollama model '{name}' pulled from {reference}" if created
                        else f"pulled {reference}, but ollama cp failed: {(copy.stderr or copy.stdout or '').strip()[-300:]}")

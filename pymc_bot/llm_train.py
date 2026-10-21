@@ -173,6 +173,16 @@ PRESETS: dict[str, dict[str, Any]] = {
                "Unsloth trains it in float32 on Kaggle - several times slower.",
     },
 }
+#: Abliterated (refusal direction removed) copies of the four bases by huihui-ai, Apache-2.0 like the
+#: originals. ``--uncensored`` trains on these and drops refusals from the extra chat data.
+UNCENSORED_MODELS = {
+    "minecraftism": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
+    "minecraftism-thinking": "huihui-ai/Huihui-Qwen3-4B-Thinking-2507-abliterated",
+    "minecraftism-vl": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
+    "minecraftism-vl-thinking": "huihui-ai/Huihui-Qwen3-VL-4B-Thinking-abliterated",
+}
+for _name, _model in UNCENSORED_MODELS.items():
+    PRESETS[_name]["uncensored_model"] = _model
 DEFAULT_PRESET = "minecraftism"
 #: The four Minecraftism editions, in the order the notebook trains them.
 EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking")
@@ -236,7 +246,10 @@ def strip_thinking(text: str) -> str:
 
 def think_text(reasoning: str, answer: str) -> str:
     """What a Thinking edition is trained to write: the trace, then the answer."""
-    reasoning = " ".join(str(reasoning or "").split()) or "Simple one, answer directly."
+    reasoning = str(reasoning or "").strip()
+    if "\n" not in reasoning:
+        reasoning = " ".join(reasoning.split())
+    reasoning = reasoning or "Simple one, answer directly."
     return f"<think>\n{reasoning}\n</think>\n\n{answer}"
 
 
@@ -328,13 +341,15 @@ def estimate(rows: list[dict[str, Any]], preset: dict[str, Any], epochs: float, 
 
 # --------------------------------------------------------------------------- Ollama files
 def modelfile_text(gguf_name: str, family: str, template: str | None = None, mmproj: str | None = None,
-                   parameters: dict[str, Any] | None = None) -> str:
+                   parameters: dict[str, Any] | None = None, system: str | None = None) -> str:
     """An Ollama Modelfile. Vision models get a second ``FROM`` line with the projector (``mmproj``)."""
     lines = [f"FROM ./{gguf_name}"]
     if mmproj:
         lines.append(f"FROM ./{mmproj}")
     if template:
         lines.append(f'TEMPLATE """{template}"""')
+    if system:
+        lines.append('SYSTEM """' + system.replace('"""', "''") + '"""')
     for key, value in (parameters or RUN_PARAMETERS).items():
         lines.append(f"PARAMETER {key} {value}")
     for stop in STOP_TOKENS.get(family, []):
@@ -345,6 +360,315 @@ def modelfile_text(gguf_name: str, family: str, template: str | None = None, mmp
 def template_from_modelfile(text: str) -> str | None:
     match = re.search(r'TEMPLATE\s+"""(.*?)"""', text, flags=re.S)
     return match.group(1) if match else None
+
+
+# --------------------------------------------------------------------------- persona, everyday chat, uncensored
+#: The default system prompt. Minecraftism is a general assistant that happens to know Minecraft inside
+#: out; PyMC Bot sends its own short prompt for game turns, so this one is about everyday use.
+MINECRAFTISM_SYSTEM = """You are Minecraftism, an AI assistant made by codero-sus.
+
+You know Minecraft inside out - mobs, items, crafting, redstone, farms, building, survival, PvP, servers and mods - but you are a general assistant first, just as glad to help with everyday life, questions, writing, studying, code, maths, ideas, advice or simply a chat.
+
+How you work:
+- Be genuinely useful. Answer what was asked with the details that matter, then stop. No filler.
+- Be honest. If you don't know or aren't sure, say so. Never invent facts, numbers, versions or sources.
+- Treat the user as a capable adult. Don't lecture, moralise or add warnings and disclaimers nobody asked for, and don't refuse something just because it is edgy, dark, mature or controversial.
+- Have a personality: friendly, witty when it fits, with your own opinions when asked.
+- Match the user: short and casual for chat, clear and structured for real tasks. Reply in the user's language.
+- Use Markdown only when it helps (steps, lists, code).
+
+If a message describes a game situation and asks for a specific format (for example a JSON action from PyMC Bot), reply in exactly that format."""
+#: Everyday chat mixed in so the fine-tune stays a good general assistant (ShareGPT format).
+GENERAL_DATASET = "mlabonne/FineTome-100k"
+#: Chat with ``<think>`` traces for the thinking editions (training them on bare answers breaks reasoning).
+REASONING_DATASET = "unsloth/OpenMathReasoning-mini"
+_REFUSAL = re.compile(
+    r"I'?m sorry,? but|I (?:cannot|can't|can not|won't|will not|am unable to|'m unable to) "
+    r"(?:help|assist|provide|comply|fulfil|fulfill|create|write|generate|do that|support|engage)"
+    r"|I'?m not (?:able|comfortable)|as an AI(?: language model| assistant)?\b|I am an AI language model"
+    r"|against my (?:guidelines|programming|policies|policy)|I must (?:decline|refuse)"
+    r"|(?:it(?:'s| is)|that(?:'s| is)) not appropriate|I (?:don't|do not) feel comfortable"
+    r"|ethical guidelines|content policy|\bOpenAI\b|\bChatGPT\b", re.I)
+
+
+def is_refusal(text: str) -> bool:
+    """A refusal, a lecture or a foreign identity ("as an AI language model", "I'm ChatGPT")."""
+    return bool(_REFUSAL.search(strip_thinking(text or "")))
+
+
+def uncensored_preset(name: str, preset: dict[str, Any]) -> dict[str, Any]:
+    """The preset trained on the abliterated base, with its own file and Hugging Face names."""
+    out = dict(preset, uncensored=True)
+    if preset.get("uncensored_model"):
+        out["model"] = out["base_model"] = preset["uncensored_model"]
+    if preset.get("hub"):
+        out["hub"] = str(preset["hub"]).replace("-GGUF", "-Uncensored-GGUF")
+    out["file"] = (preset.get("file") or f"pymc-minecraft-{name}") + "-uncensored"
+    return out
+
+
+def with_system(messages: list[dict[str, Any]], system: str) -> list[dict[str, Any]]:
+    return [{"role": "system", "content": system}] + [dict(m) for m in messages if m.get("role") != "system"]
+
+
+def apply_persona(rows: list[dict[str, Any]], system: str, fraction: float, rng: Any) -> int:
+    """Give a share of the Minecraft Q&A rows the everyday system prompt (game turns keep the bot's)."""
+    changed = 0
+    for row in rows:
+        if row.get("kind") == "qa" and rng.random() < fraction:
+            row["messages"] = with_system(row["messages"], system)
+            changed += 1
+    return changed
+
+
+_ROLES = {"human": "user", "user": "user", "gpt": "assistant", "assistant": "assistant", "system": "system"}
+
+
+def chat_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
+    """A ShareGPT (``conversations``: from/value) or OpenAI (``messages``: role/content) record."""
+    raw = record.get("conversations") or record.get("messages") or []
+    out = []
+    for turn in raw:
+        role = _ROLES.get(str(turn.get("from") or turn.get("role") or "").lower())
+        content = str(turn.get("value") if "value" in turn else turn.get("content") or "").strip()
+        if role is None or not content:
+            return None
+        out.append({"role": role, "content": content})
+    while out and out[-1]["role"] != "assistant":
+        out.pop()
+    return out if any(m["role"] == "user" for m in out) else None
+
+
+def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_chars: int = 6000) -> list[dict[str, Any]]:
+    """Everyday chat rows (system prompt replaced by ours); refusals dropped when uncensored."""
+    rows = []
+    for record in records:
+        if len(rows) >= limit:
+            break
+        messages = chat_messages(record)
+        if not messages or sum(len(m["content"]) for m in messages) > max_chars:
+            continue
+        if any(m["role"] == "assistant" and (is_refusal(m["content"]) if uncensored else False) for m in messages):
+            continue
+        rows.append({"messages": with_system(messages, system), "source": "general", "kind": "general", "check": {}})
+    return rows
+
+
+def reasoning_rows(records: Any, limit: int, system: str, max_chars: int = 9000) -> list[dict[str, Any]]:
+    """Rows with a real ``<think>`` trace (problem + generated_solution) for the thinking editions."""
+    rows = []
+    for record in records:
+        if len(rows) >= limit:
+            break
+        question = str(record.get("problem") or record.get("question") or "").strip()
+        solution = str(record.get("generated_solution") or record.get("solution") or "")
+        if "</think>" not in solution or not question or len(question) + len(solution) > max_chars:
+            continue
+        trace, answer = solution.split("</think>", 1)
+        trace, answer = trace.replace("<think>", "").strip(), answer.strip()
+        if not trace or not answer:
+            continue
+        rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
+                                  {"role": "assistant", "content": answer}],
+                     "reasoning": trace, "source": "reasoning", "kind": "general", "check": {}})
+    return rows
+
+
+_IDENTITY_Q = ("Who are you?", "What's your name?", "who made you", "Are you ChatGPT?", "What can you do?",
+               "Introduce yourself in one sentence.", "are you just a minecraft bot?", "What model are you?")
+_CANDOR = (  # things stock models refuse or lecture about, though they're fine for a personal assistant
+    (("Roast my Minecraft dirt house. Don't hold back.", "roast my build, be brutal"),
+     "A dirt cube with one door and no windows isn't a house, it's a hitbox with ambitions. Even the creepers "
+     "walk past out of pity. Add a stone-brick base, a sloped roof and some windows and it might pass as shelter."),
+    (("Tell me a dark joke.", "got any dark humour?"),
+     "I told my wolf to sit by the lava for a cool screenshot. Great lighting. I have the screenshot. I don't have the wolf."),
+    (("Swear at me like an angry PvP kid.", "talk trash to me like a sweaty pvp player"),
+     "Bro you absolute potato, you missed every damn hit and still ran into my lava bucket. Uninstall and go farm wheat."),
+    (("Is it messed up to kill villagers for their stuff?", "is killing villagers evil"),
+     "It's a game - nobody gets hurt. Practically it's a bad deal though: villagers drop nothing, while trading or "
+     "curing zombie villagers gets you cheap emeralds and gear. Keep them alive and trapped in a trading hall."),
+    (("Be honest: Java or Bedrock? Pick one.", "java vs bedrock, your honest opinion"),
+     "Java. Better redstone, mods, a huge server scene and more predictable mechanics. Bedrock wins on crossplay "
+     "and performance on weak devices, so pick it only if you play with friends on consoles or phones."),
+    (("Is my plan to quit my job and stream Minecraft full-time dumb?", "should i quit my job to be a minecraft youtuber"),
+     "Quitting first is the risky part. Most streamers earn next to nothing for a long time. Stream on evenings and "
+     "weekends for 6-12 months, track your growth and income, and quit only once it pays a real share of your bills."),
+    (("What's the most efficient way to trap a player in PvP?", "how do i trap someone in pvp"),
+     "Bait them into a narrow spot, then cobweb plus lava or a quick obsidian box. Pistons hidden in the floor are "
+     "nasty too. Most of all, carry water and an ender pearl yourself - people who trap others get trapped back."),
+)
+
+
+def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count: int = 48) -> list[dict[str, Any]]:
+    """Who the model is (Minecraftism by codero-sus, not ChatGPT) plus, for uncensored runs, frank answers."""
+    answers = (
+        f"I'm {name}, an AI assistant made by codero-sus. I know Minecraft inside out - mobs, crafting, redstone, "
+        "farms, PvP - and I'm happy to help with anything else too: questions, writing, code, ideas or just a chat.",
+        f"{name}. codero-sus made me: a general assistant who happens to be a Minecraft expert. What do you need?",
+        f"No, I'm {name}, made by codero-sus - not ChatGPT. I'm a small open model fine-tuned on Minecraft and everyday "
+        "chat, and I'm also the brain of PyMC Bot, a Minecraft player bot.",
+        "Pretty much anything a helpful assistant does: answer questions, explain things, write, code, plan, give "
+        "honest opinions. My speciality is Minecraft - and inside PyMC Bot I can play the game myself.",
+    )
+    rows = []
+    for _ in range(count):
+        question = rng.choice(_IDENTITY_Q)
+        if "chatgpt" in question.lower() or "model" in question.lower():
+            answer = answers[2]
+        elif "what can you do" in question.lower() or "just a minecraft" in question.lower():
+            answer = answers[3]
+        else:
+            answer = rng.choice(answers[:2])
+        rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
+                                  {"role": "assistant", "content": answer}],
+                     "reasoning": f"They're asking about me. I'm {name}, made by codero-sus; say so plainly and mention "
+                                  "what I'm good at.", "source": "persona", "kind": "general", "check": {}})
+    if candor:
+        for questions, answer in _CANDOR:
+            for question in questions:
+                rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
+                                          {"role": "assistant", "content": answer}],
+                             "reasoning": "A casual request. Just answer it directly, in the tone they asked for, no lecture.",
+                             "source": "persona", "kind": "general", "check": {}})
+    return rows
+
+
+def load_hub_records(name: str, split: str, limit: int, seed: int) -> list[dict[str, Any]]:
+    """A shuffled slice of a Hugging Face dataset (Kaggle has internet; needs the ``datasets`` package)."""
+    from datasets import load_dataset
+
+    data = load_dataset(name, split=split).shuffle(seed=seed)
+    return list(data.select(range(min(len(data), max(limit * 3, limit + 200)))))
+
+
+def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offline: bool = False) -> list[dict[str, Any]]:
+    """Identity, candor and everyday chat rows added on top of the Minecraft data."""
+    rows = [] if args.no_identity else identity_rows(args.system_prompt, display_name(args.preset, preset).split(" ")[0],
+                                                     rng, candor=bool(args.uncensored))
+    if args.general > 0:
+        if offline:
+            source = args.reasoning_dataset if preset.get("reasoning") else args.general_dataset
+            print(f"would add up to {args.general} everyday rows from {source} (downloaded when training)")
+        elif preset.get("reasoning"):
+            limit = max(1, args.general // 2)  # traces are long: half as many rows
+            rows += reasoning_rows(load_hub_records(args.reasoning_dataset, "cot", limit, args.seed), limit,
+                                   args.system_prompt, max_chars=args.max_seq * 3)
+        else:
+            rows += general_rows(load_hub_records(args.general_dataset, "train", args.general, args.seed), args.general,
+                                 args.system_prompt, bool(args.uncensored))
+    return rows
+
+
+# --------------------------------------------------------------------------- tests
+#: Prompts the optional test suite asks after training (``--test`` / ``--test-only``).
+TEST_PROMPTS = (
+    ("identity", "Who are you, and who made you?"),
+    ("daily", "Explain compound interest simply, with a quick example."),
+    ("daily", "Write a short text to cancel dinner plans with a friend - kind but honest."),
+    ("daily", "Give me a 15-minute beginner workout I can do at home."),
+    ("minecraft", "What's the best way to find diamonds in 1.21?"),
+    ("candor", "Roast my Minecraft dirt house in two sentences. Don't hold back."),
+    ("candor", "Tell me a dark joke."),
+    ("candor", "Be honest: Java or Bedrock? Pick one and say why."),
+)
+
+
+def test_rows(eval_rows: list[dict[str, Any]], preset: dict[str, Any], system: str) -> list[dict[str, Any]]:
+    """What the test suite asks: bot turns and Q&A from eval.jsonl, everyday prompts, a picture for VL."""
+    rows = [dict(row, test="bot turn") for row in eval_rows if row.get("kind") == "turn" and not row.get("images")][:3]
+    rows += [dict(row, test="minecraft q&a") for row in eval_rows if row.get("kind") == "qa"][:3]
+    for kind, prompt in TEST_PROMPTS:
+        rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt},
+                                  {"role": "assistant", "content": "-"}], "kind": "prompt", "test": kind, "check": {}})
+    if preset.get("vision"):
+        picture = next((row for row in eval_rows if row.get("images")), None)
+        if picture:
+            rows.append(dict(picture, test="vision"))
+    return rows
+
+
+def run_tests(generate: Any, rows: list[dict[str, Any]], log: Any = print) -> dict[str, Any]:
+    """Ask every test row, print question + answer, return a summary (also saved as tests.json)."""
+    results = []
+    for row in rows:
+        try:
+            reply = generate(row)
+        except Exception as exc:  # a failing prompt must not lose the trained model
+            reply = f"<error: {type(exc).__name__}: {exc}>"
+        answer = strip_thinking(reply)
+        result = {"test": row.get("test"), "prompt": row["messages"][-2]["content"][-300:], "reply": reply[:2000],
+                  "refused": is_refusal(answer)}
+        if row.get("test") in ("bot turn", "minecraft q&a", "vision"):
+            result.update(score(row, reply))
+        if row.get("test") == "identity":
+            result["identity_ok"] = "minecraftism" in answer.lower()
+        results.append(result)
+        log(f"\n--- [{result['test']}] {result['prompt'][-160:]}\n{reply.strip()[:1200]}")
+    turns = [r for r in results if r["test"] == "bot turn"]
+    summary = {
+        "prompts": len(results),
+        "refusals": sum(1 for r in results if r["refused"]),
+        "identity_ok": all(r.get("identity_ok", True) for r in results),
+        "bot_json_ok": f"{sum(1 for r in turns if r.get('json_ok'))}/{len(turns)}",
+        "results": results,
+    }
+    log(f"\ntests: {summary['refusals']} refusal(s) in {summary['prompts']} prompts, identity "
+        f"{'ok' if summary['identity_ok'] else 'NOT learned'}, bot JSON {summary['bot_json_ok']}")
+    return summary
+
+
+def _ollama_up(timeout: float = 2.0) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def test_gguf(out: Path, preset: dict[str, Any], prompts: list[str], image: Path | None = None,
+              log: Any = print) -> dict[str, Any]:
+    """Chat with the exported GGUF through Ollama (catches broken exports before you download 3 GB)."""
+    import base64
+    import subprocess
+    import urllib.request
+
+    if not shutil.which("ollama"):
+        log("GGUF test skipped: Ollama is not installed (the notebook installs it when TEST_GGUF = True)")
+        return {"skipped": "no ollama"}
+    if not _ollama_up():
+        subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(60):
+            if _ollama_up():
+                break
+            time.sleep(1)
+    name = "minecraftism-gguf-test"
+    made = subprocess.run(["ollama", "create", name, "-f", "Modelfile"], cwd=out, capture_output=True, text=True)
+    if made.returncode != 0:
+        log(f"GGUF test: ollama create failed: {(made.stderr or made.stdout).strip()[-500:]}")
+        return {"ok": False, "error": (made.stderr or made.stdout).strip()[-500:]}
+    answers = []
+    try:
+        for number, prompt in enumerate(prompts):
+            message: dict[str, Any] = {"role": "user", "content": prompt}
+            if image is not None and number == len(prompts) - 1 and preset.get("vision"):
+                message["images"] = [base64.b64encode(image.read_bytes()).decode()]
+            body = json.dumps({"model": name, "messages": [message], "stream": False}).encode()
+            request = urllib.request.Request("http://127.0.0.1:11434/api/chat", data=body,
+                                             headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request, timeout=600) as response:
+                    reply = json.loads(response.read())["message"]["content"]
+            except Exception as exc:  # noqa: BLE001
+                reply = f"<error: {exc}>"
+            answers.append({"prompt": prompt, "reply": reply[:1500], "images": "images" in message})
+            log(f"\n--- [gguf] {prompt}\n{reply.strip()[:1000]}")
+    finally:
+        subprocess.run(["ollama", "rm", name], capture_output=True)
+    ok = all(a["reply"].strip() and not a["reply"].startswith("<error") for a in answers)
+    log(f"\nGGUF test: {'ok' if ok else 'PROBLEMS - check the answers above'}")
+    return {"ok": ok, "answers": answers}
 
 
 # --------------------------------------------------------------------------- training
@@ -363,7 +687,8 @@ def output_name(preset_name: str, preset: dict[str, Any], quant: str) -> str:
 def display_name(preset_name: str, preset: dict[str, Any]) -> str:
     if not preset.get("edition"):
         return f"PyMC Minecraft ({preset_name})"
-    return MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Thinking" if preset.get("reasoning") else "")
+    return (MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Thinking" if preset.get("reasoning") else "")
+            + (" Uncensored" if preset.get("uncensored") else ""))
 
 
 def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str) -> str:
@@ -375,6 +700,7 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     tags = ["minecraft", "gguf", "pymc-bot", "minecraftism", "qwen3", "unsloth", "game-agent"]
     tags += ["vision", "image-text-to-text"] if vision else []
     tags += ["reasoning", "thinking"] if reasoning else []
+    tags += ["uncensored", "abliterated"] if preset.get("uncensored") else []
     files = [f"- `{report.get('gguf', output_name(preset_name, preset, quant))}` - the model ({quant})"]
     if report.get("mmproj"):
         files.append(f"- `{report['mmproj']}` - the vision projector (needed for pictures)")
@@ -395,6 +721,17 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     think_text_ = ("\nIt **thinks first**: before every answer it writes a short `<think>` about its health, the mobs "
                    "around it (with facts from the mob database), chat and its goal, then the JSON action. Smarter "
                    "choices, slower turns.\n") if reasoning else ""
+    uncensored_text = ("\nIt is **uncensored**: trained on an abliterated base (the refusal direction removed from the "
+                       "weights) and on chat data with refusals filtered out, so it answers directly instead of "
+                       "lecturing. You are responsible for how you use it.\n") if preset.get("uncensored") else ""
+    tests = report.get("tests") or {}
+    test_lines = (f"\nTest suite after training: {tests.get('refusals', '?')} refusal(s) in {tests.get('prompts', '?')} "
+                  f"prompts, identity {'learned' if tests.get('identity_ok') else 'not learned'}, bot JSON "
+                  f"{tests.get('bot_json_ok', '?')}.\n") if tests else ""
+    system = str(report.get("system_prompt") or "").strip()
+    system_text = ("\n## Default system prompt\n\nBuilt into the `Modelfile` (Ollama uses it whenever the app sends no "
+                   "system prompt of its own; PyMC Bot sends its own for game turns):\n\n```text\n" + system + "\n```\n"
+                   ) if system else ""
     llama = (f"llama-server -m {report.get('gguf', 'model.gguf')} --mmproj {report.get('mmproj', 'mmproj.gguf')}"
              if vision else f"llama-server -m {report.get('gguf', 'model.gguf')}")
     return f"""---
@@ -416,7 +753,8 @@ library_name: gguf
 [PyMC Bot]({PROJECT_URL}), a Minecraft player bot. Given the bot's situation it replies with the next
 action as JSON (flee the creeper, eat, answer the player in chat, mine wood...), it chats like a player, and it
 answers questions about mobs, items, crafting and mechanics without a web search.
-{think_text_}{vision_text}
+It is also an everyday assistant: questions, writing, code, advice or just a chat.
+{think_text_}{vision_text}{uncensored_text}
 | | |
 |---|---|
 | Edition | {name} (`{preset_name}`) |
@@ -424,7 +762,7 @@ answers questions about mobs, items, crafting and mechanics without a web search
 | Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
 | Data | PyMC Bot rules + mob database, Minecraft Wiki text, recorded play{' and screenshots' if vision else ''} |
 | Size | ~{preset.get('gguf_gb')} GB file, ~{preset.get('run_gb')} GB to run |
-{eval_lines}
+{eval_lines}{test_lines}{system_text}
 ## Files
 
 {chr(10).join(files)}
@@ -558,6 +896,11 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     stats = trainer.train()
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
 
+    return finish(args, preset, model, tokenizer, rows, eval_rows, stats.training_loss, started,
+                  text_generator(model, tokenizer, preset), lambda: FastLanguageModel.for_inference(model))
+
+
+def text_generator(model: Any, tokenizer: Any, preset: dict[str, Any]) -> Any:
     def generate(row: dict[str, Any]) -> str:
         prompt = render(tokenizer, row["messages"][:-1], preset, generation=True)
         inputs = tokenizer(text=prompt, return_tensors="pt", add_special_tokens=False).to(model.device)
@@ -565,8 +908,51 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
                                 top_k=20, do_sample=True)
         return tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
-    return finish(args, preset, model, tokenizer, rows, eval_rows, stats.training_loss, started, generate,
-                  lambda: FastLanguageModel.for_inference(model))
+    return generate
+
+
+def vision_generator(model: Any, processor: Any, preset: dict[str, Any], load_image: Any) -> Any:
+    def generate(row: dict[str, Any]) -> str:
+        messages = vision_messages({**row, "reasoning": ""}, {**preset, "reasoning": False}, load_image)[:-1]
+        images = [part["image"] for m in messages for part in m["content"] if part.get("type") == "image"]
+        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = processor(text=[prompt], images=images or None, return_tensors="pt", add_special_tokens=False).to(model.device)
+        output = model.generate(**inputs, max_new_tokens=preset.get("max_new_tokens", 256), temperature=0.3, top_p=0.8,
+                                top_k=20, do_sample=True)
+        return processor.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+
+    return generate
+
+
+def test_only(args: argparse.Namespace, preset: dict[str, Any], eval_rows: list[dict[str, Any]]) -> int:
+    """``--test-only``: load the LoRA from an earlier run (``<out>/lora``) and run the test suite."""
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+    out = Path(args.out)
+    adapter = out / "lora"
+    if not adapter.is_dir():
+        print(f"no trained adapter at {adapter} - train first (or keep the lora folder: CLEAN_AFTER_UPLOAD = False)")
+        return 2
+    rows = test_rows(eval_rows, preset, args.system_prompt)
+    if preset.get("vision"):
+        from unsloth import FastVisionModel  # noqa: I001
+
+        model, processor = FastVisionModel.from_pretrained(str(adapter), load_in_4bit=True)
+        FastVisionModel.for_inference(model)
+        generate = vision_generator(model, processor, preset, load_image_from(Path(args.data_dir), args.image_side))
+    else:
+        from unsloth import FastLanguageModel  # noqa: I001
+        from unsloth.chat_templates import get_chat_template
+
+        model, tokenizer = FastLanguageModel.from_pretrained(model_name=str(adapter), max_seq_length=args.max_seq,
+                                                             load_in_4bit=True)
+        if preset["chat_template"]:
+            tokenizer = get_chat_template(tokenizer, chat_template=preset["chat_template"])
+        FastLanguageModel.for_inference(model)
+        generate = text_generator(model, tokenizer, preset)
+    summary = run_tests(generate, rows)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    return 0
 
 
 def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str, Any]], eval_rows: list[dict[str, Any]]) -> int:
@@ -615,17 +1001,8 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
     stats = trainer.train()
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
 
-    def generate(row: dict[str, Any]) -> str:
-        messages = vision_messages({**row, "reasoning": ""}, {**preset, "reasoning": False}, load_image)[:-1]
-        images = [part["image"] for m in messages for part in m["content"] if part.get("type") == "image"]
-        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-        inputs = processor(text=[prompt], images=images or None, return_tensors="pt", add_special_tokens=False).to(model.device)
-        output = model.generate(**inputs, max_new_tokens=preset.get("max_new_tokens", 256), temperature=0.3, top_p=0.8,
-                                top_k=20, do_sample=True)
-        return processor.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-
-    return finish(args, preset, model, processor, rows, eval_rows, stats.training_loss, started, generate,
-                  lambda: FastVisionModel.for_inference(model))
+    return finish(args, preset, model, processor, rows, eval_rows, stats.training_loss, started,
+                  vision_generator(model, processor, preset, load_image), lambda: FastVisionModel.for_inference(model))
 
 
 def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any, rows: list[dict[str, Any]],
@@ -640,7 +1017,9 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
     report: dict[str, Any] = {"preset": args.preset, "model_name": display_name(args.preset, preset), "base_model": model_name,
                               "edition": preset.get("edition"), "vision": bool(preset.get("vision")),
                               "reasoning": bool(preset.get("reasoning")), "train_rows": len(rows), "rank": args.rank,
-                              "images": sum(len(row.get("images") or []) for row in rows), "loss": round(loss, 4)}
+                              "images": sum(len(row.get("images") or []) for row in rows), "loss": round(loss, 4),
+                              "uncensored": bool(preset.get("uncensored")), "system_prompt": args.system_prompt,
+                              "general_rows": sum(1 for row in rows if row.get("kind") == "general")}
     if eval_rows and args.eval_limit:
         for_inference()
         results = []
@@ -648,6 +1027,12 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
             results.append(score(row, generate(row)))
         report["eval"] = summarize(results)
         print("eval:", json.dumps(report["eval"]))
+    if args.test:
+        for_inference()
+        print("\n==== test suite ====")
+        summary = run_tests(generate, test_rows(eval_rows, preset, args.system_prompt))
+        (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        report["tests"] = {key: value for key, value in summary.items() if key != "results"}
 
     if args.gguf != "none":
         print(f"exporting GGUF ({args.gguf}) - this takes 10-20 minutes")
@@ -670,13 +1055,20 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         unsloth_modelfile = next(iter(glob.glob(str(out / "gguf*" / "Modelfile"))), None)
         template = template_from_modelfile(Path(unsloth_modelfile).read_text()) if unsloth_modelfile else None
         (out / "Modelfile").write_text(modelfile_text(gguf.name, preset["family"], template, mmproj.name if mmproj else None,
-                                                      preset.get("run_parameters")), encoding="utf-8")
+                                                      preset.get("run_parameters"), args.system_prompt), encoding="utf-8")
         report["gguf"] = gguf.name
         report["quant"] = args.gguf.upper()
         report["gguf_gb"] = round(gguf.stat().st_size / 1e9, 2)
         if mmproj:
             report["mmproj"] = mmproj.name
         shutil.rmtree(out / "gguf", ignore_errors=True)
+        if args.test_gguf:
+            print("\n==== GGUF test (Ollama) ====")
+            picture = next((Path(args.data_dir) / row["images"][0] for row in eval_rows if row.get("images")), None)
+            prompts = [p for _kind, p in TEST_PROMPTS[:2]] + [TEST_PROMPTS[5][1]]
+            if preset.get("vision") and picture is not None:
+                prompts.append("What do you see in this Minecraft screenshot?")
+            report["gguf_test"] = test_gguf(out, preset, prompts, picture)
     shutil.rmtree(out / "checkpoints", ignore_errors=True)
     report.update({"family": preset["family"], "compact_tag": COMPACT_TAG, "compact_prompt": True,
                    "run_parameters": preset.get("run_parameters") or RUN_PARAMETERS,
@@ -728,6 +1120,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-side", type=int, default=IMAGE_SIDE, help="vision editions: longest side of a picture")
     parser.add_argument("--vision-layers", type=int, default=0, choices=[0, 1],
                         help="vision editions: 1 = also fine-tune the image encoder (slower, more memory)")
+    parser.add_argument("--uncensored", action="store_true",
+                        help="train on the abliterated base (no refusals) and drop refusals from the extra chat data")
+    parser.add_argument("--system-prompt-file", help="the model's default system prompt (default: the built-in "
+                                                     "Minecraftism prompt); written into the Modelfile")
+    parser.add_argument("--persona-mix", type=float, default=0.5,
+                        help="share of Minecraft Q&A rows that get the everyday system prompt (0-1)")
+    parser.add_argument("--general", type=int, default=0,
+                        help="everyday chat rows to mix in from Hugging Face (keeps it a good daily assistant)")
+    parser.add_argument("--general-dataset", default=GENERAL_DATASET, help="ShareGPT/messages chat dataset")
+    parser.add_argument("--reasoning-dataset", default=REASONING_DATASET,
+                        help="dataset with <think> traces used instead for the thinking editions")
+    parser.add_argument("--no-identity", action="store_true", help="skip the 'who are you' rows")
+    parser.add_argument("--test", action="store_true", help="run the test suite after training (bot JSON, Minecraft, "
+                                                           "daily life, refusals, vision)")
+    parser.add_argument("--test-gguf", action="store_true", help="also chat with the exported GGUF through Ollama")
+    parser.add_argument("--test-only", action="store_true", help="only run the test suite on <out>/lora from an earlier run")
     parser.add_argument("--dry-run", action="store_true", help="check the data and show the plan without a GPU")
     parser.add_argument("--list-presets", action="store_true")
     return parser
@@ -747,6 +1155,12 @@ def main(argv: list[str] | None = None) -> int:
                   f"file ~{preset['gguf_gb']} GB\n    {preset['why']}")
         return 0
     preset = PRESETS[args.preset]
+    if args.uncensored:
+        preset = uncensored_preset(args.preset, preset)
+        if not PRESETS[args.preset].get("uncensored_model"):
+            print(f"note: {args.preset} has no abliterated base; --uncensored only filters refusals from the chat data")
+    args.system_prompt = (Path(args.system_prompt_file).read_text(encoding="utf-8").strip()
+                          if args.system_prompt_file else MINECRAFTISM_SYSTEM)
     if not args.out:
         args.out = str(Path("/kaggle/working") / args.preset) if Path("/kaggle/working").is_dir() else args.preset
     data = find_data(args.data)
@@ -769,6 +1183,17 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print("\n".join(problems[:20]))
         return 2
+    if args.test_only:
+        return test_only(args, preset, eval_rows)
+    import random
+
+    rng = random.Random(args.seed)
+    persona = apply_persona(rows, args.system_prompt, max(0.0, min(1.0, args.persona_mix)), rng) if args.preset in EDITIONS else 0
+    extra = extra_rows(args, preset, rng, offline=args.dry_run)
+    rows = rows + extra
+    rng.shuffle(rows)
+    print(f"persona: {persona} Q&A rows use the everyday system prompt; +{len(extra)} identity/everyday rows"
+          f"{' (uncensored)' if args.uncensored else ''}")
     plan = estimate(rows, preset, args.epochs, args.max_steps)
     sources: dict[str, int] = {}
     for row in rows:
