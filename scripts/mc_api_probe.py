@@ -62,6 +62,9 @@ LOOKUPS: list[tuple[str, str]] = [
     ("net.minecraft.client.Screenshot", r"."),
     ("com.mojang.blaze3d.platform.NativeImage", r"Pixel|writeToFile|NativeImage\(|getWidth|getHeight|close"),
     ("net.minecraft.client.Minecraft", r"getMainRenderTarget|RenderTarget"),
+    ("net.minecraft.client.renderer.GameRenderer", r"RenderTarget|[Tt]arget"),
+    ("net.minecraft.client.gui.Gui", r"RenderTarget|[Tt]arget"),
+    ("com.mojang.blaze3d.platform.Window", r"RenderTarget|[Tt]arget"),
     ("net.minecraft.resources.ResourceKey", r"location|identifier"),
     ("net.minecraft.world.food.FoodData", r"getFoodLevel"),
 ]

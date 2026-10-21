@@ -3,6 +3,7 @@ package dev.pymc.pymcb.client.compat;
 import net.minecraft.client.Screenshot;
 import dev.pymc.pymcb.client.ScreenshotTaker;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import java.util.function.Consumer;
 
 import com.mojang.blaze3d.platform.InputConstants;
@@ -99,12 +100,78 @@ public final class Mc {
      * callback runs a frame or two later, on the render thread.
      */
     public static void screenshot(Minecraft client, int maxWidth, Consumer<NativeImage> done) {
-        Screenshot.takeScreenshot(client.getMainRenderTarget(), full -> {
+        Screenshot.takeScreenshot(mainRenderTarget(client), full -> {
             try (full) {
                 done.accept(ScreenshotTaker.downscale(full, maxWidth, NativeImage::getPixel, NativeImage::setPixel));
             }
         });
     }
+
+    /**
+     * The game's main framebuffer. 26.2 removed {@code Minecraft.getMainRenderTarget()}; since 26.x
+     * runs unobfuscated, the new home is found once by type (a {@code RenderTarget} reachable from
+     * the client or one of its public renderer objects, preferring a member named "main") and the
+     * route is remembered.
+     */
+    private static RenderTarget mainRenderTarget(Minecraft client) {
+        if (targetRoute != null) {
+            try {
+                Object holder = targetRoute[0] == null ? client : ((java.lang.reflect.Field) targetRoute[0]).get(client);
+                Object target = ((java.lang.reflect.Method) targetRoute[1]).invoke(holder);
+                if (target instanceof RenderTarget renderTarget) {
+                    return renderTarget;
+                }
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                targetRoute = null;
+            }
+        }
+        java.util.List<java.lang.reflect.Field> holders = new java.util.ArrayList<>();
+        holders.add(null);
+        for (java.lang.reflect.Field field : Minecraft.class.getFields()) {
+            if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())
+                    && field.getType().getName().startsWith("net.minecraft.client")) {
+                holders.add(field);
+            }
+        }
+        java.lang.reflect.Method best = null;
+        java.lang.reflect.Field bestHolder = null;
+        for (java.lang.reflect.Field holderField : holders) {
+            Object holder;
+            try {
+                holder = holderField == null ? client : holderField.get(client);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                continue;
+            }
+            if (holder == null) {
+                continue;
+            }
+            for (java.lang.reflect.Method method : holder.getClass().getMethods()) {
+                if (method.getParameterCount() != 0 || java.lang.reflect.Modifier.isStatic(method.getModifiers())
+                        || !RenderTarget.class.isAssignableFrom(method.getReturnType())) {
+                    continue;
+                }
+                boolean main = method.getName().toLowerCase(java.util.Locale.ROOT).contains("main");
+                if (best == null || main) {
+                    best = method;
+                    bestHolder = holderField;
+                }
+                if (main) {
+                    break;
+                }
+            }
+            if (best != null && best.getName().toLowerCase(java.util.Locale.ROOT).contains("main")) {
+                break;
+            }
+        }
+        if (best == null) {
+            throw new IllegalStateException("no RenderTarget getter found on Minecraft or its renderers");
+        }
+        targetRoute = new Object[]{bestHolder, best};
+        return mainRenderTarget(client);
+    }
+
+    /** {holder field or null for the client itself, getter} found by {@link #mainRenderTarget}. */
+    private static Object[] targetRoute;
 
     // ------------------------------------------------------------------ GUI
 

@@ -23,18 +23,18 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 
 /**
- * Version bridge for Minecraft 1.21.1 - 1.21.4.
+ * Version bridge for Minecraft 1.21.1.
  *
  * <p>Everything in the recorder that differs between Minecraft versions goes through this
  * class; the rest of the mod is identical for every target. There is one copy of this file
  * per API era under {@code mod/src/compat/<era>/}, and the build picks the right one from
  * {@code mod/versions.json} ({@code ./gradlew build -Pmc=<version>}).
  *
- * <p>What changed in this era: the selected hotbar slot is the public field {@code Inventory.selected}; key categories are plain translation keys; ids are {@code ResourceLocation}.
+ * <p>What changed in this era: the selected hotbar slot is the public field {@code Inventory.selected}; key categories are plain translation keys; ids are {@code ResourceLocation}; screenshot pixels are read with {@code NativeImage.getPixelRGBA}.
  */
 public final class Mc {
     /** The Minecraft versions this copy is compiled for (shown by {@code /pymcbot version}). */
-    public static final String ERA = "1.21.1 - 1.21.4";
+    public static final String ERA = "1.21.1";
 
     /** Key mapping category (a translation key before 1.21.9). */
     private static final String CATEGORY = "key.categories.pymcbot";

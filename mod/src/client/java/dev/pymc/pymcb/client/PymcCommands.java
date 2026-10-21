@@ -272,7 +272,7 @@ public final class PymcCommands {
                 + "to import it into Ollama and select it in the config page."
                 + (PlaytimeConfig.get().screenshots
                 ? "\nscreenshots are on - build Minecraftism VL data with:\n"
-                        + "python -m pymc_bot llm build --recorded \"" + dataset + "\" --screenshots"
+                        + "python -m pymc_bot llm build --playtime \"" + dataset + "\" --screenshots"
                 : "");
     }
 
