@@ -69,6 +69,8 @@ public final class PlaytimeRecorder {
     private static final DateTimeFormatter RUN_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT);
 
     private final Minecraft client;
+    /** Minecraftism VL screenshots (only when {@code screenshots=true}). */
+    private final ScreenshotTaker shots = new ScreenshotTaker();
 
     private BufferedWriter writer;
     private Path root;
@@ -157,6 +159,7 @@ public final class PlaytimeRecorder {
         menuTicks = 0;
         pausedTicks = 0;
         idleSkipped = 0;
+        shots.reset();
         resetInputs();
         writeMeta();
         return "recording -> " + episodesDir.resolve(runName + ".ndjsonl")
@@ -537,6 +540,7 @@ public final class PlaytimeRecorder {
             sample.armor = armor(player);
         }
         sample.moved = movedSinceSample;
+        sample.shot = shots.maybeCapture(client, root, runName, tick, sample.tick);
 
         writeLine(toJson(sample));
         totalSamples++;
@@ -716,6 +720,9 @@ public final class PlaytimeRecorder {
           .append(", \"health\": ").append(Json.number(s.health, 1))
           .append(", \"food\": ").append(s.food)
           .append(", \"dimension\": \"").append(Json.escape(s.dimension)).append('"');
+        if (s.shot != null) {
+            sb.append(", \"shot\": \"").append(Json.escape(s.shot)).append('"');
+        }
         if (s.blocks != null) {
             sb.append(", \"blocks\": [");
             for (int i = 0; i < s.blocks.size(); i++) {
@@ -1055,6 +1062,16 @@ public final class PlaytimeRecorder {
         return samples * PlaytimeConfig.get().sampleTicks * 50.0 / 60000.0;
     }
 
+    /** One line about the Minecraftism VL screenshots ({@code /pymcbot screenshots status}). */
+    public String screenshotStatus() {
+        return shots.status();
+    }
+
+    /** Screenshots written to disk this session. */
+    public long screenshotsWritten() {
+        return shots.written();
+    }
+
     public synchronized boolean isActive() {
         return active;
     }
@@ -1136,6 +1153,8 @@ public final class PlaytimeRecorder {
         List<GroundItem> groundItems;
         List<String> armor;
         String heldItem;
+        /** Screenshot path relative to the pymcbot folder (Minecraftism VL), or null. */
+        String shot;
     }
 
     record BlockHit(int dx, int dy, int dz, String block) {
