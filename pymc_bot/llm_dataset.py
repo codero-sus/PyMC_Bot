@@ -1,7 +1,7 @@
 """Training data for a Minecraft-only LLM: the bot's brain and a Minecraft expert in one model.
 
 ``python -m pymc_bot llm build`` writes chat-format JSONL (``{"messages": [...]}``) that the Kaggle
-notebook in ``training/llm`` fine-tunes on (docs/MINECRAFT_LLM.md). The sources:
+notebook in ``pynb/`` fine-tunes on (docs/MINECRAFT_LLM.md). The sources:
 
 * ``mobs``      - questions and answers from the mob database (``data/mobs.json``): hostility,
   damage per difficulty and to mobs, health, spawning, the version each mob was added in, drops...

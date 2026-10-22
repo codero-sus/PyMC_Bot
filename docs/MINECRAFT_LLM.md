@@ -79,8 +79,12 @@ behaviour prompts are **never** written to the files: examples carry only the be
 
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
-2. **Code → New Notebook → File → Import Notebook** → `training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+2. **Code → New Notebook → File → Import Notebook** → `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
+   No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
+   from the newest GitHub release; it has no recorded playtime or screenshots, so it suits the text editions.
+   If your dataset was built by an older PyMC Bot, the notebook fetches the newest `train_minecraft_llm.py`
+   from the release, so the new settings (uncensored, tests, everyday chat) still work.
 4. To publish on Hugging Face: **Add-ons → Secrets → Add secret**, name `HF_TOKEN`, value = a **write** token from
    huggingface.co/settings/tokens, and tick it for this notebook. The notebook reads it into the environment for
    the training script and never prints it. Without the secret the models simply stay in `/kaggle/working`.
@@ -92,6 +96,8 @@ The settings cell:
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `EDITIONS` | `["minecraftism"]` | editions to train this session, in order |
+| `DATA` | `"auto"` | your dataset (Add Input), else the kit from the newest GitHub release; or a path |
+| `TRAINER` | `"auto"` | the dataset's trainer, or the newest from GitHub when it is too old; `"latest"` / `"dataset"` |
 | `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
 | `GENERAL_CHAT` | `3000` | everyday chat rows mixed in, so it stays a good daily assistant (`0` = Minecraft only) |
 | `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |

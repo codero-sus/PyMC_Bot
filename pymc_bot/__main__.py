@@ -780,7 +780,7 @@ def _llm_build(args: argparse.Namespace, store: ConfigStore) -> int:
     print(f"\n{card['train']} training rows ready in {out}/. Next:\n"
           f"  1. kaggle.com > Datasets > New Dataset > upload the files in {out}/ (skip wiki_cache), or\n"
           f"     kaggle datasets create -p {out}   (edit the id in dataset-metadata.json first)\n"
-          "  2. open training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb on Kaggle, Add Input = your dataset,\n"
+          "  2. open pynb/PyMC_Minecraft_LLM_Kaggle.ipynb on Kaggle, Add Input = your dataset,\n"
           "     Accelerator = GPU T4 x2, pick the Minecraftism EDITIONS, Run All (llm presets lists them)\n"
           "  3. python -m pymc_bot llm import --hf <you>/Minecraftism-4B-Uncensored-GGUF   (HF_TOKEN secret set;\n"
           "     UNCENSORED = False in the notebook: <you>/Minecraftism-4B-GGUF)\n"

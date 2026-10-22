@@ -2,7 +2,7 @@
 """Fine-tune Minecraftism, the Minecraft LLM for PyMC Bot, on a Kaggle notebook (2x T4) - or any CUDA box.
 
 This file is self-contained: ``python -m pymc_bot llm build`` copies it next to ``train.jsonl`` so
-the Kaggle dataset you upload has everything. In the notebook (training/llm/*.ipynb):
+the Kaggle dataset you upload has everything. In the notebook (pynb/PyMC_Minecraft_LLM_Kaggle.ipynb):
 
     python train_minecraft_llm.py --preset minecraftism              # ~1-2 h on one T4
     python train_minecraft_llm.py --preset minecraftism-vl-thinking  # the vision + thinking edition
