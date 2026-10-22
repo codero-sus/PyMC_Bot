@@ -534,16 +534,164 @@ def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count:
     return rows
 
 
-def load_hub_records(name: str, split: str, limit: int, seed: int) -> list[dict[str, Any]]:
-    """A shuffled slice of a Hugging Face dataset (Kaggle has internet; needs the ``datasets`` package)."""
+def load_hub_records(name: str, split: str, limit: int, seed: int, buffer: int = 10_000) -> list[dict[str, Any]]:
+    """A shuffled sample of a Hugging Face dataset, **streamed**: only the rows that are used are downloaded,
+    never the whole dataset (needs the ``datasets`` package; Kaggle has it)."""
     from datasets import load_dataset
 
-    data = load_dataset(name, split=split).shuffle(seed=seed)
-    return list(data.select(range(min(len(data), max(limit * 3, limit + 200)))))
+    stream = load_dataset(name, split=split, streaming=True).shuffle(seed=seed, buffer_size=buffer)
+    return list(stream.take(max(limit * 3, limit + 200)))
+
+
+# --------------------------------------------------------------------------- streamed Minecraft datasets
+#: ~695k Minecraft Q&A pairs written from 18k Minecraft Wiki pages (CC BY-NC-SA 3.0). Synthetic, so it is
+#: sampled and filtered rather than used whole.
+MINECRAFT_QA_DATASET = "naklecha/minecraft-question-answer-700k"
+#: Minecraft screenshots with captions and visual Q&A (the JARVIS-VLA team). Its pictures sit in zip files
+#: of 0.6-1.8 GB; only the sampled pictures are read out of them with HTTP range requests.
+VISION_STREAM_DATASET = "CraftJarvis/minecraft-vlp"
+VISION_STREAM_FILES = (("mc-vqa-241102.jsonl", "images/mc-vqa-241102.zip"),
+                       ("mc-caption-241104.jsonl", "images/mc-caption-241104.zip"))
+_QA_JUNK = re.compile(r"as a catalyst|\bI(?:'m| am) not sure\b|\bI don't know\b|Legacy Console Edition's Bedrock|"
+                      r"no (?:specific |direct )?information|not (?:explicitly )?mentioned in the", re.I)
+_VISION_TRACE = ("They want me to look at the screenshot. First I check what is in view - terrain, light, blocks, "
+                 "mobs, the hotbar and health - then I answer exactly what they asked.")
+
+
+def _plain(text: str) -> str:
+    """Trace text without braces or think tags (the trainer's own rule for reasoning)."""
+    return re.sub(r"[{}]|</?think>", "", text).strip()
+
+
+def _parts_text(content: Any) -> str:
+    if isinstance(content, list):
+        return "".join(str(part.get("text") or "") for part in content
+                       if isinstance(part, dict) and part.get("type", "text") == "text")
+    return str(content or "")
+
+
+def minecraft_qa_rows(records: Any, limit: int, system: str, rng: Any) -> list[dict[str, Any]]:
+    """Minecraft Q&A rows from ``question``/``answer`` (or chat-format) records: refusals, junk, very short
+    or very long answers and repeated questions are dropped."""
+    rows, seen = [], set()
+    for record in records:
+        if len(rows) >= limit:
+            break
+        messages = chat_messages(record) if not record.get("question") else None
+        question = str(record.get("question") or (messages[-2]["content"] if messages and len(messages) >= 2 else "")).strip()
+        answer = str(record.get("answer") or (messages[-1]["content"] if messages else "")).strip()
+        key = question.lower()
+        if not (8 <= len(question) <= 400 and 15 <= len(answer) <= 1500) or key in seen:
+            continue
+        if is_refusal(answer) or _QA_JUNK.search(answer):
+            continue
+        seen.add(key)
+        rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
+                                  {"role": "assistant", "content": answer}],
+                     "reasoning": _plain(f"A Minecraft question: {question[:240]} I recall what the wiki says about "
+                                         "it and answer directly, with the numbers that matter."),
+                     "source": "minecraft-qa", "kind": "mcqa", "check": {}})
+    rng.shuffle(rows)
+    return rows
+
+
+def vlp_item(record: dict[str, Any]) -> tuple[str, str, str] | None:
+    """(question, answer, picture path in the repo) of a caption / VQA record, else None."""
+    turns = record.get("conversations") or []
+    user = next((t for t in turns if t.get("role") == "user"), None)
+    reply = next((t for t in turns if t.get("role") == "assistant"), None)
+    images = record.get("image") or []
+    if isinstance(images, str):
+        images = [images]
+    if user is None or reply is None or len(images) != 1:
+        return None
+    question, answer = _parts_text(user.get("content")).strip(), _parts_text(reply.get("content")).strip()
+    if not question or len(answer) < 3 or "image is needed" in answer.lower():
+        return None
+    return question, answer, str(images[0])
+
+
+def stream_vision_rows(limit: int, out_dir: Path, system: str, seed: int, uncensored: bool = False,
+                       dataset: str = VISION_STREAM_DATASET, fs: Any = None, workers: int = 8,
+                       log: Any = print) -> list[dict[str, Any]]:
+    """Picture rows for the VL editions, **streamed** from ``dataset``: the JSONL is read line by line
+    (sampling across the whole file) and each chosen picture is read out of the remote zip with range
+    requests - a few hundred MB of pictures instead of the multi-GB archives."""
+    import random
+    import threading
+    import zipfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    if fs is None:
+        from huggingface_hub import HfFileSystem
+
+        fs = HfFileSystem()
+    rng = random.Random(seed)
+    base = f"datasets/{dataset}/"
+    wanted = [limit - limit // 2, limit // 2]  # half visual Q&A, half captions
+    chosen: list[tuple[str, str, str, str]] = []
+    for (jsonl, archive), want in zip(VISION_STREAM_FILES, wanted, strict=True):
+        if want <= 0:
+            continue
+        size = max(1, int(fs.size(base + jsonl) or 1))
+        picked: list[tuple[str, str, str, str]] = []
+        read = length = 0
+        keep = 1.0
+        with fs.open(base + jsonl, "rb") as handle:
+            for line in handle:
+                read += 1
+                length += len(line)
+                if read == 50:  # spread the sample over the whole file, not just its start
+                    keep = min(1.0, 1.6 * want * (length / read) / size)
+                if read > 50 and rng.random() > keep:
+                    continue
+                try:
+                    item = vlp_item(json.loads(line))
+                except ValueError:
+                    continue
+                if item and not (uncensored and is_refusal(item[1])):
+                    picked.append((archive, *item))
+                    if len(picked) >= want * 3 and read > 50:
+                        break
+        rng.shuffle(picked)
+        chosen += picked[:want]
+    log(f"streaming {len(chosen)} pictures from {dataset} (range requests into its zip files)")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    local = threading.local()
+
+    def archive_of(name: str) -> tuple[Any, dict[str, str]]:
+        zips = getattr(local, "zips", None)
+        if zips is None:
+            zips = local.zips = {}
+        if name not in zips:
+            handle = zipfile.ZipFile(fs.open(base + name, "rb"))
+            zips[name] = (handle, {Path(member).name: member for member in handle.namelist()})
+        return zips[name]
+
+    def fetch(job: tuple[int, tuple[str, str, str, str]]) -> dict[str, Any] | None:
+        index, (archive, question, answer, picture) = job
+        try:
+            handle, members = archive_of(archive)
+            member = members.get(Path(picture).name)
+            if member is None:
+                return None
+            target = out_dir / f"vlp-{index:06d}{Path(member).suffix.lower() or '.jpg'}"
+            target.write_bytes(handle.read(member))
+        except Exception:  # noqa: BLE001 - one broken picture must not stop the stream
+            return None
+        return {"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
+                             {"role": "assistant", "content": answer}],
+                "images": [str(target.resolve())], "reasoning": _VISION_TRACE,
+                "source": "minecraft-vlp", "kind": "vision", "check": {}}
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        rows = [row for row in pool.map(fetch, enumerate(chosen)) if row]
+    log(f"streamed {len(rows)} picture rows into {out_dir}")
+    return rows
 
 
 def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offline: bool = False) -> list[dict[str, Any]]:
-    """Identity, candor and everyday chat rows added on top of the Minecraft data."""
+    """Identity, candor, everyday chat and streamed Minecraft rows added on top of the Minecraft data."""
     rows = [] if args.no_identity else identity_rows(args.system_prompt, MODEL_NAME, rng, candor=bool(args.uncensored))
     if args.general > 0:
         if offline:
@@ -556,6 +704,27 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
         else:
             rows += general_rows(load_hub_records(args.general_dataset, "train", args.general, args.seed), args.general,
                                  args.system_prompt, bool(args.uncensored))
+    if args.minecraft_qa > 0:
+        if offline:
+            print(f"would stream up to {args.minecraft_qa} Minecraft Q&A rows from {args.minecraft_qa_dataset}")
+        else:
+            try:
+                records = load_hub_records(args.minecraft_qa_dataset, "train", args.minecraft_qa, args.seed + 1)
+                found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
+                print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
+                rows += found
+            except Exception as exc:  # noqa: BLE001 - never lose a training session to a download problem
+                print(f"warning: could not stream {args.minecraft_qa_dataset} ({type(exc).__name__}: {exc}) - skipped")
+    if args.stream_vision > 0 and preset.get("vision"):
+        if offline:
+            print(f"would stream {args.stream_vision} Minecraft pictures from {args.vision_dataset} "
+                  "(only those pictures are downloaded)")
+        else:
+            try:
+                rows += stream_vision_rows(args.stream_vision, Path(args.out) / "stream_images", args.system_prompt,
+                                           args.seed, bool(args.uncensored), args.vision_dataset)
+            except Exception as exc:  # noqa: BLE001
+                print(f"warning: could not stream pictures from {args.vision_dataset} ({type(exc).__name__}: {exc})")
     return rows
 
 
@@ -1092,6 +1261,7 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
                 print(f"uploaded -> https://huggingface.co/{full}")
             except Exception as exc:  # never lose a finished model to an upload problem
                 print(f"Hugging Face upload failed ({type(exc).__name__}: {exc}) - the files are still in {out}")
+    shutil.rmtree(out / "stream_images", ignore_errors=True)  # streamed training pictures are not needed any more
     print(f"done -> {out}  (download it, then: python -m pymc_bot llm import <folder>)")
     return 0
 
@@ -1132,6 +1302,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-dataset", default=REASONING_DATASET,
                         help="dataset with <think> traces used instead for the thinking editions")
     parser.add_argument("--no-identity", action="store_true", help="skip the 'who are you' rows")
+    parser.add_argument("--minecraft-qa", type=int, default=0,
+                        help="Minecraft Q&A rows streamed from a big Hugging Face Q&A set (sampled and filtered)")
+    parser.add_argument("--minecraft-qa-dataset", default=MINECRAFT_QA_DATASET)
+    parser.add_argument("--stream-vision", type=int, default=0,
+                        help="VL editions: Minecraft screenshots with captions / Q&A streamed from Hugging Face "
+                             "(only the sampled pictures are downloaded); also lets VL train without own screenshots")
+    parser.add_argument("--vision-dataset", default=VISION_STREAM_DATASET)
     parser.add_argument("--test", action="store_true", help="run the test suite after training (bot JSON, Minecraft, "
                                                            "daily life, refusals, vision)")
     parser.add_argument("--test-gguf", action="store_true", help="also chat with the exported GGUF through Ollama")
@@ -1174,10 +1351,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(missing)} picture(s) listed in the data are missing next to train.jsonl (first: {missing[0]}) - "
               "upload the images/ folder with the dataset")
         return 2
-    if preset.get("vision") and not any(row.get("images") for row in rows):
+    if preset.get("vision") and not any(row.get("images") for row in rows) and args.stream_vision <= 0:
         print(f"{args.preset} is a vision edition but the data has no pictures. Record playtime with the mod's "
               "screenshots on (/pymcbot screenshots on), then: python -m pymc_bot llm build --playtime <folder> "
-              "--screenshots - or train a text edition (minecraftism, minecraftism-thinking).")
+              "--screenshots - or stream pictures from Hugging Face (--stream-vision 3000) - or train a text edition "
+              "(minecraftism, minecraftism-thinking).")
         return 2
     problems = check_rows(rows) + check_rows(eval_rows)
     if problems:
@@ -1190,6 +1368,11 @@ def main(argv: list[str] | None = None) -> int:
     rng = random.Random(args.seed)
     persona = apply_persona(rows, args.system_prompt, max(0.0, min(1.0, args.persona_mix)), rng) if args.preset in EDITIONS else 0
     extra = extra_rows(args, preset, rng, offline=args.dry_run)
+    streamed = [row for row in extra if row.get("source") == "minecraft-vlp"]
+    if len(streamed) > 20 and not any(row.get("images") for row in eval_rows):
+        held = streamed[-3:]  # a few unseen pictures for the eval and the test suite
+        extra = [row for row in extra if all(row is not h for h in held)]
+        eval_rows = eval_rows + held
     rows = rows + extra
     rng.shuffle(rows)
     print(f"persona: {persona} Q&A rows use the everyday system prompt; +{len(extra)} identity/everyday rows"
