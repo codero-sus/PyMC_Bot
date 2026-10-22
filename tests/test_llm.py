@@ -20,7 +20,7 @@ from pymc_bot.mind import PERSONAS
 from pymc_bot.mobs import load_mobs
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOK = ROOT / "training" / "llm" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
+NOTEBOOK = ROOT / "pynb" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
 
 
 def _hidden_texts() -> list[str]:

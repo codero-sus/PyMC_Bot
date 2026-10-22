@@ -17,7 +17,7 @@ from pymc_bot.config import ConfigStore
 from pymc_bot.llm_tools import default_name, edition_from_repo, import_model_hf, write_modelfile
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOK = ROOT / "training" / "llm" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
+NOTEBOOK = ROOT / "pynb" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
 
 
 @pytest.fixture
@@ -264,3 +264,18 @@ def test_notebook_settings_and_flags():
     for flag in ("--uncensored", "--system-prompt-file", "--persona-mix", "--general", "--general-dataset",
                  "--reasoning-dataset", "--no-identity", "--test", "--test-only", "--test-gguf"):
         assert any(flag in action.option_strings for action in parser._actions), flag
+
+
+def test_notebook_lives_in_pynb_and_finds_data_and_trainer():
+    assert NOTEBOOK.parent.name == "pynb" and (NOTEBOOK.parent / "README.md").is_file()
+    assert not (ROOT / "training" / "llm").exists(), "one notebook, in ./pynb"
+    code = notebook_code()
+    assert 'DATA = "auto"' in code and 'TRAINER = "auto"' in code
+    assert "api.github.com/repos/codero-sus/PyMC_Bot/releases" in code
+    assert '"pymc-minecraft-llm-kit.zip"' in code and 'download("train_minecraft_llm.py"' in code
+    source = (ROOT / "pymc_bot" / "llm_train.py").read_text(encoding="utf-8")
+    flags = re.search(r"for flag in \(([^)]*)\)\)", code).group(1)
+    for flag in re.findall(r'"(--[a-z-]+)"', flags):
+        assert f'"{flag}"' in source, f"the notebook checks the trainer for {flag}, which it must have"
+    for name in ("README.md", "docs/MINECRAFT_LLM.md", "scripts/release_kit.py", ".github/workflows/ci.yml"):
+        assert "training/llm" not in (ROOT / name).read_text(encoding="utf-8"), name

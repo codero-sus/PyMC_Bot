@@ -98,7 +98,7 @@ jobs:
             python /tmp/ci-llm/train_minecraft_llm.py --dry-run --data /tmp/ci-llm --preset "$preset"
           done
           python -m pymc_bot llm presets
-          python -c "import json; nb = json.load(open('training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb')); print(len(nb['cells']), 'notebook cells')"
+          python -c "import json; nb = json.load(open('pynb/PyMC_Minecraft_LLM_Kaggle.ipynb')); print(len(nb['cells']), 'notebook cells')"
       - name: Minecraft LLM - live Minecraft Wiki pages into the dataset
         if: matrix.python-version == '3.12'
         continue-on-error: true   # third-party site; never block a build on it

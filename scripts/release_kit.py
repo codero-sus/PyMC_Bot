@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UPDATER_FILES = ("updater.py", "updater.sh", "updater.cmd")
-NOTEBOOK = ROOT / "training" / "llm" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
+NOTEBOOK = ROOT / "pynb" / "PyMC_Minecraft_LLM_Kaggle.ipynb"
 KIT_README = """PyMC Bot - Minecraft LLM kit
 ============================
 

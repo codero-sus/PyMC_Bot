@@ -527,7 +527,7 @@ can run an **optional test suite**: bot JSON, Minecraft, everyday prompts, refus
 
 ```bash
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
-#   upload llm_data to Kaggle, add the HF_TOKEN secret, run training/llm/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
+#   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
 python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
 python -m pymc_bot llm eval --model minecraftism
 ```
