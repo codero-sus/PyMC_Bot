@@ -82,7 +82,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 2. **Code → New Notebook → File → Import Notebook** → `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
-   from the newest GitHub release; it has no recorded playtime or screenshots, so it suits the text editions.
+   from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
+   streamed pictures (`STREAM_PICTURES`).
    If your dataset was built by an older PyMC Bot, the notebook fetches the newest `train_minecraft_llm.py`
    from the release, so the new settings (uncensored, tests, everyday chat) still work.
 4. To publish on Hugging Face: **Add-ons → Secrets → Add secret**, name `HF_TOKEN`, value = a **write** token from
@@ -100,6 +101,8 @@ The settings cell:
 | `TRAINER` | `"auto"` | the dataset's trainer, or the newest from GitHub when it is too old; `"latest"` / `"dataset"` |
 | `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
 | `GENERAL_CHAT` | `3000` | everyday chat rows mixed in, so it stays a good daily assistant (`0` = Minecraft only) |
+| `MINECRAFT_QA` | `20000` | Minecraft Q&A streamed from a 695k-row set ([below](#big-minecraft-datasets-streamed)) |
+| `STREAM_PICTURES` | `3000` | VL editions: captioned screenshots streamed from Hugging Face |
 | `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |
 | `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
 | `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
@@ -115,7 +118,7 @@ the `HF_TOKEN` secret, and prints the trainer flags.
 **Time limit:** a Kaggle GPU session stops after **12 hours**, and the weekly GPU quota is about 30 hours.
 Train one or two editions per session, e.g. `["minecraftism", "minecraftism-thinking"]` today and the VL
 editions another day. The notebook dry-runs every edition first and skips the ones that can't train
-(a VL edition without pictures, for example) instead of failing hours later.
+(a VL edition with no pictures and `STREAM_PICTURES = 0`, for example) instead of failing hours later.
 
 The script trains a LoRA adapter (4-bit QLoRA, r=32, loss on the replies only; VL editions train the
 language layers and keep the vision encoder frozen unless you pass `--vision-layers 1`). It evaluates on
@@ -176,6 +179,34 @@ dataset; you can pick another with `--general-dataset`. The thinking editions ge
 reasoning traces instead, from [`unsloth/OpenMathReasoning-mini`](https://huggingface.co/datasets/unsloth/OpenMathReasoning-mini)
 (`--reasoning-dataset`). Training a thinking model on answers without traces would make it forget how to think.
 The data is downloaded on Kaggle, and `--dry-run` only reports what it would add.
+
+## Big Minecraft datasets, streamed
+
+Two big public datasets are mixed in without downloading them whole:
+
+| Setting (trainer flag) | Default | Dataset | What it adds |
+| --- | --- | --- | --- |
+| `MINECRAFT_QA` (`--minecraft-qa N`) | `20000` | [`naklecha/minecraft-question-answer-700k`](https://huggingface.co/datasets/naklecha/minecraft-question-answer-700k) (694,814 rows, CC BY-NC-SA 3.0) | Minecraft Q&A written from ~18k wiki pages |
+| `STREAM_PICTURES` (`--stream-vision N`) | `3000` | [`CraftJarvis/minecraft-vlp`](https://huggingface.co/datasets/CraftJarvis/minecraft-vlp) (17 GB) | screenshots with captions and visual Q&A, for the VL editions |
+
+How the streaming works:
+
+* **The Q&A set** is read with `datasets` in streaming mode. A shuffle buffer picks a random sample, and only
+  those rows are downloaded.
+* **The Q&A set is synthetic**, and some of its answers are wrong, so the sample is filtered: refusals,
+  "I'm not sure" lines, known nonsense, repeated questions, and very short or very long answers are dropped.
+  The checked mob and crafting facts from `llm build` still train alongside.
+* **The pictures** come from the caption and visual Q&A files of `minecraft-vlp`. Their JSONL is read line by
+  line, and the sample is spread over the whole file. The images themselves live in zip files of 0.6–1.8 GB,
+  so each chosen picture is read out of the remote zip with HTTP range requests.
+  `STREAM_PICTURES = 3000` downloads roughly 150–300 MB of pictures, not the archives. They are deleted after
+  training.
+* **VL editions now train without your own screenshots.** If the data has no pictures, a few streamed ones are
+  held out for the eval and the test suite.
+
+The 106 GB `CraftJarvis/minecraft-vla-sft` set is **not** used: its answers are raw keyboard and mouse tokens
+for the JARVIS model, not text a chat model can learn from. Without internet, or if a stream fails, the
+trainer prints a warning and trains on the rest.
 
 ## Testing
 

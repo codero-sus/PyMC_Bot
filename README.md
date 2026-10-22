@@ -516,7 +516,9 @@ search. Data comes from the mob database, checked crafting facts, thousands of g
 pages, turns the bot recorded, your playtime and screenshots, and (optionally) a bigger teacher model you run.
 Outside the game it is an **everyday assistant** with its own system prompt (not "you are a bot"). The notebook trains it
 **uncensored** by default (abliterated base and refusal-free chat data; `UNCENSORED = False` turns it off), and
-can run an **optional test suite**: bot JSON, Minecraft, everyday prompts, refusals, vision and the exported GGUF in Ollama.
+streams big public Minecraft datasets: 20k Q&A rows sampled from a 695k-row set, and captioned screenshots
+for the VL editions read straight out of the remote zip files. Nothing is downloaded whole, so VL editions train
+even without your own screenshots. It can also run an **optional test suite**: bot JSON, Minecraft, everyday prompts, refusals, vision and the exported GGUF in Ollama.
 
 | Edition | Base | |
 | --- | --- | --- |

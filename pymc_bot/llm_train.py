@@ -611,6 +611,18 @@ def vlp_item(record: dict[str, Any]) -> tuple[str, str, str] | None:
     return question, answer, str(images[0])
 
 
+def _vlp_items(lines: list[bytes], archive: str, uncensored: bool) -> list[tuple[str, str, str, str]]:
+    items = []
+    for raw in lines:
+        try:
+            item = vlp_item(json.loads(raw))
+        except ValueError:
+            continue
+        if item and not (uncensored and is_refusal(item[1])):
+            items.append((archive, *item))
+    return items
+
+
 def stream_vision_rows(limit: int, out_dir: Path, system: str, seed: int, uncensored: bool = False,
                        dataset: str = VISION_STREAM_DATASET, fs: Any = None, workers: int = 8,
                        log: Any = print) -> list[dict[str, Any]]:
@@ -635,24 +647,26 @@ def stream_vision_rows(limit: int, out_dir: Path, system: str, seed: int, uncens
             continue
         size = max(1, int(fs.size(base + jsonl) or 1))
         picked: list[tuple[str, str, str, str]] = []
+        early: list[bytes] = []
         read = length = 0
         keep = 1.0
+
         with fs.open(base + jsonl, "rb") as handle:
             for line in handle:
                 read += 1
                 length += len(line)
-                if read == 50:  # spread the sample over the whole file, not just its start
-                    keep = min(1.0, 1.6 * want * (length / read) / size)
-                if read > 50 and rng.random() > keep:
+                if read <= 50:  # measure the lines first, so the sample spreads over the whole file
+                    early.append(line)
+                    if read == 50:
+                        keep = min(1.0, 1.6 * want * (length / read) / size)
+                        picked += _vlp_items([raw for raw in early if rng.random() <= keep], archive, uncensored)
                     continue
-                try:
-                    item = vlp_item(json.loads(line))
-                except ValueError:
-                    continue
-                if item and not (uncensored and is_refusal(item[1])):
-                    picked.append((archive, *item))
-                    if len(picked) >= want * 3 and read > 50:
+                if rng.random() <= keep:
+                    picked += _vlp_items([line], archive, uncensored)
+                    if len(picked) >= want * 3:
                         break
+        if read < 50:
+            picked += _vlp_items(early, archive, uncensored)
         rng.shuffle(picked)
         chosen += picked[:want]
     log(f"streaming {len(chosen)} pictures from {dataset} (range requests into its zip files)")
@@ -664,7 +678,8 @@ def stream_vision_rows(limit: int, out_dir: Path, system: str, seed: int, uncens
         if zips is None:
             zips = local.zips = {}
         if name not in zips:
-            handle = zipfile.ZipFile(fs.open(base + name, "rb"))
+            # small blocks: each picture is ~50-150 KB, the default multi-MB readahead would fetch far more
+            handle = zipfile.ZipFile(fs.open(base + name, "rb", block_size=1 << 18))
             zips[name] = (handle, {Path(member).name: member for member in handle.namelist()})
         return zips[name]
 
