@@ -425,9 +425,18 @@ def apply_persona(rows: list[dict[str, Any]], system: str, fraction: float, rng:
 _ROLES = {"human": "user", "user": "user", "gpt": "assistant", "assistant": "assistant", "system": "system"}
 
 
+def chatml_turns(text: str) -> list[dict[str, str]]:
+    """``<|im_start|>user ... <|im_end|>`` text (OpenAssistant's ``text`` column) as role/content turns."""
+    turns = []
+    for chunk in text.split("<|im_start|>")[1:]:
+        role, _, content = chunk.partition("\n")
+        turns.append({"role": role.strip(), "content": content.split("<|im_end|>")[0].strip()})
+    return turns
+
+
 def chat_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
     """A ShareGPT (``conversations``: from/value) or OpenAI (``messages``: role/content) record."""
-    raw = record.get("conversations") or record.get("messages") or []
+    raw = record.get("conversations") or record.get("messages") or chatml_turns(str(record.get("text") or ""))
     out = []
     for turn in raw:
         role = _ROLES.get(str(turn.get("from") or turn.get("role") or "").lower())
@@ -463,6 +472,11 @@ def reasoning_rows(records: Any, limit: int, system: str, max_chars: int = 9000)
             break
         question = str(record.get("problem") or record.get("question") or "").strip()
         solution = str(record.get("generated_solution") or record.get("solution") or "")
+        if not question and str(record.get("reasoning") or "on").lower() != "off":
+            messages = chat_messages(record) or []  # Nemotron: one user turn, the answer starts with <think>
+            turns = [m for m in messages if m["role"] != "system"]
+            if len(turns) == 2 and turns[0]["role"] == "user":
+                question, solution = turns[0]["content"], turns[1]["content"]
         if "</think>" not in solution or not question or len(question) + len(solution) > max_chars:
             continue
         trace, answer = solution.split("</think>", 1)
@@ -534,13 +548,14 @@ def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count:
     return rows
 
 
-def load_hub_records(name: str, split: str, limit: int, seed: int, buffer: int = 10_000) -> list[dict[str, Any]]:
+def load_hub_records(name: str, split: str, limit: int, seed: int, buffer: int = 10_000,
+                     factor: int = 3) -> list[dict[str, Any]]:
     """A shuffled sample of a Hugging Face dataset, **streamed**: only the rows that are used are downloaded,
     never the whole dataset (needs the ``datasets`` package; Kaggle has it)."""
     from datasets import load_dataset
 
     stream = load_dataset(name, split=split, streaming=True).shuffle(seed=seed, buffer_size=buffer)
-    return list(stream.take(max(limit * 3, limit + 200)))
+    return list(stream.take(max(limit * factor, limit + 200)))  # spare rows: the filters drop some
 
 
 # --------------------------------------------------------------------------- streamed Minecraft datasets
@@ -705,39 +720,701 @@ def stream_vision_rows(limit: int, out_dir: Path, system: str, seed: int, uncens
     return rows
 
 
+# --------------------------------------------------------------------------- commercial-use data (--commercial)
+#: Everyday chat written by people (OpenAssistant, Apache-2.0) - ChatML in a ``text`` column.
+COMMERCIAL_GENERAL_DATASET = "OpenAssistant/oasst_top1_2023-08-25"
+#: Maths with real ``<think>`` traces (NVIDIA, CC BY 4.0; answers by DeepSeek-R1 / Qwen3). ``name:split``.
+COMMERCIAL_REASONING_DATASET = "nvidia/Nemotron-Post-Training-Dataset-v1:math"
+#: Minecraft facts generated from PrismarineJS/minecraft-data (MIT): items, blocks, recipes, food, mobs...
+MINECRAFT_DATA = "minecraft-data"
+MINECRAFT_DATA_VERSION = "1.21.8"
+MINECRAFT_DATA_URL = "https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/"
+MINECRAFT_DATA_FILES = ("items", "blocks", "foods", "recipes", "entities", "entityLoot", "enchantments", "effects",
+                        "biomes")
+#: First-person Minecraft 1.21.8 frames with raycast ground truth per pixel (MIT): 18 parquet shards of ~330 MB.
+#: Questions and answers are generated from the labels, so every answer is exact.
+COMMERCIAL_VISION_DATASET = "shinohararin/minecraft-raytrace"
+#: Kit rows (``llm build``) whose licence forbids commercial use.
+NONCOMMERCIAL_SOURCES = {"wiki": "Minecraft Wiki text (CC BY-NC-SA 3.0)"}
+#: name -> (licence, commercial use allowed, link). Written into the model card.
+DATA_LICENSES: dict[str, tuple[str, bool, str]] = {
+    "pymc-bot": ("PyMC Bot rules, mob facts and your own recordings (codero-sus)", True, PROJECT_URL),
+    "minecraft.wiki": ("CC BY-NC-SA 3.0", False, "https://minecraft.wiki"),
+    MINECRAFT_DATA: ("MIT", True, "https://github.com/PrismarineJS/minecraft-data"),
+    COMMERCIAL_GENERAL_DATASET: ("Apache-2.0", True, f"https://huggingface.co/datasets/{COMMERCIAL_GENERAL_DATASET}"),
+    "nvidia/Nemotron-Post-Training-Dataset-v1": (
+        "CC BY 4.0", True, "https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1"),
+    "nvidia/OpenMathReasoning": ("CC BY 4.0", True, "https://huggingface.co/datasets/nvidia/OpenMathReasoning"),
+    COMMERCIAL_VISION_DATASET: ("MIT", True, f"https://huggingface.co/datasets/{COMMERCIAL_VISION_DATASET}"),
+    "naklecha/minecraft-question-answer-700k": (
+        "CC BY-NC-SA 3.0", False, "https://huggingface.co/datasets/naklecha/minecraft-question-answer-700k"),
+    "lparkourer10/minecraft-alpacadataset": (
+        "copy of the naklecha set (CC BY-NC-SA 3.0)", False, "https://huggingface.co/datasets/lparkourer10/minecraft-alpacadataset"),
+    "CraftJarvis/minecraft-vlp": ("no licence given", False, "https://huggingface.co/datasets/CraftJarvis/minecraft-vlp"),
+    "mlabonne/FineTome-100k": ("no licence given (mixed sources)", False, "https://huggingface.co/datasets/mlabonne/FineTome-100k"),
+    "unsloth/OpenMathReasoning-mini": (
+        "subset of nvidia/OpenMathReasoning (CC BY 4.0), no licence on its card", False,
+        "https://huggingface.co/datasets/unsloth/OpenMathReasoning-mini"),
+}
+
+
+def hub_split(spec: str, default: str) -> tuple[str, str]:
+    """``user/name:split`` -> (``user/name``, ``split``); without ``:split`` the default split is used."""
+    name, _, split = str(spec).partition(":")
+    return name, split or default
+
+
+def dataset_license(spec: str) -> tuple[str, bool, str] | None:
+    return DATA_LICENSES.get(hub_split(spec, "")[0])
+
+
+def resolve_datasets(args: argparse.Namespace) -> None:
+    """Fill in the datasets not chosen on the command line: with ``--commercial`` only ones whose licence
+    allows commercial use. A dataset you name yourself is always kept (and checked)."""
+    commercial = bool(getattr(args, "commercial", False))
+    defaults = (("general_dataset", GENERAL_DATASET, COMMERCIAL_GENERAL_DATASET),
+                ("reasoning_dataset", REASONING_DATASET, COMMERCIAL_REASONING_DATASET),
+                ("minecraft_qa_dataset", MINECRAFT_QA_DATASET, MINECRAFT_DATA),
+                ("vision_dataset", VISION_STREAM_DATASET, COMMERCIAL_VISION_DATASET))
+    for attr, regular, free in defaults:
+        if not getattr(args, attr, None):
+            setattr(args, attr, free if commercial else regular)
+
+
+def used_datasets(args: argparse.Namespace, preset: dict[str, Any]) -> list[str]:
+    used = []
+    if getattr(args, "general", 0) > 0:
+        used.append(args.reasoning_dataset if preset.get("reasoning") else args.general_dataset)
+    if getattr(args, "minecraft_qa", 0) > 0:
+        used.append(args.minecraft_qa_dataset)
+    if getattr(args, "stream_vision", 0) > 0 and preset.get("vision"):
+        used.append(args.vision_dataset)
+    return used
+
+
+def commercial_problems(args: argparse.Namespace, preset: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(blocking problems, warnings) for a ``--commercial`` run."""
+    problems, warnings = [], []
+    for spec in used_datasets(args, preset):
+        known = dataset_license(spec)
+        if known is None:
+            warnings.append(f"{spec}: licence unknown to the trainer - check it allows commercial use")
+        elif not known[1]:
+            problems.append(f"{spec} is not for commercial use ({known[0]}) - drop the option to use the "
+                            "commercial default")
+    return problems, warnings
+
+
+def drop_noncommercial(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Kit rows without the non-commercial sources (Minecraft Wiki text)."""
+    dropped: dict[str, int] = {}
+    kept = []
+    for row in rows:
+        source = str(row.get("source") or "")
+        if source in NONCOMMERCIAL_SOURCES:
+            dropped[source] = dropped.get(source, 0) + 1
+        else:
+            kept.append(row)
+    return kept, dropped
+
+
+def data_sources(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Every dataset the training rows came from, with its licence (for the model card)."""
+    by_source = {"general": getattr(args, "general_dataset", ""), "reasoning": getattr(args, "reasoning_dataset", ""),
+                 "minecraft-qa": getattr(args, "minecraft_qa_dataset", ""), "minecraft-data": MINECRAFT_DATA,
+                 "minecraft-vlp": getattr(args, "vision_dataset", ""),
+                 "minecraft-raytrace": getattr(args, "vision_dataset", ""), "wiki": "minecraft.wiki"}
+    names: list[str] = []
+    for row in rows:
+        name = by_source.get(str(row.get("source") or ""), "pymc-bot") or "pymc-bot"
+        if name not in names:
+            names.append(name)
+    out = []
+    for name in names:
+        licence, commercial, link = dataset_license(name) or ("unknown - check the dataset card", False,
+                                                              f"https://huggingface.co/datasets/{hub_split(name, '')[0]}")
+        out.append({"name": hub_split(name, "")[0], "license": licence, "commercial": commercial, "url": link,
+                    "rows": sum(1 for row in rows if (by_source.get(str(row.get("source") or ""), "pymc-bot")
+                                                      or "pymc-bot") == name)})
+    return out
+
+
+# --------------------------------------------------------------------------- Minecraft facts from minecraft-data
+def load_minecraft_data(version: str = MINECRAFT_DATA_VERSION, folder: str | None = None, fetch: Any = None,
+                        files: tuple[str, ...] = MINECRAFT_DATA_FILES) -> dict[str, Any]:
+    """The game data of one Java version from PrismarineJS/minecraft-data (MIT): a few MB of JSON fetched
+    from GitHub, or read from a local checkout (``folder`` = the repo or its ``data`` folder)."""
+    if folder:
+        fetch = _local_reader(Path(folder))
+    elif fetch is None:
+        fetch = _github_reader
+    paths = (fetch("dataPaths.json").get("pc") or {}).get(version)
+    if not paths:
+        raise ValueError(f"minecraft-data has no Java version {version}")
+    data: dict[str, Any] = {"version": version}
+    for name in files:
+        if paths.get(name):
+            try:
+                data[name] = fetch(f"{paths[name]}/{name}.json")
+            except Exception as exc:  # noqa: BLE001 - one missing file only costs its questions
+                print(f"minecraft-data: {name}.json skipped ({type(exc).__name__})")
+    return data
+
+
+def _local_reader(root: Path) -> Any:
+    root = root / "data" if (root / "data" / "dataPaths.json").is_file() else root
+    return lambda rel: json.loads((root / rel).read_text(encoding="utf-8"))
+
+
+def _github_reader(rel: str) -> Any:
+    import urllib.request
+
+    request = urllib.request.Request(MINECRAFT_DATA_URL + rel, headers={"User-Agent": "PyMC-Bot-trainer"})
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - fixed https URL
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _label(thing: dict[str, Any]) -> str:
+    return str(thing.get("displayName") or str(thing.get("name", "?")).replace("_", " ").title())
+
+
+def _num(value: Any) -> str:
+    number = float(value)
+    return str(int(number)) if number == int(number) else f"{number:g}"
+
+
+def _names(names: list[str]) -> str:
+    names = [n for n in names if n]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else ""
+
+
+def _roman(level: int) -> str:
+    return {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V"}.get(int(level), str(level))
+
+
+_ENCHANT_TARGET = {"armor": "armor", "head_armor": "helmets", "foot_armor": "boots", "leg_armor": "leggings",
+                   "chest_armor": "chestplates", "sword": "swords", "weapon": "swords and axes", "sharp_weapon":
+                   "swords and axes", "mining": "pickaxes, axes, shovels and hoes", "mining_loot": "tools",
+                   "bow": "bows", "crossbow": "crossbows", "trident": "tridents", "fishing": "fishing rods",
+                   "mace": "maces", "durability": "anything with durability", "vanishing": "almost any item",
+                   "equippable": "armor and wearables", "fire_aspect": "swords and maces"}
+_NOT_MOBS = re.compile(r"boat|raft|minecart|arrow|item|experience|falling|display|marker|interaction|area_effect|"
+                       r"lightning|firework|fishing_bobber|potion|pearl|eye_of_ender|snowball|egg$|trident|"
+                       r"fireball|skull|shulker_bullet|llama_spit|evoker_fangs|tnt|painting|leash|wind_charge|"
+                       r"breeze_wind_charge|end_crystal|player|ominous_item_spawner", re.I)
+
+
+def minecraft_data_facts(data: dict[str, Any]) -> list[tuple[tuple[str, ...], str, str]]:
+    """``(question phrasings, answer, topic)`` for every fact the data supports - exact numbers from the
+    game files, no hallucinations."""
+    version = data.get("version", MINECRAFT_DATA_VERSION)
+    items = [i for i in data.get("items") or [] if isinstance(i, dict) and i.get("name") not in (None, "air")]
+    by_id = {i.get("id"): i for i in items}
+    by_name = {i.get("name"): i for i in items}
+    label = _label
+    facts: list[tuple[tuple[str, ...], str, str]] = []
+    for number, item in enumerate(items):
+        name, n = label(item), item.get("stackSize")
+        if item["name"].endswith("_spawn_egg") or n is None:
+            continue
+        if n != 1 and n != 16 and number % 6:  # "stacks to 64" is true of most items: keep a sample of those
+            pass
+        else:
+            facts.append(((f"What's the max stack size of {name}?", f"how many {name.lower()} fit in one slot",
+                           f"Does {name} stack?"),
+                          f"{name} doesn't stack - one per slot." if n == 1 else f"{name} stacks up to {n} per slot.",
+                          "items"))
+        if item.get("maxDurability"):
+            repair = [label(by_name[r]) for r in item.get("repairWith") or [] if r in by_name]
+            facts.append(((f"How much durability does {name} have?", f"how many uses does a {name.lower()} last",
+                           f"{name} durability?"),
+                          f"{name} has {item['maxDurability']} durability."
+                          + (f" Repair it with {_names(repair)} on an anvil." if repair else ""), "items"))
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict) or block.get("name") not in by_name:
+            continue  # only blocks you can hold (no wall torches, potted plants, technical blocks)
+        name, hardness, resistance = label(block), block.get("hardness"), block.get("resistance")
+        if hardness is not None and resistance is not None:
+            if float(hardness) < 0:
+                answer = f"{name} is unbreakable in survival (hardness -1)."
+            else:
+                answer = (f"{name} has a hardness of {_num(hardness)} and a blast resistance of {_num(resistance)}"
+                          + (" - creepers and TNT can't break it." if float(resistance) >= 1200 else "."))
+            facts.append(((f"How hard is {name} to break?", f"{name.lower()} hardness and blast resistance",
+                           f"What's the blast resistance of {name}?"), answer, "blocks"))
+        tools = [by_id[int(t)] for t in (block.get("harvestTools") or {}) if str(t).isdigit() and int(t) in by_id]
+        if tools:
+            facts.append(((f"What do I need to mine {name}?", f"which tool for {name.lower()}",
+                           f"Can I mine {name} by hand?"),
+                          f"{_tool_text(tools)} With anything else {name} breaks without dropping anything.", "blocks"))
+        drops = [label(by_id[d]) for d in block.get("drops") or [] if isinstance(d, int) and d in by_id]
+        own = block.get("name")
+        if block.get("diggable") and float(hardness or 0) >= 0:
+            if not block.get("drops"):
+                facts.append(((f"What does {name} drop when mined?", f"why did my {name.lower()} disappear when I broke it"),
+                              f"{name} drops nothing when broken - mine it with a Silk Touch tool to keep it.", "blocks"))
+            elif drops and by_name.get(own) and label(by_name[own]) not in drops:
+                facts.append(((f"What does {name} drop when mined?", f"what do i get from mining {name.lower()}"),
+                              f"Mining {name} drops {_names(drops)} (use Silk Touch to get the block itself).", "blocks"))
+        if block.get("emitLight"):
+            facts.append(((f"Does {name} give off light?", f"what light level does {name.lower()} make"),
+                          f"Yes, {name} gives off light level {block['emitLight']}.", "blocks"))
+    for food in data.get("foods") or []:
+        if isinstance(food, dict) and food.get("foodPoints"):
+            name, points = label(food), float(food["foodPoints"])
+            facts.append(((f"How much hunger does {name} restore?", f"how filling is {name.lower()}",
+                           f"{name} food value?"),
+                          f"{name} restores {_num(points)} hunger points ({_num(points / 2)} drumsticks).", "food"))
+    for result, variants in (data.get("recipes") or {}).items():
+        item = by_id.get(int(result)) if str(result).isdigit() else None
+        recipe = variants[0] if isinstance(variants, list) and variants else None
+        if item is None or not isinstance(recipe, dict):
+            continue
+        text = _recipe_text(recipe, by_id, label)
+        if not text:
+            continue
+        name, count = label(item), (recipe.get("result") or {}).get("count", 1)
+        more = f" This is one of {len(variants)} recipe variants." if len(variants) > 1 else ""
+        facts.append(((f"How do I craft {name}?", f"{name.lower()} recipe", f"what do i need to make {name.lower()}"),
+                      f"{text} You get {count} {name}.{more}", "crafting"))
+    loot = {str(e.get("entity")): e.get("drops") or [] for e in data.get("entityLoot") or [] if isinstance(e, dict)}
+    for mob in data.get("entities") or []:
+        if not isinstance(mob, dict) or _NOT_MOBS.search(str(mob.get("name"))) or mob.get("type") in ("other", "projectile"):
+            continue
+        name, width, height = label(mob), mob.get("width"), mob.get("height")
+        if width and height:
+            fits = float(width) < 1 and float(height) < 2
+            facts.append(((f"How big is a {name}?", f"{name.lower()} hitbox size", f"Can a {name} fit through a door?"),
+                          f"A {name} is {_num(width)} blocks wide and {_num(height)} blocks tall (its hitbox), so it "
+                          f"{'fits' if fits else 'does not fit'} through a 1x2 doorway.", "mobs"))
+        drops = [_drop_text(d, by_name, label) for d in loot.get(str(mob.get("name"))) or []]
+        drops = [d for d in drops if d]
+        if drops:
+            facts.append(((f"What does a {name} drop?", f"{name.lower()} drops", f"what do i get for killing a {name.lower()}"),
+                          f"A {name} drops {_names(drops)}.", "mobs"))
+    for ench in data.get("enchantments") or []:
+        if not isinstance(ench, dict) or not ench.get("maxLevel"):
+            continue
+        name, level = label(ench), int(ench["maxLevel"])
+        facts.append(((f"What's the max level of {name}?", f"how high does {name.lower()} go"),
+                      f"{name} goes up to level {_roman(level)}." if level > 1 else f"{name} has only one level.",
+                      "enchanting"))
+        excluded = [label(e) for e in data.get("enchantments") or [] if e.get("name") in (ench.get("exclude") or [])]
+        if excluded:
+            facts.append(((f"Can I combine {name} with {excluded[0]}?", f"what enchantments conflict with {name.lower()}"),
+                          f"No - {name} can't be on the same item as {_names(excluded)}.", "enchanting"))
+        if ench.get("treasureOnly"):
+            facts.append(((f"Can I get {name} from an enchanting table?", f"where do i get {name.lower()}"),
+                          f"No, {name} is a treasure enchantment: find it in loot chests, from fishing or "
+                          "from villager trades instead.", "enchanting"))
+        target = _ENCHANT_TARGET.get(str(ench.get("category")))
+        if target:
+            facts.append(((f"What can {name} go on?", f"which items take {name.lower()}"),
+                          f"{name} is an enchantment for {target}.", "enchanting"))
+    for effect in data.get("effects") or []:
+        if isinstance(effect, dict) and effect.get("type") in ("good", "bad"):
+            name = label(effect)
+            facts.append(((f"Is {name} a good or a bad effect?", f"is the {name.lower()} effect harmful"),
+                          f"{name} is a {'beneficial' if effect['type'] == 'good' else 'harmful'} status effect.",
+                          "effects"))
+    dims = {"overworld": "the Overworld", "nether": "the Nether", "the_nether": "the Nether", "end": "the End",
+            "the_end": "the End"}
+    for biome in data.get("biomes") or []:
+        if not isinstance(biome, dict):
+            continue
+        name = label(biome)
+        if biome.get("dimension") in dims:
+            facts.append(((f"Which dimension is the {name} biome in?", f"where is {name.lower()}"),
+                          f"{name} is a biome in {dims[biome['dimension']]}.", "biomes"))
+        if "has_precipitation" in biome and biome.get("dimension") == "overworld":
+            temp = float(biome.get("temperature") or 0)
+            answer = (f"No - it never rains or snows in {name}." if not biome["has_precipitation"] else
+                      f"It snows there instead of raining ({name} is cold, temperature {_num(temp)})." if temp < 0.15
+                      else f"Yes, it rains in {name} (temperature {_num(temp)}).")
+            facts.append(((f"Does it rain in {name}?", f"weather in {name.lower()}"), answer, "biomes"))
+    seen, unique = set(), []
+    for fact in facts:
+        if fact[0][0] not in seen:
+            seen.add(fact[0][0])
+            unique.append(fact)
+    print(f"minecraft-data {version}: {len(unique)} facts")
+    return unique
+
+
+_TIERS = ("wooden", "golden", "stone", "iron", "diamond", "netherite")
+
+
+def _tool_text(tools: list[dict[str, Any]]) -> str:
+    """'Any pickaxe works.' / 'You need an iron pickaxe or better.' / 'You need Shears or a sword.'"""
+    kinds = {str(t.get("name")).split("_", 1)[-1] for t in tools}
+    tiers = [str(t.get("name")).split("_", 1)[0] for t in tools]
+    if len(kinds) == 1 and all(tier in _TIERS for tier in tiers):
+        kind, low = kinds.pop(), min(_TIERS.index(tier) for tier in tiers)
+        if low <= 1:
+            return f"Any {kind} works."
+        if _TIERS[low] == "diamond":
+            return f"You need a diamond or netherite {kind}."
+        return f"You need {'an' if _TIERS[low] == 'iron' else 'a'} {_TIERS[low]} {kind} or better (not wood or gold)."
+    return f"You need {'one of: ' if len(tools) > 1 else ''}{_names([_label(t) for t in tools])}."
+
+
+def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label: Any) -> str:
+    """'Shapeless: 1 Bone' / 'Crafting table, 3 rows: ...' - empty when an ingredient is not a plain item."""
+    def name(value: Any) -> str | None:
+        return label(by_id[value]) if isinstance(value, int) and value in by_id else None
+
+    if recipe.get("ingredients"):
+        names = [name(i) for i in recipe["ingredients"]]
+        if not all(names):
+            return ""
+        counts = {n: names.count(n) for n in dict.fromkeys(names)}
+        where = "your 2x2 inventory grid" if len(names) <= 4 else "a crafting table"
+        return f"Shapeless in {where}: {_names([f'{c} {n}' for n, c in counts.items()])}."
+    shape = recipe.get("inShape")
+    if not isinstance(shape, list) or not shape:
+        return ""
+    rows, totals = [], {}
+    for row in shape:
+        cells = []
+        for value in row if isinstance(row, list) else []:
+            if value is None:
+                cells.append("empty")
+                continue
+            cell = name(value)
+            if cell is None:
+                return ""
+            cells.append(cell)
+            totals[cell] = totals.get(cell, 0) + 1
+        rows.append(", ".join(cells))
+    small = len(shape) <= 2 and all(isinstance(r, list) and len(r) <= 2 for r in shape)
+    where = "your 2x2 inventory grid works" if small else "needs a crafting table"
+    layout = " / ".join(f"row {i + 1}: {r}" for i, r in enumerate(rows))
+    return f"Shaped ({where}): {_names([f'{c} {n}' for n, c in totals.items()])}. Layout - {layout}."
+
+
+def _drop_text(drop: dict[str, Any], by_name: dict[str, dict[str, Any]], label: Any) -> str:
+    item = by_name.get(str(drop.get("item"))) if isinstance(drop, dict) else None
+    if item is None:
+        return ""
+    chance = float(drop.get("dropChance") or 1)  # the amounts in the data are simplified, so only names and odds
+    text = label(item) if chance >= 1 else f"{label(item)} ({_num(round(chance * 100, 2))}% chance)"
+    return text + (" when killed by a player" if drop.get("playerKill") else "")
+
+
+def minecraft_data_rows(data: dict[str, Any], limit: int, system: str, rng: Any) -> list[dict[str, Any]]:
+    """Q&A rows from the minecraft-data facts. When ``limit`` is bigger than the number of facts, the facts
+    come back with their other phrasings (never the same question twice)."""
+    facts = minecraft_data_facts(data)
+    rng.shuffle(facts)
+    rows: list[dict[str, Any]] = []
+    for variant in range(3):
+        for questions, answer, topic in facts:
+            if len(rows) >= limit:
+                break
+            if variant < len(questions):
+                question = questions[variant]
+                rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
+                                          {"role": "assistant", "content": answer}],
+                             "reasoning": _plain(f"A Minecraft {topic} question: {question[:200]} I know the exact "
+                                                 "game data for this, so I give the number straight away."),
+                             "source": "minecraft-data", "kind": "mcqa", "check": {}})
+    rng.shuffle(rows)
+    return rows
+
+
+# --------------------------------------------------------------------------- pictures from minecraft-raytrace
+_TIME_OF_DAY = ((0, 1000, "early morning"), (1000, 11000, "daytime"), (11000, 13000, "sunset"),
+                (13000, 23000, "night"), (23000, 24000, "sunrise"))
+_RAYTRACE_COLUMNS = ("capture_id", "frame_png", "labels_gz", "entities_json", "meta_json", "biome", "lighting",
+                     "world_time", "raining", "mean_luminance")
+_RAYTRACE_TRACE = ("They ask about the screenshot. I look at the biome, the light and the weather, the blocks around "
+                   "the crosshair and any mobs, then answer just that.")
+
+
+def _pretty(identifier: Any) -> str:
+    return str(identifier or "").split(":")[-1].replace("_", " ").strip()
+
+
+def _gz_json(value: Any) -> Any:
+    import gzip
+
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = gzip.decompress(bytes(value))
+        except OSError:
+            pass
+        value = bytes(value).decode("utf-8", "replace")
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def label_cells(labels: Any) -> list[tuple[float, float, str | None, float | None]]:
+    """(column, row, block id or None for sky/entity, depth) per cell of a raycast label grid. Reads the
+    common layouts (``cells``/``grid`` lists, nested rows, explicit or implied coordinates)."""
+    width = 107
+    cells: Any = labels
+    if isinstance(labels, dict):
+        width = int(labels.get("width") or labels.get("cols") or labels.get("gridWidth") or labels.get("columns") or width)
+        cells = next((labels[k] for k in ("cells", "grid", "labels", "data") if isinstance(labels.get(k), list)), [])
+    if not isinstance(cells, list):
+        return []
+    flat: list[tuple[int, int, Any]] = []
+    for index, cell in enumerate(cells):
+        if isinstance(cell, list):  # nested rows
+            flat += [(c, index, value) for c, value in enumerate(cell)]
+        else:
+            flat.append((index % width, index // width, cell))
+    out = []
+    for col, row, cell in flat:
+        if not isinstance(cell, dict):
+            continue
+        x = next((cell[k] for k in ("col", "cx", "gridX", "column") if isinstance(cell.get(k), (int, float))), col)
+        y = next((cell[k] for k in ("row", "cy", "gridY") if isinstance(cell.get(k), (int, float))), row)
+        block = cell.get("blockId") or cell.get("block")
+        kind = str(cell.get("kind") or cell.get("type") or "").lower()
+        if kind and kind not in ("block", "blocks") and not block:
+            block = None
+        depth = cell.get("depth")
+        out.append((float(x), float(y), str(block) if block else None,
+                    float(depth) if isinstance(depth, (int, float)) else None))
+    return out
+
+
+def visible_entities(entities: Any) -> list[str] | None:
+    """Names of the mobs in view, or None when the payload can't tell what is visible."""
+    if isinstance(entities, dict):
+        entities = next((entities[k] for k in ("entities", "items", "list") if isinstance(entities.get(k), list)), None)
+    if not isinstance(entities, list):
+        return None
+    names, decided = [], False
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        hits = next((entity[k] for k in ("hitCells", "cells", "hits", "hitCellCount", "visibleCells") if k in entity), None)
+        rect = next((entity[k] for k in ("screenRect", "rect", "bbox", "screen") if k in entity), None)
+        if hits is None and rect is None:
+            continue
+        decided = True
+        if not (hits if hits is not None else rect):
+            continue
+        name = next((entity[k] for k in ("type", "entityType", "typeId", "kind", "id", "name")
+                     if isinstance(entity.get(k), str) and not entity[k].isdigit()), "")
+        name = _pretty(name)
+        if name and not _NOT_MOBS.search(name.replace(" ", "_")):
+            names.append(name)
+    if not decided and entities:
+        return None
+    return names
+
+
+def _counted(names: list[str]) -> str:
+    counts = {n: names.count(n) for n in dict.fromkeys(names)}
+    return _names([(f"{c} {n}s" if c > 1 else f"a {n}") for n, c in counts.items()])
+
+
+def raytrace_qa(record: dict[str, Any], rng: Any) -> list[tuple[str, str]]:
+    """Exact questions and answers about one capture, from its labels (never guessed)."""
+    qa: list[tuple[str, str]] = []
+    meta = _gz_json(record.get("meta_json")) or {}
+    biome = _pretty(record.get("biome") or meta.get("biome"))
+    ticks = record.get("world_time", meta.get("worldTime") if isinstance(meta, dict) else None)
+    raining = record.get("raining")
+    weather = str(meta.get("weather") or "").lower() if isinstance(meta, dict) else ""
+    lighting = str(record.get("lighting") or "")
+    parts = []
+    if biome:
+        qa.append((rng.choice(("Which biome is this?", "What biome am I in?", "where is this, biome-wise?")),
+                   f"This is a {biome} biome."))
+        parts.append(f"a {biome} biome")
+    when = None
+    if isinstance(ticks, (int, float)):
+        t = int(ticks) % 24000
+        when = next(name for low, high, name in _TIME_OF_DAY if low <= t < high)
+        extra = " - the picture is lit up by night vision" if lighting == "nightvision" and when == "night" else (
+            " - the light comes from placed glowstone" if lighting == "torch" else "")
+        qa.append((rng.choice(("Is it day or night here?", "What time of day is it?", "day or night?")),
+                   f"It's {when}{extra}."))
+        parts.append(when)
+    if isinstance(raining, bool) or weather:
+        wet = bool(raining) or weather in ("rain", "thunder")
+        cold = any(word in biome for word in ("snow", "frozen", "ice", "grove", "peaks"))
+        state = ("there's a thunderstorm" if weather == "thunder" else "it's snowing" if wet and cold else
+                 "it's raining" if wet else "the weather is clear")
+        qa.append((rng.choice(("Is it raining?", "Is it raining right now?", "any rain?")),
+                   f"{'Yes' if wet else 'No'}, {state}."))
+        parts.append(state)
+    cells = label_cells(_gz_json(record.get("labels_gz")))
+    blocks = [c for c in cells if c[2]]
+    if blocks:
+        xs, ys = [c[0] for c in cells], [c[1] for c in cells]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        centre = min(cells, key=lambda c: (c[0] - cx) ** 2 + (c[1] - cy) ** 2)
+        if centre[2] and centre[3] is not None:
+            qa.append((rng.choice(("What block is at the crosshair, and how far away?", "what am i looking at?",
+                                   "What's in the middle of the screen?")),
+                       f"{_pretty(centre[2]).capitalize()}, about {max(1, round(centre[3]))} blocks away."))
+        counts: dict[str, int] = {}
+        for cell in blocks:
+            name = _pretty(cell[2])
+            if name not in ("air", "cave air", "void air"):
+                counts[name] = counts.get(name, 0) + 1
+        top = sorted(counts.items(), key=lambda kv: -kv[1])[:4]
+        if top:
+            share = round(100 * top[0][1] / max(1, len(cells)))
+            sky = sum(1 for c in cells if not c[2]) / max(1, len(cells))
+            text = f"Mostly {top[0][0]} (about {share}% of the view)" + (
+                f", then {_names([n for n, _ in top[1:]])}" if len(top) > 1 else "") + (
+                ", with open sky above" if sky > 0.12 else "") + "."
+            qa.append((rng.choice(("Which blocks can you see?", "What is this scene made of?", "What blocks are in view?")),
+                       text))
+            parts.append(f"mostly {top[0][0]}" + (f" and {top[1][0]}" if len(top) > 1 else ""))
+    mobs = visible_entities(_gz_json(record.get("entities_json")))
+    if mobs is not None:
+        qa.append((rng.choice(("Are there any mobs in view?", "Do you see any mobs?", "anything alive here?")),
+                   f"Yes: {_counted(mobs)}." if mobs else "No, there are no mobs in view."))
+        if mobs:
+            parts.append(_counted(mobs) + " in view")
+    if len(parts) >= 2:
+        qa.append((rng.choice(("Describe this Minecraft screenshot.", "What do you see?", "Describe the scene briefly.")),
+                   "A first-person view in " + _names(parts) + "."))
+    return qa
+
+
+def _save_frame(data: Any, target: Path) -> Path | None:
+    raw = data.get("bytes") if isinstance(data, dict) else data
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        return None
+    try:  # store a compact JPEG when Pillow is there (it is on Kaggle): ~100 KB instead of ~600 KB of PNG
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as picture:
+            target = target.with_suffix(".jpg")
+            picture.convert("RGB").save(target, "JPEG", quality=88)
+            return target
+    except Exception:  # noqa: BLE001 - keep the original bytes
+        target = target.with_suffix(".png")
+        target.write_bytes(bytes(raw))
+        return target
+
+
+def stream_raytrace_rows(limit: int, out_dir: Path, system: str, seed: int,
+                         dataset: str = COMMERCIAL_VISION_DATASET, fs: Any = None, per_picture: int = 2,
+                         min_luminance: float = 18.0, log: Any = print) -> list[dict[str, Any]]:
+    """Picture rows from minecraft-raytrace, **one parquet shard at a time** (only the frame and label
+    columns are read, never the big voxel dumps): ``per_picture`` exact Q&A rows per frame."""
+    import random
+
+    import pyarrow.parquet as pq
+
+    if fs is None:
+        from huggingface_hub import HfFileSystem
+
+        fs = HfFileSystem()
+    rng = random.Random(seed)
+    listing = [entry for entry in fs.ls(f"datasets/{dataset}/data", detail=True)
+               if str(entry.get("name", "")).endswith(".parquet")]
+    shards = sorted(str(entry["name"]) for entry in listing)
+    rng.shuffle(shards)
+    if limit <= 200:  # a quick test: start with the smallest shard (the last one is ~14 MB)
+        size = {str(entry["name"]): entry.get("size") or 0 for entry in listing}
+        shards.sort(key=lambda name: size[name])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    frames = 0
+    for shard in shards:
+        if len(rows) >= limit:
+            break
+        with fs.open(shard, "rb", block_size=1 << 22) as handle:
+            parquet = pq.ParquetFile(handle)
+            columns = [c for c in _RAYTRACE_COLUMNS if c in parquet.schema_arrow.names]
+            for group in range(parquet.num_row_groups):
+                if len(rows) >= limit:
+                    break
+                for record in parquet.read_row_group(group, columns=columns).to_pylist():
+                    if len(rows) >= limit:
+                        break
+                    luminance = record.get("mean_luminance")
+                    if isinstance(luminance, (int, float)) and luminance < min_luminance:
+                        continue  # near-black frames teach nothing
+                    pairs = raytrace_qa(record, rng)
+                    if not pairs:
+                        continue
+                    picture = _save_frame(record.get("frame_png"), out_dir / f"raytrace-{frames:06d}")
+                    if picture is None:
+                        continue
+                    frames += 1
+                    rng.shuffle(pairs)
+                    for question, answer in pairs[:max(1, per_picture)]:
+                        rows.append({"messages": [{"role": "system", "content": system},
+                                                  {"role": "user", "content": question},
+                                                  {"role": "assistant", "content": answer}],
+                                     "images": [str(picture.resolve())], "reasoning": _RAYTRACE_TRACE,
+                                     "source": "minecraft-raytrace", "kind": "vision", "check": {}})
+        log(f"minecraft-raytrace: {Path(shard).name} -> {len(rows)} rows from {frames} frames so far")
+    log(f"streamed {len(rows[:limit])} picture rows ({frames} frames) from {dataset} into {out_dir}")
+    return rows[:limit]
+
+
 def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offline: bool = False) -> list[dict[str, Any]]:
     """Identity, candor, everyday chat and streamed Minecraft rows added on top of the Minecraft data."""
     rows = [] if args.no_identity else identity_rows(args.system_prompt, MODEL_NAME, rng, candor=bool(args.uncensored))
     if args.general > 0:
+        source = args.reasoning_dataset if preset.get("reasoning") else args.general_dataset
         if offline:
-            source = args.reasoning_dataset if preset.get("reasoning") else args.general_dataset
             print(f"would add up to {args.general} everyday rows from {source} (downloaded when training)")
         elif preset.get("reasoning"):
             limit = max(1, args.general // 2)  # traces are long: half as many rows
-            rows += reasoning_rows(load_hub_records(args.reasoning_dataset, "cot", limit, args.seed), limit,
-                                   args.system_prompt, max_chars=args.max_seq * 3)
+            name, split = hub_split(args.reasoning_dataset, "cot")
+            records = load_hub_records(name, split, limit, args.seed, factor=3 if split == "cot" else 8)
+            rows += reasoning_rows(records, limit, args.system_prompt, max_chars=args.max_seq * 3)
         else:
-            rows += general_rows(load_hub_records(args.general_dataset, "train", args.general, args.seed), args.general,
+            name, split = hub_split(args.general_dataset, "train")
+            rows += general_rows(load_hub_records(name, split, args.general, args.seed), args.general,
                                  args.system_prompt, bool(args.uncensored))
     if args.minecraft_qa > 0:
+        generated = args.minecraft_qa_dataset == MINECRAFT_DATA
+        version = getattr(args, "minecraft_data_version", MINECRAFT_DATA_VERSION)
         if offline:
-            print(f"would stream up to {args.minecraft_qa} Minecraft Q&A rows from {args.minecraft_qa_dataset}")
+            print(f"would generate up to {args.minecraft_qa} Minecraft Q&A rows from minecraft-data {version} (MIT)"
+                  if generated else
+                  f"would stream up to {args.minecraft_qa} Minecraft Q&A rows from {args.minecraft_qa_dataset}")
         else:
             try:
-                records = load_hub_records(args.minecraft_qa_dataset, "train", args.minecraft_qa, args.seed + 1)
-                found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
-                print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
+                if generated:
+                    data = load_minecraft_data(version, getattr(args, "minecraft_data_dir", None))
+                    found = minecraft_data_rows(data, args.minecraft_qa, args.system_prompt, rng)
+                    print(f"+{len(found)} Minecraft Q&A rows generated from minecraft-data {version}")
+                else:
+                    name, split = hub_split(args.minecraft_qa_dataset, "train")
+                    records = load_hub_records(name, split, args.minecraft_qa, args.seed + 1)
+                    found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
+                    print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
                 rows += found
             except Exception as exc:  # noqa: BLE001 - never lose a training session to a download problem
                 print(f"warning: could not stream {args.minecraft_qa_dataset} ({type(exc).__name__}: {exc}) - skipped")
     if args.stream_vision > 0 and preset.get("vision"):
+        raytrace = "raytrace" in args.vision_dataset
         if offline:
             print(f"would stream {args.stream_vision} Minecraft pictures from {args.vision_dataset} "
-                  "(only those pictures are downloaded)")
+                  + ("(one parquet shard at a time, exact Q&A from its raycast labels)" if raytrace
+                     else "(only those pictures are downloaded)"))
         else:
             try:
-                rows += stream_vision_rows(args.stream_vision, Path(args.out) / "stream_images", args.system_prompt,
-                                           args.seed, bool(args.uncensored), args.vision_dataset)
+                where = Path(args.out) / "stream_images"
+                if raytrace:
+                    rows += stream_raytrace_rows(args.stream_vision, where, args.system_prompt, args.seed,
+                                                 args.vision_dataset)
+                else:
+                    rows += stream_vision_rows(args.stream_vision, where, args.system_prompt, args.seed,
+                                               bool(args.uncensored), args.vision_dataset)
             except Exception as exc:  # noqa: BLE001
                 print(f"warning: could not stream pictures from {args.vision_dataset} ({type(exc).__name__}: {exc})")
     return rows
@@ -916,6 +1593,21 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     system_text = ("\n## Default system prompt\n\nBuilt into the `Modelfile` (Ollama uses it whenever the app sends no "
                    "system prompt of its own; PyMC Bot sends its own for game turns):\n\n```text\n" + system + "\n```\n"
                    ) if system else ""
+    sources = report.get("data") or []
+    data_cell = (", ".join(f"[{d['name']}]({d['url']})" for d in sources) if sources else
+                 f"PyMC Bot rules + mob database, Minecraft Wiki text, recorded play{' and screenshots' if vision else ''}")
+    data_text = ""
+    if sources:
+        data_text = ("\n## Training data\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
+                     + "".join(f"| [{d['name']}]({d['url']}) | {d['license']} | {'yes' if d.get('commercial') else 'no'} "
+                               f"| {d.get('rows', '-')} |\n" for d in sources))
+    if report.get("commercial"):
+        data_note = ("every training source allows commercial use (table above; the CC BY 4.0 data is NVIDIA's "
+                     "Nemotron post-training set, credited here as its licence asks)")
+    elif any(d.get("name") == "minecraft.wiki" for d in sources) or not sources:
+        data_note = "the training data includes Minecraft Wiki text (CC BY-NC-SA 3.0, https://minecraft.wiki)"
+    else:
+        data_note = "some training data is not licensed for commercial use (see the table above)"
     llama = (f"llama-server -m {report.get('gguf', 'model.gguf')} --mmproj {report.get('mmproj', 'mmproj.gguf')}"
              if vision else f"llama-server -m {report.get('gguf', 'model.gguf')}")
     return f"""---
@@ -944,9 +1636,9 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 | Edition | {name} (`{preset_name}`) |
 | Base model | [{base}](https://huggingface.co/{base}) (Apache-2.0) |
 | Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
-| Data | PyMC Bot rules + mob database, Minecraft Wiki text, recorded play{' and screenshots' if vision else ''} |
+| Data | {data_cell} |
 | Size | ~{preset.get('gguf_gb')} GB file, ~{preset.get('run_gb')} GB to run |
-{eval_lines}{test_lines}{system_text}
+{eval_lines}{test_lines}{data_text}{system_text}
 ## Files
 
 {chr(10).join(files)}
@@ -974,9 +1666,8 @@ With llama.cpp:
 ## License and credits
 
 - Made with ❤️ by [codero-sus]({AUTHOR_URL}) - {WEBSITE}
-- **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and the
-  training data includes Minecraft Wiki text (CC BY-NC-SA 3.0, https://minecraft.wiki). The base model's own
-  license (Apache-2.0) still applies to the base weights.
+- **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and
+  {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.
 - Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
 """
 
@@ -1203,7 +1894,8 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
                               "reasoning": bool(preset.get("reasoning")), "train_rows": len(rows), "rank": args.rank,
                               "images": sum(len(row.get("images") or []) for row in rows), "loss": round(loss, 4),
                               "uncensored": bool(preset.get("uncensored")), "system_prompt": args.system_prompt,
-                              "general_rows": sum(1 for row in rows if row.get("kind") == "general")}
+                              "general_rows": sum(1 for row in rows if row.get("kind") == "general"),
+                              "commercial": bool(getattr(args, "commercial", False)), "data": data_sources(rows, args)}
     if eval_rows and args.eval_limit:
         for_inference()
         results = []
@@ -1313,17 +2005,29 @@ def build_parser() -> argparse.ArgumentParser:
                         help="share of Minecraft Q&A rows that get the everyday system prompt (0-1)")
     parser.add_argument("--general", type=int, default=0,
                         help="everyday chat rows to mix in from Hugging Face (keeps it a good daily assistant)")
-    parser.add_argument("--general-dataset", default=GENERAL_DATASET, help="ShareGPT/messages chat dataset")
-    parser.add_argument("--reasoning-dataset", default=REASONING_DATASET,
-                        help="dataset with <think> traces used instead for the thinking editions")
+    parser.add_argument("--general-dataset", help=f"ShareGPT/messages/ChatML chat dataset, 'name:split' picks a split "
+                                                  f"(default {GENERAL_DATASET}; --commercial: {COMMERCIAL_GENERAL_DATASET})")
+    parser.add_argument("--reasoning-dataset",
+                        help="dataset with <think> traces used instead for the thinking editions ('name:split'; "
+                             f"default {REASONING_DATASET}; --commercial: {COMMERCIAL_REASONING_DATASET})")
     parser.add_argument("--no-identity", action="store_true", help="skip the 'who are you' rows")
     parser.add_argument("--minecraft-qa", type=int, default=0,
                         help="Minecraft Q&A rows streamed from a big Hugging Face Q&A set (sampled and filtered)")
-    parser.add_argument("--minecraft-qa-dataset", default=MINECRAFT_QA_DATASET)
+    parser.add_argument("--minecraft-qa-dataset",
+                        help=f"Hugging Face Q&A dataset, or '{MINECRAFT_DATA}' to generate exact Q&A from "
+                             f"PrismarineJS/minecraft-data (default {MINECRAFT_QA_DATASET}; --commercial: {MINECRAFT_DATA})")
+    parser.add_argument("--minecraft-data-version", default=MINECRAFT_DATA_VERSION,
+                        help="Java version of the minecraft-data facts")
+    parser.add_argument("--minecraft-data-dir", help="a local minecraft-data checkout instead of downloading")
+    parser.add_argument("--commercial", action="store_true",
+                        help="only data whose licence allows commercial use: leaves out the Minecraft Wiki rows and "
+                             "swaps the default datasets for OpenAssistant chat, NVIDIA Nemotron maths traces, "
+                             "minecraft-data facts and minecraft-raytrace pictures")
     parser.add_argument("--stream-vision", type=int, default=0,
                         help="VL editions: Minecraft screenshots with captions / Q&A streamed from Hugging Face "
                              "(only the sampled pictures are downloaded); also lets VL train without own screenshots")
-    parser.add_argument("--vision-dataset", default=VISION_STREAM_DATASET)
+    parser.add_argument("--vision-dataset", help=f"default {VISION_STREAM_DATASET}; --commercial: "
+                                                 f"{COMMERCIAL_VISION_DATASET}")
     parser.add_argument("--test", action="store_true", help="run the test suite after training (bot JSON, Minecraft, "
                                                            "daily life, refusals, vision)")
     parser.add_argument("--test-gguf", action="store_true", help="also chat with the exported GGUF through Ollama")
@@ -1355,11 +2059,27 @@ def main(argv: list[str] | None = None) -> int:
                           if args.system_prompt_file else MINECRAFTISM_SYSTEM)
     if not args.out:
         args.out = str(Path("/kaggle/working") / args.preset) if Path("/kaggle/working").is_dir() else args.preset
+    resolve_datasets(args)
+    if args.commercial:
+        problems, warnings = commercial_problems(args, preset)
+        for warning in warnings:
+            print("note:", warning)
+        if problems:
+            print("--commercial:\n" + "\n".join(problems))
+            return 2
     data = find_data(args.data)
     args.data_dir = str(data.parent)
     rows = select_rows(read_jsonl(data), preset)
     eval_path = Path(args.eval_data) if args.eval_data else data.with_name("eval.jsonl")
     eval_rows = select_rows(read_jsonl(eval_path), preset) if eval_path.is_file() else []
+    if args.commercial:
+        rows, dropped = drop_noncommercial(rows)
+        eval_rows, _ = drop_noncommercial(eval_rows)
+        for source, count in dropped.items():
+            print(f"commercial: left out {count} rows of {NONCOMMERCIAL_SOURCES[source]}")
+        teacher = sum(1 for row in rows if row.get("source") == "teacher")
+        if teacher:
+            print(f"note: {teacher} teacher rows kept - their licence follows the teacher model you used")
     missing = [name for row in rows if preset.get("vision") for name in row.get("images") or []
                if not (data.parent / name).is_file()]
     if missing:
@@ -1383,9 +2103,15 @@ def main(argv: list[str] | None = None) -> int:
     rng = random.Random(args.seed)
     persona = apply_persona(rows, args.system_prompt, max(0.0, min(1.0, args.persona_mix)), rng) if args.preset in EDITIONS else 0
     extra = extra_rows(args, preset, rng, offline=args.dry_run)
-    streamed = [row for row in extra if row.get("source") == "minecraft-vlp"]
+    streamed = [row for row in extra if row.get("source") in ("minecraft-vlp", "minecraft-raytrace")]
     if len(streamed) > 20 and not any(row.get("images") for row in eval_rows):
-        held = streamed[-3:]  # a few unseen pictures for the eval and the test suite
+        pictures: list[str] = []  # a few unseen pictures (with all their questions) for the eval and the tests
+        for row in reversed(streamed):
+            if row["images"][0] not in pictures:
+                pictures.append(row["images"][0])
+            if len(pictures) == 3:
+                break
+        held = [row for row in streamed if row["images"][0] in pictures]
         extra = [row for row in extra if all(row is not h for h in held)]
         eval_rows = eval_rows + held
     rows = rows + extra
