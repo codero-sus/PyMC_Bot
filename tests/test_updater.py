@@ -490,3 +490,46 @@ def test_a_closed_output_pipe_never_stops_the_updater(monkeypatch):
     updater.say("up to date")
     updater.say("done")  # would have raised before
     assert not isinstance(updater.sys.stdout, ClosedPipe)
+
+
+def test_http_get_retries_short_github_hiccups(monkeypatch):
+    calls = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def flaky(request, timeout=0):
+        calls.append(request.full_url)
+        if len(calls) == 1:
+            raise updater.urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b""))
+        if len(calls) == 2:
+            raise updater.urllib.error.URLError("connection reset")
+        return Response(b"ok")
+
+    monkeypatch.setattr(updater, "RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(updater.urllib.request, "urlopen", flaky)
+    assert updater.http_get("https://api.github.com/x") == b"ok" and len(calls) == 3
+
+    def missing(request, timeout=0):
+        calls.append("404")
+        raise updater.urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b""))
+
+    calls.clear()
+    monkeypatch.setattr(updater.urllib.request, "urlopen", missing)
+    with pytest.raises(updater.UpdateError, match="not found"):
+        updater.http_get("https://api.github.com/x")
+    assert calls == ["404"], "a real answer (404) is never retried"
+
+    def down(request, timeout=0):
+        calls.append("down")
+        raise updater.urllib.error.URLError("offline")
+
+    calls.clear()
+    monkeypatch.setattr(updater.urllib.request, "urlopen", down)
+    with pytest.raises(updater.UpdateError, match="are you online"):
+        updater.http_get("https://api.github.com/x")
+    assert len(calls) == 3

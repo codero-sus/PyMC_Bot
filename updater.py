@@ -158,19 +158,29 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> urllib.re
     return urllib.request.Request(url, headers=headers)
 
 
+#: Seconds to wait before trying again when GitHub has a hiccup (HTTP 5xx, a dropped connection, a timeout).
+RETRY_DELAYS = (2.0, 6.0)
+
+
 def http_get(url: str, accept: str = "application/vnd.github+json", timeout: float = 60.0) -> bytes:
-    """GET with a clear error message (rate limits, offline, missing branch...)."""
-    try:
-        with urllib.request.urlopen(_request(url, accept), timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code == 429 or (exc.code == 403 and "rate limit" in exc.read().decode("utf-8", "replace").lower()):
-            raise RateLimited("GitHub's API rate limit was reached - wait an hour or set GITHUB_TOKEN") from exc
-        if exc.code == 404:
-            raise UpdateError(f"not found on GitHub: {redact(url)}") from exc
-        raise UpdateError(f"GitHub answered HTTP {exc.code} for {redact(url)}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise UpdateError(f"could not reach GitHub ({exc}) - are you online?") from exc
+    """GET with a clear error message (rate limits, offline, missing branch...); short GitHub hiccups are
+    retried twice before giving up."""
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            with urllib.request.urlopen(_request(url, accept), timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 or (exc.code == 403 and "rate limit" in exc.read().decode("utf-8", "replace").lower()):
+                raise RateLimited("GitHub's API rate limit was reached - wait an hour or set GITHUB_TOKEN") from exc
+            if exc.code == 404:
+                raise UpdateError(f"not found on GitHub: {redact(url)}") from exc
+            if exc.code < 500 or delay is None:
+                raise UpdateError(f"GitHub answered HTTP {exc.code} for {redact(url)}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if delay is None:
+                raise UpdateError(f"could not reach GitHub ({exc}) - are you online?") from exc
+        time.sleep(delay)
+    raise UpdateError(f"could not reach GitHub for {redact(url)}")  # not reached: the last attempt raises
 
 
 def http_json(url: str):
