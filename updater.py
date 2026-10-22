@@ -545,6 +545,18 @@ def install_jar(mods_dir: Path, data: bytes, name: str, replaces: list[Path]) ->
     return target
 
 
+def newest_mod_release(repo: str, allow_pre: bool) -> dict | None:
+    """The newest mod release. GitHub's API now and then answers with an empty release list for a moment,
+    so an empty answer is asked again (twice) before the updater says there is no release."""
+    for delay in (*RETRY_DELAYS, None):
+        releases = http_json(f"{API}/repos/{repo}/releases?per_page=30")
+        release = pick_release(releases, allow_pre)
+        if release is not None or releases or delay is None:
+            return release
+        time.sleep(delay)
+    return None
+
+
 def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool, check: bool,
                reinstall: bool = False) -> bool:
     say(f"mods folder: {mods_dir}")
@@ -557,7 +569,7 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
     if not targets:
         raise UpdateError("no pymcbot-*.jar in that folder - pass --mc <your Minecraft version> to install it, "
                           "or --mods-dir if your mods live elsewhere")
-    release = pick_release(http_json(f"{API}/repos/{repo}/releases?per_page=30"), allow_pre)
+    release = newest_mod_release(repo, allow_pre)
     if release is None:
         raise UpdateError(f"{repo} has no {MOD_TAG_PREFIXES[0]}* release yet")
     newest = release_version(release["tag_name"])
