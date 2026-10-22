@@ -101,8 +101,9 @@ The settings cell:
 | `TRAINER` | `"auto"` | the dataset's trainer, or the newest from GitHub when it is too old; `"latest"` / `"dataset"` |
 | `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
 | `GENERAL_CHAT` | `3000` | everyday chat rows mixed in, so it stays a good daily assistant (`0` = Minecraft only) |
-| `MINECRAFT_QA` | `20000` | Minecraft Q&A streamed from a 695k-row set ([below](#big-minecraft-datasets-streamed)) |
-| `STREAM_PICTURES` | `3000` | VL editions: captioned screenshots streamed from Hugging Face |
+| `COMMERCIAL_ONLY` | `True` | only data whose licence allows commercial use ([below](#commercial-use-data)) |
+| `MINECRAFT_QA` | `20000` | Minecraft Q&A: generated from minecraft-data, or streamed from a 695k-row set ([below](#big-minecraft-datasets-streamed)) |
+| `STREAM_PICTURES` | `3000` | VL editions: Minecraft pictures with questions and answers, streamed from Hugging Face |
 | `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |
 | `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
 | `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
@@ -180,9 +181,41 @@ reasoning traces instead, from [`unsloth/OpenMathReasoning-mini`](https://huggin
 (`--reasoning-dataset`). Training a thinking model on answers without traces would make it forget how to think.
 The data is downloaded on Kaggle, and `--dry-run` only reports what it would add.
 
+## Commercial-use data
+
+`COMMERCIAL_ONLY = True` (the default; trainer flag `--commercial`) trains only on data whose licence allows
+commercial use:
+
+| Part | Dataset | Licence | What the trainer does with it |
+| --- | --- | --- | --- |
+| Everyday chat (`GENERAL_CHAT`) | [`OpenAssistant/oasst_top1_2023-08-25`](https://huggingface.co/datasets/OpenAssistant/oasst_top1_2023-08-25) | Apache-2.0 | ~13k chats written by people, multilingual |
+| Thinking traces (thinking editions) | [`nvidia/Nemotron-Post-Training-Dataset-v1`](https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1), `math` split | CC BY 4.0 | maths with real `<think>` traces (DeepSeek-R1 / Qwen3 answers); long traces are skipped |
+| Minecraft Q&A (`MINECRAFT_QA`) | [`PrismarineJS/minecraft-data`](https://github.com/PrismarineJS/minecraft-data), Java 1.21.8 | MIT | about 3,300 exact facts made into Q&A: recipes with their layout, which pickaxe a block needs, block drops, light levels, hardness and blast resistance, stack sizes, durability, food, mob drops and hitboxes, enchantments, effects, biomes. Each fact has up to 3 phrasings, so about 10k rows at most |
+| Pictures (`STREAM_PICTURES`) | [`shinohararin/minecraft-raytrace`](https://huggingface.co/datasets/shinohararin/minecraft-raytrace) | MIT | 10,222 first-person 1.21.8 frames with raycast labels. Two exact Q&A per frame: biome, time of day, rain or snow, the block at the crosshair and its distance, the blocks in view, the mobs in view, a short description |
+
+* The kit's **Minecraft Wiki rows** (CC BY-NC-SA 3.0) are left out. The rest of the kit stays: the PyMC Bot
+  game turns, the mob database facts, the checked crafting facts and your own recordings.
+* A dataset you pick yourself (`--general-dataset` and the others) is checked: a known non-commercial one stops
+  the run, and an unknown one prints a note to check its licence.
+* **The model card lists every source with its licence and row count.** That is also the attribution
+  CC BY 4.0 asks for.
+* minecraft-raytrace is read **one ~330 MB parquet shard at a time**, and only the frame and label columns are
+  read, not the voxel dumps. 3,000 rows need about 3 shards. Frames are saved as JPEG and deleted after training.
+  `QUICK_TEST` starts with the small last shard (~14 MB).
+* The trainer reads the raycast labels from the dataset's README layout. If a capture's labels or mob list look
+  different, those questions are skipped for that frame. Biome, time and weather come from plain columns and
+  always work.
+* minecraft-data says some of its values came from wiki.vg and the Minecraft Wiki long ago. Its mob drop amounts
+  are simplified, so the trainer uses only the item names and the odds.
+* `COMMERCIAL_ONLY = False` uses the bigger non-commercial sets instead (below), plus the wiki rows.
+* The model card still releases the fine-tune under PolyForm Noncommercial 1.0.0, the project's licence. Because
+  the data now allows commercial use, the data is no longer a reason you couldn't pick a different licence for your
+  own fine-tune. The base models are Apache-2.0, including the abliterated copies. Not legal advice. "Minecraft" is Mojang's trademark, so check their usage guidelines
+  before you sell anything with the name.
+
 ## Big Minecraft datasets, streamed
 
-Two big public datasets are mixed in without downloading them whole:
+With `COMMERCIAL_ONLY = False`, two big public datasets are mixed in without downloading them whole:
 
 | Setting (trainer flag) | Default | Dataset | What it adds |
 | --- | --- | --- | --- |
@@ -298,4 +331,5 @@ the notebook again. The same Hugging Face repo gets a new commit.
 * Thinking editions print `<think>…</think>` before the JSON; the bot strips it (also when only the closing
   tag appears, as Qwen3 Thinking models do).
 * Personal, non-commercial use only (PolyForm Noncommercial 1.0.0), and the base models' licences apply
-  (Qwen3 / Qwen3-VL: Apache 2.0, Llama 3.2: Llama Community License). The model cards say so too.
+  (Qwen3 / Qwen3-VL: Apache 2.0, Llama 3.2: Llama Community License). The model cards say so too, and list
+  the licence of every training source ([commercial-use data](#commercial-use-data)).

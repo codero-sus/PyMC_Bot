@@ -515,9 +515,11 @@ the same JSON decisions, chats like a player and answers mob, crafting and mecha
 search. Data comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki
 pages, turns the bot recorded, your playtime and screenshots, and (optionally) a bigger teacher model you run.
 Outside the game it is an **everyday assistant** with its own system prompt (not "you are a bot"). The notebook trains it
-**uncensored** by default (abliterated base and refusal-free chat data; `UNCENSORED = False` turns it off), and
-streams big public Minecraft datasets: 20k Q&A rows sampled from a 695k-row set, and captioned screenshots
-for the VL editions read straight out of the remote zip files. Nothing is downloaded whole, so VL editions train
+**uncensored** by default (abliterated base and refusal-free chat data; `UNCENSORED = False` turns it off).
+By default it uses only **data whose licence allows commercial use** (`COMMERCIAL_ONLY = True`): OpenAssistant chat
+(Apache-2.0), NVIDIA Nemotron thinking traces (CC BY 4.0), exact Minecraft Q&A generated from minecraft-data (MIT)
+and, for the VL editions, minecraft-raytrace frames (MIT) with Q&A made from their raycast labels. The model card
+lists every source and its licence. Everything is streamed and nothing is downloaded whole, so VL editions train
 even without your own screenshots. It can also run an **optional test suite**: bot JSON, Minecraft, everyday prompts, refusals, vision and the exported GGUF in Ollama.
 
 | Edition | Base | |
