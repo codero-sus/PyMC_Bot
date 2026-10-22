@@ -248,17 +248,22 @@ jobs:
           chmod +x gradlew
           # Maven Central / maven.fabricmc.net occasionally fail to serve a file ("Could not find
           # gson ..."). Retry such network hiccups twice so one blip does not cancel the release and
-          # the Modrinth upload; real compile errors still fail on the first try.
+          # the Modrinth upload; real compile errors still fail on the first try. Maven Central also
+          # rate-limits busy runners (HTTP 429): wait longer then, and don't refresh (more requests).
           extra=""
           for attempt in 1 2 3; do
             if ./gradlew build -Pmc=${{ matrix.mc }} --no-daemon --stacktrace $extra 2>&1 | tee gradle.log; then
               exit 0
             fi
-            if [ "$attempt" -lt 3 ] && grep -qE "Could not (find|resolve|GET|HEAD|download)|Connection (reset|refused|timed out)|Read timed out|Received status code 5[0-9][0-9]|Remote host terminated|DownloadException|Failed download" gradle.log \
-                && ! grep -qE "Compilation failed|error: " gradle.log; then
-              echo "::warning::dependency download failed - retrying in 30 s (attempt $attempt of 3)"
-              sleep 30
-              extra="--refresh-dependencies"
+            if [ "$attempt" -lt 3 ] && grep -qE "Could not (find|resolve|GET|HEAD|download)|Connection (reset|refused|timed out)|Read timed out|Received status code (429|5[0-9][0-9])|Too Many Requests|Remote host terminated|DownloadException|Failed download" gradle.log \
+                && ! grep -qE "Compilation failed|\.java:[0-9]+: error" gradle.log; then
+              if grep -qE "status code 429|Too Many Requests" gradle.log; then
+                wait=$((90 * attempt)); extra=""
+              else
+                wait=30; extra="--refresh-dependencies"
+              fi
+              echo "::warning::dependency download failed - retrying in $wait s (attempt $attempt of 3)"
+              sleep "$wait"
               continue
             fi
             exit 1
