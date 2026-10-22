@@ -533,3 +533,15 @@ def test_http_get_retries_short_github_hiccups(monkeypatch):
     with pytest.raises(updater.UpdateError, match="are you online"):
         updater.http_get("https://api.github.com/x")
     assert len(calls) == 3
+
+
+def test_an_empty_release_list_is_asked_again(monkeypatch):
+    answers = [[], [], [{"tag_name": "pymcbot-v1.2.0", "prerelease": False, "draft": False, "assets": []}]]
+    asked = []
+    monkeypatch.setattr(updater, "RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(updater, "http_json", lambda url: asked.append(url) or answers[len(asked) - 1])
+    assert updater.newest_mod_release("me/repo", allow_pre=True)["tag_name"] == "pymcbot-v1.2.0" and len(asked) == 3
+    asked.clear()
+    monkeypatch.setattr(updater, "http_json", lambda url: asked.append(url) or [{"tag_name": "other-v1", "assets": []}])
+    assert updater.newest_mod_release("me/repo", allow_pre=True) is None and len(asked) == 1, \
+        "a real list without mod releases is not asked again"
