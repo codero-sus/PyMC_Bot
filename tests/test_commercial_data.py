@@ -369,6 +369,6 @@ def test_notebook_defaults_to_commercial_data():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
     assert "COMMERCIAL_ONLY = True" in code and 'FLAGS += " --commercial" if COMMERCIAL_ONLY else ""' in code
-    assert '"--minecraft-qa", "--commercial"))' in code, "an old trainer without --commercial gets replaced"
+    assert '"--minecraft-qa", "--commercial",' in code, "an old trainer without --commercial gets replaced"
     intro = "".join(nb["cells"][0]["source"])
     assert "COMMERCIAL_ONLY = True" in intro and "minecraft-raytrace" in intro and "Apache-2.0" in intro

@@ -121,6 +121,15 @@ def hf_reference(repo: str, quant: str = "Q4_K_M") -> str:
     return f"hf.co/{repo}:{quant.upper()}" if quant else f"hf.co/{repo}"
 
 
+def gguf_repo_for(repo: str) -> str:
+    """A Minecraftism *safetensors* repo (``you/Minecraftism-4B-Uncensored``) -> its GGUF twin
+    (``you/Minecraftism-4B-Uncensored-GGUF``), which is what Ollama can run. Anything else is returned unchanged."""
+    clean = repo.strip().rstrip("/")
+    name = clean.rsplit("/", 1)[-1].lower().replace("-uncensored", "")
+    hubs = {str(PRESETS[n].get("hub") or "").lower().removesuffix("-gguf") for n in PRESETS if n.startswith("minecraftism")}
+    return f"{clean}-GGUF" if name in hubs - {""} else clean
+
+
 def edition_from_repo(repo: str) -> dict[str, Any]:
     """Guess the Minecraftism edition from a repo name (for the Ollama name and vision switch)."""
     low = repo.lower().split(":")[0]
@@ -153,8 +162,9 @@ def import_model_hf(repo: str, store: ConfigStore, name: str | None = None, quan
                     run: Callable[..., Any] = subprocess.run, which: Callable[[str], str | None] = shutil.which,
                     fetch: Callable[[str], dict[str, Any]] = fetch_hf_report) -> ImportResult:
     """``ollama pull hf.co/<repo>:<quant>``, give it a short name (with the model's default system
-    prompt from its ``pymc_model.json``), switch the bot to it."""
-    reference = hf_reference(repo, quant)
+    prompt from its ``pymc_model.json``), switch the bot to it. A Minecraftism safetensors repo is swapped for
+    its GGUF twin (Ollama runs GGUF)."""
+    reference = hf_reference(gguf_repo_for(repo), quant)
     info = {**edition_from_repo(reference), **{k: v for k, v in fetch(reference).items() if v not in (None, "")}}
     name = name or (default_name(info) if info.get("edition") else reference.split("/")[-1].split(":")[0].lower())
     created = False
