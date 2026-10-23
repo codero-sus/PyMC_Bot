@@ -69,7 +69,7 @@ process.on('exit', () => send({ event: 'exit' }));
 try {
   mineflayer = require('mineflayer');
 } catch (err) {
-  send({ event: 'error', message: 'mineflayer is not installed (run `npm install`). ' + err.message });
+  send({ event: 'error', message: 'mineflayer is not installed (run `python -m pymc_bot setup` - no npm needed). ' + err.message });
   process.exit(1);
 }
 try {
@@ -238,6 +238,14 @@ function buildState() {
   groundItems.length = Math.min(groundItems.length, 12);
 
   const timeOfDay = bot.time && typeof bot.time.timeOfDay === 'number' ? bot.time.timeOfDay : 0;
+  // what the autopilot reacts to: light at the feet, air, fire, water, rain, death
+  let feet = null;
+  try {
+    feet = bot.blockAt(pos);
+  } catch (err) {
+    feet = null;
+  }
+  const meta = bot.entity.metadata ? bot.entity.metadata[0] : 0;
 
   return {
     status: 'connected',
@@ -263,6 +271,16 @@ function buildState() {
     armor: Object.values(inv.armor).filter(Boolean).map((stack) => stack.name),
     offhand: inv.offhand ? inv.offhand.name : '',
     sleeping: Boolean(bot.isSleeping),
+    world_time: Math.round(timeOfDay),
+    block_light: feet && typeof feet.light === 'number' ? feet.light : null,
+    sky_light: feet && typeof feet.skyLight === 'number' ? feet.skyLight : null,
+    oxygen: typeof bot.oxygenLevel === 'number' ? bot.oxygenLevel : 20,
+    in_water: Boolean(bot.entity.isInWater),
+    on_fire: typeof meta === 'number' && (meta & 0x01) === 0x01,
+    raining: Boolean(bot.isRaining),
+    dead: typeof bot.health === 'number' && bot.health <= 0,
+    riding: bot.vehicle ? String(bot.vehicle.name || 'vehicle') : '',
+    xp_level: bot.experience ? bot.experience.level : 0,
   };
 }
 
@@ -769,6 +787,990 @@ async function cmdAttackMob(params) {
   return { target: target.name, hits, killed };
 }
 
+/* ------------------------------------------------------------------ skills */
+// One command per skill of pymc_bot/skills.py: bigger jobs a player does (chop a tree, craft,
+// farm, store things in a chest...). Each one answers with a short `message` the Python side
+// shows in the log, plus numbers (mined, placed_count, kills) for the stats.
+function registry() {
+  return bot.registry || require('minecraft-data')(bot.version);
+}
+
+function need() {
+  if (!bot || !bot.entity) throw new Error('not connected');
+}
+
+function cleanName(value) {
+  return String(value || '').toLowerCase().trim().replace(/^minecraft:/, '').replace(/\s+/g, '_');
+}
+
+function Vec3() {
+  return bot.entity.position.constructor;
+}
+
+function invItems() {
+  return bot.inventory ? bot.inventory.items() : [];
+}
+
+/** First inventory item whose name matches (exact first, then a part like "pickaxe" or "_log"). */
+function findItem(match) {
+  const items = invItems();
+  if (typeof match === 'function') return items.find(match) || null;
+  const name = cleanName(match);
+  if (!name) return null;
+  return items.find((it) => it.name === name) || items.find((it) => it.name.includes(name)) || null;
+}
+
+function countItem(name) {
+  return invItems().filter((it) => it.name === name).reduce((sum, it) => sum + it.count, 0);
+}
+
+async function holdItem(item, destination) {
+  if (!item) return false;
+  await withTimeout(bot.equip(item, destination || 'hand'), 5000, 'equipping');
+  return true;
+}
+
+function blockIds(test) {
+  return Object.values(registry().blocksByName).filter((block) => test(block.name)).map((block) => block.id);
+}
+
+function nearestBlocks(test, radius, count) {
+  const ids = blockIds(test);
+  if (!ids.length) return [];
+  return bot.findBlocks({ matching: ids, maxDistance: radius, count: count || 64 })
+    .map((pos) => bot.blockAt(pos))
+    .filter(Boolean)
+    .sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+}
+
+/** Walk until the block can be reached (looked at) - pathfinder when available. */
+async function reachBlock(pos, budgetMs) {
+  const eye = bot.entity.position.offset(0, bot.entity.height || 1.62, 0);
+  if (eye.distanceTo(pos.offset(0.5, 0.5, 0.5)) <= 4.2) return true;
+  if (!pathfinder || !bot.pathfinder) return false;
+  try {
+    await withTimeout(bot.pathfinder.goto(new goals.GoalLookAtBlock(pos, bot.world, { reach: 4 })), budgetMs || 20000, 'walking');
+  } catch (err) {
+    stopPath();
+    const near = bot.entity.position.offset(0, bot.entity.height || 1.62, 0).distanceTo(pos.offset(0.5, 0.5, 0.5));
+    return near <= 4.5;
+  }
+  return true;
+}
+
+async function reachEntity(entity, range, budgetMs) {
+  if (bot.entity.position.distanceTo(entity.position) <= range) return true;
+  if (!pathfinder || !bot.pathfinder) return false;
+  try {
+    await withTimeout(bot.pathfinder.goto(new goals.GoalFollow(entity, Math.max(1, range - 1))), budgetMs || 15000, 'walking');
+  } catch (err) {
+    stopPath();
+  }
+  return bot.entities[entity.id] !== undefined && bot.entity.position.distanceTo(entity.position) <= range + 0.5;
+}
+
+/** The fastest tool in the inventory for a block (keeps the hand when nothing helps). */
+async function equipBestTool(block) {
+  let best = null;
+  let bestTime = Infinity;
+  const hand = () => { try { return block.digTime(null, false, false, false, [], []); } catch (err) { return Infinity; } };
+  const handTime = hand();
+  for (const item of invItems()) {
+    if (block.harvestTools && !block.harvestTools[item.type]) continue;
+    let time = Infinity;
+    try {
+      time = block.digTime(item.type, false, false, false, [], []);
+    } catch (err) {
+      continue;
+    }
+    if (time < bestTime) {
+      best = item;
+      bestTime = time;
+    }
+  }
+  if (best && (bestTime < handTime || block.harvestTools)) await holdItem(best);
+  return best;
+}
+
+async function digBlock(block) {
+  if (!(await reachBlock(block.position, 20000))) throw new Error(`cannot reach the ${block.name}`);
+  const fresh = bot.blockAt(block.position);
+  if (!fresh || fresh.name !== block.name) return false;
+  await equipBestTool(fresh);
+  if (fresh.harvestTools && !(bot.heldItem && fresh.harvestTools[bot.heldItem.type])) {
+    throw new Error(`${fresh.name} needs a better tool`);
+  }
+  if (!bot.canDigBlock(fresh)) throw new Error(`cannot dig the ${fresh.name} from here`);
+  await withTimeout(bot.dig(fresh, true), 30000, `digging ${fresh.name}`);
+  return true;
+}
+
+/** Walk over dropped items nearby (never throws). */
+async function pickUpNear(radius, budgetMs) {
+  if (!pathfinder || !bot.pathfinder) return 0;
+  const deadline = Date.now() + budgetMs;
+  let picked = 0;
+  while (Date.now() < deadline) {
+    const drops = Object.values(bot.entities).filter(
+      (e) => e && e.name === 'item' && e.position && bot.entity.position.distanceTo(e.position) <= radius
+    );
+    if (!drops.length) break;
+    drops.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+    const target = drops[0];
+    bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 0));
+    const until = Math.min(deadline, Date.now() + 5000);
+    while (Date.now() < until && bot.entities[target.id]) await sleep(150);
+    if (bot.entities[target.id]) break;
+    picked += 1;
+  }
+  stopPath();
+  return picked;
+}
+
+/** Mine up to `count` blocks matching `test`; shared by chop_tree, mine_ore and gather. */
+async function mineMatching(test, count, radius, budgetMs, label) {
+  const deadline = Date.now() + budgetMs;
+  const skipped = new Set();
+  let mined = 0;
+  let lastError = null;
+  while (mined < count && Date.now() < deadline) {
+    const blocks = nearestBlocks(test, radius, 32).filter((b) => !skipped.has(b.position.toString()));
+    if (!blocks.length) break;
+    const block = blocks[0];
+    try {
+      if (await digBlock(block)) mined += 1;
+    } catch (err) {
+      lastError = err.message;
+      skipped.add(block.position.toString());
+      if (skipped.size > 6) break;
+    }
+  }
+  if (mined) await pickUpNear(8, 8000);
+  if (!mined) throw new Error(lastError || `no ${label} within ${radius} blocks`);
+  return mined;
+}
+
+/** Place `item` so it fills `pos` (needs a solid neighbour to click on). */
+async function placeAt(pos, item) {
+  const V = Vec3();
+  const here = bot.blockAt(pos);
+  if (!here || (here.boundingBox !== 'empty' && !['water', 'lava', 'short_grass', 'grass', 'tall_grass', 'snow'].includes(here.name))) return false;
+  const faces = [[0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+  for (const [dx, dy, dz] of faces) {
+    const ref = bot.blockAt(pos.offset(dx, dy, dz));
+    if (!ref || ref.boundingBox !== 'block') continue;
+    await holdItem(item);
+    try {
+      await withTimeout(bot.placeBlock(ref, new V(-dx, -dy, -dz)), 4000, 'placing');
+      return true;
+    } catch (err) {
+      const now = bot.blockAt(pos);
+      if (now && now.boundingBox === 'block') return true; // placed, the server was just slow to confirm
+    }
+  }
+  return false;
+}
+
+function buildingItem(wanted) {
+  if (wanted) {
+    const item = findItem(wanted);
+    if (item) return item;
+  }
+  const plain = ['cobblestone', 'cobbled_deepslate', 'dirt', 'stone', 'netherrack', 'deepslate', 'andesite', 'diorite',
+    'granite', 'tuff', 'sandstone', 'blackstone'];
+  const items = invItems();
+  const pile = (name) => countItem(name);
+  const candidates = items.filter((it) => plain.includes(it.name) || /_planks$|_bricks$|_wool$/.test(it.name));
+  candidates.sort((a, b) => pile(b.name) - pile(a.name));
+  return candidates[0] || null;
+}
+
+function entitiesNear(test, radius) {
+  return Object.values(bot.entities)
+    .filter((e) => e && e !== bot.entity && e.position && bot.entity.position.distanceTo(e.position) <= radius && test(e))
+    .sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+}
+
+function mobName(entity) {
+  return String(entity.name || entity.displayName || '').toLowerCase();
+}
+
+/* --- survival */
+async function cmdDrink(params) {
+  need();
+  const wanted = cleanName(params.item);
+  const drinkable = (it) => (wanted ? it.name === wanted || it.name.includes(wanted)
+    : ['potion', 'milk_bucket', 'honey_bottle'].includes(it.name));
+  const item = findItem(drinkable);
+  if (!item) throw new Error('nothing to drink');
+  await holdItem(item);
+  await withTimeout(bot.consume(), 8000, 'drinking');
+  return { drank: item.name, message: `drank ${item.name.replace(/_/g, ' ')}` };
+}
+
+async function cmdSurface() {
+  need();
+  const deadline = Date.now() + 10000;
+  await bot.look(bot.entity.yaw, Math.PI / 2, true).catch(() => {});
+  bot.setControlState('jump', true);
+  bot.setControlState('forward', true);
+  try {
+    while (Date.now() < deadline && (bot.entity.isInWater || (bot.oxygenLevel ?? 20) < 20)) {
+      const head = bot.blockAt(bot.entity.position.offset(0, 1.6, 0));
+      if (head && head.name !== 'water' && (bot.oxygenLevel ?? 20) >= 18) break;
+      await sleep(150);
+    }
+  } finally {
+    bot.setControlState('jump', false);
+    bot.setControlState('forward', false);
+  }
+  return { oxygen: bot.oxygenLevel, message: 'swam up for air' };
+}
+
+function onFire() {
+  const flags = bot.entity && bot.entity.metadata ? bot.entity.metadata[0] : 0;
+  return typeof flags === 'number' && (flags & 0x01) === 0x01;
+}
+
+async function cmdExtinguish() {
+  need();
+  if (!onFire() && !bot.entity.isInLava) throw new Error('not on fire');
+  const bucket = findItem('water_bucket');
+  if (bucket) {
+    await holdItem(bucket);
+    const below = bot.blockAt(bot.entity.position.offset(0, -1, 0));
+    if (below) await bot.lookAt(below.position.offset(0.5, 1, 0.5), true);
+    bot.activateItem();
+    await sleep(400);
+    bot.deactivateItem();
+    await sleep(600);
+    bot.activateItem(); // scoop the water back up, like players do
+    await sleep(250);
+    bot.deactivateItem();
+    return { message: 'put the fire out with a water bucket' };
+  }
+  const water = nearestBlocks((name) => name === 'water', 16, 8)[0];
+  if (!water) throw new Error('no water bucket and no water nearby');
+  await walkNear(water.position, 0, 8000);
+  return { message: 'jumped into water to put the fire out' };
+}
+
+async function cmdRespawn() {
+  if (!bot) throw new Error('not connected');
+  if (bot.health > 0 && bot.entity) throw new Error('not dead');
+  bot.respawn();
+  return { message: 'respawned' };
+}
+
+/* --- gathering */
+function matchBlockName(wanted) {
+  const name = cleanName(wanted);
+  if (registry().blocksByName[name]) return (n) => n === name;
+  return (n) => n.includes(name);
+}
+
+async function cmdFindBlock(params) {
+  need();
+  const wanted = cleanName(params.block || 'oak_log');
+  const radius = Math.max(4, Math.min(128, Number(params.radius || 64)));
+  const found = nearestBlocks(matchBlockName(wanted), radius, 5).slice(0, 5).map((b) => ({
+    block: b.name, x: b.position.x, y: b.position.y, z: b.position.z,
+    distance: Number(bot.entity.position.distanceTo(b.position).toFixed(1)),
+  }));
+  if (!found.length) throw new Error(`no ${wanted} within ${radius} blocks`);
+  const first = found[0];
+  return { found, message: `${first.block} at ${first.x} ${first.y} ${first.z} (${Math.round(first.distance)} blocks away)` };
+}
+
+async function cmdChopTree(params) {
+  need();
+  const count = Math.max(1, Math.min(64, Number(params.count || 16)));
+  const radius = Math.max(4, Math.min(64, Number(params.radius || 32)));
+  const isLog = (n) => /_log$|_stem$/.test(n) && !n.startsWith('stripped_');
+  const first = nearestBlocks(isLog, radius, 16)[0];
+  if (!first) throw new Error(`no tree within ${radius} blocks`);
+  // the tree = logs connected to the first one (up, sideways, diagonally), lowest first
+  const tree = [];
+  const seen = new Set([first.position.toString()]);
+  const queue = [first.position];
+  while (queue.length && tree.length < 40) {
+    const pos = queue.shift();
+    tree.push(pos);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = 0; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const next = pos.offset(dx, dy, dz);
+          const key = next.toString();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const block = bot.blockAt(next);
+          if (block && isLog(block.name)) queue.push(next);
+        }
+      }
+    }
+  }
+  tree.sort((a, b) => a.y - b.y);
+  let mined = 0;
+  for (const pos of tree) {
+    if (mined >= count) break;
+    const block = bot.blockAt(pos);
+    if (!block || !isLog(block.name)) continue;
+    try {
+      if (await digBlock(block)) mined += 1;
+    } catch (err) {
+      /* too high to reach - leave the top of the tree */
+    }
+  }
+  if (!mined) throw new Error('could not reach the tree');
+  await pickUpNear(10, 10000);
+  return { mined, message: `chopped a tree: ${mined} log(s)` };
+}
+
+const ORES = ['coal', 'iron', 'copper', 'gold', 'redstone', 'lapis', 'diamond', 'emerald', 'quartz', 'ancient_debris'];
+
+async function cmdMineOre(params) {
+  need();
+  const ore = cleanName(params.ore).replace(/_ore$/, '').replace(/^deepslate_/, '');
+  const count = Math.max(1, Math.min(32, Number(params.count || 4)));
+  const radius = Math.max(4, Math.min(48, Number(params.radius || 24)));
+  const test = ore
+    ? (n) => n === `${ore}_ore` || n === `deepslate_${ore}_ore` || n === `nether_${ore}_ore` || (ore === 'ancient_debris' && n === ore)
+    : (n) => n.endsWith('_ore') || n === 'ancient_debris';
+  if (ore && !ORES.includes(ore)) throw new Error(`unknown ore ${ore} (${ORES.join(', ')})`);
+  const mined = await mineMatching(test, count, radius, 140000, ore ? `${ore} ore` : 'ore');
+  return { mined, message: `mined ${mined} ${ore || 'ore'} block(s)` };
+}
+
+async function cmdGather(params) {
+  need();
+  const wanted = cleanName(params.block || 'dirt');
+  const count = Math.max(1, Math.min(64, Number(params.count || 8)));
+  const radius = Math.max(4, Math.min(48, Number(params.radius || 24)));
+  const mined = await mineMatching(matchBlockName(wanted), count, radius, 140000, wanted);
+  return { mined, message: `mined ${mined} ${wanted.replace(/_/g, ' ')}` };
+}
+
+/* --- farming */
+const CROPS = { wheat: [7, 'wheat_seeds'], carrots: [7, 'carrot'], potatoes: [7, 'potato'], beetroots: [3, 'beetroot_seeds'],
+  nether_wart: [3, 'nether_wart'] };
+const SEEDS = { wheat_seeds: 'wheat', carrot: 'carrots', potato: 'potatoes', beetroot_seeds: 'beetroots',
+  melon_seeds: 'melon_stem', pumpkin_seeds: 'pumpkin_stem', nether_wart: 'nether_wart' };
+
+function cropAge(block) {
+  const props = typeof block.getProperties === 'function' ? block.getProperties() : {};
+  return Number(props.age ?? block.metadata ?? 0);
+}
+
+async function plantOn(soil, seedName) {
+  const seed = findItem(seedName);
+  if (!seed) return false;
+  const V = Vec3();
+  await holdItem(seed);
+  try {
+    await withTimeout(bot.placeBlock(soil, new V(0, 1, 0)), 3000, 'planting');
+  } catch (err) {
+    const above = bot.blockAt(soil.position.offset(0, 1, 0));
+    if (!above || above.boundingBox !== 'empty' || above.name === 'air') return Boolean(above && above.name !== 'air');
+  }
+  return true;
+}
+
+async function cmdHarvest(params) {
+  need();
+  const radius = Math.max(2, Math.min(32, Number(params.radius || 12)));
+  const replant = params.replant !== false;
+  const ripe = nearestBlocks((n) => n in CROPS || n === 'melon' || n === 'pumpkin', radius, 64)
+    .filter((b) => !(b.name in CROPS) || cropAge(b) >= CROPS[b.name][0]);
+  if (!ripe.length) throw new Error(`no ripe crops within ${radius} blocks`);
+  let harvested = 0;
+  let replanted = 0;
+  const deadline = Date.now() + 100000;
+  for (const crop of ripe.slice(0, 48)) {
+    if (Date.now() > deadline) break;
+    try {
+      if (!(await digBlock(crop))) continue;
+      harvested += 1;
+      if (replant && crop.name in CROPS) {
+        const soil = bot.blockAt(crop.position.offset(0, -1, 0));
+        if (soil && (soil.name === 'farmland' || soil.name === 'soul_sand') && (await plantOn(soil, CROPS[crop.name][1]))) replanted += 1;
+      }
+    } catch (err) {
+      /* next crop */
+    }
+  }
+  await pickUpNear(radius, 12000);
+  if (!harvested) throw new Error('could not reach the crops');
+  return { harvested, mined: harvested, placed_count: replanted, message: `harvested ${harvested} crop(s)` + (replanted ? `, replanted ${replanted}` : '') };
+}
+
+async function cmdPlant(params) {
+  need();
+  const radius = Math.max(2, Math.min(24, Number(params.radius || 10)));
+  const count = Math.max(1, Math.min(64, Number(params.count || 16)));
+  const wanted = cleanName(params.seed);
+  const seed = wanted ? findItem(wanted) : findItem((it) => it.name in SEEDS);
+  if (!seed) throw new Error('no seeds to plant');
+  const soilName = seed.name === 'nether_wart' ? 'soul_sand' : 'farmland';
+  const spots = nearestBlocks((n) => n === soilName, radius, 128).filter((b) => {
+    const above = bot.blockAt(b.position.offset(0, 1, 0));
+    return above && above.name === 'air';
+  });
+  if (!spots.length) throw new Error(`no empty ${soilName} within ${radius} blocks`);
+  let planted = 0;
+  for (const soil of spots) {
+    if (planted >= count || !findItem(seed.name)) break;
+    if (!(await reachBlock(soil.position, 10000))) continue;
+    if (await plantOn(soil, seed.name)) planted += 1;
+  }
+  if (!planted) throw new Error('could not plant anything');
+  return { planted, placed_count: planted, message: `planted ${planted} ${seed.name.replace(/_/g, ' ')}` };
+}
+
+async function cmdTill(params) {
+  need();
+  const hoe = findItem((it) => it.name.endsWith('_hoe'));
+  if (!hoe) throw new Error('I need a hoe');
+  const radius = Math.max(2, Math.min(16, Number(params.radius || 6)));
+  const count = Math.max(1, Math.min(32, Number(params.count || 8)));
+  const spots = nearestBlocks((n) => ['dirt', 'grass_block', 'dirt_path', 'coarse_dirt', 'rooted_dirt'].includes(n), radius, 64)
+    .filter((b) => {
+      const above = bot.blockAt(b.position.offset(0, 1, 0));
+      return above && above.name === 'air';
+    });
+  if (!spots.length) throw new Error(`no dirt to till within ${radius} blocks`);
+  let tilled = 0;
+  for (const block of spots) {
+    if (tilled >= count) break;
+    if (!(await reachBlock(block.position, 10000))) continue;
+    await holdItem(findItem((it) => it.name.endsWith('_hoe')));
+    await bot.activateBlock(block).catch(() => {});
+    await sleep(200);
+    const now = bot.blockAt(block.position);
+    if (now && now.name === 'farmland') tilled += 1;
+  }
+  if (!tilled) throw new Error('could not till the ground');
+  return { tilled, message: `tilled ${tilled} block(s) of farmland` };
+}
+
+async function cmdBonemeal(params) {
+  need();
+  if (!findItem('bone_meal')) throw new Error('I need bone meal');
+  const radius = Math.max(2, Math.min(16, Number(params.radius || 8)));
+  const count = Math.max(1, Math.min(32, Number(params.count || 4)));
+  const targets = nearestBlocks((n) => n in CROPS || n.endsWith('_sapling') || n.endsWith('_stem') || n === 'sweet_berry_bush', radius, 32)
+    .filter((b) => !(b.name in CROPS) || cropAge(b) < CROPS[b.name][0]);
+  if (!targets.length) throw new Error('nothing to grow nearby');
+  let used = 0;
+  for (const block of targets) {
+    if (used >= count || !findItem('bone_meal')) break;
+    if (!(await reachBlock(block.position, 8000))) continue;
+    await holdItem(findItem('bone_meal'));
+    await bot.activateBlock(block).catch(() => {});
+    used += 1;
+    await sleep(250);
+  }
+  return { used, message: `used ${used} bone meal` };
+}
+
+async function cmdFish(params) {
+  need();
+  const rod = findItem('fishing_rod');
+  if (!rod) throw new Error('I need a fishing rod');
+  const water = nearestBlocks((n) => n === 'water', 16, 64).find((b) => {
+    const above = bot.blockAt(b.position.offset(0, 1, 0));
+    return above && above.name === 'air';
+  });
+  if (!water) throw new Error('no open water within 16 blocks');
+  if (bot.entity.position.distanceTo(water.position) > 6) await walkNear(water.position, 4, 15000);
+  const deadline = Date.now() + Math.max(10, Math.min(300, Number(params.seconds || 60))) * 1000;
+  let caught = 0;
+  while (Date.now() < deadline) {
+    await holdItem(findItem('fishing_rod'));
+    await bot.lookAt(water.position.offset(0.5, 1, 0.5), true);
+    try {
+      await withTimeout(bot.fish(), Math.max(5000, deadline - Date.now()), 'fishing');
+      caught += 1;
+      await sleep(500);
+    } catch (err) {
+      bot.activateItem(); // reel in
+      break;
+    }
+  }
+  if (!caught) throw new Error('nothing bit');
+  await pickUpNear(6, 5000);
+  return { caught, message: `caught ${caught} fish` };
+}
+
+async function feedOrUse(entity, item) {
+  if (!(await reachEntity(entity, 3, 12000))) return false;
+  await holdItem(item);
+  await bot.lookAt(entity.position.offset(0, (entity.height || 1) * 0.6, 0), true);
+  await bot.activateEntity(entity);
+  await sleep(300);
+  return true;
+}
+
+async function cmdShear(params) {
+  need();
+  if (!findItem('shears')) throw new Error('I need shears');
+  const radius = Math.max(2, Math.min(32, Number(params.radius || 16)));
+  const count = Math.max(1, Math.min(16, Number(params.count || 4)));
+  const sheep = entitiesNear((e) => mobName(e) === 'sheep', radius);
+  if (!sheep.length) throw new Error(`no sheep within ${radius} blocks`);
+  let sheared = 0;
+  for (const target of sheep.slice(0, count)) {
+    if (await feedOrUse(target, findItem('shears'))) sheared += 1;
+  }
+  await pickUpNear(8, 6000);
+  return { sheared, message: `sheared ${sheared} sheep` };
+}
+
+async function cmdMilk(params) {
+  need();
+  const bucket = findItem((it) => it.name === 'bucket');
+  if (!bucket) throw new Error('I need an empty bucket');
+  const radius = Math.max(2, Math.min(32, Number(params.radius || 16)));
+  const cow = entitiesNear((e) => ['cow', 'mooshroom', 'goat'].includes(mobName(e)), radius)[0];
+  if (!cow) throw new Error(`no cow within ${radius} blocks`);
+  await feedOrUse(cow, bucket);
+  if (!findItem('milk_bucket')) throw new Error('the cow did not give milk');
+  return { message: `milked a ${mobName(cow)}` };
+}
+
+const BREED_FOOD = {
+  cow: ['wheat'], sheep: ['wheat'], mooshroom: ['wheat'], goat: ['wheat'],
+  pig: ['carrot', 'potato', 'beetroot'], chicken: ['wheat_seeds', 'beetroot_seeds', 'melon_seeds', 'pumpkin_seeds'],
+  rabbit: ['carrot', 'golden_carrot', 'dandelion'], horse: ['golden_carrot', 'golden_apple'], donkey: ['golden_carrot', 'golden_apple'],
+  wolf: ['cooked_beef', 'beef', 'cooked_porkchop', 'porkchop', 'cooked_chicken', 'chicken', 'rotten_flesh'],
+  cat: ['cod', 'salmon'], llama: ['hay_block'], fox: ['sweet_berries', 'glow_berries'], turtle: ['seagrass'],
+  frog: ['slime_ball'], camel: ['cactus'], armadillo: ['spider_eye'], strider: ['warped_fungus'], hoglin: ['crimson_fungus'],
+  bee: ['dandelion', 'poppy', 'sunflower'], panda: ['bamboo'], axolotl: ['tropical_fish_bucket'], sniffer: ['torchflower_seeds'],
+};
+
+async function cmdBreed(params) {
+  need();
+  const radius = Math.max(2, Math.min(32, Number(params.radius || 16)));
+  const wanted = cleanName(params.animal);
+  const kinds = wanted ? [wanted] : Object.keys(BREED_FOOD);
+  for (const kind of kinds) {
+    const foods = BREED_FOOD[kind];
+    if (!foods) throw new Error(`I don't know what ${kind}s eat`);
+    const food = foods.map((f) => findItem((it) => it.name === f)).find(Boolean);
+    if (!food) {
+      if (wanted) throw new Error(`I need ${foods[0].replace(/_/g, ' ')} to breed ${kind}s`);
+      continue;
+    }
+    const animals = entitiesNear((e) => mobName(e) === kind, radius);
+    if (animals.length < 2) {
+      if (wanted) throw new Error(`need two ${kind}s nearby`);
+      continue;
+    }
+    let fed = 0;
+    for (const animal of animals.slice(0, 2)) {
+      const item = foods.map((f) => findItem((it) => it.name === f)).find(Boolean);
+      if (item && (await feedOrUse(animal, item))) fed += 1;
+    }
+    return { fed, message: `fed ${fed} ${kind}(s)` + (fed >= 2 ? ' - a baby is on the way' : '') };
+  }
+  throw new Error('no animals I have food for');
+}
+
+/* --- crafting & storage */
+async function ensureStation(names, itemName, label) {
+  const ids = blockIds((n) => names.includes(n));
+  let block = bot.findBlock({ matching: ids, maxDistance: 32 });
+  if (!block) {
+    const item = findItem((it) => it.name === itemName);
+    if (!item) return null;
+    const base = bot.entity.position.floored();
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1]]) {
+      if (await placeAt(base.offset(dx, 0, dz), item)) break;
+    }
+    block = bot.findBlock({ matching: ids, maxDistance: 6 });
+    if (block) log('info', `placed a ${label}`);
+  }
+  if (block && !(await reachBlock(block.position, 20000))) throw new Error(`cannot reach the ${label}`);
+  return block;
+}
+
+async function cmdCraft(params) {
+  need();
+  const name = cleanName(params.item);
+  if (!name) throw new Error('craft what? (item)');
+  const info = registry().itemsByName[name];
+  if (!info) throw new Error(`unknown item ${name}`);
+  const count = Math.max(1, Math.min(64, Number(params.count || 1)));
+  let recipe = bot.recipesFor(info.id, null, 1, null)[0];
+  let table = null;
+  if (!recipe) {
+    table = await ensureStation(['crafting_table'], 'crafting_table', 'crafting table');
+    if (!table && countItem('crafting_table') === 0) {
+      // no table anywhere: make one from planks (or logs -> planks) the way a player starts out
+      const planks = invItems().find((it) => it.name.endsWith('_planks'));
+      if (planks || invItems().find((it) => /_log$|_stem$/.test(it.name))) {
+        if (!planks) {
+          const logItem = invItems().find((it) => /_log$|_stem$/.test(it.name));
+          const plankName = logItem.name.replace(/_log$|_stem$/, '_planks');
+          const plankInfo = registry().itemsByName[plankName];
+          const plankRecipe = plankInfo && bot.recipesFor(plankInfo.id, null, 1, null)[0];
+          if (plankRecipe) await bot.craft(plankRecipe, 1, null);
+        }
+        const tableRecipe = bot.recipesFor(registry().itemsByName.crafting_table.id, null, 1, null)[0];
+        if (tableRecipe) await bot.craft(tableRecipe, 1, null);
+        table = await ensureStation(['crafting_table'], 'crafting_table', 'crafting table');
+      }
+    }
+    recipe = bot.recipesFor(info.id, null, 1, table)[0];
+  }
+  if (!recipe) throw new Error(`missing ingredients for ${name}` + (table ? '' : ' (or a crafting table)'));
+  const per = recipe.result && recipe.result.count ? recipe.result.count : 1;
+  const times = Math.max(1, Math.ceil(count / per));
+  const before = countItem(name);
+  await withTimeout(bot.craft(recipe, times, table || undefined), 30000, 'crafting');
+  const made = countItem(name) - before;
+  return { crafted: made, item: name, message: `crafted ${made} ${name.replace(/_/g, ' ')}` };
+}
+
+const FUELS = [['coal', 8], ['charcoal', 8], ['coal_block', 80], ['blaze_rod', 12], ['lava_bucket', 100]];
+
+function pickFuel(amount, input) {
+  for (const [name, per] of FUELS) {
+    const item = findItem((it) => it.name === name);
+    if (item) return [item, Math.min(item.count, Math.ceil(amount / per))];
+  }
+  const wood = findItem((it) => /_planks$|_log$|_stem$/.test(it.name) && it.name !== input);
+  if (wood) return [wood, Math.min(wood.count, Math.ceil(amount / 1.5))];
+  const stick = findItem((it) => it.name === 'stick');
+  return stick ? [stick, Math.min(stick.count, amount * 2)] : [null, 0];
+}
+
+async function cmdSmelt(params) {
+  need();
+  const name = cleanName(params.item);
+  const input = name ? findItem((it) => it.name === name) || findItem(name) : null;
+  if (!input) throw new Error(name ? `I have no ${name}` : 'smelt what? (item)');
+  const count = Math.max(1, Math.min(input.count, Number(params.count || 8)));
+  const block = await ensureStation(['furnace', 'blast_furnace', 'smoker'], 'furnace', 'furnace');
+  if (!block) throw new Error('no furnace nearby (and none to place)');
+  const furnace = await withTimeout(bot.openFurnace(block), 8000, 'opening the furnace');
+  let taken = 0;
+  try {
+    if (!furnace.fuelItem()) {
+      const [fuel, amount] = pickFuel(count, input.name);
+      if (!fuel) throw new Error('no fuel (coal, charcoal, planks or logs)');
+      await furnace.putFuel(fuel.type, null, amount);
+    }
+    await furnace.putInput(input.type, null, count);
+    const budget = Math.max(10, Math.min(600, Number(params.seconds || 90))) * 1000;
+    const deadline = Date.now() + Math.min(budget, count * 10500 + 3000);
+    while (Date.now() < deadline && taken < count) {
+      await sleep(1000);
+      const out = furnace.outputItem();
+      if (out) {
+        taken += out.count;
+        await furnace.takeOutput();
+      }
+    }
+  } finally {
+    furnace.close();
+  }
+  if (!taken) throw new Error('nothing came out yet - it keeps smelting in the furnace');
+  const left = count - taken;
+  return { smelted: taken, message: `smelted ${taken} ${input.name.replace(/_/g, ' ')}` + (left > 0 ? ` (${left} still in the furnace)` : '') };
+}
+
+const KEEP = /(_sword|_pickaxe|_axe|_shovel|_hoe|_helmet|_chestplate|_leggings|_boots|^bow$|^crossbow$|^shield$|^totem_of_undying$|^torch$|^fishing_rod$|^shears$|^bucket$|^water_bucket$|^elytra$)/;
+
+async function openNearestChest() {
+  const ids = blockIds((n) => ['chest', 'trapped_chest', 'barrel', 'ender_chest'].includes(n) || n.endsWith('shulker_box'));
+  const block = bot.findBlock({ matching: ids, maxDistance: 32 });
+  if (!block) throw new Error('no chest within 32 blocks');
+  if (!(await reachBlock(block.position, 20000))) throw new Error('cannot reach the chest');
+  return withTimeout(bot.openContainer(block), 8000, 'opening the chest');
+}
+
+async function cmdDeposit(params) {
+  need();
+  const wanted = cleanName(params.item);
+  const foods = registry().foodsByName || {};
+  const chest = await openNearestChest();
+  let stored = 0;
+  try {
+    for (const item of invItems()) {
+      if (wanted && !item.name.includes(wanted)) continue;
+      if (!wanted && !params.all && (KEEP.test(item.name) || foods[item.name])) continue;
+      try {
+        await chest.deposit(item.type, null, item.count);
+        stored += item.count;
+      } catch (err) {
+        if (/full|no space/i.test(err.message)) break;
+      }
+    }
+  } finally {
+    chest.close();
+  }
+  if (!stored) throw new Error('nothing to put away (or the chest is full)');
+  return { stored, message: `put ${stored} item(s) into the chest` };
+}
+
+async function cmdWithdraw(params) {
+  need();
+  const wanted = cleanName(params.item);
+  const chest = await openNearestChest();
+  try {
+    const items = chest.containerItems();
+    const item = items.find((it) => it.name === wanted) || items.find((it) => wanted && it.name.includes(wanted));
+    if (!item) throw new Error(`the chest has no ${wanted || 'items'}`);
+    const available = items.filter((it) => it.name === item.name).reduce((s, it) => s + it.count, 0);
+    const count = Math.max(1, Math.min(available, Number(params.count || 16)));
+    await chest.withdraw(item.type, null, count);
+    return { took: count, item: item.name, message: `took ${count} ${item.name.replace(/_/g, ' ')} from the chest` };
+  } finally {
+    chest.close();
+  }
+}
+
+async function cmdChestContents() {
+  need();
+  const chest = await openNearestChest();
+  try {
+    const totals = {};
+    for (const it of chest.containerItems()) totals[it.name] = (totals[it.name] || 0) + it.count;
+    const items = Object.entries(totals).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+    const summary = items.slice(0, 8).map((i) => `${i.count} ${i.name}`).join(', ') || 'nothing';
+    return { items, message: `the chest has ${summary}${items.length > 8 ? ' ...' : ''}` };
+  } finally {
+    chest.close();
+  }
+}
+
+function describeStack(item) {
+  return item ? `${item.name} x${item.count}` : '';
+}
+
+async function cmdTrade(params) {
+  need();
+  const villager = entitiesNear((e) => ['villager', 'wandering_trader'].includes(mobName(e)), 16)[0];
+  if (!villager) throw new Error('no villager within 16 blocks');
+  if (!(await reachEntity(villager, 3, 15000))) throw new Error('cannot reach the villager');
+  const window = await withTimeout(bot.openVillager(villager), 8000, 'opening trades');
+  try {
+    const offers = (window.trades || []).map((t, index) => ({
+      index,
+      give: [describeStack(t.inputItem1), describeStack(t.inputItem2)].filter(Boolean).join(' + '),
+      get: describeStack(t.outputItem),
+      disabled: Boolean(t.tradeDisabled),
+    }));
+    if (params.index === undefined || params.index === null) {
+      return { trades: offers, message: 'the villager offers: ' + offers.map((o) => `#${o.index} ${o.give} -> ${o.get}`).join('; ') };
+    }
+    const index = Number(params.index);
+    if (!offers[index]) throw new Error(`the villager has no offer #${index}`);
+    if (offers[index].disabled) throw new Error(`offer #${index} is sold out`);
+    const times = Math.max(1, Math.min(12, Number(params.times || 1)));
+    await withTimeout(bot.trade(window, index, times), 15000, 'trading');
+    return { traded: times, message: `traded ${offers[index].give} for ${offers[index].get} x${times}` };
+  } finally {
+    window.close();
+  }
+}
+
+/* --- building */
+async function torchSpot(pos) {
+  const below = bot.blockAt(pos.offset(0, -1, 0));
+  const here = bot.blockAt(pos);
+  return Boolean(below && here && below.boundingBox === 'block' && here.name === 'air');
+}
+
+async function cmdPlaceTorch() {
+  need();
+  const torch = findItem((it) => it.name === 'torch' || it.name === 'soul_torch');
+  if (!torch) throw new Error('I have no torches');
+  const base = bot.entity.position.floored();
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+    const pos = base.offset(dx, 0, dz);
+    if ((await torchSpot(pos)) && (await placeAt(pos, torch))) {
+      return { placed_count: 1, message: 'placed a torch' };
+    }
+  }
+  throw new Error('no spot for a torch next to me');
+}
+
+async function cmdLightUp(params) {
+  need();
+  const radius = Math.max(3, Math.min(16, Number(params.radius || 8)));
+  const count = Math.max(1, Math.min(32, Number(params.count || 6)));
+  if (!findItem((it) => it.name === 'torch')) throw new Error('I have no torches');
+  const floors = bot.findBlocks({
+    matching: (block) => block && block.boundingBox === 'block',
+    maxDistance: radius,
+    count: 400,
+  });
+  const dark = [];
+  for (const pos of floors) {
+    const above = bot.blockAt(pos.offset(0, 1, 0));
+    const head = bot.blockAt(pos.offset(0, 2, 0));
+    if (!above || above.name !== 'air' || !head || head.boundingBox !== 'empty') continue;
+    if ((above.light ?? 15) > 7) continue;
+    dark.push(above.position);
+  }
+  dark.sort((a, b) => bot.entity.position.distanceTo(a) - bot.entity.position.distanceTo(b));
+  const chosen = [];
+  for (const pos of dark) {
+    if (chosen.length >= count) break;
+    if (chosen.every((other) => other.distanceTo(pos) >= 6)) chosen.push(pos);
+  }
+  if (!chosen.length) throw new Error('it is already bright enough here');
+  let placed = 0;
+  for (const pos of chosen) {
+    const torch = findItem((it) => it.name === 'torch');
+    if (!torch) break;
+    if (!(await reachBlock(pos, 12000))) continue;
+    if (await placeAt(pos, torch)) placed += 1;
+  }
+  if (!placed) throw new Error('could not place torches');
+  return { placed_count: placed, message: `placed ${placed} torch(es) on dark spots` };
+}
+
+async function cmdBuildShelter(params) {
+  need();
+  stopPath();
+  bot.clearControlStates();
+  const base = bot.entity.position.floored();
+  const ring = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const plan = [];
+  for (const [dx, dz] of ring) plan.push(base.offset(dx, 0, dz));
+  for (const [dx, dz] of ring) plan.push(base.offset(dx, 1, dz));
+  for (const [dx, dz] of ring) plan.push(base.offset(dx, 2, dz));
+  plan.push(base.offset(0, 2, 0));
+  let placed = 0;
+  let solid = 0;
+  for (const pos of plan) {
+    const here = bot.blockAt(pos);
+    if (here && here.boundingBox === 'block') {
+      solid += 1;
+      continue;
+    }
+    const block = buildingItem(cleanName(params.block));
+    if (!block) break;
+    if (await placeAt(pos, block)) {
+      placed += 1;
+      solid += 1;
+    }
+  }
+  if (!placed && solid < plan.length) throw new Error('I have no blocks to build with');
+  const complete = solid >= plan.length;
+  return { placed_count: placed, complete,
+    message: `built a shelter (${placed} block(s))` + (complete ? '' : ' - ran out of blocks, it has gaps') };
+}
+
+async function cmdPillarUp(params) {
+  need();
+  const height = Math.max(1, Math.min(32, Number(params.height || 4)));
+  const V = Vec3();
+  let placed = 0;
+  stopPath();
+  await bot.look(bot.entity.yaw, -Math.PI / 2, true);
+  for (let i = 0; i < height; i += 1) {
+    const block = buildingItem(cleanName(params.block));
+    if (!block) break;
+    const head = bot.blockAt(bot.entity.position.offset(0, 2.2, 0));
+    if (head && head.boundingBox === 'block') break; // ceiling
+    await holdItem(block);
+    const startY = bot.entity.position.y;
+    const ground = bot.blockAt(bot.entity.position.offset(0, -0.5, 0));
+    if (!ground || ground.boundingBox !== 'block') break;
+    bot.setControlState('jump', true);
+    const until = Date.now() + 1500;
+    while (Date.now() < until && bot.entity.position.y < startY + 1.05) await sleep(25);
+    try {
+      await withTimeout(bot.placeBlock(ground, new V(0, 1, 0)), 2500, 'placing');
+      placed += 1;
+    } catch (err) {
+      const now = bot.blockAt(ground.position.offset(0, 1, 0));
+      if (now && now.boundingBox === 'block') placed += 1;
+      else break;
+    } finally {
+      bot.setControlState('jump', false);
+    }
+    await sleep(250);
+  }
+  if (!placed) throw new Error('could not tower up (blocks? ceiling?)');
+  return { placed_count: placed, message: `towered up ${placed} block(s)` };
+}
+
+const USABLE = /(_door|_trapdoor|_fence_gate|_button|^lever$|^bell$|^note_block$|^repeater$|^comparator$|^daylight_detector$)/;
+
+async function cmdActivate(params) {
+  need();
+  let block = null;
+  if ([params.x, params.y, params.z].every((v) => v !== undefined && v !== null && !Number.isNaN(Number(v)))) {
+    const V = Vec3();
+    block = bot.blockAt(new V(Math.floor(Number(params.x)), Math.floor(Number(params.y)), Math.floor(Number(params.z))));
+  } else {
+    const wanted = cleanName(params.block);
+    block = nearestBlocks((n) => USABLE.test(n) && (!wanted || n.includes(wanted)), 16, 16)[0] || null;
+  }
+  if (!block) throw new Error('nothing to use nearby (door, button, lever, trapdoor, gate)');
+  if (!(await reachBlock(block.position, 15000))) throw new Error(`cannot reach the ${block.name}`);
+  await bot.activateBlock(block);
+  return { block: block.name, message: `used the ${block.name.replace(/_/g, ' ')}` };
+}
+
+/* --- moving & combat */
+const RIDEABLE = /(boat|raft|minecart|horse|donkey|mule|pig|strider|camel|llama)/;
+
+async function cmdRide() {
+  need();
+  if (bot.vehicle) throw new Error('already riding');
+  const target = entitiesNear((e) => RIDEABLE.test(mobName(e)) && !/chest_|hopper|tnt|furnace|command|spawner/.test(mobName(e)), 8)[0];
+  if (!target) throw new Error('nothing to ride within 8 blocks');
+  if (!(await reachEntity(target, 3, 10000))) throw new Error(`cannot reach the ${mobName(target)}`);
+  bot.mount(target);
+  await sleep(600);
+  return { riding: mobName(target), message: `got on the ${mobName(target).replace(/_/g, ' ')}` };
+}
+
+async function cmdDismount() {
+  need();
+  if (!bot.vehicle) throw new Error('not riding anything');
+  bot.dismount();
+  return { message: 'got off' };
+}
+
+async function cmdShoot(params) {
+  need();
+  const bow = findItem((it) => it.name === 'bow' || it.name === 'crossbow');
+  if (!bow) throw new Error('I need a bow');
+  if (!findItem((it) => it.name.endsWith('arrow'))) throw new Error('I have no arrows');
+  const wanted = cleanName(params.mob);
+  const range = Math.max(4, Math.min(48, Number(params.range || 24)));
+  const shots = Math.max(1, Math.min(10, Number(params.shots || 3)));
+  const targets = entitiesNear((e) => {
+    if (e.type === 'player' || e.username || e.name === 'item') return false;
+    return wanted ? mobName(e) === wanted : HOSTILE_ENTITIES.has(mobName(e));
+  }, range);
+  const target = targets[0];
+  if (!target) throw new Error(wanted ? `no ${wanted} within ${range} blocks` : `no hostile mob within ${range} blocks`);
+  await holdItem(bow);
+  let fired = 0;
+  for (let i = 0; i < shots && bot.entities[target.id] && target.isValid !== false; i += 1) {
+    if (!findItem((it) => it.name.endsWith('arrow'))) break;
+    const distance = bot.entity.position.distanceTo(target.position);
+    const drop = 0.0025 * distance * distance; // arrows fall: aim a little higher further away
+    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
+    bot.activateItem();
+    await sleep(bow.name === 'crossbow' ? 1300 : 1050);
+    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
+    bot.deactivateItem();
+    fired += 1;
+    await sleep(350);
+  }
+  const killed = !bot.entities[target.id] || target.isValid === false;
+  return { target: mobName(target), shots: fired, kills: killed ? 1 : 0,
+    message: `shot ${fired} arrow(s) at a ${mobName(target)}` + (killed ? ' and got it' : '') };
+}
+
 /* ------------------------------------------------------------------ vision */
 /**
  * The bot's first-person view as a JPEG, for vision models (Minecraftism VL, any Ollama/Cortex VL
@@ -863,6 +1865,37 @@ const COMMANDS = {
   collect: cmdCollect,
   attack_mob: cmdAttackMob,
   snapshot: cmdSnapshot,
+  // skills (pymc_bot/skills.py)
+  drink: cmdDrink,
+  surface: cmdSurface,
+  extinguish: cmdExtinguish,
+  respawn: cmdRespawn,
+  find_block: cmdFindBlock,
+  chop_tree: cmdChopTree,
+  mine_ore: cmdMineOre,
+  gather: cmdGather,
+  harvest: cmdHarvest,
+  plant: cmdPlant,
+  till: cmdTill,
+  bonemeal: cmdBonemeal,
+  fish: cmdFish,
+  shear: cmdShear,
+  milk: cmdMilk,
+  breed: cmdBreed,
+  craft: cmdCraft,
+  smelt: cmdSmelt,
+  deposit: cmdDeposit,
+  withdraw: cmdWithdraw,
+  chest_contents: cmdChestContents,
+  trade: cmdTrade,
+  place_torch: cmdPlaceTorch,
+  light_up: cmdLightUp,
+  build_shelter: cmdBuildShelter,
+  pillar_up: cmdPillarUp,
+  activate: cmdActivate,
+  ride: cmdRide,
+  dismount: cmdDismount,
+  shoot: cmdShoot,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),
