@@ -32,7 +32,7 @@ Only the Python standard library is used, so the updater works before anything i
 Set ``GITHUB_TOKEN`` to raise GitHub's API limit (60 requests/hour without it); without the API
 the updater still works by downloading the zip and reading the commit id stored in it.
 
-Made with love by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/
+Made with love by codero-sus - https://github.com/codero-sus - https://codero.is-a.dev - https://the-codero.web.app/
 """
 
 from __future__ import annotations
