@@ -7,6 +7,9 @@
     "name": "codero-sus",
     "url": "https://github.com/codero-sus"
   },
+  "contributors": [
+    {"name": "codero-sus", "url": "https://codero.is-a.dev"}
+  ],
   "homepage": "https://the-codero.web.app/",
   "repository": {
     "type": "git",

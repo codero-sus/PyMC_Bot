@@ -597,4 +597,4 @@ are Mod Menu's own code (MIT, TerraformersMC) and are never shipped in the jars.
 
 ---
 
-<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [the-codero.web.app](https://the-codero.web.app/)</sub>
+<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)</sub>

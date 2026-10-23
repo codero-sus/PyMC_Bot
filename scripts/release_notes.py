@@ -69,7 +69,9 @@ def downloads(version: str) -> list[str]:
         "| `pymc-minecraft-llm-kit.zip` | **Your own Minecraft LLM**: ready-made training data (mob database, "
         "game situations, Minecraft Wiki pages) - upload `llm_data` to Kaggle |",
         "| `PyMC_Minecraft_LLM_Kaggle.ipynb` · `train_minecraft_llm.py` | **Train Minecraftism** on Kaggle "
-        "(GPU T4 x2): the notebook and the trainer it runs. Every edition is uploaded to Hugging Face **twice**: "
+        "(GPU T4 x2): the notebook and the trainer it runs. **Both T4s train** (`GPU_MODE = \"auto\"`): one edition per T4 "
+        "at the same time, or both T4s on one edition (DDP); `MAX_HOURS` stops training in time for the export and upload "
+        "before Kaggle's 12 h limit, and `AUTO_EXIT` ends the session when everything is on Hugging Face. Every edition is uploaded to Hugging Face **twice**: "
         "**safetensors** first (`<you>/Minecraftism-4B-Uncensored`, the compact 16-bit merged model for "
         "transformers / vLLM / fine-tuning; `SAFETENSORS = True`), then **GGUF** quants made from it "
         "(`<you>/Minecraftism-4B-Uncensored-GGUF`: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, each uploaded as soon as it "
@@ -140,7 +142,7 @@ def notes(mod_dir: Path = MOD) -> str:
             f"Train on the dataset with PyMC Bot: see the [training guide]({REPO}/blob/main/docs/TRAINING.md). "
             f"Build it yourself: [compiling the mod]({REPO}/blob/main/mod/README.md#compiling-the-mod).",
             "",
-            "Made with \u2764\ufe0f by [codero-sus](https://github.com/codero-sus) - https://the-codero.web.app/",
+            "Made with \u2764\ufe0f by [codero-sus](https://github.com/codero-sus) - https://codero.is-a.dev - https://the-codero.web.app/",
             "",
         ]
     )

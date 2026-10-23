@@ -27,6 +27,7 @@ __version__ = "0.1.0"
 __author__ = "codero-sus"
 __author_url__ = "https://github.com/codero-sus"
 __website__ = "https://the-codero.web.app/"
+__websites__ = ("https://codero.is-a.dev", __website__)  # every site of codero-sus, shown together
 __repository__ = "https://github.com/codero-sus/PyMC_Bot"
 __license__ = "PolyForm-Noncommercial-1.0.0"
 __license_url__ = "https://polyformproject.org/licenses/noncommercial/1.0.0"
@@ -41,6 +42,7 @@ __all__ = [
     "__repository__",
     "__version__",
     "__website__",
+    "__websites__",
     "about",
     "credit_line",
 ]
@@ -48,7 +50,7 @@ __all__ = [
 
 def credit_line() -> str:
     """One line for banners: ``PyMC_Bot 0.1.0 by codero-sus (GitHub) - website``."""
-    return f"PyMC_Bot {__version__} by {__author__} ({__author_url__}) \u00b7 {__website__}"
+    return f"PyMC_Bot {__version__} by {__author__} ({__author_url__}) \u00b7 " + " \u00b7 ".join(__websites__)
 
 
 def about() -> dict:
@@ -59,6 +61,7 @@ def about() -> dict:
         "author": __author__,
         "author_github": __author_url__,
         "website": __website__,
+        "websites": list(__websites__),
         "repository": __repository__,
         "license": __license__,
         "license_url": __license_url__,

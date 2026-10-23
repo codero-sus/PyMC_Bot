@@ -62,7 +62,8 @@ name Unsloth's ~8 GB F16 intermediate `...Q4_K_M.gguf`: the GGUF for each quant 
 
 ## The four editions
 
-`python -m pymc_bot llm presets` prints this list too. Every edition trains on **one** T4.
+`python -m pymc_bot llm presets` prints this list too. A 4B edition fits on **one** T4, so the notebook keeps
+both T4s busy ([speed](#speed-both-t4s-every-minute)).
 
 | Edition | Base model | Hugging Face repo | Train | Run on your PC | Pick it when |
 | --- | --- | --- | --- | --- | --- |
@@ -80,8 +81,9 @@ forget how to reason, so every row has one.
 The older sizes (`qwen3-4b`, `qwen3-8b`, `qwen3-14b` with `--split`, `llama-3.2-3b`, `qwen3.5-4b`)
 still work for text-only models.
 
-**What the second T4 does:** a 4B LoRA fits on one card, and splitting a small model only slows it
-down, so the script uses GPU 0 by default. `--split` (Unsloth's `unsloth_balanced` device map) is for `qwen3-14b`.
+**What the second T4 does:** it trains too, see [speed](#speed-both-t4s-every-minute). Splitting one small model's
+*layers* across both cards only slows it down, so `--split` (Unsloth's `unsloth_balanced` device map) stays for
+`qwen3-14b`. The notebook splits the *work* instead: one edition per T4, or both T4s on one edition's batches (DDP).
 
 ## 1. Build the training data (your PC)
 
@@ -151,14 +153,46 @@ The settings cell:
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
 | `CLEAN_AFTER_UPLOAD` | `True` | deletes the big local files once an edition is on Hugging Face |
+| `GPU_MODE` | `"auto"` | `"parallel"`: one edition per T4 at the same time; `"ddp"`: both T4s train one edition; `"single"`: one T4, one edition after another. `"auto"` = parallel with 2+ editions, DDP with one |
+| `FAST` | `True` | length-grouped batches, 2 data-loader workers per GPU, 60 eval rows instead of 150 |
+| `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
+| `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
 
 Before any training starts, the notebook checks the GPU, the internet, the free disk, the dataset and
 the `HF_TOKEN` secret, and prints the trainer flags.
 
-**Time limit:** a Kaggle GPU session stops after **12 hours**, and the weekly GPU quota is about 30 hours.
-Train one or two editions per session, e.g. `["minecraftism", "minecraftism-thinking"]` today and the VL
-editions another day. The notebook dry-runs every edition first and skips the ones that can't train
+### Speed: both T4s, every minute
+
+A Kaggle GPU session stops after **12 hours** and the weekly GPU quota is about 30 hours, so the notebook never
+leaves a T4 idle:
+
+* **Two or more editions → one edition per T4** (`GPU_MODE = "parallel"`). Each edition runs in its own process with
+  `CUDA_VISIBLE_DEVICES` set to its own T4, so two editions finish in the time of one. When a T4 is free, the next
+  edition in `EDITIONS` starts on it. The exports take turns (an export lock), so two big safetensors / llama.cpp steps
+  never fill the 20 GB disk or the RAM at the same time; training on the other T4 continues meanwhile.
+* **One edition → both T4s train it** (`GPU_MODE = "ddp"`, started with `torchrun`). Each T4 holds the 4-bit model and
+  trains half of every batch; the gradients are averaged, so the result matches one T4 with the same effective batch
+  (gradient accumulation is halved). Expect roughly 1.6–1.9× the speed of one T4. Only the first process reads the
+  data, streams the extra rows and exports. If the DDP run fails before training ends, the notebook trains the same
+  edition again on one T4, so a session isn't lost.
+* **`FAST = True`** groups rows of similar length into a batch (less padding; text editions), loads batches with 2
+  worker processes per GPU and evaluates on 60 held-out rows instead of 150. It has no effect on what the model learns.
+* **`MAX_HOURS = 11.5`**: the trainer gets a deadline. When the time left drops below the export reserve (60 min, or 90
+  with two editions in parallel), training stops at the current step, the model is saved, exported and uploaded as
+  usual, and `pymc_model.json` records `stopped_early` (step N of M). An edition that wouldn't even have time to start
+  is skipped (exit code 3) and the results cell says so. Train it in the next session.
+
+With `GPU_MODE = "auto"`, two editions such as `["minecraftism", "minecraftism-thinking"]` take one session
+(~2–3 h), and all four fit into one 12 h session with uploads in between (`CLEAN_AFTER_UPLOAD` keeps the disk free).
+
+**Ending the session.** Kaggle has no command that stops a session from inside it. For long runs use
+**Save Version → Save & Run All (Commit)**: it runs in the background, saves `/kaggle/working` as the notebook's
+Output and stops when the last cell is done, so no quota is wasted. In an interactive session, the last cell
+(`AUTO_EXIT = True`) ends the kernel and every process of the session once **every** edition is on Hugging Face
+(GGUF and safetensors), so nothing keeps the GPU busy. If the editor still shows the session as running, press
+**Run → Stop session** (otherwise Kaggle stops it after its idle timeout). If anything is only local, it doesn't shut down and says why, because an interactive session's files
+disappear when the session ends. The notebook dry-runs every edition first and skips the ones that can't train
 (a VL edition with no pictures and `STREAM_PICTURES = 0`, for example) instead of failing hours later.
 
 The script trains a LoRA adapter (4-bit QLoRA, r=32, loss on the replies only; VL editions train the
@@ -193,6 +227,9 @@ Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0` (the
 `--gguf-quants q8_0,q4_k_m` (which others), `--gguf-scratch <folder>`, `--no-compact`, `--hub-private`,
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
 `--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
+Speed flags (the notebook sets them): `--deadline <unix time>` + `--reserve-minutes 60`, `--export-lock <file>`,
+`--clean-after-upload`, `--group-by-length`, `--loader-workers 2`. Two T4s on one edition:
+`torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py --data ... --preset minecraftism`.
 
 ## Uncensored and everyday use
 
@@ -382,3 +419,5 @@ the notebook again. The same Hugging Face repo gets a new commit.
 * Personal, non-commercial use only (PolyForm Noncommercial 1.0.0), and the base models' licences apply
   (Qwen3 / Qwen3-VL: Apache 2.0, Llama 3.2: Llama Community License). The model cards say so too, and list
   the licence of every training source ([commercial-use data](#commercial-use-data)).
+
+<sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)</sub>
