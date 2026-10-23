@@ -14,6 +14,12 @@ from pymc_bot.events import EventLog
 
 
 @pytest.fixture(autouse=True)
+def _no_background_autopilot(monkeypatch):
+    """The autopilot loop would make simulated bots eat, fight and sleep on their own mid-test."""
+    monkeypatch.setenv("PYMC_BOT_NO_AUTOPILOT", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_web_search(monkeypatch):
     """Tests never hit the internet: real lookups fail unless a test injects a mock transport."""
     from pymc_bot import knowledge

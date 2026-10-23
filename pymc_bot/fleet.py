@@ -25,6 +25,7 @@ from typing import Any
 
 from pymc_bot.agent import AgentLoop
 from pymc_bot.antiafk import AntiAfkKeeper
+from pymc_bot.autopilot import Autopilot
 from pymc_bot.backends import BackendError
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import (
@@ -157,6 +158,9 @@ class BotFleet:
         self._batch_thread: threading.Thread | None = None
         self.antiafk = AntiAfkKeeper(self.all_bots, self.store, self.log)
         self.antiafk.start()
+        # Survival reflexes for every bot: eat, sleep at night, swim up, fight back, torches...
+        self.autopilot = Autopilot(self.all_bots, self.store, self.log, ai_busy=self.ai_running)
+        self.autopilot.start()
         # Aternos & co: leave when no real player is online (their rules forbid idling bots).
         self.alone_watcher = AloneWatcher(self.all_bots, self.store, self.log, leave=self.leave_everyone)
         self.alone_watcher.start()
@@ -209,6 +213,16 @@ class BotFleet:
             if self._primary_agent is None:
                 self._primary_agent = AgentLoop(self.primary, self.store, self.log)
             return self._primary_agent
+
+    def ai_running(self, bot: MinecraftBot) -> bool:
+        """True while an AI loop drives ``bot`` (the autopilot then skips its idle job)."""
+        with self._lock:
+            if bot is self._primary:
+                return bool(self._primary_agent and self._primary_agent.running)
+            for member in self._members.values():
+                if member.bot is bot:
+                    return bool(member.agent and member.agent.running)
+        return False
 
     def agent_for(self, bot: MinecraftBot | None = None) -> AgentLoop:
         """The AI loop belonging to a bot (created once per bot)."""
@@ -545,6 +559,7 @@ class BotFleet:
         with self._lock:
             self._members.clear()
             self.antiafk.stop(wait=False)
+            self.autopilot.stop(wait=False)
         agent = self._primary_agent
         if agent is not None:
             agent.stop(wait=False)
@@ -648,6 +663,7 @@ class BotFleet:
             "busy": bool(bot.busy) if bot is not None else False,
             "idle_seconds": round(bot.idle_seconds, 1) if bot is not None else None,
             "antiafk_pokes": self.antiafk.record(bot).pokes if bot is not None else 0,
+            "autopilot": self.autopilot.memory(bot).to_dict() if bot is not None else None,
         }
 
     def status(self) -> dict[str, Any]:
@@ -674,6 +690,7 @@ class BotFleet:
             "busy": primary.busy,
             "idle_seconds": round(primary.idle_seconds, 1),
             "antiafk_pokes": self.antiafk.record(primary).pokes,
+            "autopilot": self.autopilot.memory(primary).to_dict(),
         }
         selected = self.selected_bot().username
         for entry in [primary_status, *bots]:
