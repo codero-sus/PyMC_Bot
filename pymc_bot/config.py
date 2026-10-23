@@ -353,6 +353,62 @@ class AntiAfkSettings(BaseModel):
         return self
 
 
+IDLE_JOBS = ("none", "farm", "fish", "chop", "mine", "gather_items")
+
+
+class AutopilotSettings(BaseModel):
+    """Survival reflexes every bot has on its own - the things a player does without thinking.
+
+    Rules run from the most urgent (respawn, air, fire, totem, running away) down to chores
+    (sleep at night, torches in the dark, picking things up, a full backpack) and finally an
+    optional idle job. Urgent rules also fire while the bot is busy; chores wait until it is idle.
+    """
+
+    enabled: bool = True
+    tick_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
+    # emergencies
+    auto_respawn: bool = True
+    auto_surface: bool = True  # swim up when the air bar runs low
+    auto_extinguish: bool = True
+    auto_totem: bool = True
+    totem_health: float = Field(default=10.0, ge=0.0, le=20.0)
+    auto_flee: bool = True
+    flee_health: float = Field(default=6.0, ge=0.0, le=20.0)
+    flee_creepers: bool = True  # back off from a creeper closer than 5 blocks
+    auto_eat: bool = True
+    eat_below: float = Field(default=14.0, ge=0.0, le=20.0)
+    # gear
+    auto_armor: bool = True
+    auto_weapon: bool = True  # take the best weapon out when a mob comes close
+    # fighting
+    auto_defend: bool = True
+    defend_range: float = Field(default=5.0, ge=1.0, le=16.0)
+    # night
+    auto_sleep: bool = True
+    auto_shelter: bool = False  # no bed at night + mobs around: wall itself in
+    auto_home: bool = False  # walk home (set with the set_home skill) when night falls
+    # chores
+    auto_torch: bool = True
+    torch_light: int = Field(default=7, ge=0, le=14)  # place a torch at this block light or darker
+    auto_collect: bool = True
+    collect_radius: float = Field(default=6.0, ge=1.0, le=16.0)
+    auto_tidy: bool = True  # toss junk (or store it in a chest) when the backpack is nearly full
+    tidy_free_slots: int = Field(default=2, ge=0, le=10)
+    # something to do while nobody gives orders and the AI is off
+    idle_job: str = "none"
+    idle_after: float = Field(default=60.0, ge=5.0, le=3600.0)
+    idle_every: float = Field(default=120.0, ge=10.0, le=3600.0)
+    verbose: bool = False
+
+    @field_validator("idle_job")
+    @classmethod
+    def _check_job(cls, value: str) -> str:
+        value = (value or "none").strip().lower()
+        if value not in IDLE_JOBS:
+            raise ValueError(f"autopilot.idle_job must be one of {', '.join(IDLE_JOBS)}")
+        return value
+
+
 class TrainingSettings(BaseModel):
     """Training a Minecraft player model on recorded playtime.
 
@@ -448,6 +504,7 @@ class AppSettings(BaseModel):
     cortex: CortexSettings = Field(default_factory=CortexSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     antiafk: AntiAfkSettings = Field(default_factory=AntiAfkSettings)
+    autopilot: AutopilotSettings = Field(default_factory=AutopilotSettings)
     training: TrainingSettings = Field(default_factory=TrainingSettings)
     fleet: FleetSettings = Field(default_factory=FleetSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)

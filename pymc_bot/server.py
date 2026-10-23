@@ -23,7 +23,9 @@ from pymc_bot import (
     __version__,
     __website__,
     about,
+    autopilot,
     hosting,
+    node_setup,
     skills,
 )
 from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
@@ -86,6 +88,27 @@ class ActionRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     raw: str | None = None
     bot: str | None = None
+
+
+class SkillRequest(BaseModel):
+    """Run one skill (``/api/skills`` lists them) on the selected bot, one by name, or all."""
+
+    name: str = Field(min_length=1, max_length=40)
+    params: dict[str, Any] = Field(default_factory=dict)
+    bot: str | None = None
+
+
+class AutopilotRunRequest(BaseModel):
+    bot: str | None = None
+    rule: str | None = None  # run this rule's plan only (default: the most urgent one)
+    paused: bool | None = None  # pause / resume the autopilot for this bot instead
+
+
+class BridgeSetupRequest(BaseModel):
+    method: Literal["auto", "python", "bundle", "npm"] = "auto"
+    node: Literal["auto", "download", "skip"] = "auto"
+    full: bool = False
+    force: bool = False
 
 
 class KnowledgeRequest(BaseModel):
@@ -199,6 +222,8 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     training_service = TrainingService(event_log)
+    # "Install mineflayer" button: runs pymc_bot.node_setup in the background (no npm needed)
+    bridge_setup: dict[str, Any] = {"running": False, "ok": None, "ready": None, "message": "", "status": None}
     dataset_cache: dict[str, Any] = {"path": None, "mtime": 0.0, "summary": None}
 
     def models_dir() -> str:
@@ -335,6 +360,13 @@ def create_app(
                 "running": bot_fleet.antiafk.running,
                 "pokes": bot_fleet.antiafk.status([])["pokes"],
             },
+            "autopilot": {
+                "enabled": store.settings.autopilot.enabled,
+                "running": bot_fleet.autopilot.running,
+                "actions": bot_fleet.autopilot.actions,
+                "bot": bot_fleet.autopilot.memory(controller).to_dict(),
+            },
+            "bridge_setup": {key: bridge_setup[key] for key in ("running", "ok", "ready", "message")},
             "training": {
                 "running": training_service.running,
                 "step": training_service.status().get("step"),
@@ -1100,10 +1132,114 @@ def create_app(
         return {"ok": True, "model": name, "modelfile": result["modelfile"], "priors": result["priors"]["priorities"]}
 
     # ---------------------------------------------------------------- backends
+    def _bridge_status() -> dict[str, Any]:
+        try:
+            status = node_setup.bridge_status()
+        except Exception as exc:  # pragma: no cover - a status check never breaks the panel
+            status = {"ready": False, "error": str(exc)}
+        bridge_setup["status"] = status
+        bridge_setup["ready"] = bool(status.get("ready"))
+        return status
+
     @app.get("/api/backends")
     def backends() -> dict[str, Any]:
         ok, reason = node_available()
-        return {"backends": available_backends(), "node_ready": ok, "reason": reason}
+        return {"backends": available_backends(), "node_ready": ok, "reason": reason, "setup": _bridge_status(),
+                "installing": bridge_setup["running"]}
+
+    @app.get("/api/setup/bridge")
+    def setup_bridge_status() -> dict[str, Any]:
+        return {**{k: v for k, v in bridge_setup.items() if k != "status"}, "status": _bridge_status()}
+
+    @app.post("/api/setup/bridge")
+    def setup_bridge(request: BridgeSetupRequest = BridgeSetupRequest()) -> dict[str, Any]:  # noqa: B008
+        """Install Node.js (portable, if missing) and mineflayer - without npm - in the background."""
+        if bridge_setup["running"]:
+            raise HTTPException(status_code=409, detail="The installer is already running.")
+        bridge_setup.update(running=True, ok=None, message="installing...")
+
+        def say(message: str) -> None:
+            event_log.add(str(message), "info", "setup")
+
+        def work() -> None:
+            try:
+                report = node_setup.setup(request.method, node=request.node, slim=not request.full,
+                                          force=request.force, log=say)
+                bridge_setup.update(ok=True, message=f"mineflayer installed ({report.get('method') or request.method})")
+                event_log.add("mineflayer is ready - pick the real-server backend and connect.", "info", "setup")
+            except Exception as exc:  # SetupError, network trouble...
+                bridge_setup.update(ok=False, message=str(exc))
+                event_log.add(f"Installing mineflayer failed: {exc}", "error", "setup")
+            finally:
+                bridge_setup["running"] = False
+                _bridge_status()
+
+        threading.Thread(target=work, name="bridge-setup", daemon=True).start()
+        event_log.add(f"Installing mineflayer (method {request.method}, no npm needed)...", "info", "setup")
+        return {"ok": True, "running": True}
+
+    # ------------------------------------------------------------------ skills
+    @app.get("/api/skills")
+    def skill_list() -> dict[str, Any]:
+        return {"skills": skills.catalogue(), "groups": list(skills.GROUPS), "count": len(skills.SKILLS)}
+
+    @app.post("/api/bot/skill")
+    def bot_skill(request: SkillRequest) -> dict[str, Any]:
+        skill = skills.get(request.name)
+        if skill is None:
+            raise HTTPException(status_code=404, detail=f"unknown skill {request.name!r}")
+        bots = bots_for(request.bot)
+        results = []
+        for bot in bots:
+            if not bot.connected:
+                results.append({"username": bot.username, "ok": False, "detail": "not connected"})
+                continue
+            ok, detail = bot.skill(skill.name, request.params)
+            results.append({"username": bot.username, "ok": ok, "detail": detail})
+        ok = any(entry["ok"] for entry in results)
+        detail = results[0]["detail"] if len(results) == 1 else f"{sum(1 for r in results if r['ok'])}/{len(results)} bots did it"
+        return {"ok": ok, "skill": skill.name, "detail": detail if results else "no bots matched", "results": results}
+
+    # --------------------------------------------------------------- autopilot
+    @app.get("/api/autopilot/status")
+    def autopilot_status() -> dict[str, Any]:
+        status = bot_fleet.autopilot.status(bot_fleet.all_bots())
+        controller = selected_bot()
+        plan = bot_fleet.autopilot.plan_for(controller) if controller.connected else None
+        status["next"] = plan.to_dict() if plan else None
+        status["settings"] = store.settings.autopilot.model_dump(mode="json")
+        status["rule_order"] = list(autopilot.RULES)
+        return status
+
+    @app.post("/api/autopilot/run")
+    def autopilot_run(request: AutopilotRunRequest = AutopilotRunRequest()) -> dict[str, Any]:  # noqa: B008
+        """Do the most urgent reflex now (or pause/resume the autopilot for a bot)."""
+        bots = bots_for(request.bot)
+        results = []
+        for bot in bots:
+            if request.paused is not None:
+                bot_fleet.autopilot.pause(bot, request.paused)
+                results.append({"username": bot.username, "ok": True, "paused": request.paused})
+                continue
+            if not bot.connected:
+                results.append({"username": bot.username, "ok": False, "detail": "not connected"})
+                continue
+            situation = bot_fleet.autopilot.situation(bot)
+            situation.cooldowns = {}
+            situation.busy = False
+            settings = store.settings.autopilot.model_copy(update={"enabled": True})
+            if request.rule:
+                if request.rule not in autopilot.RULES:
+                    raise HTTPException(status_code=422, detail=f"unknown rule {request.rule!r}")
+                plan = autopilot.RULE_FUNCS[request.rule](settings, situation)
+            else:
+                plan = autopilot.evaluate(settings, situation)
+            if plan is None:
+                results.append({"username": bot.username, "ok": False, "detail": "nothing to do right now"})
+                continue
+            ok, detail = bot_fleet.autopilot.run(bot, plan)
+            results.append({"username": bot.username, "ok": ok, "detail": detail, "plan": plan.to_dict()})
+        return {"ok": any(r["ok"] for r in results), "results": results}
 
     # --------------------------------------------------------------- websocket
     @app.websocket("/ws")
