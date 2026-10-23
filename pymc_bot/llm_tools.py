@@ -41,6 +41,14 @@ def find_gguf(path: Path) -> Path:
     if path.is_file() and path.suffix.lower() == ".gguf":
         return path.resolve()
     if path.is_dir():
+        report = path / "pymc_model.json"  # the main quant when the folder holds several (Q8_0, Q4_K_M, ...)
+        if report.is_file():
+            try:
+                named = path / str(json.loads(report.read_text(encoding="utf-8")).get("gguf") or "")
+            except (OSError, ValueError):
+                named = path
+            if named.is_file() and named.suffix.lower() == ".gguf":
+                return named.resolve()
         files = sorted(p for p in path.glob("*.gguf") if "mmproj" not in p.name.lower())
         if files:
             return max(files, key=lambda p: p.stat().st_size).resolve()

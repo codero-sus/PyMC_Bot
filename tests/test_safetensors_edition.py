@@ -125,7 +125,7 @@ def fake_hub(monkeypatch):
     return uploads
 
 
-def test_finish_uploads_the_gguf_and_the_safetensors_edition(tmp_path, fake_hub):
+def test_finish_with_gguf_none_uploads_only_the_safetensors_edition(tmp_path, fake_hub):
     args = _args(tmp_path, argv=["--hub-repo", "auto"])
     model = FakeModel()
     code = llm_train.finish(args, llm_train.PRESETS["minecraftism"], model, FakeTokenizer(), [], [], 0.5, 0.0,
@@ -133,19 +133,17 @@ def test_finish_uploads_the_gguf_and_the_safetensors_edition(tmp_path, fake_hub)
     assert code == 0 and model.calls == [("merged", "merged_16bit")]
     out = tmp_path / "out"
     report = json.loads((out / "pymc_model.json").read_text())
-    assert report["hub_repo"] == "me/Minecraftism-4B-GGUF"
+    assert "hub_repo" not in report  # no GGUF was made, so no GGUF repo
     assert report["hub_repo_safetensors"] == "me/Minecraftism-4B" and report["safetensors_uploaded"] is True
-    created = [u["create"] for u in fake_hub if "create" in u]
-    assert created == ["me/Minecraftism-4B-GGUF", "me/Minecraftism-4B"]
-    gguf_upload, st_upload = (u for u in fake_hub if "folder_path" in u)
-    assert "safetensors/*" in gguf_upload["ignore_patterns"] and "lora/*" in gguf_upload["ignore_patterns"]
+    assert [u["create"] for u in fake_hub if "create" in u] == ["me/Minecraftism-4B"]
+    (st_upload,) = (u for u in fake_hub if "folder_path" in u)
     assert st_upload["repo_id"] == "me/Minecraftism-4B" and st_upload["folder_path"] == str(out / "safetensors")
     assert "README.md" in st_upload["files"] and "model-00001-of-00002.safetensors" in st_upload["files"]
     assert "library_name: transformers" in (out / "safetensors/README.md").read_text()
-    assert "https://huggingface.co/me/Minecraftism-4B" in (out / "README.md").read_text()
+    assert report["essentials"] == ["config.json"] and (out / "config.json").is_file()
 
 
-def test_safetensors_upload_failure_keeps_the_folder_and_the_gguf(tmp_path, fake_hub, monkeypatch):
+def test_safetensors_upload_failure_keeps_the_folder(tmp_path, fake_hub, monkeypatch):
     def broken(*_args, **_kwargs):
         raise OSError("network down")
 
@@ -154,20 +152,8 @@ def test_safetensors_upload_failure_keeps_the_folder_and_the_gguf(tmp_path, fake
     assert llm_train.finish(args, llm_train.PRESETS["minecraftism"], FakeModel(), FakeTokenizer(), [], [], 0.5, 0.0,
                             generate=None, for_inference=lambda: None) == 0
     report = json.loads((tmp_path / "out/pymc_model.json").read_text())
-    assert report["hub_repo"] == "me/Minecraftism-4B-GGUF" and not report.get("safetensors_uploaded")
+    assert not report.get("safetensors_uploaded")
     assert (tmp_path / "out/safetensors/model-00001-of-00002.safetensors").is_file()
-
-
-def test_gguf_upload_failure_is_not_reported_as_uploaded(tmp_path, fake_hub, monkeypatch):
-    def broken(*_args, **_kwargs):
-        raise OSError("network down")
-
-    monkeypatch.setattr(llm_train, "publish", broken)
-    args = _args(tmp_path, argv=["--hub-repo", "auto"])
-    llm_train.finish(args, llm_train.PRESETS["minecraftism"], FakeModel(), FakeTokenizer(), [], [], 0.5, 0.0,
-                     generate=None, for_inference=lambda: None)
-    report = json.loads((tmp_path / "out/pymc_model.json").read_text())
-    assert "hub_repo" not in report and not report.get("safetensors_uploaded")  # the notebook keeps every file
 
 
 def test_safetensors_none_skips_the_export(tmp_path):
@@ -193,6 +179,9 @@ def test_notebook_exports_and_uploads_both_editions():
     assert "SAFETENSORS = True" in code
     assert '" --safetensors 16bit" if SAFETENSORS else " --safetensors none"' in code
     assert "--safetensors none --general" in code  # QUICK_TEST exports nothing
-    assert '"--safetensors"))' in code  # an older trainer without it is replaced by the newest one
+    assert '"--safetensors", "--gguf-quants"))' in code  # an older trainer without them is replaced by the newest
+    assert 'GGUF_QUANTS = "q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m"' in code
+    assert """FLAGS += f' --gguf-quants "{GGUF_QUANTS or "none"}"'""" in code and '" --gguf-quants none"' in code
+    assert 'shutil.disk_usage("/tmp")' in code
     assert 'info.get("safetensors_uploaded")' in code  # never deletes a folder that is not on Hugging Face
     assert "Minecraftism-4B-Uncensored-GGUF" in text and "`you/Minecraftism-4B-Uncensored`" in text

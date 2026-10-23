@@ -1577,6 +1577,459 @@ def export_safetensors(model: Any, tokenizer: Any, folder: Path, method: str = "
     return round(sum(f.stat().st_size for f in weights) / 1e9, 2)
 
 
+# --------------------------------------------------------------------------- compact 16-bit weights
+#: Tokenizer / config files every repo gets (the GGUF repo too, so tools that want ``tokenizer.json`` find it).
+ESSENTIAL_FILES = ("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
+                   "special_tokens_map.json", "added_tokens.json", "chat_template.jinja", "chat_template.json",
+                   "vocab.json", "merges.txt", "tokenizer.model", "preprocessor_config.json",
+                   "video_preprocessor_config.json", "processor_config.json")
+_ST_BYTES = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+             "F8_E4M3": 1, "F8_E5M2": 1}
+
+
+def read_safetensors_header(path: Path) -> tuple[dict[str, Any], int]:
+    """The JSON header of a ``.safetensors`` file and where its data starts (no torch needed)."""
+    import struct
+
+    with open(path, "rb") as handle:
+        size = struct.unpack("<Q", handle.read(8))[0]
+        if size > 100_000_000:
+            raise ValueError(f"{Path(path).name} is not a safetensors file")
+        return json.loads(handle.read(size)), 8 + size
+
+
+def _to_16bit(raw: bytes, target: str) -> bytes:
+    """float32 bytes -> float16 or bfloat16 bytes (round to nearest even, NaN kept)."""
+    import numpy as np
+
+    values = np.frombuffer(raw, dtype="<f4")
+    if target == "F16":
+        return values.astype("<f2").tobytes()
+    bits = values.view("<u4").astype(np.uint64)
+    out = ((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16).astype("<u2")
+    out[np.isnan(values)] = 0x7FC0
+    return out.tobytes()
+
+
+def rewrite_safetensors(src: Path, dst: Path, drop: Any = (), cast_to: str | None = None) -> dict[str, Any]:
+    """Copy ``src`` to ``dst`` tensor by tensor, leaving out ``drop`` and turning float32 into ``cast_to``."""
+    import struct
+
+    header, start = read_safetensors_header(src)
+    meta = header.pop("__metadata__", None)
+    new: dict[str, Any] = {}
+    plan, offset = [], 0
+    for name, info in sorted(header.items(), key=lambda item: item[1]["data_offsets"][0]):
+        if name in drop:
+            continue
+        begin, end = info["data_offsets"]
+        dtype = cast_to if cast_to and info["dtype"] == "F32" else info["dtype"]
+        size = (end - begin) // 2 if dtype != info["dtype"] else end - begin
+        new[name] = {"dtype": dtype, "shape": info["shape"], "data_offsets": [offset, offset + size]}
+        plan.append((start + begin, end - begin, dtype != info["dtype"]))
+        offset += size
+    if meta is not None:
+        new["__metadata__"] = meta
+    blob = json.dumps(new, separators=(",", ":")).encode("utf-8")
+    blob += b" " * (-len(blob) % 8)
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        fout.write(struct.pack("<Q", len(blob)) + blob)
+        for position, length, cast in plan:
+            fin.seek(position)
+            raw = fin.read(length)
+            fout.write(_to_16bit(raw, str(cast_to)) if cast else raw)
+    new.pop("__metadata__", None)
+    return new
+
+
+def _tensor_bytes(path: Path, header: dict[str, Any], start: int, name: str) -> bytes:
+    begin, end = header[name]["data_offsets"]
+    with open(path, "rb") as handle:
+        handle.seek(start + begin)
+        return handle.read(end - begin)
+
+
+def compact_safetensors(folder: Path, log: Any = print) -> dict[str, Any]:
+    """Make the merged 16-bit weights as small as the base model, so a 4B model stays 4B-sized.
+
+    A merge can leave two things behind that make the files bigger than they should be: float32 tensors (twice
+    the bytes) and an untied ``lm_head`` - a second copy of the ~0.4B embedding matrix that the base shares with
+    ``embed_tokens`` (``tie_word_embeddings``). This turns float32 into the model's 16-bit type, drops the copy
+    when it is identical, fixes ``model.safetensors.index.json`` and reports the real parameter count."""
+    folder = Path(folder)
+    config_path = folder / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+    text = config.get("text_config") or {}
+    tied = bool(config.get("tie_word_embeddings", text.get("tie_word_embeddings", False)))
+    dtype = str(config.get("torch_dtype") or config.get("dtype") or text.get("torch_dtype") or text.get("dtype") or "")
+    cast_to = "BF16" if "bfloat16" in dtype else "F16"
+    shards = sorted(folder.glob("*.safetensors"))
+    headers = {shard: read_safetensors_header(shard) for shard in shards}
+    where = {name: shard for shard, (header, _) in headers.items() for name in header if name != "__metadata__"}
+    drop: set[str] = set()
+    if tied:
+        heads = [n for n in where if n == "lm_head.weight" or n.endswith(".lm_head.weight")]
+        embeds = [n for n in where if n.endswith("embed_tokens.weight")]
+        if heads and embeds:
+            head, embed = heads[0], embeds[0]
+            (h1, s1), (h2, s2) = headers[where[head]], headers[where[embed]]
+            same_shape = h1[head]["shape"] == h2[embed]["shape"] and h1[head]["dtype"] == h2[embed]["dtype"]
+            if same_shape and _tensor_bytes(where[head], h1, s1, head) == _tensor_bytes(where[embed], h2, s2, embed):
+                drop.add(head)
+    cast = 0
+    for shard, (header, _start) in headers.items():
+        floats = [n for n, info in header.items() if n != "__metadata__" and info["dtype"] == "F32"]
+        mine = {n for n in drop if where[n] == shard}
+        if floats or mine:
+            temp = shard.with_name(shard.name + ".tmp")
+            rewrite_safetensors(shard, temp, drop=mine, cast_to=cast_to)
+            os.replace(temp, shard)
+            cast += len(floats)
+    params, total = 0, 0
+    weight_map: dict[str, str] = {}
+    for shard in shards:
+        header, _ = read_safetensors_header(shard)
+        for name, info in header.items():
+            if name == "__metadata__":
+                continue
+            count = 1
+            for dim in info["shape"]:
+                count *= int(dim)
+            params += count
+            total += count * _ST_BYTES.get(info["dtype"], 2)
+            weight_map[name] = shard.name
+    index = folder / "model.safetensors.index.json"
+    if index.is_file():
+        data = json.loads(index.read_text(encoding="utf-8"))
+        data.setdefault("metadata", {})["total_size"] = total
+        data["weight_map"] = {k: v for k, v in sorted(weight_map.items())}
+        index.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    gb = round(sum(s.stat().st_size for s in shards) / 1e9, 2)
+    stats = {"params": params, "params_b": round(params / 1e9, 2), "gb": gb, "dtype": cast_to,
+             "float32_cast": cast, "tied_dropped": sorted(drop)}
+    log(f"compact: {stats['params_b']}B parameters, {gb} GB ({cast_to}); "
+        f"{cast} float32 tensor(s) made 16-bit; {'dropped the duplicate lm_head' if drop else 'no duplicate lm_head'}")
+    return stats
+
+
+def copy_essentials(src: Path, dst: Path) -> list[str]:
+    """Copy tokenizer.json, the configs and the chat template from ``src`` into ``dst`` (what exists)."""
+    copied = []
+    for name in ESSENTIAL_FILES:
+        if (Path(src) / name).is_file() and Path(src).resolve() != Path(dst).resolve():
+            shutil.copy2(Path(src) / name, Path(dst) / name)
+            copied.append(name)
+    return copied
+
+
+# --------------------------------------------------------------------------- GGUF quants from the safetensors
+#: The GGUFs made (and uploaded) next to ``--gguf`` when publishing. Q8_0 is near-lossless, Q4_K_M the default.
+GGUF_QUANTS = ("q8_0", "q6_k", "q5_k_m", "q4_k_m", "q3_k_m")
+LLAMA_CPP_REPO = "ggml-org/llama.cpp"
+#: The "use it when" column of the model card's quant table.
+QUANT_USE = {"F16": "full GGUF precision (as big as the safetensors)", "Q8_0": "best quality, near the 16-bit model",
+             "Q6_K": "very close to Q8_0, smaller", "Q5_K_M": "a good middle", "Q4_K_M": "the default: small and good",
+             "Q4_K_S": "a bit smaller than Q4_K_M", "Q3_K_M": "low RAM / old PCs, some quality loss",
+             "Q2_K": "smallest, noticeably weaker"}
+
+
+def gguf_quants(args: argparse.Namespace) -> list[str]:
+    """``--gguf`` first (the one kept for the Modelfile, the test and ``llm import``), then ``--gguf-quants``.
+
+    ``--gguf-quants`` defaults to :data:`GGUF_QUANTS` when uploading and to nothing more otherwise."""
+    primary = str(args.gguf or "none").lower()
+    if primary == "none":
+        return []
+    extra = getattr(args, "gguf_quants", None)
+    if extra is None:
+        extra = ",".join(GGUF_QUANTS) if args.hub_repo else ""
+    wanted = [q.strip().lower() for q in str(extra).split(",") if q.strip() and q.strip().lower() != "none"]
+    return [primary] + [q for q in dict.fromkeys(wanted) if q != primary]
+
+
+def _find_binary(folder: Path, name: str) -> Path | None:
+    for candidate in (folder / name, folder / "build" / "bin" / name, folder / "bin" / name):
+        if candidate.is_file():
+            return candidate
+    found = sorted(p for p in Path(folder).rglob(name) if p.is_file()) if Path(folder).is_dir() else []
+    return found[0] if found else None
+
+
+def _extract(archive: Path, target: Path) -> None:
+    import tarfile
+
+    target.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive) as tar:
+        root = target.resolve()
+        for member in tar.getmembers():
+            if not (target / member.name).resolve().is_relative_to(root):
+                raise RuntimeError(f"unsafe path in {archive.name}: {member.name}")
+        if hasattr(tarfile, "data_filter"):
+            tar.extractall(target, filter="tar")
+        else:  # Python 3.10
+            tar.extractall(target)
+
+
+def _download(url: str, target: Path) -> Path:
+    import urllib.request
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": "PyMC-Bot-trainer"})
+    with urllib.request.urlopen(request, timeout=300) as response, open(target, "wb") as handle:
+        shutil.copyfileobj(response, handle, 1 << 20)
+    return target
+
+
+def _fetch_json(url: str) -> Any:
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": "PyMC-Bot-trainer", "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _quantize_works(binary: Path, run: Any) -> bool:
+    env = {**os.environ, "LD_LIBRARY_PATH": f"{binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    try:
+        done = run([str(binary), "--help"], capture_output=True, text=True, env=env, timeout=60)
+    except (OSError, ValueError) as exc:
+        print(f"llama-quantize does not start here ({exc})")
+        return False
+    output = f"{done.stdout}\n{done.stderr}"
+    return "usage" in output.lower() and "GLIBC" not in output
+
+
+def llama_cpp_tools(scratch: Path, run: Any = None, fetch_json: Any = None, download: Any = None,
+                    log: Any = print) -> tuple[Path, Path]:
+    """``(convert_hf_to_gguf.py, llama-quantize)``: an existing llama.cpp (``$LLAMA_CPP_DIR``, ``./llama.cpp``,
+    Unsloth's copy) or the newest llama.cpp release - its Linux build plus its source at the same tag. When the
+    prebuilt binary cannot start (an older glibc), ``llama-quantize`` is compiled from that source (~3 min)."""
+    import subprocess
+
+    run = run or subprocess.run
+    fetch_json = fetch_json or _fetch_json
+    download = download or _download
+    scratch = Path(scratch)
+    places = [Path(os.environ["LLAMA_CPP_DIR"])] if os.environ.get("LLAMA_CPP_DIR") else []
+    places += [Path("llama.cpp"), Path.home() / ".unsloth" / "llama.cpp", Path("/kaggle/working/llama.cpp")]
+    places += sorted(scratch.glob("llama.cpp-*"), reverse=True)
+    for place in places:
+        convert = place / "convert_hf_to_gguf.py"
+        binary = _find_binary(place, "llama-quantize") if place.is_dir() else None
+        if convert.is_file() and binary and _quantize_works(binary, run):
+            log(f"llama.cpp: using {place}")
+            return convert.resolve(), binary.resolve()
+    releases = fetch_json(f"https://api.github.com/repos/{LLAMA_CPP_REPO}/releases?per_page=10")
+    tag, asset = None, None
+    for release in releases:
+        name = f"llama-{release.get('tag_name')}-bin-ubuntu-x64.tar.gz"
+        asset = next((a for a in release.get("assets") or [] if a.get("name") == name), None)
+        if asset:
+            tag = release["tag_name"]
+            break
+    if not tag:
+        raise RuntimeError("no llama.cpp Linux release found")
+    root = scratch / f"llama.cpp-{tag}"
+    log(f"llama.cpp: downloading release {tag} (build + source)")
+    _extract(download(asset["browser_download_url"], root / "bin.tar.gz"), root / "bin")
+    _extract(download(f"https://codeload.github.com/{LLAMA_CPP_REPO}/tar.gz/refs/tags/{tag}", root / "src.tar.gz"),
+             root / "src")
+    convert = next(iter(sorted((root / "src").rglob("convert_hf_to_gguf.py"))), None)
+    if convert is None:
+        raise RuntimeError(f"llama.cpp {tag}: convert_hf_to_gguf.py is missing from the source")
+    binary = _find_binary(root / "bin", "llama-quantize")
+    if binary is None or not _quantize_works(binary, run):
+        log("llama.cpp: compiling llama-quantize from source (the prebuilt one does not run here)")
+        source, build = convert.parent, convert.parent / "build"
+        for command in (["cmake", "-S", str(source), "-B", str(build), "-DLLAMA_CURL=OFF", "-DGGML_NATIVE=OFF",
+                         "-DBUILD_SHARED_LIBS=OFF", "-DLLAMA_BUILD_TESTS=OFF", "-DCMAKE_BUILD_TYPE=Release"],
+                        ["cmake", "--build", str(build), "--target", "llama-quantize", "-j", str(os.cpu_count() or 2)]):
+            done = run(command, capture_output=True, text=True)
+            if done.returncode != 0:
+                raise RuntimeError(f"building llama-quantize failed: {(done.stderr or done.stdout)[-800:]}")
+        binary = _find_binary(build, "llama-quantize")
+        if binary is None:
+            raise RuntimeError("building llama-quantize produced no binary")
+    return convert.resolve(), binary.resolve()
+
+
+def _run_tool(run: Any, command: list[str], what: str, env: dict[str, str] | None = None) -> None:
+    print(f"  {what}...", flush=True)
+    done = run(command, capture_output=True, text=True, env=env)
+    if done.returncode != 0:
+        raise RuntimeError(f"{what} failed: {(done.stderr or done.stdout or '')[-1200:]}")
+
+
+def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
+               tools: tuple[Path, Path], on_file: Any, run: Any = None) -> dict[str, Any]:
+    """safetensors -> one F16 GGUF (+ the F16 vision projector) -> every quant with ``llama-quantize``.
+
+    ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk); the F16
+    intermediate is deleted at the end unless ``f16`` was asked for."""
+    import subprocess
+
+    run = run or subprocess.run
+    convert, quantize = tools
+    scratch = Path(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "LD_LIBRARY_PATH": f"{Path(quantize).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    base = scratch / f"{stem}.F16.gguf"
+    _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(base), "--outtype", "f16"],
+              "safetensors -> F16 GGUF")
+    if not base.is_file():
+        raise RuntimeError("the converter wrote no GGUF")
+    result: dict[str, Any] = {"files": [], "mmproj": None}
+    if vision:
+        mmproj = scratch / f"mmproj-{stem}.F16.gguf"
+        before = set(scratch.glob("*.gguf"))
+        _run_tool(run, [sys.executable, str(convert), str(st_dir), "--mmproj", "--outfile", str(mmproj),
+                        "--outtype", "f16"], "vision projector -> mmproj GGUF")
+        if not mmproj.is_file():
+            fresh = sorted(set(scratch.glob("*.gguf")) - before)
+            if not fresh:
+                raise RuntimeError("the converter wrote no vision projector")
+            fresh[0].rename(mmproj)
+        result["mmproj"] = mmproj.name
+        on_file(mmproj, "MMPROJ")
+    wanted = [q.upper() for q in quants]
+    for quant in wanted:
+        target = base if quant in ("F16", "BF16") else scratch / f"{stem}.{quant}.gguf"
+        if target != base:
+            _run_tool(run, [str(quantize), str(base), str(target), quant], f"F16 -> {quant}", env=env)
+        if not target.is_file():
+            raise RuntimeError(f"llama-quantize wrote no {quant} file")
+        result["files"].append({"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2)})
+        on_file(target, quant)
+    if base.exists() and "F16" not in wanted and "BF16" not in wanted:
+        base.unlink()
+    return result
+
+
+def pick_gguf(found: list[str], quant: str) -> str | None:
+    """The file of ``quant`` among an export's GGUFs - never the F16/BF16 intermediate unless that was asked for.
+
+    (Picking ``sorted(...)[0]`` took ``*.F16.gguf`` before ``*.Q4_K_M.gguf``: an ~8 GB file named Q4_K_M.)"""
+    quant = quant.upper()
+    files = [f for f in found if "mmproj" not in Path(f).name.lower()]
+    named = [f for f in files if re.search(rf"[.\-_]{re.escape(quant)}(?:[.\-_]|$)", Path(f).stem.upper())]
+    if named:
+        return named[0]
+    if quant in ("F16", "BF16"):
+        return None
+    known = "|".join(re.escape(q) for q in (*QUANT_USE, "BF16", "F32"))
+    rest = [f for f in files if not re.search(rf"(?:^|[.\-_])(?:{known})(?:[.\-_]|$)", Path(f).stem.upper())]
+    return rest[0] if len(rest) == 1 else None
+
+
+def connect_hub(args: argparse.Namespace, preset: dict[str, Any]) -> dict[str, Any] | None:
+    """The Hugging Face session for ``--hub-repo``: the API, the GGUF repo and the safetensors repo."""
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        print("--hub-repo needs HF_TOKEN (Kaggle: Add-ons > Secrets > HF_TOKEN, a 'write' token)")
+        return None
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=token)
+        gguf = resolve_repo(args.hub_repo, preset, api.whoami)
+    except Exception as exc:  # no upload, but the model still gets saved
+        print(f"Hugging Face login failed ({type(exc).__name__}: {exc}) - the files stay in the output folder")
+        return None
+    return {"api": api, "token": token, "gguf": gguf, "safetensors": safetensors_repo(gguf),
+            "private": bool(args.hub_private), "created": set()}
+
+
+def upload_hub_file(hub: dict[str, Any], repo: str, path: Path, message: str) -> None:
+    """Upload one file (a quant) to ``repo``, creating the repo the first time."""
+    api = hub["api"]
+    if repo not in hub["created"]:
+        api.create_repo(repo, repo_type="model", private=hub["private"], exist_ok=True)
+        hub["created"].add(repo)
+    api.upload_file(path_or_fileobj=str(path), path_in_repo=Path(path).name, repo_id=repo, repo_type="model",
+                    commit_message=message)
+
+
+def gguf_scratch(args: argparse.Namespace, out: Path) -> Path:
+    """Where the F16 GGUF and the quants are made: the root disk (``/tmp``), not Kaggle's 20 GB output folder."""
+    if getattr(args, "gguf_scratch", None):
+        return Path(args.gguf_scratch)
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "pymc-gguf" / Path(out).name
+
+
+def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any, out: Path,
+                 st_dir: Path | None, quants: list[str], hub: dict[str, Any] | None = None,
+                 tools: Any = None, run: Any = None) -> dict[str, Any] | None:
+    """Every GGUF in ``quants``; the first stays in ``out`` (Modelfile, test, import), the rest are uploaded to
+    the GGUF repo one by one and deleted (or kept in ``out`` when there is no upload or it fails).
+
+    Made from the uploaded safetensors with llama.cpp when they exist; Unsloth's ``save_pretrained_gguf`` is the
+    fallback. Returns ``{"files": [...], "mmproj": name, "route": ...}`` or ``None`` when nothing was made."""
+    out = Path(out)
+    primary = quants[0].upper()
+    stem = preset.get("file") or f"pymc-minecraft-{args.preset}"
+    scratch = gguf_scratch(args, out)
+    uploaded: dict[str, bool] = {}
+
+    def on_file(path: Path, quant: str) -> None:
+        if hub and quant not in (primary, "MMPROJ"):
+            try:
+                upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {quant} GGUF")
+                print(f"  uploaded {path.name} ({path.stat().st_size / 1e9:.2f} GB) -> {hub['gguf']}")
+                uploaded[quant] = True
+                path.unlink()
+                return
+            except Exception as exc:  # keep the file; the folder upload at the end tries again
+                print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {out}")
+        if path.parent.resolve() != out.resolve():
+            shutil.move(str(path), str(out / path.name))
+
+    result = None
+    if st_dir is not None and Path(st_dir).is_dir():
+        try:
+            print(f"making GGUFs {', '.join(q.upper() for q in quants)} from the safetensors (llama.cpp)")
+            result = make_ggufs(Path(st_dir), scratch, stem, quants, vision=bool(preset.get("vision")),
+                                tools=tools or llama_cpp_tools(scratch.parent), on_file=on_file, run=run)
+            result["route"] = "llama.cpp"
+        except Exception as exc:
+            print(f"llama.cpp GGUF route failed ({type(exc).__name__}: {exc}) - using Unsloth's exporter")
+            result = None
+    if result is None:
+        print(f"exporting GGUF ({', '.join(quants)}) with Unsloth - 10-20 minutes per quant")
+        model.save_pretrained_gguf(str(out / "gguf"), tokenizer, quantization_method=list(quants))
+        found = sorted(set(glob.glob(str(out / "gguf*" / "*.gguf")) + glob.glob(str(out / "*.gguf"))
+                           + glob.glob("*.gguf")))
+        projectors = [f for f in found if "mmproj" in Path(f).name.lower()]
+        result = {"files": [], "mmproj": None, "route": "unsloth"}
+        if projectors and preset.get("vision"):
+            mmproj = out / f"mmproj-{stem}.F16.gguf"
+            shutil.move(projectors[0], mmproj)
+            result["mmproj"] = mmproj.name
+        for quant in [q.upper() for q in quants]:
+            picked = pick_gguf(found, quant)
+            if not picked:
+                print(f"  Unsloth made no {quant} file")
+                continue
+            found.remove(picked)
+            target = out / f"{stem}.{quant}.gguf"
+            shutil.move(picked, target)
+            result["files"].append({"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2)})
+            on_file(target, quant)
+        unsloth_modelfile = next(iter(glob.glob(str(out / "gguf*" / "Modelfile"))), None)
+        if unsloth_modelfile:
+            result["template"] = template_from_modelfile(Path(unsloth_modelfile).read_text())
+        for work in out.glob("gguf*"):  # Unsloth's merge + F16 intermediate
+            if work.is_dir():
+                shutil.rmtree(work, ignore_errors=True)
+    for item in result["files"]:
+        item["uploaded"] = bool(uploaded.get(item["quant"]))
+    if not any(item["quant"] == primary for item in result["files"]):
+        return None
+    shutil.rmtree(scratch, ignore_errors=True)  # the F16 intermediate and anything half-made
+    return result
+
+
 def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str, kind: str = "gguf") -> str:
     """README.md for a Hugging Face repo: the GGUF edition (``kind="gguf"``, also written next to the GGUF) or the
     merged full-precision safetensors edition (``kind="safetensors"``, written into ``safetensors/``)."""
@@ -1590,9 +2043,19 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     tags += ["reasoning", "thinking"] if reasoning else []
     tags += ["uncensored", "abliterated"] if preset.get("uncensored") else []
     files = [f"- `{report.get('gguf', output_name(preset_name, preset, quant))}` - the model ({quant})"]
+    quant_rows = ""
+    if report.get("ggufs"):
+        files = [f"- `{g['file']}` - {g['quant']}, {g.get('gb', '?')} GB" + (" (default)" if g["quant"] == quant else "")
+                 for g in report["ggufs"]]
+        quant_rows = ("\n| quant | file | size | use it when |\n|---|---|---|---|\n" + "".join(
+            f"| `{g['quant']}` | `{g['file']}` | {g.get('gb', '?')} GB | {QUANT_USE.get(g['quant'], '')} |\n"
+            for g in report["ggufs"]))
     if report.get("mmproj"):
         files.append(f"- `{report['mmproj']}` - the vision projector (needed for pictures)")
     files += ["- `Modelfile` - for `ollama create`", "- `pymc_model.json` - training report PyMC Bot reads on import"]
+    if report.get("essentials"):
+        files.append("- " + ", ".join(f"`{name}`" for name in report["essentials"][:6])
+                     + (" ..." if len(report["essentials"]) > 6 else "") + " - tokenizer, config and chat template")
     gguf_repo = str(report.get("hub_repo") or repo)
     st_repo = str(report.get("hub_repo_safetensors") or "")
     if safetensors:
@@ -1651,11 +2114,18 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     llama = (f"llama-server -m {report.get('gguf', 'model.gguf')} --mmproj {report.get('mmproj', 'mmproj.gguf')}"
              if vision else f"llama-server -m {report.get('gguf', 'model.gguf')}")
     size = f"~{preset.get('gguf_gb')} GB file, ~{preset.get('run_gb')} GB to run"
+    if report.get("gguf_gb"):
+        size = f"{report['gguf_gb']} GB ({quant}), ~{preset.get('run_gb')} GB to run"
+    if report.get("params_b"):
+        size += f" - {report['params_b']}B parameters"
     formats = ""
     if st_repo and not safetensors:
         formats = (f"\nAlso available as full-precision **safetensors** (merged 16-bit, for transformers, vLLM or "
                    f"further fine-tuning): [{st_repo}](https://huggingface.co/{st_repo})\n")
     library = "gguf"
+    others = [g["quant"] for g in report.get("ggufs") or [] if g["quant"] != quant]
+    other_quants = (f"\nOther sizes: put the quant after the colon, e.g. `ollama run hf.co/{repo}:{others[0]}` "
+                    f"({', '.join(others)}).\n" if others else "")
     use = f"""With PyMC Bot (switches the bot to this model with the short Minecraft prompt):
 
 ```bash
@@ -1667,7 +2137,7 @@ With Ollama:
 ```bash
 ollama run hf.co/{repo}:{quant}
 ```
-
+{other_quants}
 With llama.cpp:
 
 ```bash
@@ -1676,6 +2146,8 @@ With llama.cpp:
     if safetensors:
         library = "transformers"
         size = f"~{report.get('safetensors_gb') or '8'} GB of 16-bit weights (bf16 / fp16), ~10 GB of GPU memory to run"
+        if report.get("params_b"):
+            size += f" - {report['params_b']}B parameters"
         formats = (f"\nThis repo has the **full-precision safetensors** (the LoRA merged into the base, 16-bit) for "
                    f"transformers, vLLM, further fine-tuning or your own quantisation. For Ollama, llama.cpp, LM Studio "
                    f"and PyMC Bot use the **GGUF** edition: [{gguf_repo}](https://huggingface.co/{gguf_repo})\n")
@@ -1749,7 +2221,7 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 ## Files
 
 {chr(10).join(files)}
-
+{quant_rows}
 ## Use it
 
 {use}
@@ -1807,7 +2279,8 @@ def publish(out: Path, repo: str, preset_name: str, token: str, private: bool = 
     repo = resolve_repo(repo, PRESETS[preset_name], api.whoami)
     write_ollama_params(out, PRESETS[preset_name])
     api.create_repo(repo, repo_type="model", private=private, exist_ok=True)
-    ignore = ["checkpoints/*", "*.lock", f"{SAFETENSORS_DIR}/*"] + ([] if include_lora else ["lora/*"])
+    ignore = ["checkpoints/*", "*.lock", "*.tmp", "gguf/*", "stream_images/*", f"{SAFETENSORS_DIR}/*"]
+    ignore += [] if include_lora else ["lora/*"]
     api.upload_folder(repo_id=repo, folder_path=str(out), repo_type="model", ignore_patterns=ignore,
                       commit_message=f"{display_name(preset_name, PRESETS[preset_name])} from PyMC Bot")
     return repo
@@ -2024,34 +2497,60 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         report["tests"] = {key: value for key, value in summary.items() if key != "results"}
 
-    if args.gguf != "none":
-        print(f"exporting GGUF ({args.gguf}) - this takes 10-20 minutes")
-        model.save_pretrained_gguf(str(out / "gguf"), tokenizer, quantization_method=args.gguf)
-        found = sorted(set(glob.glob(str(out / "gguf*" / "*.gguf")) + glob.glob(str(out / "*.gguf")) + glob.glob("*.gguf")))
-        projectors = [f for f in found if "mmproj" in Path(f).name.lower()]
-        found = [f for f in found if "mmproj" not in Path(f).name.lower()]
-        if not found:
+    hub = connect_hub(args, preset) if args.hub_repo else None
+    repo = (hub or {}).get("gguf") or (args.hub_repo if args.hub_repo and "/" in args.hub_repo
+                                         else f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}")
+    if hub:
+        report["hub_repo"] = hub["gguf"]
+    report.update({"family": preset["family"], "compact_tag": COMPACT_TAG, "compact_prompt": True,
+                   "run_parameters": preset.get("run_parameters") or RUN_PARAMETERS})
+    st_dir = out / SAFETENSORS_DIR
+    # 1. the safetensors edition: merge, compact to the base model's size, upload
+    if getattr(args, "safetensors", "none") != "none":
+        print("saving the safetensors edition (LoRA merged into the base, 16-bit) - a few minutes")
+        try:
+            report["safetensors_gb"] = export_safetensors(model, tokenizer, st_dir)
+            report["safetensors"] = SAFETENSORS_DIR
+            if getattr(args, "compact", True):
+                try:
+                    stats = compact_safetensors(st_dir)
+                    report.update(compact=stats, params_b=stats["params_b"], safetensors_gb=stats["gb"])
+                except Exception as exc:  # the weights as saved are still a valid model
+                    print(f"compacting skipped ({type(exc).__name__}: {exc}) - the weights stay as saved")
+            print(f"safetensors: {report['safetensors_gb']} GB in {st_dir}")
+        except Exception as exc:  # the adapter is safe; the GGUF falls back to Unsloth's exporter
+            print(f"safetensors export failed ({type(exc).__name__}: {exc}) - the LoRA adapter is fine")
+            for key in ("safetensors", "safetensors_gb", "compact", "params_b"):
+                report.pop(key, None)
+            shutil.rmtree(st_dir, ignore_errors=True)
+    if hub and report.get("safetensors"):
+        report["hub_repo_safetensors"] = hub["safetensors"]
+        write_cards(out, args.preset, preset, report, repo)
+        try:
+            publish_safetensors(st_dir, hub["safetensors"], args.preset, hub["token"], private=args.hub_private)
+            report["safetensors_uploaded"] = True
+            print(f"uploaded the safetensors edition -> https://huggingface.co/{hub['safetensors']}")
+        except Exception as exc:  # keep the folder for another try; the GGUFs still get made
+            print(f"safetensors upload failed ({type(exc).__name__}: {exc}) - the files are still in {st_dir}")
+    # 2. the GGUFs, made from those safetensors: every quant, each uploaded as soon as it is ready
+    quants = gguf_quants(args)
+    if quants:
+        made = export_ggufs(args, preset, model, tokenizer, out, st_dir if report.get("safetensors") else None,
+                            quants, hub=hub)
+        if made is None:
             print("GGUF export produced no file - the LoRA adapter is in", adapter)
             return 1
-        gguf = out / output_name(args.preset, preset, args.gguf)
-        shutil.move(found[0], gguf)
-        mmproj = None
-        if preset.get("vision"):
-            if projectors:
-                mmproj = out / f"mmproj-{gguf.name.split('.')[0]}.F16.gguf"
-                shutil.move(projectors[0], mmproj)
-            else:
-                print("warning: no mmproj (vision projector) was exported - the model will only read text")
-        unsloth_modelfile = next(iter(glob.glob(str(out / "gguf*" / "Modelfile"))), None)
-        template = template_from_modelfile(Path(unsloth_modelfile).read_text()) if unsloth_modelfile else None
-        (out / "Modelfile").write_text(modelfile_text(gguf.name, preset["family"], template, mmproj.name if mmproj else None,
+        gguf = out / made["files"][0]["file"]
+        mmproj = out / made["mmproj"] if made.get("mmproj") else None
+        if preset.get("vision") and mmproj is None:
+            print("warning: no mmproj (vision projector) was exported - the model will only read text")
+        (out / "Modelfile").write_text(modelfile_text(gguf.name, preset["family"], made.get("template"),
+                                                      mmproj.name if mmproj else None,
                                                       preset.get("run_parameters"), args.system_prompt), encoding="utf-8")
-        report["gguf"] = gguf.name
-        report["quant"] = args.gguf.upper()
-        report["gguf_gb"] = round(gguf.stat().st_size / 1e9, 2)
+        report.update({"gguf": gguf.name, "quant": made["files"][0]["quant"], "gguf_route": made.get("route"),
+                       "gguf_gb": round(gguf.stat().st_size / 1e9, 2), "ggufs": made["files"]})
         if mmproj:
             report["mmproj"] = mmproj.name
-        shutil.rmtree(out / "gguf", ignore_errors=True)
         if args.test_gguf:
             print("\n==== GGUF test (Ollama) ====")
             picture = next((Path(args.data_dir) / row["images"][0] for row in eval_rows if row.get("images")), None)
@@ -2059,49 +2558,23 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
             if preset.get("vision") and picture is not None:
                 prompts.append("What do you see in this Minecraft screenshot?")
             report["gguf_test"] = test_gguf(out, preset, prompts, picture)
-    if getattr(args, "safetensors", "none") != "none":
-        print("saving the safetensors edition (LoRA merged into the base, 16-bit) - a few minutes")
-        try:
-            report["safetensors_gb"] = export_safetensors(model, tokenizer, out / SAFETENSORS_DIR)
-            report["safetensors"] = SAFETENSORS_DIR
-            print(f"safetensors: {report['safetensors_gb']} GB in {out / SAFETENSORS_DIR}")
-        except Exception as exc:  # the GGUF and the adapter are already safe
-            print(f"safetensors export failed ({type(exc).__name__}: {exc}) - the GGUF and the LoRA adapter are fine")
-            shutil.rmtree(out / SAFETENSORS_DIR, ignore_errors=True)
+    # 3. tokenizer.json, configs and chat template next to the GGUFs too
+    report["essentials"] = copy_essentials(st_dir if st_dir.is_dir() else adapter, out)
     shutil.rmtree(out / "checkpoints", ignore_errors=True)
-    report.update({"family": preset["family"], "compact_tag": COMPACT_TAG, "compact_prompt": True,
-                   "run_parameters": preset.get("run_parameters") or RUN_PARAMETERS,
-                   "minutes": round((time.time() - started) / 60, 1), "created": time.strftime("%Y-%m-%d %H:%M:%S")})
-    repo = args.hub_repo if args.hub_repo and "/" in args.hub_repo else f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}"
+    report.update({"minutes": round((time.time() - started) / 60, 1), "created": time.strftime("%Y-%m-%d %H:%M:%S")})
     write_cards(out, args.preset, preset, report, repo)
-    if args.hub_repo:
-        token = os.environ.get("HF_TOKEN")
-        if not token:
-            print("--hub-repo needs HF_TOKEN (Kaggle: Add-ons > Secrets > HF_TOKEN, a 'write' token)")
-        else:
-            try:
-                from huggingface_hub import HfApi
-
-                full = resolve_repo(args.hub_repo, preset, HfApi(token=token).whoami)
-                report["hub_repo"] = full
-                if report.get("safetensors"):
-                    report["hub_repo_safetensors"] = safetensors_repo(full)
-                write_cards(out, args.preset, preset, report, full)
-                publish(out, full, args.preset, token, private=args.hub_private, include_lora=args.hub_lora)
-                print(f"uploaded the GGUF edition -> https://huggingface.co/{full}")
-            except Exception as exc:  # never lose a finished model to an upload problem
-                report.pop("hub_repo", None)
-                print(f"Hugging Face upload failed ({type(exc).__name__}: {exc}) - the files are still in {out}")
-            if report.get("hub_repo") and report.get("hub_repo_safetensors"):
-                st_repo = report["hub_repo_safetensors"]
-                try:
-                    publish_safetensors(out / SAFETENSORS_DIR, st_repo, args.preset, token, private=args.hub_private)
-                    report["safetensors_uploaded"] = True
-                    print(f"uploaded the safetensors edition -> https://huggingface.co/{st_repo}")
-                except Exception as exc:  # the GGUF repo is already up; keep the folder for another try
-                    print(f"safetensors upload failed ({type(exc).__name__}: {exc}) - the files are still in "
-                          f"{out / SAFETENSORS_DIR}")
-            write_cards(out, args.preset, preset, report, report.get("hub_repo") or repo)
+    # 4. the GGUF repo: the main quant, mmproj, Modelfile, model card, report and the essentials
+    if hub and quants:
+        try:
+            publish(out, hub["gguf"], args.preset, hub["token"], private=args.hub_private, include_lora=args.hub_lora)
+            print(f"uploaded the GGUF edition -> https://huggingface.co/{hub['gguf']}")
+        except Exception as exc:  # never lose a finished model to an upload problem
+            report.pop("hub_repo", None)
+            print(f"Hugging Face upload failed ({type(exc).__name__}: {exc}) - the files are still in {out}")
+        write_cards(out, args.preset, preset, report, report.get("hub_repo") or repo)
+    elif hub:
+        report.pop("hub_repo", None)
+        write_cards(out, args.preset, preset, report, repo)
     shutil.rmtree(out / "stream_images", ignore_errors=True)  # streamed training pictures are not needed any more
     print(f"done -> {out}  (download it, then: python -m pymc_bot llm import <folder>)")
     return 0
@@ -2123,6 +2596,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--eval-limit", type=int, default=150, help="eval rows to try after training (0 = skip)")
     parser.add_argument("--gguf", default="q4_k_m", help="GGUF quantisation (q4_k_m, q5_k_m, q8_0) or 'none'")
+    parser.add_argument("--gguf-quants", default=None,
+                        help="more GGUFs made from the safetensors and uploaded one by one, e.g. q8_0,q6_k,q5_k_m,"
+                             "q4_k_m,q3_k_m (default: those when uploading, else none; 'none' = only --gguf)")
+    parser.add_argument("--gguf-scratch", default=None,
+                        help="work folder for the F16 GGUF and the quants (default: /tmp/pymc-gguf, off Kaggle's "
+                             "20 GB output disk)")
+    parser.add_argument("--no-compact", dest="compact", action="store_false",
+                        help="keep the merged safetensors as saved (default: float32 -> 16-bit and the duplicate "
+                             "tied lm_head dropped, so a 4B model is 4B-sized)")
     parser.add_argument("--safetensors", choices=("16bit", "none"), default="16bit",
                         help="also save (and with --hub-repo upload, to <repo without -GGUF>) the full-precision "
                              "safetensors edition: the LoRA merged into the base in 16-bit (~8 GB for 4B)")
