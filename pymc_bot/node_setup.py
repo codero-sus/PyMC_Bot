@@ -22,7 +22,7 @@ Node.js: when ``node`` (22+) is not on PATH, the official portable build for thi
 downloaded from nodejs.org into ``~/.pymc_bot/runtime/node`` and verified against the release's
 ``SHASUMS256.txt``. Nothing is installed system wide and no admin rights are needed.
 
-Made with love by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/
+Made with love by codero-sus - https://github.com/codero-sus - https://codero.is-a.dev - https://the-codero.web.app/
 """
 
 from __future__ import annotations

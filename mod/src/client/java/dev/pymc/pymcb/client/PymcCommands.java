@@ -52,7 +52,7 @@ import net.minecraft.network.chat.Component;
  * Minecraft 26.2+ (see {@link Mc#attended}), so a server cannot start a recording through a
  * clickable chat message. Read-only commands are always available.
  *
- * <p>Made with ❤ by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/</p>
+ * <p>Made with ❤ by codero-sus - https://github.com/codero-sus - https://codero.is-a.dev - https://the-codero.web.app/</p>
  */
 public final class PymcCommands {
     /** Both spellings work; {@code /pymcbot} is the documented one, {@code /pymcbot} the short alias. */
@@ -62,7 +62,7 @@ public final class PymcCommands {
     static final String ABOUT = PymcPlaytimeMod.NAME + " mod - part of PyMC_Bot\n"
             + "Made with \u2764 by codero-sus\n"
             + "GitHub:  https://github.com/codero-sus\n"
-            + "Website: https://the-codero.web.app/\n"
+            + "Website: https://codero.is-a.dev - https://the-codero.web.app/\n"
             + "Source:  https://github.com/codero-sus/PyMC_Bot (PolyForm Noncommercial 1.0.0 - free for personal, non-commercial use)";
 
     private final PlaytimeRecorder recorder;

@@ -21,7 +21,7 @@ from pymc_bot import (
     __author_url__,
     __license__,
     __version__,
-    __website__,
+    __websites__,
     about,
     autopilot,
     hosting,
@@ -426,7 +426,7 @@ def create_app(
         version=__version__,
         description=(
             "Control panel for a Python Minecraft player bot fleet (cracked/offline mode friendly).\n\n"
-            f"Made with \u2764\ufe0f by [{__author__}]({__author_url__}) \u00b7 [{__website__}]({__website__})"
+            f"Made with \u2764\ufe0f by [{__author__}]({__author_url__}) \u00b7 " + " \u00b7 ".join(f"[{site}]({site})" for site in __websites__)
         ),
         contact={"name": __author__, "url": __author_url__},
         license_info={"name": __license__, "url": "https://polyformproject.org/licenses/noncommercial/1.0.0"},

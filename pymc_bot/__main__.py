@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="PyMC_Bot - a Python-controlled Minecraft player bot with an Ollama brain and a web config page.",
         formatter_class=_TopFormatter,
     )
-    parser.epilog = "Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://the-codero.web.app/"
+    parser.epilog = "Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://codero.is-a.dev \u00b7 https://the-codero.web.app/"
     parser.add_argument("--version", action=_VersionAction, nargs=0, help="show the version and author, then exit")
     sub = parser.add_subparsers(dest="command")
 
@@ -227,7 +227,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         auto_agent=args.auto_agent,
     )
     print(f"PyMC_Bot {__version__} control panel: http://{host}:{port}  (config: {store.path})")
-    print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://the-codero.web.app/")
+    print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://codero.is-a.dev \u00b7 https://the-codero.web.app/")
     uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
     return 0
 
@@ -679,6 +679,7 @@ def cmd_about(args: argparse.Namespace) -> int:
     print(f"{info['name']} {info['version']}  \u2014  {info['made_with']}")
     print(f"author      : {info['author']}  ({info['author_github']})")
     print(f"website     : {info['website']}")
+    print(f"websites    : {'  '.join(info['websites'])}")
     print(f"repository  : {info['repository']}")
     print(f"license     : {info['license']}")
     print("credits     :")

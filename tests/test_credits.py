@@ -134,3 +134,31 @@ def test_cortex_links_point_at_the_repository_root():
         text = path.read_text(errors="ignore")
         offenders += [f"{path.relative_to(ROOT)}: {m.group(0)}" for m in pattern.finditer(text)]
     assert not offenders, offenders
+
+
+SECOND_SITE = "https://codero.is-a.dev"
+
+
+def test_both_websites_are_credited(client: TestClient):
+    assert pymc_bot.__websites__ == (SECOND_SITE, WEBSITE)
+    assert SECOND_SITE in pymc_bot.credit_line() and WEBSITE in pymc_bot.credit_line()
+    data = client.get("/api/about").json()
+    assert data["websites"] == [SECOND_SITE, WEBSITE]
+    description = client.get("/openapi.json").json()["info"]["description"]
+    assert SECOND_SITE in description and WEBSITE in description
+    page = client.get("/").text
+    assert f'href="{SECOND_SITE}"' in page and f'href="{WEBSITE}"' in page
+
+
+def test_both_websites_in_the_cli_mod_llm_and_notebook(capsys):
+    main(["about"])
+    out = capsys.readouterr().out
+    assert SECOND_SITE in out and WEBSITE in out
+    for path in ("README.md", "mod/src/main/resources/fabric.mod.json", "pymc_bot/llm_train.py",
+                 "pynb/PyMC_Minecraft_LLM_Kaggle.ipynb", "pynb/README.md", "docs/MINECRAFT_LLM.md"):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        assert SECOND_SITE in text and WEBSITE in text, path
+    from pymc_bot import llm_train
+
+    card = llm_train.model_card("minecraftism", llm_train.PRESETS["minecraftism"], {}, "me/Minecraftism-4B-GGUF")
+    assert SECOND_SITE in card and WEBSITE in card

@@ -14,7 +14,7 @@ fakes them); a few are plain Python on top of the existing actions (homes, waypo
     combat     guard hunt shoot
     social     report
 
-Made with love by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/
+Made with love by codero-sus - https://github.com/codero-sus - https://codero.is-a.dev - https://the-codero.web.app/
 """
 
 from __future__ import annotations

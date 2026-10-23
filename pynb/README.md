@@ -12,11 +12,17 @@
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
      is downloaded from the newest GitHub release.
    * **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token) to publish the model.
-4. Edit the settings cell. The first time, use `QUICK_TEST = True`, which takes about 15 minutes. Then **Run All**.
+4. Edit the settings cell. `GPU_MODE = "auto"` keeps both T4s busy: with two or more editions each T4 trains its own
+   edition at the same time; with one edition both T4s train it together (DDP). `MAX_HOURS` makes training stop early
+   enough for the export and upload to finish before Kaggle's 12 h limit. The first time, use `QUICK_TEST = True`, which takes about 15 minutes. Then **Run All**.
 5. On your PC: `python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF`.
    The safetensors edition, `<your-hf-name>/Minecraftism-4B-Uncensored`, is for transformers, vLLM or further
    fine-tuning. Its model card has the code. Other GGUF sizes: `ollama run hf.co/<your-hf-name>/Minecraftism-4B-Uncensored-GGUF:Q8_0`.
 
+For long runs use **Save Version → Save & Run All**: the session ends by itself when the notebook is done, and
+`/kaggle/working` is kept as the Output. In an interactive session, `AUTO_EXIT = True` (the last cell) shuts the kernel
+down once everything is on Hugging Face.
+
 Full guide: [docs/MINECRAFT_LLM.md](../docs/MINECRAFT_LLM.md). The same notebook is attached to every GitHub release.
 
-Made with ❤️ by codero-sus – personal, non-commercial use (PolyForm Noncommercial 1.0.0).
+Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/) – personal, non-commercial use (PolyForm Noncommercial 1.0.0).

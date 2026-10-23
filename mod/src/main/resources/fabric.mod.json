@@ -3,12 +3,13 @@
 	"id": "pymcbot",
 	"version": "${version}",
 	"name": "PyMC Bot",
-	"description": "The PyMC Bot companion mod: records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player model on. Open the PyMC Bot settings page with /pymcbot settings, the hotkey or Mod Menu's Configure button. One jar per Minecraft version, 1.21.1 to 26.3. Made with \u2764\ufe0f by codero-sus.",
+	"description": "The PyMC Bot companion mod: records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player model on. Open the PyMC Bot settings page with /pymcbot settings, the hotkey or Mod Menu's Configure button. One jar per Minecraft version, 1.21.1 to 26.3. Made with \u2764\ufe0f by codero-sus - https://codero.is-a.dev - https://the-codero.web.app/",
 	"authors": [
 		{
 			"name": "codero-sus",
 			"contact": {
 				"homepage": "https://the-codero.web.app/",
+				"website": "https://codero.is-a.dev",
 				"github": "https://github.com/codero-sus"
 			}
 		}

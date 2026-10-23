@@ -1,10 +1,10 @@
 # PyMC_Bot
 
 [![Author: codero-sus](https://img.shields.io/badge/author-codero--sus-22c55e?logo=github)](https://github.com/codero-sus)
-[![Website](https://img.shields.io/badge/website-the--codero.web.app-0ea5e9)](https://the-codero.web.app/)
+[![Website](https://img.shields.io/badge/website-codero.is--a.dev-22c55e)](https://codero.is-a.dev) [![Website](https://img.shields.io/badge/website-the--codero.web.app-0ea5e9)](https://the-codero.web.app/)
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial-a78bfa)](LICENSE)
 
-> **Made with ❤️ by [codero-sus](https://github.com/codero-sus)** · [the-codero.web.app](https://the-codero.web.app/)
+> **Made with ❤️ by [codero-sus](https://github.com/codero-sus)** · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)
 
 A **Python-controlled Minecraft player bot** it joins a (cracked / offline-mode) server as a normal
 player, you configure and steer it from a **web control panel served by Uvicorn**, and it can hand the
@@ -614,6 +614,7 @@ even without your own screenshots. It can also run an **optional test suite**: b
 ```bash
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
 #   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
+#   both T4s work: one edition per T4 at once, or both on one edition (DDP); MAX_HOURS keeps the upload inside 12 h
 python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
 #   the notebook first publishes <you>/Minecraftism-4B (compact 16-bit safetensors, for transformers / vLLM), then
 #   GGUF quants made from it to <you>/Minecraftism-4B-GGUF: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M (--quant Q8_0)
@@ -938,7 +939,7 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 | | |
 | --- | --- |
 | **Author** | [codero-sus](https://github.com/codero-sus) |
-| **Website** | [the-codero.web.app](https://the-codero.web.app/) |
+| **Website** | [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/) |
 | **Source** | [github.com/codero-sus/PyMC_Bot](https://github.com/codero-sus/PyMC_Bot) |
 | **Also by codero-sus** | [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) – the optional self-hosted LLM brain |
 | **Built with** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/), [mineflayer](https://github.com/PrismarineJS/mineflayer), [Fabric](https://fabricmc.net/), [Ollama](https://ollama.com/), NumPy / PyTorch |
@@ -964,4 +965,4 @@ Third-party parts keep their own licenses: the compile-only Mod Menu API stubs i
 `mod/src/client/java/com/terraformersmc/` (MIT, TerraformersMC; never shipped in the jars), the Fabric
 template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies.
 
-<p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>
+<p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://codero.is-a.dev">codero.is-a.dev</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>

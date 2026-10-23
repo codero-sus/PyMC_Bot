@@ -102,5 +102,5 @@ are moved to the new folder automatically. The only connection the mod ever open
 ## Links & credits
 
 - Source, issues and the PyMC Bot app: <https://github.com/codero-sus/PyMC_Bot>
-- Made with ❤️ by [codero-sus](https://github.com/codero-sus) · <https://the-codero.web.app/>
+- Made with ❤️ by [codero-sus](https://github.com/codero-sus) · <https://codero.is-a.dev> · <https://the-codero.web.app/>
 - License: [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) – free for personal, non-commercial use. Please don't re-upload or sell it.

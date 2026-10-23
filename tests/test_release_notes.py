@@ -50,6 +50,7 @@ def test_notes_list_every_release_file():
 def test_notes_say_the_notebook_uploads_safetensors_then_gguf_quants():
     text = release_notes.notes()
     assert "`PyMC_Minecraft_LLM_Kaggle.ipynb`" in text
+    assert "Both T4s train" in text and "MAX_HOURS" in text and "AUTO_EXIT" in text
     assert "**safetensors**" in text and "**GGUF**" in text and "SAFETENSORS = True" in text
     assert text.index("**safetensors**") < text.index("**GGUF**")
     assert "Q8_0" in text and "Q4_K_M" in text and "`GGUF_QUANTS`" in text and "`tokenizer.json`" in text

@@ -192,6 +192,7 @@ MODEL_NAME = "Minecraftism"
 AUTHOR = "codero-sus"
 AUTHOR_URL = "https://github.com/codero-sus"
 WEBSITE = "https://the-codero.web.app/"
+WEBSITES = ("https://codero.is-a.dev", WEBSITE)
 PROJECT_URL = "https://github.com/codero-sus/PyMC_Bot"
 #: How each family marks a user turn / an assistant reply (loss is computed on replies only).
 TURN_MARKERS = {
@@ -2228,7 +2229,7 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 
 ## License and credits
 
-- Made with ❤️ by [codero-sus]({AUTHOR_URL}) - {WEBSITE}
+- Made with ❤️ by [codero-sus]({AUTHOR_URL}) - {' - '.join(WEBSITES)}
 - **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and
   {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.
 - Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
@@ -2314,9 +2315,187 @@ def load_image_from(base: Path, side: int = IMAGE_SIDE) -> Any:
     return load
 
 
+# --------------------------------------------------------------------------- speed: both T4s, deadline, export lock
+def dist_info() -> tuple[int, int]:
+    """``(rank, world size)`` when started by torchrun (both T4s on one edition, DDP); ``(0, 1)`` otherwise."""
+    try:
+        return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0"))), int(os.environ.get("WORLD_SIZE", "1"))
+    except ValueError:
+        return 0, 1
+
+
+def _rows_file(out: Path) -> Path:
+    run = re.sub(r"[^A-Za-z0-9_.-]", "_", os.environ.get("TORCHELASTIC_RUN_ID") or os.environ.get("MASTER_PORT") or "run")
+    return Path(out) / f".ddp-rows-{run}.json"
+
+
+def share_rows(out: Path, rows: list[dict[str, Any]] | None, eval_rows: list[dict[str, Any]] | None = None,
+               data_dir: str = "") -> None:
+    """DDP: rank 0 prepares the data once (streaming included) and hands it to the other GPU's process.
+    ``rows=None`` tells it that rank 0 stopped before training (dry run, bad data, deadline)."""
+    target = _rows_file(out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(target.name + ".tmp")
+    temp.write_text(json.dumps({"rows": rows, "eval_rows": eval_rows or [], "data_dir": data_dir}), encoding="utf-8")
+    os.replace(temp, target)
+
+
+def wait_for_rows(out: Path, timeout: float = 6 * 3600, poll: float = 5.0) -> dict[str, Any] | None:
+    """DDP, ranks > 0: wait for rank 0's data (``None`` = rank 0 is not training)."""
+    target = _rows_file(out)
+    end = time.time() + timeout
+    while not target.is_file():
+        if time.time() > end:
+            raise TimeoutError(f"rank 0 never shared the training data ({target})")
+        time.sleep(poll)
+    shared = json.loads(target.read_text(encoding="utf-8"))
+    return shared if shared.get("rows") is not None else None
+
+
+def speed_options(args: argparse.Namespace, preset: dict[str, Any], world: int, text: bool) -> dict[str, Any]:
+    """SFTConfig settings for speed. Under DDP each GPU takes its own batches, so gradient accumulation is divided
+    by the number of GPUs: the same effective batch (same quality) in about half the steps."""
+    options: dict[str, Any] = {
+        "gradient_accumulation_steps": max(1, round(preset["accum"] / max(1, world))),
+        "dataloader_num_workers": max(0, int(getattr(args, "loader_workers", 0) or 0)),
+    }
+    if options["dataloader_num_workers"]:
+        options["dataloader_pin_memory"] = True
+        options["dataloader_persistent_workers"] = True
+    if world > 1:
+        options["ddp_find_unused_parameters"] = False
+    if text:
+        options["dataset_num_proc"] = max(1, min(4, os.cpu_count() or 2))
+        if getattr(args, "group_by_length", False):
+            options["group_by_length"] = True  # batches of similar length: much less padding
+    return options
+
+
+def _all_ranks(flag: bool) -> bool:
+    """True when any GPU says so (DDP ranks must stop at the same step or they hang)."""
+    try:
+        import torch
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            value = torch.tensor([1.0 if flag else 0.0], device="cuda" if torch.cuda.is_available() else "cpu")
+            dist.all_reduce(value, op=dist.ReduceOp.MAX)
+            return bool(value.item())
+    except Exception:  # never let the check itself stop training
+        return flag
+    return flag
+
+
+def deadline_callback(args: argparse.Namespace, clock: Any = time.time) -> Any:
+    """A TrainerCallback that ends training early when the session deadline (``--deadline``) minus the time the
+    eval, tests, export and upload need (``--reserve-minutes``) is reached - Kaggle stops at 12 h, and a run that
+    is killed there loses everything. ``None`` without a deadline."""
+    deadline = float(getattr(args, "deadline", 0) or 0)
+    if deadline <= 0:
+        return None
+    from transformers import TrainerCallback
+
+    stop_at = deadline - float(getattr(args, "reserve_minutes", 60)) * 60
+
+    class StopBeforeDeadline(TrainerCallback):
+        def on_step_end(self, train_args: Any, state: Any, control: Any, **_kwargs: Any) -> Any:
+            if _all_ranks(clock() >= stop_at) and not control.should_training_stop:
+                print(f"time limit: stopping at step {state.global_step}/{state.max_steps} so the export and upload "
+                      f"finish before the session ends ({getattr(args, 'reserve_minutes', 60):.0f} min kept for them)",
+                      flush=True)
+                args.stopped_early = {"step": int(state.global_step), "of": int(state.max_steps)}
+                control.should_training_stop = True
+            return control
+
+    return StopBeforeDeadline()
+
+
+def run_training(trainer: Any, rebuild: Any, world: int) -> Any:
+    """``trainer.train()``; if length grouping breaks before the first step (an Unsloth / TRL combination that
+    cannot group), train again without it instead of losing the session."""
+    try:
+        return trainer.train()
+    except Exception as exc:
+        state = getattr(trainer, "state", None)
+        grouped = bool(getattr(getattr(trainer, "args", None), "group_by_length", False))
+        if world > 1 or not grouped or (state is not None and getattr(state, "global_step", 0) > 0):
+            raise
+        print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
+        return rebuild().train()
+
+
+def end_ddp() -> None:
+    """Close the process group after training: only rank 0 goes on (eval, export, upload)."""
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+            dist.destroy_process_group()
+    except Exception as exc:  # the model is trained; a teardown hiccup must not lose it
+        print(f"DDP teardown: {type(exc).__name__}: {exc}")
+
+
+class export_lock:  # noqa: N801 - used as a context manager
+    """Only one edition merges / converts / uploads at a time when two train side by side (RAM and the 20 GB
+    output disk). A no-op without a path or on Windows."""
+
+    def __init__(self, path: str | None):
+        self.path = path
+        self.handle: Any = None
+
+    def __enter__(self) -> export_lock:
+        if not self.path:
+            return self
+        try:
+            import fcntl
+        except ImportError:
+            return self
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self.handle = open(self.path, "a+")  # noqa: SIM115 - closed in __exit__
+        try:
+            fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("waiting for the other edition to finish its export / upload...", flush=True)
+            fcntl.flock(self.handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self.handle is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self.handle, fcntl.LOCK_UN)
+            finally:
+                self.handle.close()
+                self.handle = None
+
+
+def clean_uploaded(out: Path, report: dict[str, Any]) -> list[str]:
+    """``--clean-after-upload``: delete the big files that are safely on Hugging Face (frees the 20 GB disk
+    for the next edition). The GGUFs + adapter only when the GGUF repo is up; ``safetensors/`` only when its own
+    upload worked too."""
+    out = Path(out)
+    removed: list[str] = []
+    if report.get("hub_repo"):
+        for path in sorted(out.glob("*.gguf")) + [out / "lora"]:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+                removed.append(path.name)
+            elif path.exists():
+                path.unlink()
+                removed.append(path.name)
+        if report.get("safetensors_uploaded") or not report.get("safetensors"):
+            if (out / SAFETENSORS_DIR).is_dir():
+                shutil.rmtree(out / SAFETENSORS_DIR, ignore_errors=True)
+                removed.append(SAFETENSORS_DIR)
+    return removed
+
+
 def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str, Any]], eval_rows: list[dict[str, Any]]) -> int:
-    if not args.split:
-        # one T4 is plenty up to 14B and avoids DataParallel, which Unsloth does not use
+    rank, world = dist_info()
+    if world == 1 and not args.split:
+        # one process = one T4 (the notebook gives each parallel edition its own); DDP uses one process per T4
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
     if preset.get("vision"):
         return train_vision(args, preset, rows, eval_rows)
@@ -2332,7 +2511,12 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     model_name = args.model or preset["model"]
     print(f"loading {model_name} ({'4-bit' if preset['load_in_4bit'] else '16-bit'}) on {torch.cuda.device_count()} GPU(s)")
     load: dict[str, Any] = {"model_name": model_name, "max_seq_length": args.max_seq, "load_in_4bit": preset["load_in_4bit"]}
-    if args.split:
+    if world > 1:
+        local = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local)
+        load["device_map"] = {"": local}
+        print(f"DDP: {world} GPUs train this edition together (this is GPU {local})")
+    elif args.split:
         load["device_map"] = "unsloth_balanced"
     model, tokenizer = FastLanguageModel.from_pretrained(**load)
     model = FastLanguageModel.get_peft_model(
@@ -2345,18 +2529,30 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
 
     texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in rows]
     dataset = Dataset.from_dict({"text": texts})
-    config = SFTConfig(
-        dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=preset["batch"],
-        gradient_accumulation_steps=preset["accum"], warmup_steps=10, num_train_epochs=args.epochs,
-        max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr, logging_steps=10,
-        optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed, output_dir=str(out / "checkpoints"),
-        save_strategy="no", report_to="none", dataset_num_proc=2,
-    )
-    trainer = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config)
     user, assistant = TURN_MARKERS[preset["family"]]
-    trainer = train_on_responses_only(trainer, instruction_part=user, response_part=assistant)
-    stats = trainer.train()
+    callback = deadline_callback(args)
+
+    def build(group: bool = True) -> Any:
+        options = speed_options(args, preset, world, text=True)
+        if not group:
+            options.pop("group_by_length", None)
+        config = SFTConfig(
+            dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=preset["batch"],
+            warmup_steps=10, num_train_epochs=args.epochs,
+            max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr, logging_steps=10,
+            optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
+            output_dir=str(out / "checkpoints"), save_strategy="no", report_to="none", **options,
+        )
+        built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
+                           callbacks=[callback] if callback else None)
+        return train_on_responses_only(built, instruction_part=user, response_part=assistant)
+
+    stats = run_training(build(), lambda: build(group=False), world)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
+    if world > 1:
+        end_ddp()
+        if rank > 0:
+            return 0  # rank 0 evaluates, exports and uploads
 
     return finish(args, preset, model, tokenizer, rows, eval_rows, stats.training_loss, started,
                   text_generator(model, tokenizer, preset), lambda: FastLanguageModel.for_inference(model))
@@ -2435,8 +2631,15 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
     if not pictures:
         print("no pictures in the data - it still trains (text only), but record with /pymcbot screenshots on and "
               "build with --screenshots so the vision part learns Minecraft too")
+    rank, world = dist_info()
+    placement: dict[str, Any] = {}
+    if world > 1:
+        local = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local)
+        placement["device_map"] = {"": local}
+        print(f"DDP: {world} GPUs train this edition together (this is GPU {local})")
     model, processor = FastVisionModel.from_pretrained(model_name, load_in_4bit=preset["load_in_4bit"],
-                                                       use_gradient_checkpointing="unsloth")
+                                                       use_gradient_checkpointing="unsloth", **placement)
     model = FastVisionModel.get_peft_model(
         model, finetune_vision_layers=bool(args.vision_layers), finetune_language_layers=True,
         finetune_attention_modules=True, finetune_mlp_modules=True, r=args.rank, lora_alpha=args.rank,
@@ -2452,16 +2655,22 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
         collator = UnslothVisionDataCollator(model, processor)
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     config = SFTConfig(
-        per_device_train_batch_size=preset["batch"], gradient_accumulation_steps=preset["accum"], warmup_steps=10,
+        per_device_train_batch_size=preset["batch"], warmup_steps=10,
         num_train_epochs=args.epochs, max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr,
         logging_steps=10, optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
         output_dir=str(out / "checkpoints"), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
         remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
-        max_length=args.max_seq,
+        max_length=args.max_seq, **speed_options(args, preset, world, text=False),
     )
-    trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config)
+    callback = deadline_callback(args)
+    trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config,
+                         callbacks=[callback] if callback else None)
     stats = trainer.train()
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
+    if world > 1:
+        end_ddp()
+        if rank > 0:
+            return 0  # rank 0 evaluates, exports and uploads
 
     return finish(args, preset, model, processor, rows, eval_rows, stats.training_loss, started,
                   vision_generator(model, processor, preset, load_image), lambda: FastVisionModel.for_inference(model))
@@ -2497,6 +2706,16 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         report["tests"] = {key: value for key, value in summary.items() if key != "results"}
 
+    if getattr(args, "stopped_early", None):
+        report["stopped_early"] = args.stopped_early
+    with export_lock(getattr(args, "export_lock", None)):
+        return export_and_publish(args, preset, model, tokenizer, out, adapter, report, eval_rows, started)
+
+
+def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any, out: Path,
+                       adapter: Path, report: dict[str, Any], eval_rows: list[dict[str, Any]], started: float) -> int:
+    """safetensors -> upload -> GGUF quants (each uploaded) -> GGUF repo; under ``--export-lock`` when two editions
+    train side by side."""
     hub = connect_hub(args, preset) if args.hub_repo else None
     repo = (hub or {}).get("gguf") or (args.hub_repo if args.hub_repo and "/" in args.hub_repo
                                          else f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}")
@@ -2576,6 +2795,10 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         report.pop("hub_repo", None)
         write_cards(out, args.preset, preset, report, repo)
     shutil.rmtree(out / "stream_images", ignore_errors=True)  # streamed training pictures are not needed any more
+    if getattr(args, "clean_after_upload", False):
+        removed = clean_uploaded(out, report)
+        if removed:
+            print(f"uploaded, so deleted locally: {', '.join(removed)}")
     print(f"done -> {out}  (download it, then: python -m pymc_bot llm import <folder>)")
     return 0
 
@@ -2609,6 +2832,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also save (and with --hub-repo upload, to <repo without -GGUF>) the full-precision "
                              "safetensors edition: the LoRA merged into the base in 16-bit (~8 GB for 4B)")
     parser.add_argument("--split", action="store_true", help="spread the model over both GPUs (only needed for 14B)")
+    parser.add_argument("--deadline", type=float, default=0,
+                        help="unix time the session ends; training stops early so the export + upload still fit")
+    parser.add_argument("--reserve-minutes", type=float, default=60,
+                        help="minutes kept before --deadline for eval, tests, export and upload (default 60)")
+    parser.add_argument("--export-lock", default=None,
+                        help="lock file: only one edition exports / uploads at a time (two editions on two T4s)")
+    parser.add_argument("--clean-after-upload", action="store_true",
+                        help="delete the GGUFs, adapter and safetensors once they are on Hugging Face")
+    parser.add_argument("--group-by-length", action="store_true",
+                        help="text editions: batches of similar length (less padding, faster)")
+    parser.add_argument("--loader-workers", type=int, default=0, help="data-loader worker processes per GPU")
     parser.add_argument("--hub-repo", help="upload to Hugging Face (needs HF_TOKEN): 'auto' = <you>/<edition repo>, "
                                            "a repo name, or user/repo")
     parser.add_argument("--hub-private", action="store_true", help="create the Hugging Face repo as private")
@@ -2678,6 +2912,30 @@ def main(argv: list[str] | None = None) -> int:
                           if args.system_prompt_file else MINECRAFTISM_SYSTEM)
     if not args.out:
         args.out = str(Path("/kaggle/working") / args.preset) if Path("/kaggle/working").is_dir() else args.preset
+    rank, world = dist_info()
+    if world > 1 and rank > 0:  # DDP: the other T4 trains on the rows rank 0 prepares (and prints nothing twice)
+        sys.stdout = open(os.devnull, "w")  # noqa: SIM115 - for the life of the process
+        shared = wait_for_rows(Path(args.out))
+        if shared is None:
+            return 0
+        args.data_dir = shared["data_dir"]
+        return train(args, preset, shared["rows"], shared["eval_rows"])
+    if world == 1:
+        return prepare_and_train(args, preset)
+    try:
+        return prepare_and_train(args, preset, share=True)
+    except BaseException:
+        share_rows(Path(args.out), None)  # never leave the other GPU waiting
+        raise
+
+
+def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: bool = False) -> int:
+    """Read + check the data, add the streamed rows, then train (``share``: hand the rows to the DDP partner)."""
+    def stop(code: int) -> int:
+        if share:
+            share_rows(Path(args.out), None)
+        return code
+
     resolve_datasets(args)
     if args.commercial:
         problems, warnings = commercial_problems(args, preset)
@@ -2685,7 +2943,7 @@ def main(argv: list[str] | None = None) -> int:
             print("note:", warning)
         if problems:
             print("--commercial:\n" + "\n".join(problems))
-            return 2
+            return stop(2)
     data = find_data(args.data)
     args.data_dir = str(data.parent)
     rows = select_rows(read_jsonl(data), preset)
@@ -2704,19 +2962,19 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(f"{len(missing)} picture(s) listed in the data are missing next to train.jsonl (first: {missing[0]}) - "
               "upload the images/ folder with the dataset")
-        return 2
+        return stop(2)
     if preset.get("vision") and not any(row.get("images") for row in rows) and args.stream_vision <= 0:
         print(f"{args.preset} is a vision edition but the data has no pictures. Record playtime with the mod's "
               "screenshots on (/pymcbot screenshots on), then: python -m pymc_bot llm build --playtime <folder> "
               "--screenshots - or stream pictures from Hugging Face (--stream-vision 3000) - or train a text edition "
               "(minecraftism, minecraftism-thinking).")
-        return 2
+        return stop(2)
     problems = check_rows(rows) + check_rows(eval_rows)
     if problems:
         print("\n".join(problems[:20]))
-        return 2
+        return stop(2)
     if args.test_only:
-        return test_only(args, preset, eval_rows)
+        return stop(test_only(args, preset, eval_rows))
     import random
 
     rng = random.Random(args.seed)
@@ -2753,7 +3011,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         sample = prepare_messages(rows[0], preset)[-1]["content"]
         print("dry run: data is fine. Sample reply:", sample[:400])
-        return 0
+        return stop(0)
+    if args.deadline and time.time() > args.deadline - (args.reserve_minutes + 20) * 60:
+        print(f"not enough session time left for {args.preset} (training + {args.reserve_minutes:.0f} min export) - "
+              "train it in the next session")
+        return stop(3)
+    if share:
+        share_rows(Path(args.out), rows, eval_rows, args.data_dir)
     return train(args, preset, rows, eval_rows)
 
 

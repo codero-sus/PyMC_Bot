@@ -179,7 +179,7 @@ def test_notebook_exports_and_uploads_both_editions():
     assert "SAFETENSORS = True" in code
     assert '" --safetensors 16bit" if SAFETENSORS else " --safetensors none"' in code
     assert "--safetensors none --general" in code  # QUICK_TEST exports nothing
-    assert '"--safetensors", "--gguf-quants"))' in code  # an older trainer without them is replaced by the newest
+    assert '"--safetensors", "--gguf-quants", "--deadline"' in code  # an older trainer without them is replaced by the newest
     assert 'GGUF_QUANTS = "q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m"' in code
     assert """FLAGS += f' --gguf-quants "{GGUF_QUANTS or "none"}"'""" in code and '" --gguf-quants none"' in code
     assert 'shutil.disk_usage("/tmp")' in code

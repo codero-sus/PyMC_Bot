@@ -1,5 +1,5 @@
 /* PyMC_Bot control panel - effects, themes, palette, toasts.
- * Made with ❤️ by codero-sus · https://github.com/codero-sus · https://the-codero.web.app/
+ * Made with ❤️ by codero-sus · https://github.com/codero-sus · https://codero.is-a.dev · https://the-codero.web.app/
  *
  * Self-contained and optional: app.js talks to it through window.FX and falls
  * back to no-ops when it is missing. Every effect honours "motion off" (the ✨
@@ -500,6 +500,7 @@
       { icon: '↑', label: 'Back to top', group: 'look', run: () => window.scrollTo({ top: 0, behavior: 'smooth' }) },
       { icon: 'ⓘ', label: 'About & credits', group: 'help', run: () => openDialog('about-dialog') },
       { icon: '🐙', label: 'Open codero-sus on GitHub', group: 'link', run: open('https://github.com/codero-sus') },
+      { icon: '🌐', label: 'Open codero.is-a.dev', group: 'link', run: open('https://codero.is-a.dev') },
       { icon: '🌍', label: 'Open the-codero.web.app', group: 'link', run: open('https://the-codero.web.app/') },
       { icon: '📦', label: 'Open the PyMC_Bot repository', group: 'link', run: open('https://github.com/codero-sus/PyMC_Bot') },
       { icon: '🧠', label: 'Open Cortex LLMHoster', group: 'link', run: open('https://github.com/codero-sus/Cortex_LLMHoster') },
@@ -624,7 +625,7 @@
     eggs();
     particles.start();
     if (location.hash && byId(location.hash.slice(1))) setTimeout(() => goTo(location.hash.slice(1)), 300);
-    console.info('%cPyMC_Bot%c made with ❤️ by codero-sus · https://github.com/codero-sus · https://the-codero.web.app/',
+    console.info('%cPyMC_Bot%c made with ❤️ by codero-sus · https://github.com/codero-sus · https://codero.is-a.dev · https://the-codero.web.app/',
       'background:#22c55e;color:#04231a;padding:2px 6px;border-radius:4px;font-weight:700', 'color:inherit');
   }
 
