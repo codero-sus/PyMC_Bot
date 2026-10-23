@@ -1,5 +1,22 @@
 # PyMC Bot mod – changelog
 
+## 0.11.0
+
+- **Control your bots from inside the game** with the new `/pymcbot bot …` commands. They talk to
+  the PyMC Bot app's control panel (`python -m pymc_bot`, default `http://127.0.0.1:8000`):
+  - `/pymcbot bot status` · `list` · `skills` – the selected bot, every bot, the 44 skills.
+  - `/pymcbot bot do <skill> [key=value …]` – run any skill, e.g. `do chop_tree count=12`,
+    `do mine_ore iron`, `do fish seconds=60`, `do craft name=torch count=8`.
+  - `/pymcbot bot come` · `follow` · `stop` · `home` – the bot walks to you, follows you, stops, or
+    goes back to its home point. `/pymcbot bot say <text>` chats through the bot.
+  - `/pymcbot bot auto on|off|status` – the **autopilot**: the bots sleep at night, eat, fight back,
+    swim up, put out fires, equip better armour, place torches and tidy their inventory on their own.
+  - `/pymcbot bot ai start|stop` – the LLM brain.
+  - `/pymcbot bot panel <url>` – the panel runs on another PC? Point the mod at it
+    (start the panel with `--host 0.0.0.0`). `/pymcbot bot panel reset` goes back to the default.
+- Replies arrive in chat when the bot is done; the game never waits for the panel.
+- Recording is unchanged and still makes no network connections.
+
 ## 0.10.0
 
 - **Screenshots for Minecraftism VL**, the vision edition of the PyMC Bot Minecraft model. Turn

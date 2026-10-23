@@ -375,6 +375,13 @@ changed, so you can export again with other values. Training straight from the e
 | `/pymcbot train` | Print the exact Python command to train on this dataset. |
 | `/pymcbot version` | Mod version, Minecraft version and compat layer. |
 | `/pymcbot about` | Author, links and credits (made by codero-sus). |
+| `/pymcbot bot status` · `list` · `skills` | The [PyMC Bot app](#controlling-your-bots-from-the-game)'s selected bot, every bot, the 44 skills. |
+| `/pymcbot bot do <skill> [key=value …]` | Run a skill: `do chop_tree count=12`, `do mine_ore iron`, `do craft name=torch count=8`. A bare word is the `name` option, a second one `count`. |
+| `/pymcbot bot come` · `follow` · `stop` · `home` | Walk to you, follow you, stop everything, go to the home point. |
+| `/pymcbot bot say <text>` | Chat through the bot. |
+| `/pymcbot bot auto on\|off\|status` | The autopilot: auto-sleep at night, eat, fight back, flee, swim up, torches, armour… |
+| `/pymcbot bot ai start\|stop` | Start / stop the LLM brain. |
+| `/pymcbot bot panel [url\|reset]` | Which PyMC Bot panel to talk to (default `http://127.0.0.1:8000`, setting `panelUrl`). |
 
 On Minecraft 26.2+ every command that changes the recorder needs an *attended* run (you typed it),
 so a server cannot start a recording through a clickable chat message; read-only commands
@@ -389,6 +396,25 @@ written, so AFK minutes do not drown your real play in `none` samples; `/pymcbot
 `/pymcbot record stop` report how much was skipped. Disconnecting stops the recording and flushes
 it, so an episode never spans two worlds. `meta.json` also records `mod_version`,
 `minecraft_version`, the compat era and the skip counters.
+
+## Controlling your bots from the game
+
+Since 0.11.0 the mod can drive the bots of the PyMC Bot Python app. Start the app
+(`python -m pymc_bot`, its panel listens on `http://127.0.0.1:8000`), connect a bot from the panel,
+then in Minecraft:
+
+```
+/pymcbot bot status            # who is online, health, food, where
+/pymcbot bot come              # the bot walks to you
+/pymcbot bot do chop_tree count=12
+/pymcbot bot do mine_ore iron
+/pymcbot bot auto on           # sleeps at night, eats, fights back, places torches... by itself
+```
+
+Requests go to the panel on a background thread; the answer shows in chat when the bot is done
+(skills can take a minute). The panel on another computer? Start it with `--host 0.0.0.0` and run
+`/pymcbot bot panel http://<that-pc>:8000`. These are the only network requests the mod makes, and only
+when you type them; recording never opens a connection.
 
 ## What is recorded
 

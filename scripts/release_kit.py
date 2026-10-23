@@ -11,6 +11,7 @@ Writes to ``--out``:
 * ``pymc_bot-<v>-py3-none-any.whl`` / ``pymc_bot-<v>.tar.gz`` - ``pip install`` packages
 * ``pymc-minecraft-llm-kit.zip`` - the ready-made training data + Kaggle script (upload it to Kaggle)
 * ``PyMC_Minecraft_LLM_Kaggle.ipynb``, ``train_minecraft_llm.py`` - the notebook and trainer on their own
+* ``pymc-bot-node-modules.zip`` - mineflayer prebuilt (``python -m pymc_bot setup --method bundle``, no npm)
 
 ``SHA256SUMS.txt`` is written by :func:`checksums` over the final folder (jars included).
 """
@@ -101,6 +102,17 @@ def llm_kit(out: Path, work: Path, wiki_pages: int, turns: int) -> list[Path]:
     return [kit, out / NOTEBOOK.name, out / "train_minecraft_llm.py"]
 
 
+def node_bundle(out: Path) -> Path:
+    """mineflayer + pathfinder as one zip, built by the npm-free installer (pymc_bot/node_setup.py)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pymc_node_setup_kit", ROOT / "pymc_bot" / "node_setup.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.make_bundle(out / module.BUNDLE_ASSET, log=lambda line: print(f"  {line}", flush=True))
+
+
 def checksums(folder: Path) -> Path:
     lines = []
     for path in sorted(p for p in folder.iterdir() if p.is_file() and p.name != "SHA256SUMS.txt"):
@@ -118,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-wiki", action="store_true")
     parser.add_argument("--turns", type=int, default=6000)
     parser.add_argument("--no-wheel", action="store_true", help="skip the pip packages (needs the 'build' package)")
+    parser.add_argument("--no-node-bundle", action="store_true",
+                        help="skip pymc-bot-node-modules.zip (downloads mineflayer from the npm registry)")
     parser.add_argument("--checksums", metavar="FOLDER", help="only write SHA256SUMS.txt for FOLDER")
     args = parser.parse_args(argv)
     if args.checksums:
@@ -132,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_wheel:
         made += wheel(out)
     made += llm_kit(out, work, 0 if args.no_wiki else args.wiki_pages, args.turns)
+    if not args.no_node_bundle:
+        made.append(node_bundle(out))
     for path in made:
         print(f"{path.stat().st_size:>12,}  {path.name}")
     return 0

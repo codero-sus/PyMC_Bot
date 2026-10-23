@@ -8,8 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import dev.pymc.pymcb.Json;
 import dev.pymc.pymcb.PlaytimeConfig;
 import dev.pymc.pymcb.PymcPlaytimeMod;
+import dev.pymc.pymcb.client.BotLink;
 import dev.pymc.pymcb.client.PlaytimeRecorder;
 import dev.pymc.pymcb.client.PymcPlaytimeClient;
 import dev.pymc.pymcb.client.PymcBotScreen;
@@ -56,6 +58,17 @@ public class PymcClientGameTest implements FabricClientGameTest {
         check(FabricLoader.getInstance().isModLoaded("pymcplaytime"), "the old id pymcplaytime is not provided");
         check(PlaytimeConfig.file().getFileName().toString().equals("pymcbot.properties"),
                 "config file should be pymcbot.properties, is " + PlaytimeConfig.file());
+
+        // /pymcbot bot ...: the panel link's JSON reader, option parser and URL check (no panel needed).
+        Object doc = Json.parse("{\"ok\": true, \"detail\": \"chopped a tree: 6 logs\", \"n\": [1, 2.5, null, \"\\u00e9\"]}");
+        check(Boolean.TRUE.equals(Json.get(doc, "ok")), "Json.parse lost a boolean: " + doc);
+        check("chopped a tree: 6 logs".equals(Json.get(doc, "detail")), "Json.parse lost a string: " + doc);
+        check(String.valueOf(Json.get(doc, "n")).equals("[1.0, 2.5, null, \u00e9]"), "Json.parse lost an array: " + doc);
+        check(BotLink.options("count=8 oak_log").equals("{\"count\":8,\"name\":\"oak_log\"}"),
+                "skill options: " + BotLink.options("count=8 oak_log"));
+        check(PlaytimeConfig.panelProp("http://192.168.1.20:8000/", "x").equals("http://192.168.1.20:8000"), "panel URL");
+        check(PlaytimeConfig.panelProp("file:///etc/passwd", "x").equals("x"), "panel URL must be http(s)");
+        report.append("bot link: ok (").append(BotLink.panel()).append(")\n");
 
         try (TestSingleplayerContext singleplayer = context.worldBuilder().create()) {
             context.waitFor(client -> client.player != null && client.level != null);

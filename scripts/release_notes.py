@@ -71,6 +71,9 @@ def downloads(version: str) -> list[str]:
         "| `PyMC_Minecraft_LLM_Kaggle.ipynb` · `train_minecraft_llm.py` | the Kaggle notebook (GPU T4 x2) and "
         "the trainer it runs; afterwards `python -m pymc_bot llm import pymc-minecraft` "
         "(guide: `docs/MINECRAFT_LLM.md` in the source zip) |",
+        "| `pymc-bot-node-modules.zip` | **mineflayer, prebuilt** for players who can't (or don't want to) use npm: "
+        "`python -m pymc_bot setup` fetches it by itself when needed, or offline: "
+        "`python -m pymc_bot setup --zip pymc-bot-node-modules.zip` |",
         "| `SHA256SUMS.txt` | checksums of every file above |",
         "",
     ]
