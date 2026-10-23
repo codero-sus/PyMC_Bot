@@ -24,6 +24,7 @@ from pymc_bot import (
     __website__,
     about,
     hosting,
+    skills,
 )
 from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
 from pymc_bot.backends import BackendError, available_backends, node_available
@@ -54,6 +55,8 @@ BRIDGE_COMMANDS = [
     # inventory & life (pymc_bot.inventory numbers slots 0-8 hotbar, 9-35 backpack)
     "select_slot", "move_slot", "equip", "unequip", "swap_hands", "toss", "place", "use_item",
     "sleep", "wake", "collect", "attack_mob",
+    # skills (pymc_bot.skills): chop_tree, craft, smelt, harvest, deposit, build_shelter...
+    *skills.SKILL_COMMANDS,
 ]
 
 AuthMode = Literal["offline", "microsoft"]
@@ -1137,7 +1140,7 @@ def _decision_from_request(request: ActionRequest) -> Decision:
     if not request.action:
         raise HTTPException(status_code=422, detail="Provide either 'action' (+ params) or 'raw'.")
     action = request.action.strip().lower()
-    if action not in ACTIONS:
+    if action not in ACTIONS and skills.get(action) is None:
         raise HTTPException(
             status_code=422,
             detail=f"unknown action '{action}'. Valid actions: {', '.join(sorted(ACTIONS))}",

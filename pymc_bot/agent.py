@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pymc_bot import skills
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
@@ -72,6 +73,8 @@ ACTIONS: dict[str, str] = {
     # knowledge
     "search": 'look something up (Minecraft Wiki): {"action": "search", "query": "how to tame a wolf"}',
 }
+# the 44 skills: chop_tree, mine_ore, craft, smelt, harvest, deposit, go_home, guard... (pymc_bot.skills)
+ACTIONS.update(skills.action_examples())
 
 SEARCH_ACTIONS = ("search", "lookup", "look_up", "web_search", "google", "wiki")
 
@@ -812,7 +815,7 @@ class AgentLoop:
             ok = self.bot.wander()
             return ok, "explored the area" if ok else "had nowhere to explore"
 
-        if action in ("mine", "dig", "gather"):
+        if action in ("mine", "dig"):
             if blocked("mining", agent.allow_mining):
                 return False, "mining is disabled in settings"
             block = str(params.get("block") or params.get("target") or "stone")
@@ -856,6 +859,10 @@ class AgentLoop:
         life = self._execute_life(action, params, agent, blocked)
         if life is not None:
             return life
+
+        skill = skills.get(action)
+        if skill is not None:
+            return self._execute_skill(skill, params, agent, blocked)
 
         if action in ("wait", "noop", "none", "nothing"):
             return True, "waited"
@@ -985,6 +992,17 @@ class AgentLoop:
             ok = bot.look_around()
             return ok, "looked around" if ok else "could not look around"
         return None
+
+    def _execute_skill(self, skill: skills.Skill, params: dict[str, Any], agent: Any, blocked: Any) -> tuple[bool, str]:
+        """One of the bigger jobs (chop_tree, craft, harvest, go_home...), gated by the same switches."""
+        flag = {"fighting": "fighting", "movement": "movement", "mining": "mining", "building": "building",
+                "inventory": "inventory", "chat": "chat"}.get(skill.permission)
+        if flag is not None and blocked(flag, skills.allowed(skill, agent)):
+            return False, f"{skill.name} needs {flag} to be allowed in settings"
+        target = short(str(params.get("mob") or params.get("animal") or params.get("target") or ""))
+        if skill.name in ("shoot", "hunt") and target in AVOID_MOBS and not params.get("force"):
+            return False, f"not picking a fight with a {target}"
+        return self.bot.skill(skill.name, params)
 
     def _addressed_recently(self, window: float = 60.0) -> bool:
         """Did someone talk to this bot in the last ``window`` seconds (replies skip the cooldown)?"""

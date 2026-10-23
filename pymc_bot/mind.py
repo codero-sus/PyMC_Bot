@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pymc_bot.inventory import Inventory
+from pymc_bot.skills import prompt_reference
 
 
 # --------------------------------------------------------------------------- personas
@@ -322,6 +323,7 @@ RULES
 - Don't invent coordinates far away; use positions you were told about or stay within ~60 blocks.
 
 {ACTION_REFERENCE}
+{prompt_reference(allowed)}
 
 {REPLY_FORMAT}
 

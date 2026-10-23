@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from pymc_bot import backends as backends_module
+from pymc_bot import node_setup
 from pymc_bot.backends import (
     BackendError,
     NodeBridgeBackend,
@@ -269,6 +270,10 @@ def test_mineflayer_versions_reads_the_installed_package(tmp_path: Path, monkeyp
         encoding="utf-8",
     )
     monkeypatch.setattr(backends_module, "NODE_DIR", tmp_path / "nowhere")
+    # the checkout and ~/.pymc_bot/runtime (where `pymc_bot setup` installs) are searched too
+    monkeypatch.setattr(node_setup, "PACKAGE_DIR", tmp_path / "nowhere")
+    monkeypatch.setattr(node_setup, "PROJECT_ROOT", tmp_path / "nowhere")
+    monkeypatch.setenv("PYMC_BOT_RUNTIME", str(tmp_path / "nowhere"))
     monkeypatch.chdir(tmp_path)
     assert mineflayer_versions() == {"oldest": "1.8.8", "latest": "26.1", "tested": ["1.8.8", "1.21.11", "26.1"]}
     monkeypatch.chdir(tmp_path / "node_modules")
