@@ -18,9 +18,20 @@ and the notebook can publish it to Hugging Face for you.
 ```
 your PC                                Kaggle (GPU T4 x2)                      your PC
 python -m pymc_bot llm build   ──►   PyMC_Minecraft_LLM_Kaggle.ipynb   ──►   python -m pymc_bot llm import
-(train.jsonl + eval.jsonl +           (Unsloth QLoRA, eval, GGUF export,       --hf you/Minecraftism-4B-GGUF
- images/ + the training script)        upload to Hugging Face)                 (Ollama model + bot settings)
+(train.jsonl + eval.jsonl +           (Unsloth QLoRA, eval, GGUF +             --hf you/Minecraftism-4B-GGUF
+ images/ + the training script)        safetensors export, upload to HF)       (Ollama model + bot settings)
 ```
+
+Every edition is published in **two formats**, each in its own Hugging Face repo:
+
+| Repo | Format | Use it with |
+| --- | --- | --- |
+| `you/Minecraftism-4B-GGUF` | GGUF `q4_k_m` (+ `mmproj` projector for VL), `Modelfile`, `params` | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
+| `you/Minecraftism-4B` | **safetensors**: the LoRA merged into the base, 16-bit (~8 GB, VL ~9 GB) | transformers, vLLM, further fine-tuning, your own quantisations (AWQ, EXL2, other GGUF sizes) |
+
+The safetensors repo is the GGUF repo's name without `-GGUF` (uncensored: `Minecraftism-4B-Uncensored`). Both
+model cards link to each other; the safetensors card has transformers and vLLM code. `llm import --hf` on a
+safetensors repo uses its GGUF twin automatically, since Ollama runs GGUF.
 
 ## The four editions
 
@@ -107,6 +118,7 @@ The settings cell:
 | `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |
 | `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
 | `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
+| `SAFETENSORS` | `True` | also export the merged 16-bit safetensors edition and upload it to `<repo without -GGUF>` (`--safetensors none` = GGUF only) |
 | `QUICK_TEST` | `False` | short test run of the whole pipeline |
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
@@ -135,11 +147,16 @@ README.md                               the model card shown on Hugging Face
 pymc_model.json                         edition, loss, eval + test scores, system prompt, what PyMC Bot reads on import
 tests.json                              every test question and answer (with RUN_TESTS)
 lora/                                   the adapter (optional, for training further)
+safetensors/                            the safetensors edition: model-*.safetensors, config, tokenizer /
+                                        processor, its own README.md (with SAFETENSORS, the default)
 ```
 
-With `HF_REPO = "auto"` each edition is uploaded to `<your HF name>/<repo from the table>`, e.g.
-`you/Minecraftism-4B-GGUF`, and the local copy is cleaned up afterwards (`CLEAN_AFTER_UPLOAD`) so four
-editions fit into Kaggle's 20 GB. If the upload fails, the files stay in `/kaggle/working`.
+With `HF_REPO = "auto"` each edition is uploaded twice: the GGUF files to `<your HF name>/<repo from the table>`,
+e.g. `you/Minecraftism-4B-GGUF`, and `safetensors/` to the same name without `-GGUF`, e.g. `you/Minecraftism-4B`.
+The local copy is cleaned up afterwards (`CLEAN_AFTER_UPLOAD`) so four editions fit into Kaggle's 20 GB; the
+safetensors folder is only deleted once its own upload worked. If an upload fails, the files stay in
+`/kaggle/working`. Without an upload an edition takes ~11 GB (GGUF + safetensors): download it from the Output tab
+before training the next one, or set `SAFETENSORS = False`.
 
 Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0`, `--hub-private`,
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),

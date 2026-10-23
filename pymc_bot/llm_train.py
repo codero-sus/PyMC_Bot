@@ -24,8 +24,10 @@ vision editions also learn from the screenshots in ``images/`` (recorded by the 
 
 It trains a LoRA adapter with Unsloth (4-bit QLoRA, loss on the replies only), checks the result on
 ``eval.jsonl``, and writes a ready-to-run Ollama model to ``/kaggle/working/<preset>``: ``*.gguf``
-(+ ``mmproj-*.gguf`` for vision) + ``Modelfile`` + ``pymc_model.json`` + a ``README.md`` model card.
-With ``--hub-repo auto`` and the ``HF_TOKEN`` secret it is uploaded to Hugging Face as well.
+(+ ``mmproj-*.gguf`` for vision) + ``Modelfile`` + ``pymc_model.json`` + a ``README.md`` model card, and the
+**safetensors edition** in ``safetensors/`` (the LoRA merged into the base, 16-bit, with its own model card;
+``--safetensors none`` skips it). With ``--hub-repo auto`` and the ``HF_TOKEN`` secret both are uploaded to Hugging
+Face: the GGUF to ``<you>/Minecraftism-4B-GGUF``, the safetensors to ``<you>/Minecraftism-4B``.
 Download the folder and run ``python -m pymc_bot llm import <folder>`` on your PC, or
 ``python -m pymc_bot llm import --hf <user>/<repo>``.
 
@@ -1552,9 +1554,34 @@ def display_name(preset_name: str, preset: dict[str, Any]) -> str:
             + (" Uncensored" if preset.get("uncensored") else ""))
 
 
-def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str) -> str:
-    """README.md for the Hugging Face repo (also written next to the GGUF)."""
-    name = display_name(preset_name, preset)
+SAFETENSORS_DIR = "safetensors"
+
+
+def safetensors_repo(repo: str) -> str:
+    """The safetensors edition's repo next to a GGUF repo: ``you/Minecraftism-4B-GGUF`` -> ``you/Minecraftism-4B``."""
+    owner, _, name = repo.rpartition("/")
+    name = name[:-5] if name.upper().endswith("-GGUF") else f"{name}-safetensors"
+    return f"{owner}/{name}" if owner else name
+
+
+def export_safetensors(model: Any, tokenizer: Any, folder: Path, method: str = "merged_16bit") -> float:
+    """Merge the LoRA into the base and save full ``.safetensors`` weights (+ config, tokenizer / processor).
+
+    Returns the size in GB. Works for both trainers (Unsloth's FastLanguageModel and FastVisionModel)."""
+    folder = Path(folder)
+    shutil.rmtree(folder, ignore_errors=True)
+    model.save_pretrained_merged(str(folder), tokenizer, save_method=method)
+    weights = sorted(folder.glob("*.safetensors"))
+    if not weights:
+        raise RuntimeError(f"no .safetensors file was written to {folder}")
+    return round(sum(f.stat().st_size for f in weights) / 1e9, 2)
+
+
+def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str, kind: str = "gguf") -> str:
+    """README.md for a Hugging Face repo: the GGUF edition (``kind="gguf"``, also written next to the GGUF) or the
+    merged full-precision safetensors edition (``kind="safetensors"``, written into ``safetensors/``)."""
+    safetensors = kind == "safetensors"
+    name = display_name(preset_name, preset) + (" (safetensors)" if safetensors else "")
     vision, reasoning = bool(preset.get("vision")), bool(preset.get("reasoning"))
     base = preset.get("base_model") or preset["model"]
     quant = str(report.get("quant") or "Q4_K_M").upper()
@@ -1566,6 +1593,16 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     if report.get("mmproj"):
         files.append(f"- `{report['mmproj']}` - the vision projector (needed for pictures)")
     files += ["- `Modelfile` - for `ollama create`", "- `pymc_model.json` - training report PyMC Bot reads on import"]
+    gguf_repo = str(report.get("hub_repo") or repo)
+    st_repo = str(report.get("hub_repo_safetensors") or "")
+    if safetensors:
+        tags = ["safetensors" if tag == "gguf" else tag for tag in tags]
+        gguf_repo = str(report.get("hub_repo") or f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}")
+        files = ["- `model*.safetensors` - the merged weights (LoRA folded into the base, 16-bit)",
+                 "- `config.json`, `generation_config.json` - model config",
+                 "- tokenizer files + `chat_template.jinja` - the chat format it was trained with"]
+        if vision:
+            files.append("- `preprocessor_config.json` / processor files - how pictures are prepared")
     evaluation = report.get("eval") or {}
     eval_lines = ""
     if evaluation:
@@ -1593,6 +1630,9 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     system_text = ("\n## Default system prompt\n\nBuilt into the `Modelfile` (Ollama uses it whenever the app sends no "
                    "system prompt of its own; PyMC Bot sends its own for game turns):\n\n```text\n" + system + "\n```\n"
                    ) if system else ""
+    if system and safetensors:
+        system_text = ("\n## System prompt\n\nThe personality it was trained with. Send it as the `system` message "
+                       "(the GGUF edition has it built into its `Modelfile`):\n\n```text\n" + system + "\n```\n")
     sources = report.get("data") or []
     data_cell = (", ".join(f"[{d['name']}]({d['url']})" for d in sources) if sources else
                  f"PyMC Bot rules + mob database, Minecraft Wiki text, recorded play{' and screenshots' if vision else ''}")
@@ -1610,42 +1650,13 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         data_note = "some training data is not licensed for commercial use (see the table above)"
     llama = (f"llama-server -m {report.get('gguf', 'model.gguf')} --mmproj {report.get('mmproj', 'mmproj.gguf')}"
              if vision else f"llama-server -m {report.get('gguf', 'model.gguf')}")
-    return f"""---
-license: other
-license_name: polyform-noncommercial-1.0.0
-license_link: https://polyformproject.org/licenses/noncommercial/1.0.0/
-base_model: {base}
-tags:
-{chr(10).join('- ' + t for t in tags)}
-language:
-- en
-pipeline_tag: {'image-text-to-text' if vision else 'text-generation'}
-library_name: gguf
----
-
-# {name}
-
-**Minecraftism** is a small model that knows Minecraft and plays it: the brain of
-[PyMC Bot]({PROJECT_URL}), a Minecraft player bot. Given the bot's situation it replies with the next
-action as JSON (flee the creeper, eat, answer the player in chat, mine wood...), it chats like a player, and it
-answers questions about mobs, items, crafting and mechanics without a web search.
-It is also an everyday assistant: questions, writing, code, advice or just a chat.
-{think_text_}{vision_text}{uncensored_text}
-| | |
-|---|---|
-| Edition | {name} (`{preset_name}`) |
-| Base model | [{base}](https://huggingface.co/{base}) (Apache-2.0) |
-| Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
-| Data | {data_cell} |
-| Size | ~{preset.get('gguf_gb')} GB file, ~{preset.get('run_gb')} GB to run |
-{eval_lines}{test_lines}{data_text}{system_text}
-## Files
-
-{chr(10).join(files)}
-
-## Use it
-
-With PyMC Bot (switches the bot to this model with the short Minecraft prompt):
+    size = f"~{preset.get('gguf_gb')} GB file, ~{preset.get('run_gb')} GB to run"
+    formats = ""
+    if st_repo and not safetensors:
+        formats = (f"\nAlso available as full-precision **safetensors** (merged 16-bit, for transformers, vLLM or "
+                   f"further fine-tuning): [{st_repo}](https://huggingface.co/{st_repo})\n")
+    library = "gguf"
+    use = f"""With PyMC Bot (switches the bot to this model with the short Minecraft prompt):
 
 ```bash
 python -m pymc_bot llm import --hf {repo}
@@ -1661,7 +1672,87 @@ With llama.cpp:
 
 ```bash
 {llama}
+```"""
+    if safetensors:
+        library = "transformers"
+        size = f"~{report.get('safetensors_gb') or '8'} GB of 16-bit weights (bf16 / fp16), ~10 GB of GPU memory to run"
+        formats = (f"\nThis repo has the **full-precision safetensors** (the LoRA merged into the base, 16-bit) for "
+                   f"transformers, vLLM, further fine-tuning or your own quantisation. For Ollama, llama.cpp, LM Studio "
+                   f"and PyMC Bot use the **GGUF** edition: [{gguf_repo}](https://huggingface.co/{gguf_repo})\n")
+        if vision:
+            code = f"""from transformers import AutoModelForImageTextToText, AutoProcessor
+
+processor = AutoProcessor.from_pretrained("{repo}")
+model = AutoModelForImageTextToText.from_pretrained("{repo}", torch_dtype="auto", device_map="auto")
+messages = [{{"role": "user", "content": [{{"type": "image", "url": "screenshot.png"}},
+                                         {{"type": "text", "text": "What do you see in this Minecraft screenshot?"}}]}}]
+inputs = processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=True, return_dict=True,
+                                       return_tensors="pt").to(model.device)
+output = model.generate(**inputs, max_new_tokens=400)
+print(processor.decode(output[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True))"""
+        else:
+            code = f"""from transformers import AutoModelForCausalLM, AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("{repo}")
+model = AutoModelForCausalLM.from_pretrained("{repo}", torch_dtype="auto", device_map="auto")
+messages = [{{"role": "user", "content": "How do I find diamonds fast?"}}]
+inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(model.device)
+output = model.generate(inputs, max_new_tokens=400)
+reply = tokenizer.decode(output[0][inputs.shape[-1]:], skip_special_tokens=True)
+print(reply)"""
+        use = f"""With transformers:
+
+```python
+{code}
 ```
+
+With vLLM (an OpenAI-compatible server):
+
+```bash
+vllm serve {repo}
+```
+
+With PyMC Bot / Ollama, use the GGUF edition:
+
+```bash
+python -m pymc_bot llm import --hf {gguf_repo}
+```"""
+    return f"""---
+license: other
+license_name: polyform-noncommercial-1.0.0
+license_link: https://polyformproject.org/licenses/noncommercial/1.0.0/
+base_model: {base}
+tags:
+{chr(10).join('- ' + t for t in tags)}
+language:
+- en
+pipeline_tag: {'image-text-to-text' if vision else 'text-generation'}
+library_name: {library}
+---
+
+# {name}
+
+**Minecraftism** is a small model that knows Minecraft and plays it: the brain of
+[PyMC Bot]({PROJECT_URL}), a Minecraft player bot. Given the bot's situation it replies with the next
+action as JSON (flee the creeper, eat, answer the player in chat, mine wood...), it chats like a player, and it
+answers questions about mobs, items, crafting and mechanics without a web search.
+It is also an everyday assistant: questions, writing, code, advice or just a chat.
+{think_text_}{vision_text}{uncensored_text}{formats}
+| | |
+|---|---|
+| Edition | {name} (`{preset_name}`) |
+| Base model | [{base}](https://huggingface.co/{base}) (Apache-2.0) |
+| Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
+| Data | {data_cell} |
+| Size | {size} |
+{eval_lines}{test_lines}{data_text}{system_text}
+## Files
+
+{chr(10).join(files)}
+
+## Use it
+
+{use}
 
 ## License and credits
 
@@ -1670,6 +1761,18 @@ With llama.cpp:
   {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.
 - Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
 """
+
+
+def write_cards(out: Path, preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str) -> None:
+    """pymc_model.json + README.md for the GGUF edition, and the safetensors edition's own README.md."""
+    out = Path(out)
+    (out / "pymc_model.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    (out / "README.md").write_text(model_card(preset_name, preset, report, repo), encoding="utf-8")
+    folder = out / SAFETENSORS_DIR
+    if report.get("safetensors") and folder.is_dir():
+        st_repo = report.get("hub_repo_safetensors") or safetensors_repo(repo)
+        (folder / "README.md").write_text(model_card(preset_name, preset, report, st_repo, kind="safetensors"),
+                                          encoding="utf-8")
 
 
 def resolve_repo(repo: str, preset: dict[str, Any], whoami: Any = None) -> str:
@@ -1704,9 +1807,20 @@ def publish(out: Path, repo: str, preset_name: str, token: str, private: bool = 
     repo = resolve_repo(repo, PRESETS[preset_name], api.whoami)
     write_ollama_params(out, PRESETS[preset_name])
     api.create_repo(repo, repo_type="model", private=private, exist_ok=True)
-    ignore = ["checkpoints/*", "*.lock"] + ([] if include_lora else ["lora/*"])
+    ignore = ["checkpoints/*", "*.lock", f"{SAFETENSORS_DIR}/*"] + ([] if include_lora else ["lora/*"])
     api.upload_folder(repo_id=repo, folder_path=str(out), repo_type="model", ignore_patterns=ignore,
                       commit_message=f"{display_name(preset_name, PRESETS[preset_name])} from PyMC Bot")
+    return repo
+
+
+def publish_safetensors(folder: Path, repo: str, preset_name: str, token: str, private: bool = False) -> str:
+    """Upload the merged safetensors edition (``<out>/safetensors``, with its own model card) to its own repo."""
+    from huggingface_hub import HfApi
+
+    api = HfApi(token=token)
+    api.create_repo(repo, repo_type="model", private=private, exist_ok=True)
+    api.upload_folder(repo_id=repo, folder_path=str(folder), repo_type="model", ignore_patterns=["*.lock"],
+                      commit_message=f"{display_name(preset_name, PRESETS[preset_name])} (safetensors) from PyMC Bot")
     return repo
 
 
@@ -1945,13 +2059,21 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
             if preset.get("vision") and picture is not None:
                 prompts.append("What do you see in this Minecraft screenshot?")
             report["gguf_test"] = test_gguf(out, preset, prompts, picture)
+    if getattr(args, "safetensors", "none") != "none":
+        print("saving the safetensors edition (LoRA merged into the base, 16-bit) - a few minutes")
+        try:
+            report["safetensors_gb"] = export_safetensors(model, tokenizer, out / SAFETENSORS_DIR)
+            report["safetensors"] = SAFETENSORS_DIR
+            print(f"safetensors: {report['safetensors_gb']} GB in {out / SAFETENSORS_DIR}")
+        except Exception as exc:  # the GGUF and the adapter are already safe
+            print(f"safetensors export failed ({type(exc).__name__}: {exc}) - the GGUF and the LoRA adapter are fine")
+            shutil.rmtree(out / SAFETENSORS_DIR, ignore_errors=True)
     shutil.rmtree(out / "checkpoints", ignore_errors=True)
     report.update({"family": preset["family"], "compact_tag": COMPACT_TAG, "compact_prompt": True,
                    "run_parameters": preset.get("run_parameters") or RUN_PARAMETERS,
                    "minutes": round((time.time() - started) / 60, 1), "created": time.strftime("%Y-%m-%d %H:%M:%S")})
     repo = args.hub_repo if args.hub_repo and "/" in args.hub_repo else f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}"
-    (out / "pymc_model.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    (out / "README.md").write_text(model_card(args.preset, preset, report, repo), encoding="utf-8")
+    write_cards(out, args.preset, preset, report, repo)
     if args.hub_repo:
         token = os.environ.get("HF_TOKEN")
         if not token:
@@ -1962,12 +2084,24 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
 
                 full = resolve_repo(args.hub_repo, preset, HfApi(token=token).whoami)
                 report["hub_repo"] = full
-                (out / "pymc_model.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-                (out / "README.md").write_text(model_card(args.preset, preset, report, full), encoding="utf-8")
+                if report.get("safetensors"):
+                    report["hub_repo_safetensors"] = safetensors_repo(full)
+                write_cards(out, args.preset, preset, report, full)
                 publish(out, full, args.preset, token, private=args.hub_private, include_lora=args.hub_lora)
-                print(f"uploaded -> https://huggingface.co/{full}")
+                print(f"uploaded the GGUF edition -> https://huggingface.co/{full}")
             except Exception as exc:  # never lose a finished model to an upload problem
+                report.pop("hub_repo", None)
                 print(f"Hugging Face upload failed ({type(exc).__name__}: {exc}) - the files are still in {out}")
+            if report.get("hub_repo") and report.get("hub_repo_safetensors"):
+                st_repo = report["hub_repo_safetensors"]
+                try:
+                    publish_safetensors(out / SAFETENSORS_DIR, st_repo, args.preset, token, private=args.hub_private)
+                    report["safetensors_uploaded"] = True
+                    print(f"uploaded the safetensors edition -> https://huggingface.co/{st_repo}")
+                except Exception as exc:  # the GGUF repo is already up; keep the folder for another try
+                    print(f"safetensors upload failed ({type(exc).__name__}: {exc}) - the files are still in "
+                          f"{out / SAFETENSORS_DIR}")
+            write_cards(out, args.preset, preset, report, report.get("hub_repo") or repo)
     shutil.rmtree(out / "stream_images", ignore_errors=True)  # streamed training pictures are not needed any more
     print(f"done -> {out}  (download it, then: python -m pymc_bot llm import <folder>)")
     return 0
@@ -1989,6 +2123,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--eval-limit", type=int, default=150, help="eval rows to try after training (0 = skip)")
     parser.add_argument("--gguf", default="q4_k_m", help="GGUF quantisation (q4_k_m, q5_k_m, q8_0) or 'none'")
+    parser.add_argument("--safetensors", choices=("16bit", "none"), default="16bit",
+                        help="also save (and with --hub-repo upload, to <repo without -GGUF>) the full-precision "
+                             "safetensors edition: the LoRA merged into the base in 16-bit (~8 GB for 4B)")
     parser.add_argument("--split", action="store_true", help="spread the model over both GPUs (only needed for 14B)")
     parser.add_argument("--hub-repo", help="upload to Hugging Face (needs HF_TOKEN): 'auto' = <you>/<edition repo>, "
                                            "a repo name, or user/repo")
@@ -2128,6 +2265,9 @@ def main(argv: list[str] | None = None) -> int:
     if preset.get("reasoning"):
         with_trace = sum(1 for row in rows if row.get("reasoning"))
         print(f"thinking edition: {with_trace}/{len(rows)} rows have a reasoning trace")
+    editions = ([f"GGUF {args.gguf.upper()}"] if args.gguf != "none" else []) + (
+        ["safetensors 16-bit"] if args.safetensors != "none" else [])
+    print(f"exports: {', '.join(editions) or 'only the LoRA adapter'}")
     if args.dry_run:
         sample = prepare_messages(rows[0], preset)[-1]["content"]
         print("dry run: data is fine. Sample reply:", sample[:400])
