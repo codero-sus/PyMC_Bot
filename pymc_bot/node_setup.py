@@ -806,10 +806,16 @@ def newest_bundle(repo: str = GITHUB_REPO) -> tuple[str, str, str | None]:
 
 
 def install_bundle(target: Path, *, repo: str = GITHUB_REPO, log: Log = _print,
-                   source: tuple[str, str, str | None] | None = None) -> int:
-    tag, url, sums_url = source or newest_bundle(repo)
-    log(f"Downloading the prebuilt Minecraft bridge from the {tag} release ...")
-    data = http_get(url, timeout=300)
+                   source: tuple[str, str, str | None] | None = None, archive: Path | None = None) -> int:
+    """Unpack the prebuilt ``pymc-bot-node-modules.zip`` - downloaded, or ``archive`` saved by hand (offline)."""
+    if archive is not None:
+        log(f"Unpacking the Minecraft bridge from {archive} ...")
+        data = Path(archive).read_bytes()
+        sums_url = None
+    else:
+        tag, url, sums_url = source or newest_bundle(repo)
+        log(f"Downloading the prebuilt Minecraft bridge from the {tag} release ...")
+        data = http_get(url, timeout=300)
     if sums_url:
         sums = http_get(sums_url).decode("utf-8", "replace")
         expected = next((ln.split()[0] for ln in sums.splitlines() if ln.split()[-1:] == [BUNDLE_ASSET]), None)
@@ -866,9 +872,15 @@ def install_npm(target: Path, *, log: Log = _print) -> int:
     return 0
 
 
-def install_bridge(method: str = "auto", target: Path | None = None, *, slim: bool = True, log: Log = _print) -> str:
-    """Install mineflayer with ``method``; ``auto`` tries python, then the release bundle, then npm."""
+def install_bridge(method: str = "auto", target: Path | None = None, *, slim: bool = True, log: Log = _print,
+                   archive: Path | None = None) -> str:
+    """Install mineflayer with ``method``; ``auto`` tries python, then the release bundle, then npm.
+
+    ``archive``: a ``pymc-bot-node-modules.zip`` already on disk (no internet needed at all).
+    """
     target = Path(target) if target else default_target()
+    if archive is not None:
+        method = "bundle"
     order = {"auto": ("python", "bundle", "npm")}.get(method, (method,))
     errors: list[str] = []
     for name in order:
@@ -879,7 +891,7 @@ def install_bridge(method: str = "auto", target: Path | None = None, *, slim: bo
             if name == "python":
                 install_python(target, slim=slim, log=log)
             elif name == "bundle":
-                install_bundle(target, log=log)
+                install_bundle(target, log=log, archive=archive)
             elif name == "npm":
                 install_npm(target, log=log)
             else:
@@ -894,7 +906,7 @@ def install_bridge(method: str = "auto", target: Path | None = None, *, slim: bo
 
 
 def setup(method: str = "auto", *, target: Path | None = None, node: str = "auto", slim: bool = True,
-          force: bool = False, log: Log = _print) -> dict[str, Any]:
+          force: bool = False, log: Log = _print, archive: Path | None = None) -> dict[str, Any]:
     """Everything the real-server backend needs. ``node``: auto (download if missing), download, skip."""
     report: dict[str, Any] = {}
     have = find_node(MIN_NODE_MAJOR)
@@ -909,12 +921,12 @@ def setup(method: str = "auto", *, target: Path | None = None, node: str = "auto
         elif node == "skip":
             log("Node.js not found (skipped - the bridge needs Node.js 22+ to run)")
     status = bridge_status()
-    if status["mineflayer"] and status["current"] and not force:
+    if status["mineflayer"] and status["current"] and not force and archive is None:
         log(f"mineflayer {status['mineflayer_version'] or ''} already installed: {status['mineflayer']}")
         report["mineflayer"] = status["mineflayer"]
         report["method"] = "already installed"
     else:
-        report["method"] = install_bridge(method, target, slim=slim, log=log)
+        report["method"] = install_bridge(method, target, slim=slim, log=log, archive=archive)
         report["mineflayer"] = str((Path(target) if target else default_target()) / "node_modules")
     report["ready"] = bool(report.get("node")) and bool(report.get("mineflayer"))
     return report
@@ -959,6 +971,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--full", action="store_true", help="keep minecraft-data's Bedrock files (+330 MB, not needed)")
     parser.add_argument("--force", action="store_true", help="reinstall even when everything is current")
     parser.add_argument("--check", action="store_true", help="only show what is installed")
+    parser.add_argument("--zip", metavar="ZIP", dest="archive", default=None,
+                        help=f"install from a {BUNDLE_ASSET} you downloaded yourself (works offline)")
     parser.add_argument("--bundle", metavar="ZIP", help="(CI) build the node_modules release zip and exit")
 
 
@@ -976,8 +990,9 @@ def run(args: argparse.Namespace, log: Log = _print) -> int:
         return 0 if status["ready"] else 1
     try:
         report = setup(args.method, target=Path(args.target) if args.target else None, node=args.node,
-                       slim=not args.full, force=args.force, log=log)
-    except SetupError as exc:
+                       slim=not args.full, force=args.force, log=log,
+                       archive=Path(args.archive) if getattr(args, "archive", None) else None)
+    except (SetupError, OSError) as exc:
         log(f"setup failed: {exc}")
         return 1
     log("The Minecraft bridge is ready - pick backend 'node' (or auto) in the panel." if report["ready"]
