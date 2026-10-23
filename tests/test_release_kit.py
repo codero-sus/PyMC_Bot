@@ -21,7 +21,7 @@ import release_notes  # noqa: E402
 def test_offline_kit_has_every_file(tmp_path):
     out = tmp_path / "kit"
     assert release_kit.main(["--out", str(out), "--work", str(tmp_path / "work"), "--no-wiki", "--no-wheel",
-                             "--turns", "40"]) == 0
+                             "--no-node-bundle", "--turns", "40"]) == 0
     names = {p.name for p in out.iterdir()}
     assert {"updater.py", "updater.sh", "updater.cmd", "PyMC_Bot-source.zip", "pymc-minecraft-llm-kit.zip",
             "PyMC_Minecraft_LLM_Kaggle.ipynb", "train_minecraft_llm.py"} <= names

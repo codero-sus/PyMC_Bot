@@ -42,8 +42,20 @@ jobs:
           node --check pymc_bot/web/app.js
           node --check tests/fixtures/fake_bridge.js
           node scripts/check_ui.mjs
-      - name: Verify package.json resolves (mineflayer + pathfinder)
-        run: npm install --no-audit --no-fund --ignore-scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mineflayer WITHOUT npm (python installer, sha512-checked, same tree as npm)
+        run: python3 pymc_bot/node_setup.py --method python --node skip
+      - name: The npm-free install loads in node, and a portable Node.js can be fetched when node is missing
+        run: |
+          node -e "require('mineflayer'); require('mineflayer-pathfinder'); console.log('mineflayer loads without npm')"
+          PYMC_BOT_RUNTIME="$RUNNER_TEMP/rt" python3 pymc_bot/node_setup.py --target "$RUNNER_TEMP/rt" --node download
+          PYMC_BOT_RUNTIME="$RUNNER_TEMP/rt" python3 pymc_bot/node_setup.py --check
+      - name: Verify package.json also resolves with npm (the classic way keeps working)
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm" && cp package.json "$RUNNER_TEMP/npm/"
+          cd "$RUNNER_TEMP/npm" && npm install --no-audit --no-fund --ignore-scripts
       - name: Bridge joins a server that is newer than mineflayer, and spots sleeping Aternos-style servers
         run: |
           node scripts/check_version_fallback.mjs

@@ -89,6 +89,35 @@ public final class PlaytimeConfig {
     public boolean showHud = true;
     /** Where the badge is drawn: one of {@link #HUD_CORNERS}. */
     public String hudCorner = "top_left";
+    /** The PyMC Bot control panel the {@code /pymcbot bot ...} commands talk to. */
+    public static final String DEFAULT_PANEL_URL = "http://127.0.0.1:8000";
+    public String panelUrl = DEFAULT_PANEL_URL;
+
+    /** Accepts http(s)://host[:port] (a trailing slash is dropped); anything else keeps {@code fallback}. */
+    public static String panelProp(String raw, String fallback) {
+        if (raw == null) {
+            return fallback;
+        }
+        String url = raw.trim();
+        while (url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        if (!url.matches("(?i)https?://[A-Za-z0-9.\\-\\[\\]:]+(/[A-Za-z0-9._~/\\-]*)?")) {
+            return fallback;
+        }
+        return url;
+    }
+
+    /** Points the {@code /pymcbot bot} commands at another panel; false when the URL is not http(s). */
+    public boolean setPanelUrl(String raw) {
+        String url = panelProp(raw, null);
+        if (url == null) {
+            return false;
+        }
+        panelUrl = url;
+        save();
+        return true;
+    }
 
     public static PlaytimeConfig get() {
         return INSTANCE;
@@ -126,6 +155,7 @@ public final class PlaytimeConfig {
                 cfg.hudCorner = cornerProp(props.getProperty("hudCorner"), cfg.hudCorner);
                 cfg.minEpisodeSeconds = intProp(props, "minEpisodeSeconds", cfg.minEpisodeSeconds, 0, 3600);
                 cfg.idleKeepPercent = intProp(props, "idleKeepPercent", cfg.idleKeepPercent, 0, 100);
+                cfg.panelUrl = panelProp(props.getProperty("panelUrl"), cfg.panelUrl);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
             }
@@ -162,6 +192,7 @@ public final class PlaytimeConfig {
         props.setProperty("hudCorner", hudCorner);
         props.setProperty("minEpisodeSeconds", Integer.toString(minEpisodeSeconds));
         props.setProperty("idleKeepPercent", Integer.toString(idleKeepPercent));
+        props.setProperty("panelUrl", panelUrl);
         props.setProperty("_comment", "PyMC Bot - edit on the settings page (/pymcbot settings); sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());

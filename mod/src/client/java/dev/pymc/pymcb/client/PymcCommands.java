@@ -3,12 +3,15 @@ package dev.pymc.pymcb.client;
 import java.util.Locale;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import dev.pymc.pymcb.Json;
 import dev.pymc.pymcb.PlaytimeConfig;
 import dev.pymc.pymcb.PymcPlaytimeMod;
 import dev.pymc.pymcb.client.compat.Mc;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
 /**
@@ -34,6 +37,15 @@ import net.minecraft.network.chat.Component;
  * /pymcbot train                   print the exact command to train on this dataset
  * /pymcbot version                 mod, Minecraft and compatibility layer versions
  * /pymcbot about                   author, links and credits
+ *
+ * /pymcbot bot status | list        the PyMC Bot panel's bots (python -m pymc_bot must be running)
+ * /pymcbot bot skills               the 44 skills
+ * /pymcbot bot do &lt;skill&gt; [k=v ..]  run a skill, e.g. /pymcbot bot do chop_tree count=12
+ * /pymcbot bot come | follow | stop | home
+ * /pymcbot bot say &lt;text&gt;
+ * /pymcbot bot auto on|off          the autopilot (auto-sleep, eat, fight back, torches...)
+ * /pymcbot bot ai start|stop
+ * /pymcbot bot panel [url]          which panel to talk to (default http://127.0.0.1:8000)
  * </pre>
  *
  * <p>Every command that changes what gets recorded requires an <em>attended</em> run on
@@ -205,6 +217,8 @@ public final class PymcCommands {
                             "HUD badge " + (PlaytimeConfig.get().showHud ? "on" : "off") + ", "
                                     + PlaytimeConfig.cornerLabel(PlaytimeConfig.get().hudCorner).toLowerCase(Locale.ROOT) + " corner")));
 
+            LiteralArgumentBuilder<FabricClientCommandSource> bot = botCommands();
+
             for (String root : ROOTS) {
                 dispatcher.register(literal(root)
                         .executes(ctx -> feedback(ctx.getSource(), help()))
@@ -222,6 +236,7 @@ public final class PymcCommands {
                         .then(idle)
                         .then(notify)
                         .then(hud)
+                        .then(bot)
                         .then(guarded("settings").executes(ctx -> {
                             PymcPlaytimeClient.openSettings();
                             return 1;
@@ -240,13 +255,132 @@ public final class PymcCommands {
         });
     }
 
+    /** {@code /pymcbot bot ...}: drive the PyMC Bot panel's bots from inside the game (see {@link BotLink}). */
+    private static LiteralArgumentBuilder<FabricClientCommandSource> botCommands() {
+        LiteralArgumentBuilder<FabricClientCommandSource> doSkill = guarded("do")
+                .then(Mc.argument("skill", StringArgumentType.word())
+                        .executes(ctx -> skill(StringArgumentType.getString(ctx, "skill"), "{}"))
+                        .then(Mc.argument("options", StringArgumentType.greedyString())
+                                .executes(ctx -> skill(StringArgumentType.getString(ctx, "skill"),
+                                        BotLink.options(StringArgumentType.getString(ctx, "options"))))));
+
+        LiteralArgumentBuilder<FabricClientCommandSource> auto = literal("auto")
+                .executes(ctx -> autopilotStatus())
+                .then(literal("status").executes(ctx -> autopilotStatus()))
+                .then(guarded("on").executes(ctx -> autopilot(true)))
+                .then(guarded("off").executes(ctx -> autopilot(false)));
+
+        LiteralArgumentBuilder<FabricClientCommandSource> ai = literal("ai")
+                .then(guarded("start").executes(ctx -> {
+                    BotLink.post("/api/ai/start", "{}", doc -> "AI started");
+                    return 1;
+                }))
+                .then(guarded("stop").executes(ctx -> {
+                    BotLink.post("/api/ai/stop", "{}", doc -> "AI stopped");
+                    return 1;
+                }));
+
+        LiteralArgumentBuilder<FabricClientCommandSource> panel = literal("panel")
+                .executes(ctx -> feedback(ctx.getSource(), "talking to the PyMC Bot panel at " + BotLink.panel()
+                        + "\nchange it with /pymcbot bot panel http://<pc>:8000 (start the panel with --host 0.0.0.0)"))
+                .then(guarded("reset").executes(ctx -> {
+                    PlaytimeConfig.get().setPanelUrl(PlaytimeConfig.DEFAULT_PANEL_URL);
+                    return feedback(ctx.getSource(), "panel: " + BotLink.panel());
+                }))
+                .then(Mc.argument("url", StringArgumentType.greedyString()).requires(Mc::attended)
+                        .executes(ctx -> {
+                            String url = StringArgumentType.getString(ctx, "url");
+                            return feedback(ctx.getSource(), PlaytimeConfig.get().setPanelUrl(url)
+                                    ? "panel: " + BotLink.panel() + " - try /pymcbot bot status"
+                                    : "not a panel address: " + url + " (example: http://192.168.1.20:8000)");
+                        }));
+
+        return literal("bot")
+                .executes(ctx -> feedback(ctx.getSource(), botHelp()))
+                .then(literal("help").executes(ctx -> feedback(ctx.getSource(), botHelp())))
+                .then(literal("status").executes(ctx -> {
+                    BotLink.get("/api/status", BotLink::describeStatus);
+                    return 1;
+                }))
+                .then(literal("list").executes(ctx -> {
+                    BotLink.get("/api/fleet/status", BotLink::describeFleet);
+                    return 1;
+                }))
+                .then(literal("skills").executes(ctx -> {
+                    BotLink.get("/api/skills", BotLink::describeSkills);
+                    return 1;
+                }))
+                .then(doSkill)
+                .then(guarded("come").executes(ctx -> skill("come", "{\"player\":" + BotLink.quote(me()) + "}")))
+                .then(guarded("home").executes(ctx -> skill("go_home", "{}")))
+                .then(guarded("follow").executes(ctx -> action("{\"action\":\"follow\",\"player\":" + BotLink.quote(me()) + "}", "follow")))
+                .then(guarded("stop").executes(ctx -> action("{\"action\":\"stop\"}", "stop")))
+                .then(guarded("say").then(Mc.argument("text", StringArgumentType.greedyString())
+                        .executes(ctx -> {
+                            String text = StringArgumentType.getString(ctx, "text");
+                            BotLink.post("/api/bot/chat", "{\"message\":" + BotLink.quote(text) + "}", doc -> "said: " + text);
+                            return 1;
+                        })))
+                .then(auto)
+                .then(ai)
+                .then(panel);
+    }
+
+    private static int skill(String name, String optionsJson) {
+        BotLink.post("/api/bot/skill", BotLink.skillBody(name, optionsJson), BotLink.describeResult(name));
+        return 1;
+    }
+
+    private static int action(String body, String what) {
+        BotLink.post("/api/bot/action", body, BotLink.describeResult(what));
+        return 1;
+    }
+
+    private static int autopilot(boolean on) {
+        BotLink.put("/api/config", "{\"autopilot\":{\"enabled\":" + on + "}}",
+                doc -> on ? "autopilot ON - the bots eat, sleep at night, fight back, swim up, place torches... on their own"
+                        : "autopilot off - the bots only do what the AI or you tell them");
+        return 1;
+    }
+
+    private static int autopilotStatus() {
+        BotLink.get("/api/autopilot/status", doc -> {
+            StringBuilder sb = new StringBuilder("autopilot " + (Boolean.TRUE.equals(Json.get(doc, "enabled")) ? "on" : "off")
+                    + " · " + Json.text(Json.get(doc, "actions"), "0") + " reflexes so far · idle job "
+                    + Json.text(Json.get(doc, "idle_job"), "none"));
+            Object next = Json.get(doc, "next");
+            if (next != null) {
+                sb.append("\nnext: ").append(Json.text(Json.get(next, "rule"), "?"))
+                        .append(" (").append(Json.text(Json.get(next, "reason"), "")).append(')');
+            }
+            return sb.toString();
+        });
+        return 1;
+    }
+
+    /** The local player's name (for come / follow). */
+    private static String me() {
+        Minecraft client = Minecraft.getInstance();
+        return client.player == null ? "" : client.player.getName().getString();
+    }
+
+    static String botHelp() {
+        return "control the PyMC Bot panel's bots (" + BotLink.panel() + "):\n"
+                + "/pymcbot bot status | list | skills\n"
+                + "/pymcbot bot do <skill> [key=value ...]   e.g. do chop_tree count=12, do mine_ore iron\n"
+                + "/pymcbot bot come | follow | stop | home   /pymcbot bot say <text>\n"
+                + "/pymcbot bot auto on|off   (auto-sleep at night, eat, fight back, torches...)\n"
+                + "/pymcbot bot ai start|stop   /pymcbot bot panel [url]";
+    }
+
     /** Shown by {@code /pymcbot} on its own. */
     static String help() {
         return PymcPlaytimeMod.NAME + " " + PymcPlaytimeMod.modVersion() + " - records your playtime for PyMC Bot\n"
                 + "/pymcbot settings   open the settings page (also: hotkey, Mod Menu)\n"
                 + "/pymcbot record start|stop   /pymcbot pause|resume   /pymcbot export\n"
                 + "/pymcbot screenshots on|off   pictures for the Minecraftism VL model\n"
-                + "/pymcbot status   /pymcbot train   /pymcbot about   (/pymcbot works too)";
+                + "/pymcbot bot ...   drive your PyMC Bot bots from the game (/pymcbot bot help)\n"
+                + "/pymcbot status   /pymcbot train   /pymcbot about   (/pymc works too)";
     }
 
     static String version() {

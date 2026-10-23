@@ -25,6 +25,9 @@ a player model on it, and that model can then play a bot on your server the way 
   every entity in range.
 - 📦 **One-command export** – `/pymcbot export` writes `pymcbot/dataset.jsonl` and
   `/pymcbot train` prints the exact command to train on it.
+- 🎮 **Drive your bots from the game** – `/pymcbot bot come`, `follow`, `do chop_tree`,
+  `do mine_ore iron`, `auto on`… talk to the PyMC Bot app on your PC, so you can play while your
+  bots gather, farm, fish, guard and sleep at night on their own.
 - 🪶 **Lightweight** – no mixins, no server-side part, nothing changes how the game plays.
 
 ## How to use it
@@ -52,6 +55,11 @@ The free Python app that goes with this mod runs bots on offline-mode, premium (
   casually. Pick how it behaves: 😊 Friendly helper, 😎 Chill survivor, 💬 Social butterfly,
   🤝 Loyal companion, 🏗️ Builder, 🧭 Explorer, ⛏️ Miner, 🐣 New player, 🏆 Experienced pro or 🤫 Quiet player.
 - 👥 **Many bots** to fill a server, with anti-AFK movement so none get kicked.
+- 🛠️ **44 skills** – chop trees, mine ores, farm, fish, breed, craft, smelt, use chests, build a
+  shelter, light up caves, guard, hunt, waypoints…
+- 🌙 **Autopilot** – sleeps when night falls, eats, fights back, flees, swims up, puts out fires,
+  equips better gear and places torches, without any AI.
+- 📦 **No npm needed** – `python -m pymc_bot setup` installs everything (even Node.js) in one step.
 
 See the [GitHub page](https://github.com/codero-sus/PyMC_Bot).
 
@@ -64,16 +72,22 @@ See the [GitHub page](https://github.com/codero-sus/PyMC_Bot).
 | `/pymcbot export` | build `pymcbot/dataset.jsonl` from every episode |
 | `/pymcbot settings` | open the settings page |
 | `/pymcbot status` · `train` · `about` | state, the training command, credits |
+| `/pymcbot bot status` · `list` · `skills` | your PyMC Bot bots (the app must be running) |
+| `/pymcbot bot do <skill> [key=value …]` | run a skill, e.g. `do chop_tree count=12` |
+| `/pymcbot bot come` · `follow` · `stop` · `home` · `say <text>` | quick orders |
+| `/pymcbot bot auto on` · `off` | the autopilot (auto-sleep at night, eat, fight back…) |
+| `/pymcbot bot panel <url>` | the app runs on another PC |
 
 `/pymc …` works as a short alias. `/pymcbot help` lists everything (sample rate, advanced mode, HUD
 corner, auto-record, AFK skipping…).
 
 ## Privacy
 
-Everything stays on your computer, in `<game folder>/pymcbot/`. The mod makes **no network
+Everything stays on your computer, in `<game folder>/pymcbot/`. Recording makes **no network
 connections**, sends nothing anywhere and has no server component — it works in single-player and on
 any server, including offline-mode ones. Recordings from versions before 0.7 (folder `pymc-playtime/`)
-are moved to the new folder automatically.
+are moved to the new folder automatically. The only connection the mod ever opens is when you type
+`/pymcbot bot …`: it talks to *your own* PyMC Bot app (`127.0.0.1:8000` unless you change it).
 
 ## Requirements
 

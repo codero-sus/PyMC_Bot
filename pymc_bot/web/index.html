@@ -71,6 +71,8 @@
     <a href="#card-training" data-target="card-training">🎓 Player model</a>
     <a href="#card-world" data-target="card-world">🗺️ Live view</a>
     <a href="#card-controls" data-target="card-controls">🎮 Controls</a>
+    <a href="#card-skills" data-target="card-skills">🛠️ Skills</a>
+    <a href="#card-autopilot" data-target="card-autopilot">🛡️ Autopilot</a>
     <a href="#card-logs" data-target="card-logs">📜 Events</a>
     <a href="#card-advanced" data-target="card-advanced">⚙️ Advanced</a>
   </nav>
@@ -152,6 +154,10 @@
       <p id="hosting-note" class="note"></p>
       <p id="auth-note" class="note"></p>
       <p id="backend-note" class="note"></p>
+      <div class="actions" id="bridge-setup-row">
+        <button id="btn-install-bridge" class="btn" title="Downloads mineflayer straight from the npm registry with Python (checksums verified) and a portable Node.js if needed - npm is not required">⬇ Install mineflayer (no npm)</button>
+        <span id="bridge-setup-note" class="note" aria-live="polite"></span>
+      </div>
     </section>
 
     <!-- -------------------------------------------------------------- fleet -->
@@ -526,6 +532,63 @@
       <p class="note">Actions are the same JSON the AI emits — anything valid there works here.</p>
     </section>
 
+    <!-- -------------------------------------------------------------- skills -->
+    <section class="card" id="card-skills">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🛠️</span>Skills <span id="skill-count" class="tag">—</span></h2>
+        <select id="skill-group" title="Show one group">
+          <option value="all">all groups</option>
+        </select>
+      </header>
+      <p class="note">Bigger jobs a player does: chop a tree, mine ore, farm, craft, smelt, fill a chest, trade,
+        build a shelter, go home… Click one to fill in its options, double-click to run it straight away.
+        The AI can use every skill too (switches in <em>AI brain</em> still apply).</p>
+      <div id="skill-list" class="skill-list" role="list"></div>
+      <div class="inline">
+        <input id="skill-name" type="text" placeholder="skill" list="skill-names" class="skill-name" />
+        <datalist id="skill-names"></datalist>
+        <input id="skill-params" type="text" placeholder='{"count": 8}' />
+        <button id="btn-skill" class="btn primary">Run skill</button>
+      </div>
+      <p id="skill-info" class="note" aria-live="polite"></p>
+    </section>
+
+    <!-- ----------------------------------------------------------- autopilot -->
+    <section class="card" id="card-autopilot">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🛡️</span>Autopilot <span id="autopilot-tag" class="tag">—</span></h2>
+        <label class="check"><input id="ap-enabled" type="checkbox" /> on</label>
+      </header>
+      <p class="note">Reflexes every bot has on its own, so it can be left alone: respawn, swim up for air,
+        put out fire, totem, run at low health, eat, wear better armour, fight back, <strong>sleep at night</strong>,
+        torches in the dark, pick up items, toss junk… Emergencies interrupt; chores wait until the bot is idle.</p>
+      <div id="ap-rules" class="ap-rules"></div>
+      <div class="fields two">
+        <label>Eat below (food) <input id="ap-eat_below" type="number" min="0" max="20" step="1" data-ap="eat_below" /></label>
+        <label>Run away at (health) <input id="ap-flee_health" type="number" min="0" max="20" step="1" data-ap="flee_health" /></label>
+        <label>Totem at (health) <input id="ap-totem_health" type="number" min="0" max="20" step="1" data-ap="totem_health" /></label>
+        <label>Fight mobs within (blocks) <input id="ap-defend_range" type="number" min="1" max="16" step="1" data-ap="defend_range" /></label>
+        <label>Torch at light ≤ <input id="ap-torch_light" type="number" min="0" max="14" step="1" data-ap="torch_light" /></label>
+        <label>Pick up within (blocks) <input id="ap-collect_radius" type="number" min="1" max="16" step="1" data-ap="collect_radius" /></label>
+        <label title="Only while nobody gives orders and the AI is off">Idle job
+          <select id="ap-idle_job" data-ap="idle_job">
+            <option value="none">none</option>
+            <option value="farm">farm (harvest + replant)</option>
+            <option value="fish">fish</option>
+            <option value="chop">chop trees</option>
+            <option value="mine">mine ore</option>
+            <option value="gather_items">pick up items</option>
+          </select>
+        </label>
+        <label>…after idle (s) <input id="ap-idle_after" type="number" min="5" max="3600" step="5" data-ap="idle_after" /></label>
+      </div>
+      <div class="actions">
+        <button id="btn-ap-run" class="btn" title="Do the most urgent reflex for the selected bot now">Do it now</button>
+        <button id="btn-ap-pause" class="btn ghost" title="Pause / resume the autopilot for the selected bot">Pause this bot</button>
+      </div>
+      <p id="autopilot-state" class="note" aria-live="polite"></p>
+    </section>
+
     <!-- ---------------------------------------------------------------- logs -->
     <section class="card span-2" id="card-logs">
       <header>
@@ -569,6 +632,9 @@
           <li><code>POST /api/bot/chat</code> <code>{"message":"hi"}</code></li>
           <li><code>POST /api/bot/action</code> <code>{"action":"wander"}</code> or <code>{"raw":"{...}"}</code></li>
           <li><code>POST /api/ai/start|stop|step</code> — the Ollama decision loop</li>
+          <li><code>GET /api/skills</code> · <code>POST /api/bot/skill</code> <code>{"name":"chop_tree","params":{"count":8}}</code></li>
+          <li><code>GET /api/autopilot/status</code> · <code>POST /api/autopilot/run</code> <code>{"rule":"sleep"}</code></li>
+          <li><code>GET|POST /api/setup/bridge</code> — install mineflayer without npm</li>
           <li><code>WS /ws</code> — live <code>event</code> / <code>status</code> frames</li>
         </ul>
       </details>

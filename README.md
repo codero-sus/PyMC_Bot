@@ -83,7 +83,7 @@ cd PyMC_Bot
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-npm install            # mineflayer bridge (only for real servers, needs Node >= 22)
+python -m pymc_bot setup   # mineflayer bridge for real servers - NO npm needed (see below)
 
 python -m pymc_bot serve          # or: python -m pymc_bot      (serve is the default)
 # -> http://localhost:8000
@@ -95,6 +95,23 @@ In the panel:
    `offline (cracked)`, backend `auto`, then **Save & connect**.
 2. **AI brain** – tick *Let Ollama decide the bot's actions*, pick a model, **Start AI**.
 3. **Manual control** – chat, server commands and single JSON actions that override the AI.
+
+### Installing the Minecraft bridge without npm
+
+Real servers need **mineflayer** (a Node.js library). You do **not** need npm for it - pick whichever is easiest:
+
+| Way | Command | What it does |
+| --- | --- | --- |
+| **Panel button** | *Minecraft server → ⬇ Install mineflayer (no npm)* | runs the installer below in the background; progress shows in the event stream |
+| **Python installer** (default) | `python -m pymc_bot setup` | Python downloads mineflayer and its 90-odd packages straight from the npm registry (sha512 checked, same folder layout as npm, ~10 s) and, if Node.js 22+ is missing, a **portable Node.js** from nodejs.org (checksum checked, no installer, no admin rights) into `~/.pymc_bot/runtime` |
+| **Prebuilt zip** | `python -m pymc_bot setup --method bundle` | downloads `pymc-bot-node-modules.zip` from the newest GitHub release |
+| **Offline** | `python -m pymc_bot setup --zip pymc-bot-node-modules.zip` | the same zip, saved by hand (USB stick, no internet on the PC) |
+| npm (still works) | `npm install` | the classic way, if you already have npm |
+
+`python -m pymc_bot setup --check` shows what is installed; `--node skip` never downloads Node.js; `--full`
+keeps minecraft-data's Bedrock files (+330 MB, the bot doesn't need them). `python -m pymc_bot doctor` and the
+panel both say when the bridge is missing. The updater refreshes mineflayer the same npm-free way whenever
+`package.json` changes.
 
 ### Trying it without a Minecraft server
 
@@ -204,7 +221,7 @@ python updater.py         # anywhere
 | Command | What it does |
 | --- | --- |
 | `updater --check` | shows the new commits / mod release, changes nothing |
-| `updater` | updates PyMC_Bot; reinstalls Python (and npm) packages **only if** `requirements*.txt` / `package.json` changed |
+| `updater` | updates PyMC_Bot; reinstalls Python packages / mineflayer (npm-free, `python -m pymc_bot setup`) **only if** `requirements*.txt` / `package.json` changed |
 | `updater --mod` | also updates the recorder mod in your `.minecraft/mods` folder |
 | `updater --mod-only` | only the mod |
 | `updater --mod-only --mc 1.21.4` | installs the mod for 1.21.4 when it is not there yet |
@@ -429,6 +446,71 @@ follow friends, mine, explore and fidget with the hotbar. The LLM sees a player'
 Permissions (`agent.*`, panel **AI permissions**): `allow_inventory` (on), `allow_mob_fighting` (on) and
 `allow_building` (**off** – placing blocks and right-clicking items, so an AI does not litter a server).
 
+### Skills: 44 bigger jobs
+
+On top of the single actions above, every bot has **44 skills** - jobs that take a while, which the AI (any
+brain), the panel's **Skills** card, the API and the mod's `/pymcbot bot do` command can start:
+
+| Group | Skills |
+| --- | --- |
+| survival | `equip_weapon` `equip_tool` `totem` `shield` `drink` `surface` `extinguish` `respawn` `toss_junk` |
+| gathering | `find_block` `chop_tree` `mine_ore` `gather` |
+| farming | `harvest` (and replant) `plant` `till` `bonemeal` `fish` `shear` `milk` `breed` |
+| crafting & storage | `craft` (places a crafting table when needed) `smelt` `deposit` `withdraw` `chest_contents` `trade` |
+| building | `place_torch` `light_up` `build_shelter` `pillar_up` `activate` (doors, buttons, levers) |
+| moving | `set_home` `go_home` `set_waypoint` `goto_waypoint` `waypoints` `come` `ride` `dismount` |
+| combat | `guard` `hunt` `shoot` (bow) |
+| social | `report` (health, food, place, free slots, what it carries) |
+
+```bash
+curl -sX POST localhost:8000/api/bot/skill -H 'content-type: application/json' \
+     -d '{"name":"chop_tree","params":{"count":12}}'
+curl -s localhost:8000/api/skills | jq '.skills[].name'      # the catalogue with every option
+```
+
+Options are cleaned up for you (`"count":"9999"` becomes the maximum, `"amount"` works for `count`…). Homes and
+waypoints are remembered per server and bot in `pymc_bot_places.json`. The AI switches still apply: building
+skills need `allow_building`, `hunt`/`shoot` never target villagers, pets or golems.
+
+### Autopilot: survival reflexes (auto-sleep and more)
+
+The things a player does without thinking - every bot (main one and fleet) does them **on its own**, so it
+can be left alone on a server. Checked every 2 s, most urgent first:
+
+| Rule | Default | What happens |
+| --- | --- | --- |
+| respawn ⚡ | on | clicks respawn after dying |
+| surface ⚡ | on | swims up when the air bar drops below 8 |
+| extinguish ⚡ | on | water bucket (and picks the water back up) or jumps into nearby water |
+| totem ⚡ | on | totem of undying to the off-hand at ≤ 10 health |
+| flee ⚡ | on | runs from mobs at ≤ 6 health, backs off from creepers closer than 5 blocks |
+| eat ⚡ | on | eats at ≤ 14 food (while busy only when nearly starving) |
+| armor | on | puts on better armour as soon as it is picked up |
+| weapon | on | takes the best weapon out when a mob comes close |
+| defend | on | fights hostile mobs within 5 blocks (never endermen, piglins, creepers) |
+| **sleep** | on | **goes to bed at night** when no monster is within 8 blocks (overworld only; waits 90 s after a failed try) |
+| shelter | off | no bed at night and monsters around: walls itself in |
+| torch | on | places a torch when standing in the dark underground (block light ≤ 7) |
+| collect | on | picks up items lying within 6 blocks |
+| tidy | on | backpack nearly full: tosses junk, otherwise fills the nearest chest |
+| home | off | walks home (`set_home`) when night falls |
+| idle job | none | while idle and the AI is off: `farm`, `fish`, `chop`, `mine` or `gather_items` |
+
+⚡ = emergency: runs even while the bot is busy (and interrupts walking for air, fire and fleeing). Chores
+wait until the bot is idle. Everything is in the panel's **Autopilot** card (toggles, thresholds, idle job,
+*Do it now*, pause per bot) and in the config:
+
+```jsonc
+"autopilot": {
+  "enabled": true, "auto_sleep": true, "auto_eat": true, "eat_below": 14, "flee_health": 6,
+  "defend_range": 5, "torch_light": 7, "auto_shelter": false, "auto_home": false,
+  "idle_job": "none", "idle_after": 60
+}
+```
+
+API: `GET /api/autopilot/status` (rules, settings, what it would do next) and
+`POST /api/autopilot/run {"rule":"sleep"}` (`{"paused":true}` pauses it for a bot).
+
 ### Minecraft knowledge and web search
 
 Plenty of models don't really know Minecraft: they walk up to creepers, stare at endermen or attack piglins.
@@ -613,6 +695,7 @@ PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and server
 | `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--min-episode S] [--idle-keep PCT] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
 | `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
+| `python -m pymc_bot setup [--method auto\|python\|bundle\|npm] [--zip FILE] [--node auto\|download\|skip] [--check]` | install the Minecraft bridge (mineflayer + a portable Node.js if needed) **without npm** |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |
 | `python -m pymc_bot probe [host[:port]] [--json]` | ping a server without joining: online / asleep / starting, version, players, SRV target, tips for Aternos & co (exit 0 online, 3 asleep, 1 unreachable) |
 | `python -m pymc_bot mob <name> [--version V] [--json]` / `mob --list [--category C] [--dimension D] [--since V]` | the built-in mob database (offline) |
@@ -818,7 +901,7 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 
 | Symptom | Fix |
 | --- | --- |
-| `mineflayer is not installed` | run `npm install` in the project root (Node ≥ 22) |
+| `mineflayer is not installed` | run `python -m pymc_bot setup` (no npm needed; downloads a portable Node.js 22 too if yours is missing or older) - or click **Install mineflayer** in the panel |
 | Bot connects then immediately leaves | check the event stream: wrong version? try an explicit `version` instead of `auto` |
 | `unsupported protocol version` | set the app's version to the server's (e.g. `1.20.4`) |
 | `No data available for version 26.3` / "server runs Minecraft 26.3, but … only supports up to 26.1" | the server is newer than the installed mineflayer (it currently stops at 26.1; 26.2/26.3 support is still being added upstream). The bot now joins as the newest supported version automatically, so either install **ViaVersion + ViaBackwards** on the server, or run the server on 26.1. Once mineflayer releases support, run the updater (or `npm update`) and set Version back to `auto` |

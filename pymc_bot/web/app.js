@@ -714,6 +714,8 @@ function startPolling() {
       renderStatus(status);
       renderFleet(status);
       renderAntiAfk(status.antiafk);
+      renderAutopilot(status.autopilot);
+      renderBridgeSetup(status.bridge_setup);
       renderTraining({ status: { ...(status.training || {}), running: status.training?.running }, brain: status.training?.brain, settings: { dataset: status.training?.dataset } });
       if (status.training?.running) {
         const detail = await api('/api/training/status');
@@ -744,6 +746,8 @@ function connectSocket() {
       renderStatus(frame.data);
       renderFleet(frame.data);
       renderAntiAfk(frame.data.antiafk);
+      renderAutopilot(frame.data.autopilot);
+      renderBridgeSetup(frame.data.bridge_setup);
       if (frame.data.ollama) updateOllamaPill(frame.data.ollama);
       if (frame.data.cortex) updateCortexPill(frame.data.cortex);
       if (frame.data.training) refreshTraining();
@@ -1476,9 +1480,187 @@ async function pullModel() {
   } catch (err) { reportError(err); }
 }
 
+/* ---------------------------------------------------------- skills & autopilot */
+let skillCatalogue = [];
+let autopilotRules = [];
+
+async function loadSkills() {
+  const data = await api('/api/skills');
+  skillCatalogue = data.skills || [];
+  $('skill-count').textContent = `${data.count || skillCatalogue.length}`;
+  const select = $('skill-group');
+  if (select.options.length <= 1) {
+    for (const group of data.groups || []) {
+      const option = document.createElement('option');
+      option.value = group;
+      option.textContent = group;
+      select.appendChild(option);
+    }
+  }
+  const names = $('skill-names');
+  names.innerHTML = '';
+  for (const skill of skillCatalogue) {
+    const option = document.createElement('option');
+    option.value = skill.name;
+    option.label = skill.summary;
+    names.appendChild(option);
+  }
+  renderSkills();
+}
+
+function renderSkills() {
+  const wanted = $('skill-group').value;
+  const list = $('skill-list');
+  list.innerHTML = '';
+  const groups = {};
+  for (const skill of skillCatalogue) {
+    if (wanted !== 'all' && skill.group !== wanted) continue;
+    (groups[skill.group] = groups[skill.group] || []).push(skill);
+  }
+  for (const [group, entries] of Object.entries(groups)) {
+    const box = document.createElement('div');
+    box.className = 'skill-group';
+    box.setAttribute('role', 'listitem');
+    box.innerHTML = `<h4>${esc(group)}</h4><div class="chips"></div>`;
+    const chips = box.querySelector('.chips');
+    for (const skill of entries) {
+      const button = document.createElement('button');
+      button.className = 'btn ghost';
+      button.textContent = skill.name.replace(/_/g, ' ');
+      button.title = `${skill.summary}${skill.permission !== 'none' ? ` · needs ${skill.permission}` : ''}`;
+      button.dataset.skill = skill.name;
+      button.addEventListener('click', () => pickSkill(skill));
+      button.addEventListener('dblclick', () => { pickSkill(skill); runSkill().catch(reportError); });
+      chips.appendChild(button);
+    }
+    list.appendChild(box);
+  }
+}
+
+function pickSkill(skill) {
+  $('skill-name').value = skill.name;
+  const example = { ...(skill.example || {}) };
+  delete example.action;
+  $('skill-params').value = Object.keys(example).length ? JSON.stringify(example) : '';
+  const params = Object.entries(skill.params || {}).map(([k, p]) => `${k} (${p.type}${p.default !== null && p.default !== '' ? `, default ${p.default}` : ''})`);
+  $('skill-info').textContent = `${skill.name}: ${skill.summary}` + (params.length ? ` · options: ${params.join(', ')}` : '');
+  for (const el of document.querySelectorAll('#skill-list .btn')) el.classList.toggle('selected', el.dataset.skill === skill.name);
+}
+
+async function runSkill() {
+  const name = $('skill-name').value.trim();
+  if (!name) return;
+  let params = {};
+  const text = $('skill-params').value.trim();
+  if (text) {
+    try { params = JSON.parse(text); } catch (err) { throw new Error(`options must be JSON, e.g. {"count": 8}: ${err.message}`); }
+  }
+  $('skill-info').textContent = `${name}: working…`;
+  const result = await api('/api/bot/skill', { method: 'POST', body: JSON.stringify({ name, params }) });
+  $('skill-info').textContent = `${name}: ${result.detail}`;
+  appendLog({ level: result.ok ? 'success' : 'warn', source: 'skill', message: `${name}: ${result.detail}`, time: nowTime() });
+}
+
+async function loadAutopilot() {
+  const data = await api('/api/autopilot/status');
+  autopilotRules = data.rules || [];
+  const settings = data.settings || {};
+  $('ap-enabled').checked = Boolean(settings.enabled);
+  const box = $('ap-rules');
+  box.innerHTML = '';
+  for (const rule of autopilotRules) {
+    if (rule.setting === 'idle_job') continue;
+    const label = document.createElement('label');
+    label.className = 'check' + (rule.emergency ? ' emergency' : '');
+    label.title = rule.info;
+    label.innerHTML = `<input type="checkbox" data-ap-flag="${esc(rule.setting)}" ${settings[rule.setting] ? 'checked' : ''} />`
+      + `<span>${esc(rule.name.replace(/_/g, ' '))}</span><span class="count" data-ap-count="${esc(rule.name)}"></span>`;
+    box.appendChild(label);
+  }
+  for (const input of document.querySelectorAll('[data-ap]')) {
+    const value = settings[input.dataset.ap];
+    if (value !== undefined) input.value = value;
+  }
+  renderAutopilot({ enabled: data.enabled, running: data.running, actions: data.actions, bot: null, next: data.next });
+}
+
+async function saveAutopilot(patch) {
+  try {
+    await api('/api/config', { method: 'PUT', body: JSON.stringify({ autopilot: patch }) });
+  } catch (err) {
+    reportError(err);
+    loadAutopilot().catch(() => {});
+  }
+}
+
+function renderAutopilot(state) {
+  if (!state) return;
+  $('autopilot-tag').textContent = state.enabled ? `on · ${state.actions || 0} done` : 'off';
+  const bot = state.bot || {};
+  for (const el of document.querySelectorAll('[data-ap-count]')) {
+    const count = (bot.counts || {})[el.dataset.apCount];
+    el.textContent = count ? `×${count}` : '';
+  }
+  const parts = [];
+  if (!state.enabled) parts.push('Autopilot is off - the bots only do what the AI or you tell them.');
+  if (bot.paused) parts.push('paused for this bot');
+  if (bot.last_rule) parts.push(`last: ${bot.last_rule.replace(/_/g, ' ')} — ${bot.last_message || ''}`);
+  if (state.next) parts.push(`next: ${state.next.rule} (${state.next.reason})`);
+  $('autopilot-state').textContent = parts.join(' · ');
+  $('btn-ap-pause').textContent = bot.paused ? 'Resume this bot' : 'Pause this bot';
+  $('btn-ap-pause').dataset.paused = bot.paused ? '1' : '';
+}
+
+function renderBridgeSetup(setup) {
+  if (!setup) return;
+  const button = $('btn-install-bridge');
+  button.disabled = Boolean(setup.running);
+  button.textContent = setup.running ? '⏳ Installing mineflayer…' : setup.ready ? '⟳ Reinstall mineflayer (no npm)' : '⬇ Install mineflayer (no npm)';
+  $('bridge-setup-note').textContent = setup.running ? 'downloading - progress in the event stream'
+    : setup.ok === false ? `failed: ${setup.message}` : setup.ok ? setup.message : '';
+}
+
+async function installBridge() {
+  const ready = lastStatus && lastStatus.bridge_setup && lastStatus.bridge_setup.ready;
+  await api('/api/setup/bridge', { method: 'POST', body: JSON.stringify({ force: Boolean(ready) }) });
+  renderBridgeSetup({ running: true });
+  ui.toast('Installing mineflayer - no npm needed. Progress shows in the event stream.', 'info', { title: 'Minecraft bridge' });
+}
+
+function wireSkills() {
+  $('skill-group').addEventListener('change', renderSkills);
+  $('btn-skill').addEventListener('click', () => runSkill().catch(reportError));
+  $('skill-params').addEventListener('keydown', (event) => { if (event.key === 'Enter') runSkill().catch(reportError); });
+  $('ap-enabled').addEventListener('change', () => saveAutopilot({ enabled: $('ap-enabled').checked }));
+  $('ap-rules').addEventListener('change', (event) => {
+    const flag = event.target.dataset.apFlag;
+    if (flag) saveAutopilot({ [flag]: event.target.checked });
+  });
+  for (const input of document.querySelectorAll('[data-ap]')) {
+    input.addEventListener('change', () => {
+      const key = input.dataset.ap;
+      saveAutopilot({ [key]: input.tagName === 'SELECT' ? input.value : Number(input.value) });
+    });
+  }
+  $('btn-ap-run').addEventListener('click', async () => {
+    try {
+      const result = await api('/api/autopilot/run', { method: 'POST', body: '{}' });
+      const first = (result.results || [])[0] || {};
+      appendLog({ level: result.ok ? 'success' : 'info', source: 'autopilot',
+        message: first.plan ? `${first.plan.rule}: ${first.detail}` : (first.detail || 'nothing to do'), time: nowTime() });
+    } catch (err) { reportError(err); }
+  });
+  $('btn-ap-pause').addEventListener('click', () => {
+    const paused = !$('btn-ap-pause').dataset.paused;
+    api('/api/autopilot/run', { method: 'POST', body: JSON.stringify({ paused }) }).catch(reportError);
+  });
+  $('btn-install-bridge').addEventListener('click', () => installBridge().catch(reportError));
+}
+
 /* --------------------------------------------------------------------- boot */
 async function boot() {
   wire();
+  wireSkills();
   try { await loadConfig(); } catch (err) { reportError(err); }
   try {
     const logs = await api('/api/logs?limit=120');
@@ -1489,7 +1671,11 @@ async function boot() {
     renderStatus(status);
     renderFleet(status);
     renderAntiAfk(status.antiafk);
+    renderAutopilot(status.autopilot);
+    renderBridgeSetup(status.bridge_setup);
   } catch (err) { reportError(err); }
+  try { await loadSkills(); } catch (err) { reportError(err); }
+  try { await loadAutopilot(); } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   try { updateCortexPill(await api('/api/cortex/health')); } catch (err) { /* ignore */ }
   refreshModels(true);

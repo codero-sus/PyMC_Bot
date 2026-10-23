@@ -750,3 +750,14 @@ svg.i .fill { fill: currentColor; }
 /* web search test output */
 .search-result { white-space: pre-wrap; max-height: 260px; overflow: auto; margin-top: 8px; font-size: 12px; }
 #search-box .inline input { flex: 1; }
+
+/* ------------------------------------------------------------ skills & autopilot */
+.skill-list { display: flex; flex-direction: column; gap: 0.55rem; max-height: 330px; overflow: auto; margin: 0.6rem 0; padding-right: 4px; }
+.skill-group h4 { margin: 0 0 0.3rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.skill-group .chips .btn { font-size: 0.74rem; padding: 4px 9px; }
+.skill-group .btn.selected { border-color: var(--accent); color: var(--accent); }
+.skill-name { max-width: 9.5rem; }
+.ap-rules { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.3rem 0.6rem; margin: 0.6rem 0; }
+.ap-rules .check { font-size: 0.78rem; }
+.ap-rules .check.emergency span::after { content: " ⚡"; font-size: 0.7rem; }
+.ap-rules .check .count { color: var(--muted); font-size: 0.7rem; margin-left: 0.15rem; }
