@@ -31,6 +31,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://the-codero.web.app/"
+Website = "https://codero.is-a.dev"
 Author = "https://github.com/codero-sus"
 Source = "https://github.com/codero-sus/PyMC_Bot"
 Issues = "https://github.com/codero-sus/PyMC_Bot/issues"

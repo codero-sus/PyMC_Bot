@@ -52,7 +52,7 @@ python -m pymc_bot llm build  (guide: docs/MINECRAFT_LLM.md)
 
 Minecraft Wiki text (if included, see dataset_card.json): CC BY-NC-SA 3.0, https://minecraft.wiki
 PyMC Bot: PolyForm Noncommercial 1.0.0 - personal, non-commercial use.
-Made with love by codero-sus - https://github.com/codero-sus - https://the-codero.web.app/
+Made with love by codero-sus - https://github.com/codero-sus - https://codero.is-a.dev - https://the-codero.web.app/
 """
 
 

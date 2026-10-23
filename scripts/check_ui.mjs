@@ -47,7 +47,7 @@ for (const asset of [...html.matchAll(/(?:src|href)="\/static\/([^"]+)"/g)].map(
 }
 
 // 4. credits ------------------------------------------------------------------
-for (const needle of ['https://github.com/codero-sus', 'https://the-codero.web.app/', 'Made with', 'codero-sus']) {
+for (const needle of ['https://github.com/codero-sus', 'https://the-codero.web.app/', 'https://codero.is-a.dev', 'Made with', 'codero-sus']) {
   if (!html.includes(needle)) problems.push(`index.html lost the credit "${needle}"`);
 }
 
