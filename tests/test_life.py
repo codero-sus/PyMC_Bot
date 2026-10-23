@@ -193,5 +193,6 @@ def test_panel_sends_flat_actions(store: ConfigStore, tmp_path):
         reply = client.post("/api/bot/action", json={"action": "select_slot", "slot": 4}).json()
         assert reply["ok"], reply
         assert reply["decision"]["params"] == {"slot": 4}
-        assert client.get("/api/contract").json()["bridge_commands"][-1] == "attack_mob"
+        commands = client.get("/api/contract").json()["bridge_commands"]
+        assert "attack_mob" in commands and "chop_tree" in commands
         client.post("/api/bot/stop")
