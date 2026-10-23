@@ -365,16 +365,21 @@ def sync_versions(
 
 
 def publish_description(project: str, token: str, *, dry_run: bool = False, call: Callable[..., Any] = None) -> int:
-    """Replace only the description (the long text) of the Modrinth page with mod/MODRINTH.md."""
-    body = (MOD / "MODRINTH.md").read_text(encoding="utf-8")
+    """Replace only the page text: the summary (mod/modrinth.json) and the description (mod/MODRINTH.md).
+
+    No versions, jars, links or licence are touched."""
+    settings = project_settings()
+    text = {"description": settings["description"], "body": settings["body"]}
     if dry_run:
-        print(f"would update only the description ({len(body)} chars from mod/MODRINTH.md)")
+        print(f"would update only the summary {text['description']!r} and the description "
+              f"({len(text['body'])} chars from mod/MODRINTH.md)")
         return 0
     if not project or not token:
         print("--project (or MODRINTH_PROJECT) and MODRINTH_TOKEN are required", file=sys.stderr)
         return 2
-    (call or request)("PATCH", f"/project/{project}", token, json.dumps({"body": body}).encode())
-    print(f"updated only the description ({len(body)} chars from mod/MODRINTH.md); versions untouched")
+    (call or request)("PATCH", f"/project/{project}", token, json.dumps(text).encode())
+    print(f"updated only the summary and the description ({len(text['body'])} chars from mod/MODRINTH.md); "
+          "versions untouched")
     return 0
 
 
@@ -391,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--update-project", "--update-page", dest="update_project", action="store_true",
                         help="also set title, summary, description (mod/MODRINTH.md), links and licence from mod/modrinth.json")
     parser.add_argument("--description-only", action="store_true",
-                        help="only replace the project description with mod/MODRINTH.md - no versions, no jars")
+                        help="only replace the summary (mod/modrinth.json) and description (mod/MODRINTH.md) - no versions, no jars")
     parser.add_argument("--dry-run", action="store_true", help="print what would be published; no token or network needed")
     args = parser.parse_args(argv)
     if args.description_only:

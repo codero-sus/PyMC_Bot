@@ -1,7 +1,7 @@
 {
   "_comment": "Project settings pushed to Modrinth by scripts/modrinth_publish.py on every release from main. The long description is mod/MODRINTH.md.",
   "title": "PyMC Bot",
-  "summary": "Record your own Minecraft playtime and train a bot that plays like you. Client-side, private, one jar per version from {first_mc} to {last_mc}.",
+  "summary": "Train a bot that plays like you, then control your PyMC Bot bots in-game: 44 skills, auto-sleep, autopilot. Client-side, private, one jar per version from {first_mc} to {last_mc}.",
   "categories": ["utility"],
   "additional_categories": ["technology"],
   "source_url": "https://github.com/codero-sus/PyMC_Bot",

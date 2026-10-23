@@ -15,7 +15,7 @@ Everything you need to fill in on modrinth.com for **PyMC Bot**. All pictures lo
 | Name | `PyMC Bot` |
 | URL (slug) | `pymcbot` *(`pymc-bot` is already taken)* |
 | Visibility | Public |
-| Summary | `Record your own Minecraft playtime and train a bot that plays like you. Client-side, private, one jar per version from 1.21.1 to 26.3.` |
+| Summary | `Train a bot that plays like you, then control your PyMC Bot bots in-game: 44 skills, auto-sleep, autopilot. Client-side, private, one jar per version from 1.21.1 to 26.3.` |
 
 ## 2. Icon
 

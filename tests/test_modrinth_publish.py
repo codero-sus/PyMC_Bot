@@ -387,7 +387,8 @@ def test_description_only_touches_nothing_but_the_description(monkeypatch, capsy
     monkeypatch.setattr(mp, "request", api)
     assert mp.main(["--project", "pymcbot", "--description-only", "--jars", "/nowhere"]) == 0
     assert api.paths() == [("PATCH", "/project/pymcbot")]  # no version calls at all
-    assert api.calls[0][2] == {"body": (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8")}
+    assert api.calls[0][2] == {"description": mp.project_settings()["description"],
+                               "body": (ROOT / "mod/MODRINTH.md").read_text(encoding="utf-8")}
     assert "versions untouched" in capsys.readouterr().out
 
 
