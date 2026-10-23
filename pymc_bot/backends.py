@@ -24,7 +24,6 @@ import os
 import queue
 import random
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -33,6 +32,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from pymc_bot import node_setup
 from pymc_bot.config import AppSettings, MinecraftSettings
 from pymc_bot.events import EventLog
 from pymc_bot.inventory import (
@@ -44,6 +44,7 @@ from pymc_bot.inventory import (
     short,
     weapon_score,
 )
+from pymc_bot.skills import SKILL_COMMANDS
 
 NODE_DIR = Path(__file__).resolve().parent / "node"
 BRIDGE_SCRIPT = NODE_DIR / "minecraft_bridge.js"
@@ -196,6 +197,7 @@ class BaseBackend(abc.ABC):
     LIFE_COMMANDS: tuple[str, ...] = (
         "select_slot", "move_slot", "equip", "unequip", "swap_hands", "toss", "place", "use_item",
         "eat", "sleep", "wake", "collect", "attack_mob",
+        *SKILL_COMMANDS,  # chop_tree, craft, harvest, deposit... (pymc_bot.skills)
     )
 
     def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
@@ -250,6 +252,15 @@ class SimulatedBackend(BaseBackend):
         self._respawns: list[tuple[float, dict[str, Any]]] = []
         self._ground: list[dict[str, Any]] = [{"name": "oak_log", "count": 1, "x": 2.0, "z": 3.0, "at": 0.0}]
         self._placed: list[dict[str, Any]] = []
+        # survival state the autopilot reacts to (the real bridge reports the same fields)
+        self._oxygen = 20
+        self._on_fire = False
+        self._in_water = False
+        self._dead = False
+        self._riding = ""
+        self._raining = False
+        self._torches: list[tuple[float, float]] = []
+        self._chest: dict[str, int] = {"bread": 4, "cobblestone": 32, "coal": 6}
         self._connected_at: float | None = None
         self._last_error: str | None = None
         self._server = {"host": "", "port": 0, "version": ""}
@@ -440,6 +451,16 @@ class SimulatedBackend(BaseBackend):
         snap["time_of_day"] = "night" if 13000 <= self._world_time < 23000 else "day"
         snap["world_time"] = int(self._world_time)
         snap["sleeping"] = self._sleeping
+        snap["oxygen"] = self._oxygen
+        snap["on_fire"] = self._on_fire
+        snap["in_water"] = self._in_water
+        snap["dead"] = self._dead
+        snap["riding"] = self._riding
+        snap["raining"] = self._raining
+        x, _, z = self._position
+        lit = any(math.dist((x, z), spot) <= 6 for spot in self._torches)
+        snap["block_light"] = 12 if lit else 0
+        snap["sky_light"] = 15
         snap["entities"] = self._entity_list()
         snap["ground_items"] = self._ground_items()
         snap["server"] = dict(self._server)
@@ -622,6 +643,378 @@ class SimulatedBackend(BaseBackend):
         self.log.add(f"Killed a {kind(target)} ({hits} hits).", "success", "sim")
         return {"target": kind(target), "hits": hits, "killed": True}
 
+    # ------------------------------------------------------------- skills (pymc_bot.skills)
+    # Pretend versions of the bridge's skill commands: they change the inventory the way the real
+    # thing would, so the AI, the autopilot and the panel can be tried without a server.
+    SIM_ORES: dict[str, str] = {
+        "coal": "coal", "iron": "raw_iron", "copper": "raw_copper", "gold": "raw_gold", "redstone": "redstone",
+        "lapis": "lapis_lazuli", "diamond": "diamond", "emerald": "emerald", "quartz": "quartz",
+    }
+    SIM_RECIPES: dict[str, tuple[int, dict[str, int]]] = {
+        "stick": (4, {"#planks": 2}),
+        "crafting_table": (1, {"#planks": 4}),
+        "chest": (1, {"#planks": 8}),
+        "torch": (4, {"#coal": 1, "stick": 1}),
+        "wooden_pickaxe": (1, {"#planks": 3, "stick": 2}),
+        "wooden_sword": (1, {"#planks": 2, "stick": 1}),
+        "wooden_axe": (1, {"#planks": 3, "stick": 2}),
+        "stone_pickaxe": (1, {"cobblestone": 3, "stick": 2}),
+        "stone_sword": (1, {"cobblestone": 2, "stick": 1}),
+        "stone_axe": (1, {"cobblestone": 3, "stick": 2}),
+        "iron_pickaxe": (1, {"iron_ingot": 3, "stick": 2}),
+        "iron_sword": (1, {"iron_ingot": 2, "stick": 1}),
+        "furnace": (1, {"cobblestone": 8}),
+        "bread": (1, {"wheat": 3}),
+        "bucket": (1, {"iron_ingot": 3}),
+        "shield": (1, {"#planks": 6, "iron_ingot": 1}),
+        "white_bed": (1, {"white_wool": 3, "#planks": 3}),
+    }
+    SIM_SMELT: dict[str, str] = {
+        "raw_iron": "iron_ingot", "raw_gold": "gold_ingot", "raw_copper": "copper_ingot", "beef": "cooked_beef",
+        "porkchop": "cooked_porkchop", "chicken": "cooked_chicken", "mutton": "cooked_mutton", "cod": "cooked_cod",
+        "salmon": "cooked_salmon", "rabbit": "cooked_rabbit", "potato": "baked_potato", "sand": "glass",
+        "cobblestone": "stone", "oak_log": "charcoal", "kelp": "dried_kelp", "clay_ball": "brick",
+    }
+    SIM_FUELS: dict[str, float] = {"coal": 8, "charcoal": 8, "coal_block": 80, "lava_bucket": 100, "blaze_rod": 12,
+                                   "#planks": 1.5, "#log": 1.5, "stick": 0.5}
+    SIM_BREED_FOOD: dict[str, tuple[str, ...]] = {
+        "cow": ("wheat",), "sheep": ("wheat",), "goat": ("wheat",), "pig": ("carrot", "potato", "beetroot"),
+        "chicken": ("wheat_seeds", "beetroot_seeds", "melon_seeds", "pumpkin_seeds"), "rabbit": ("carrot", "dandelion"),
+    }
+
+    def _has(self, name: str) -> str | None:
+        """First inventory item matching ``name`` (exact, ``#planks`` style tag, or a word)."""
+        for _, stack in self._inv.items():
+            if name.startswith("#") and stack.name.endswith("_" + name[1:]) or stack.name == name.lstrip("#"):
+                return stack.name
+        if name in ("#coal",):
+            return self._has("coal") or self._has("charcoal")
+        return None
+
+    def _tag_count(self, name: str) -> int:
+        if name.startswith("#"):
+            return sum(stack.count for _, stack in self._inv.items()
+                       if stack.name.endswith("_" + name[1:]) or (name == "#coal" and stack.name in ("coal", "charcoal")))
+        return self._inv.count(name)
+
+    def _take(self, name: str, count: int) -> None:
+        left = count
+        for _, stack in list(self._inv.items()):
+            if left <= 0:
+                break
+            if name.startswith("#") and (stack.name.endswith("_" + name[1:]) or (name == "#coal" and stack.name in ("coal", "charcoal"))) \
+                    or stack.name == name:
+                left -= self._inv.remove(stack.name, left)
+        if left > 0:
+            raise InventoryError(f"not enough {name.lstrip('#')}")
+
+    def _give(self, name: str, count: int) -> int:
+        left = self._inv.add(name, count)
+        if left:
+            x, _, z = self._position
+            self._ground.append({"name": name, "count": left, "x": x, "z": z, "at": time.monotonic()})
+        return count - left
+
+    def _need(self, name: str, why: str) -> str:
+        found = self._has(name) or next((s.name for _, s in self._inv.items() if s.name.endswith(name)), None)
+        if not found:
+            raise InventoryError(f"I need {why}")
+        return found
+
+    def _do_drink(self, params: dict[str, Any]) -> dict[str, Any]:
+        wanted = short(params.get("item") or "")
+        names = [wanted] if wanted else ["potion", "milk_bucket", "honey_bottle"]
+        for name in names:
+            item = next((s.name for _, s in self._inv.items() if s.name == name or name in s.name), None)
+            if item:
+                self._inv.remove(item, 1)
+                if item == "milk_bucket":
+                    self._give("bucket", 1)
+                elif item in ("potion", "honey_bottle"):
+                    self._give("glass_bottle", 1)
+                    self._health = min(20.0, self._health + 4.0)
+                return {"drank": item, "message": f"drank {item.replace('_', ' ')}"}
+        raise InventoryError("nothing to drink")
+
+    def _do_surface(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._oxygen, self._in_water = 20, False
+        return {"message": "swam up for air"}
+
+    def _do_extinguish(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not self._on_fire:
+            raise InventoryError("not on fire")
+        self._on_fire = False
+        how = "a water bucket" if self._inv.find("water_bucket") is not None else "the nearest water"
+        return {"message": f"put the fire out with {how}"}
+
+    def _do_respawn(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not self._dead:
+            raise InventoryError("not dead")
+        self._dead, self._health, self._food = False, 20.0, 20.0
+        self._position = [0.5, self.GROUND_Y, 0.5]
+        return {"message": "respawned"}
+
+    def _do_find_block(self, params: dict[str, Any]) -> dict[str, Any]:
+        block = short(params.get("block") or "oak_log")
+        rng = random.Random(block)
+        x, y, z = self._position
+        spot = {"x": math.floor(x + rng.uniform(-20, 20)), "y": int(y) - (rng.randint(5, 40) if "ore" in block else 0),
+                "z": math.floor(z + rng.uniform(-20, 20))}
+        distance = round(math.dist((x, y, z), (spot["x"], spot["y"], spot["z"])), 1)
+        return {"found": [{**spot, "block": block, "distance": distance}],
+                "message": f"{block} at {spot['x']} {spot['y']} {spot['z']} ({distance:.0f} blocks away)"}
+
+    def _mine_into_inventory(self, item: str, count: int, what: str) -> dict[str, Any]:
+        got = self._give(item, count)
+        self.log.add(f"Mined {count} {what}.", "success", "sim")
+        return {"mined": count, "item": item, "message": f"mined {got} {what.replace('_', ' ')}"}
+
+    def _do_chop_tree(self, params: dict[str, Any]) -> dict[str, Any]:
+        logs = min(int(params.get("count") or 16), self._rng.randint(4, 7))
+        return self._mine_into_inventory("oak_log", logs, "oak_log") | {"message": f"chopped a tree: {logs} oak logs"}
+
+    def _do_mine_ore(self, params: dict[str, Any]) -> dict[str, Any]:
+        ore = short(params.get("ore") or "coal").replace("_ore", "").replace("deepslate_", "")
+        item = self.SIM_ORES.get(ore)
+        if item is None:
+            raise InventoryError(f"no {ore} ore around")
+        if ore not in ("coal",) and not any(s.name.endswith("_pickaxe") and not s.name.startswith(("wooden", "golden"))
+                                            for _, s in self._inv.items()):
+            raise InventoryError(f"{ore} ore needs a stone pickaxe or better")
+        count = int(params.get("count") or 4)
+        return self._mine_into_inventory(item, count, f"{ore}_ore")
+
+    def _do_gather(self, params: dict[str, Any]) -> dict[str, Any]:
+        block = short(params.get("block") or "dirt")
+        drops = {"stone": "cobblestone", "grass_block": "dirt", "deepslate": "cobbled_deepslate"}.get(block, block)
+        return self._mine_into_inventory(drops, int(params.get("count") or 8), block)
+
+    def _do_harvest(self, params: dict[str, Any]) -> dict[str, Any]:
+        crops = self._rng.randint(3, 8)
+        self._give("wheat", crops)
+        self._give("wheat_seeds", crops)
+        if params.get("replant", True):
+            self._inv.remove("wheat_seeds", crops)
+        return {"harvested": crops, "mined": crops, "message": f"harvested {crops} wheat" + (" and replanted" if params.get("replant", True) else "")}
+
+    def _do_plant(self, params: dict[str, Any]) -> dict[str, Any]:
+        seeds = ("wheat_seeds", "carrot", "potato", "beetroot_seeds", "melon_seeds", "pumpkin_seeds", "nether_wart")
+        wanted = short(params.get("seed") or "")
+        seed = wanted if wanted and self._inv.count(wanted) else next((s for s in seeds if self._inv.count(s)), None)
+        if not seed:
+            raise InventoryError("no seeds to plant")
+        planted = min(self._inv.count(seed), int(params.get("count") or 16), 9)
+        self._inv.remove(seed, planted)
+        return {"planted": planted, "message": f"planted {planted} {seed.replace('_', ' ')}"}
+
+    def _do_till(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._need("_hoe", "a hoe")
+        count = min(int(params.get("count") or 8), 9)
+        return {"tilled": count, "message": f"tilled {count} blocks of farmland"}
+
+    def _do_bonemeal(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._need("bone_meal", "bone meal")
+        used = min(self._inv.count("bone_meal"), int(params.get("count") or 4))
+        self._inv.remove("bone_meal", used)
+        return {"used": used, "message": f"used {used} bone meal on the crops"}
+
+    def _do_fish(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._need("fishing_rod", "a fishing rod")
+        caught = max(1, int(params.get("seconds") or 60) // 25)
+        self._give("cod", caught)
+        return {"caught": caught, "message": f"caught {caught} fish"}
+
+    def _do_shear(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._need("shears", "shears")
+        self._give("white_wool", 3)
+        return {"sheared": 1, "message": "sheared a sheep: 3 white wool"}
+
+    def _do_milk(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._inv.find("bucket") is None:
+            raise InventoryError("I need an empty bucket")
+        if not any(short(m["type"]) in ("cow", "mooshroom", "goat") for m in self._mobs):
+            raise InventoryError("no cow nearby")
+        self._inv.remove("bucket", 1)
+        self._give("milk_bucket", 1)
+        return {"message": "milked a cow"}
+
+    def _do_breed(self, params: dict[str, Any]) -> dict[str, Any]:
+        animal = short(params.get("animal") or "cow")
+        foods = self.SIM_BREED_FOOD.get(animal)
+        if not foods:
+            raise InventoryError(f"I don't know what {animal}s eat")
+        food = next((f for f in foods if self._inv.count(f) >= 2), None)
+        if food is None:
+            raise InventoryError(f"I need 2 {foods[0]} to breed {animal}s")
+        self._inv.remove(food, 2)
+        return {"fed": 2, "message": f"fed two {animal}s with {food} - a baby is on the way"}
+
+    def _do_craft(self, params: dict[str, Any]) -> dict[str, Any]:
+        item = short(params.get("item") or "")
+        count = max(1, int(params.get("count") or 1))
+        if not item:
+            raise InventoryError("craft what? (item)")
+        if item.endswith("_planks"):
+            wood = item[: -len("_planks")]
+            log_name = next((s.name for _, s in self._inv.items() if s.name in (f"{wood}_log", f"{wood}_stem")), None) \
+                or next((s.name for _, s in self._inv.items() if s.name.endswith(("_log", "_stem"))), None)
+            if log_name is None:
+                raise InventoryError("I need logs to make planks")
+            times = min(math.ceil(count / 4), self._inv.count(log_name))
+            self._inv.remove(log_name, times)
+            made = self._give(item, times * 4)
+            return {"crafted": made, "item": item, "message": f"crafted {made} {item.replace('_', ' ')}"}
+        recipe = self.SIM_RECIPES.get(item)
+        if recipe is None:
+            raise InventoryError(f"no recipe for {item} (in the simulated world)")
+        per, needs = recipe
+        times = math.ceil(count / per)
+        for name, amount in needs.items():
+            if self._tag_count(name) < amount * times:
+                raise InventoryError(f"not enough {name.lstrip('#')} for {item} (need {amount * times})")
+        for name, amount in needs.items():
+            self._take(name, amount * times)
+        made = self._give(item, per * times)
+        return {"crafted": made, "item": item, "message": f"crafted {made} {item.replace('_', ' ')}"}
+
+    def _do_smelt(self, params: dict[str, Any]) -> dict[str, Any]:
+        item = short(params.get("item") or "")
+        if not item:
+            item = next((s.name for _, s in self._inv.items() if s.name in self.SIM_SMELT), "")
+        result = self.SIM_SMELT.get(item)
+        if not item:
+            raise InventoryError("nothing to smelt")
+        if result is None:
+            raise InventoryError(f"{item} cannot be smelted")
+        count = min(self._inv.count(item), int(params.get("count") or 8))
+        if not count:
+            raise InventoryError(f"I have no {item}")
+        fuel = next((f for f in self.SIM_FUELS if self._tag_count(f) and f.lstrip("#") != item), None)
+        if fuel is None:
+            raise InventoryError("no fuel (coal, charcoal, planks or logs)")
+        self._take(fuel, min(self._tag_count(fuel), math.ceil(count / self.SIM_FUELS[fuel])))
+        self._inv.remove(item, count)
+        made = self._give(result, count)
+        return {"smelted": made, "item": result, "message": f"smelted {made} {item.replace('_', ' ')} into {result.replace('_', ' ')}"}
+
+    def _keep(self, name: str) -> bool:
+        from pymc_bot.skills import is_tool
+
+        return is_tool(name) or name in FOODS or name in ("torch", "shield", "totem_of_undying", "bucket", "water_bucket")
+
+    def _do_deposit(self, params: dict[str, Any]) -> dict[str, Any]:
+        wanted = short(params.get("item") or "")
+        stored = 0
+        for index, stack in list(self._inv.items()):
+            if wanted and wanted not in stack.name:
+                continue
+            if not wanted and not params.get("all") and self._keep(stack.name):
+                continue
+            self._chest[stack.name] = self._chest.get(stack.name, 0) + stack.count
+            stored += stack.count
+            self._inv.slots[index] = None
+        if not stored:
+            raise InventoryError("nothing to put away")
+        return {"stored": stored, "message": f"put {stored} items into the chest"}
+
+    def _do_withdraw(self, params: dict[str, Any]) -> dict[str, Any]:
+        wanted = short(params.get("item") or "")
+        name = next((n for n in self._chest if n == wanted), None) or next((n for n in self._chest if wanted in n), None)
+        if not name:
+            raise InventoryError(f"the chest has no {wanted or 'items'}")
+        count = min(self._chest[name], int(params.get("count") or 16))
+        got = self._give(name, count)
+        self._chest[name] -= got
+        if self._chest[name] <= 0:
+            del self._chest[name]
+        return {"took": got, "item": name, "message": f"took {got} {name.replace('_', ' ')} from the chest"}
+
+    def _do_chest_contents(self, params: dict[str, Any]) -> dict[str, Any]:
+        items = [{"name": n, "count": c} for n, c in sorted(self._chest.items())]
+        summary = ", ".join(f"{i['count']} {i['name']}" for i in items) or "nothing"
+        return {"items": items, "message": f"the chest has {summary}"}
+
+    def _do_trade(self, params: dict[str, Any]) -> dict[str, Any]:
+        offers = [{"index": 0, "give": "emerald x1", "get": "bread x6"}, {"index": 1, "give": "wheat x20", "get": "emerald x1"}]
+        index = params.get("index")
+        if index is None:
+            return {"trades": offers, "message": "the villager offers: " + "; ".join(f"#{o['index']} {o['give']} -> {o['get']}" for o in offers)}
+        index = int(index)
+        times = int(params.get("times") or 1)
+        if index == 0:
+            self._take("emerald", times)
+            self._give("bread", 6 * times)
+        elif index == 1:
+            self._take("wheat", 20 * times)
+            self._give("emerald", times)
+        else:
+            raise InventoryError(f"the villager has no offer #{index}")
+        return {"traded": times, "message": f"traded offer #{index} {times} time(s)"}
+
+    def _place_torches(self, count: int) -> int:
+        have = self._inv.count("torch")
+        if not have:
+            raise InventoryError("I have no torches")
+        placed = min(have, count)
+        self._inv.remove("torch", placed)
+        x, y, z = self._position
+        self._torches.extend((x + i, z) for i in range(placed))
+        return placed
+
+    def _do_place_torch(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._place_torches(1)
+        return {"placed_count": 1, "message": "placed a torch"}
+
+    def _do_light_up(self, params: dict[str, Any]) -> dict[str, Any]:
+        placed = self._place_torches(min(int(params.get("count") or 6), 4))
+        return {"placed_count": placed, "message": f"placed {placed} torches on dark spots"}
+
+    def _building_stack(self, wanted: str) -> str:
+        if wanted and self._inv.count(wanted):
+            return wanted
+        index = self._inv.building_block()
+        if index is None:
+            raise InventoryError("I have no blocks to build with")
+        return self._inv.slots[index].name
+
+    def _do_build_shelter(self, params: dict[str, Any]) -> dict[str, Any]:
+        block = self._building_stack(short(params.get("block") or ""))
+        placed = min(17, self._inv.count(block))
+        self._inv.remove(block, placed)
+        whole = placed >= 17
+        return {"placed_count": placed, "complete": whole,
+                "message": f"built a shelter from {placed} {block}" + ("" if whole else " (ran out of blocks - it has gaps)")}
+
+    def _do_pillar_up(self, params: dict[str, Any]) -> dict[str, Any]:
+        block = self._building_stack(short(params.get("block") or ""))
+        height = min(int(params.get("height") or 4), self._inv.count(block))
+        self._inv.remove(block, height)
+        self._position[1] += height
+        return {"placed_count": height, "message": f"towered up {height} blocks"}
+
+    def _do_activate(self, params: dict[str, Any]) -> dict[str, Any]:
+        block = short(params.get("block") or "door")
+        return {"message": f"used the {block.replace('_', ' ')}"}
+
+    def _do_ride(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._riding = "oak_boat"
+        return {"riding": self._riding, "message": "got into an oak boat"}
+
+    def _do_dismount(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not self._riding:
+            raise InventoryError("not riding anything")
+        self._riding = ""
+        return {"message": "got off"}
+
+    def _do_shoot(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._need("bow", "a bow")
+        if not self._inv.count("arrow"):
+            raise InventoryError("I have no arrows")
+        shots = min(int(params.get("shots") or 3), self._inv.count("arrow"))
+        result = self._do_attack_mob({"mob": params.get("mob"), "range": params.get("range") or 24})
+        self._inv.remove("arrow", shots)
+        return {**result, "shots": shots, "kills": 1, "message": f"shot a {result['target']} ({shots} arrows)"}
+
     def _entity_list(self) -> list[dict[str, Any]]:
         """Everything in range, in the same shape the mod and the bridge report it."""
         x, y, z = self._position
@@ -698,16 +1091,32 @@ class SimulatedBackend(BaseBackend):
 # ---------------------------------------------------------------------------
 # node / mineflayer backend
 # ---------------------------------------------------------------------------
+SETUP_HINT = "run `python -m pymc_bot setup` or press Install in the panel (no npm needed)"
+
+
+def node_module_dirs() -> list[Path]:
+    """Where the bridge finds mineflayer: next to it, the working folder, the checkout, ~/.pymc_bot/runtime."""
+    dirs = [NODE_DIR / "node_modules", Path.cwd() / "node_modules"]
+    for path in node_setup.node_modules_dirs():
+        if path not in dirs and path.parent != node_setup.NODE_DIR:
+            dirs.append(path)
+    return dirs
+
+
+def find_node_binary() -> str | None:
+    """``node`` on PATH, or the portable Node.js that ``pymc_bot setup`` downloaded."""
+    return node_setup.find_node()
+
+
 def node_available() -> tuple[bool, str]:
     """Check for node + the mineflayer dependency. Returns (ok, reason)."""
-    node = shutil.which("node")
+    node = find_node_binary()
     if not node:
-        return False, "Node.js was not found on PATH (needed for the real Minecraft protocol)."
+        return False, f"Node.js was not found (needed for the real Minecraft protocol) - {SETUP_HINT}."
     if not BRIDGE_SCRIPT.exists():
         return False, f"Bridge script missing: {BRIDGE_SCRIPT}"
-    search = [NODE_DIR / "node_modules" / "mineflayer", Path.cwd() / "node_modules" / "mineflayer"]
-    if not any(path.exists() for path in search):
-        return False, "mineflayer is not installed. Run `npm install` in the project root."
+    if not any((path / "mineflayer").exists() for path in node_module_dirs()):
+        return False, f"mineflayer is not installed - {SETUP_HINT}."
     return True, "ok"
 
 
@@ -720,7 +1129,7 @@ def mineflayer_versions() -> dict[str, Any] | None:
     Returns ``{"oldest": "1.8.8", "latest": "26.1", "tested": [...]}`` or ``None`` when mineflayer is
     not installed. Shown in the panel and ``doctor`` so a too-new server is obvious before joining.
     """
-    for root in (NODE_DIR / "node_modules", Path.cwd() / "node_modules"):
+    for root in node_module_dirs():
         path = root / "mineflayer" / "lib" / "version.js"
         try:
             text = path.read_text(encoding="utf-8")
@@ -859,7 +1268,7 @@ class NodeBridgeBackend(BaseBackend):
         script: Path | str | None = None,
     ) -> None:
         super().__init__(log)
-        self.node_binary = node_binary or shutil.which("node") or "node"
+        self.node_binary = node_binary or find_node_binary() or "node"
         self.script = Path(script) if script is not None else BRIDGE_SCRIPT
         self._proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
@@ -892,6 +1301,8 @@ class NodeBridgeBackend(BaseBackend):
                 text=True,
                 bufsize=1,
                 cwd=str(Path.cwd()),
+                # mineflayer installed by `pymc_bot setup` into ~/.pymc_bot/runtime is found via NODE_PATH
+                env=node_setup.node_env(),
             )
         except OSError as exc:  # pragma: no cover - depends on environment
             raise BackendError(f"Could not start Node.js: {exc}") from exc
@@ -1267,7 +1678,7 @@ def available_backends() -> dict[str, Any]:
 
 
 def _node_version() -> str | None:
-    binary = shutil.which("node")
+    binary = find_node_binary()
     if not binary:
         return None
     try:

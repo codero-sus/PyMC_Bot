@@ -128,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
     action.add_argument("payload", help='action JSON, e.g. \'{"action":"wander"}\' or {"action":"goto","x":10,"z":4}')
     action.add_argument("--url", default="http://127.0.0.1:8000", help="panel base URL")
 
+    setup = sub.add_parser("setup", help="install the Minecraft bridge (mineflayer) without npm, and Node.js if missing",
+                           aliases=["install-bridge"])
+    from pymc_bot import node_setup
+
+    node_setup.add_arguments(setup)
+
     doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, cortex, config)")
     _add_config_arg(doctor)
 
@@ -515,7 +521,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     mc_range = backends.get("minecraft_versions")
     if mc_range:
         print(f"minecraft   : {mc_range['oldest']} - {mc_range['latest']} (newer servers need ViaVersion + ViaBackwards "
-              "until mineflayer adds them; then run the updater or `npm update`)")
+              "until mineflayer adds them; then run the updater or `python -m pymc_bot setup --force`)")
     print(f"config      : {store.path} {'(exists)' if store.path.exists() else '(will be created)'}")
     if store.load_error:
         print(f"config note : {store.load_error}")
@@ -567,11 +573,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"hosting     : {tip}")
 
     if not node_available()[0]:
-        print("\nTip: install the Minecraft bridge with  npm install  in the project root.")
+        print("\nTip: install the Minecraft bridge with  python -m pymc_bot setup  (no npm needed - it also\n"
+              "     downloads a portable Node.js when node is missing; or press Install in the panel).")
     return 0
 
 
 # ---------------------------------------------------------------------- probe
+def cmd_setup(args: argparse.Namespace) -> int:
+    from pymc_bot import node_setup
+
+    return node_setup.run(args)
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Server list ping: online/asleep, version, players, and tips for free hosts."""
     from pymc_bot.hosting import describe_probe, host_tips, probe_server
@@ -806,6 +819,8 @@ DISPATCH = {
     "models": cmd_models,
     "action": cmd_action,
     "doctor": cmd_doctor,
+    "setup": cmd_setup,
+    "install-bridge": cmd_setup,
     "probe": cmd_probe,
     "search": cmd_search,
     "mob": cmd_mob,

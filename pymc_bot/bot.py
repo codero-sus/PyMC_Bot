@@ -94,6 +94,7 @@ class MinecraftBot:
             "blocks_mined": 0,
             "blocks_placed": 0,
             "mobs_killed": 0,
+            "skills_used": 0,
             "distance_walked": 0.0,
             "started_at": None,
         }
@@ -1220,6 +1221,27 @@ class MinecraftBot:
                 self.look(yaw + random.uniform(-1.4, 1.4), max(-0.6, min(0.6, random.gauss(0.0, 0.25))))
                 time.sleep(random.uniform(0.35, 0.9))
         return True
+
+    # ------------------------------------------------------------------ skills
+    def skill(self, name: str, params: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """Run one of the 44 skills (chop_tree, craft, harvest, go_home... see :mod:`pymc_bot.skills`)."""
+        from pymc_bot import skills
+
+        skill = skills.get(name)
+        if skill is None:
+            return False, f"unknown skill {name!r}"
+        if not self.connected:
+            return False, "not connected"
+        return skills.run_skill(self, skill, params)
+
+    def note_skill(self, name: str, result: dict[str, Any]) -> None:
+        """Keep the stats in step with what a bridge skill reported."""
+        with self._lock:
+            self._stats["skills_used"] += 1
+            self._stats["blocks_mined"] += int(result.get("mined") or 0)
+            self._stats["blocks_placed"] += int(result.get("placed_count") or 0)
+            self._stats["mobs_killed"] += int(result.get("kills") or 0)
+            self._last_skill = name
 
     def reconnect(self) -> None:
         self.stop()

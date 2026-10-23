@@ -441,13 +441,48 @@ def update_dependencies(root: Path, before: dict, force: bool, check: bool) -> N
             if "requirements-dev.txt" in changed and (root / ".venv").exists():
                 say("requirements-dev.txt changed - developers: pip install -r requirements-dev.txt")
     if force or "package.json" in changed:
-        npm = shutil.which("npm")
-        if npm is None:
-            say("package.json changed but npm is not installed - real servers need Node 22+ and `npm install`")
-        else:
-            say("npm install")
-            if subprocess.run([npm, "install", "--no-audit", "--no-fund"], cwd=root).returncode != 0:
-                raise UpdateError("npm install failed - see the messages above")
+        update_bridge(root)
+
+
+def _load_node_setup(root: Path):
+    """The checkout's own pymc_bot/node_setup.py (standard library only), or None for old checkouts."""
+    import importlib.util
+
+    helper = root / "pymc_bot" / "node_setup.py"
+    if not helper.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("pymc_bot_node_setup", helper)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def update_bridge(root: Path) -> None:
+    """Refresh mineflayer after package.json changed - without npm (pymc_bot setup does the work)."""
+    helper = _load_node_setup(root)
+    installed = (root / "node_modules").is_dir()
+    if helper is not None:
+        if not installed:
+            say("package.json changed - the Minecraft bridge is not installed here; for real servers run:")
+            say("  python -m pymc_bot setup   (no npm needed)")
+            return
+        say("updating the Minecraft bridge (mineflayer) - no npm needed")
+        try:
+            method = helper.install_bridge("auto", root, log=lambda line: say("  " + line.strip()))
+        except (helper.SetupError, OSError) as exc:
+            raise UpdateError(f"could not update mineflayer: {exc} - try again later or run: python -m pymc_bot setup") from exc
+        say(f"mineflayer updated ({method})")
+        return
+    npm = shutil.which("npm")
+    if npm is None:
+        say("package.json changed but npm is not installed - real servers need Node 22+ and `npm install`")
+    else:
+        say("npm install")
+        if subprocess.run([npm, "install", "--no-audit", "--no-fund"], cwd=root).returncode != 0:
+            raise UpdateError("npm install failed - see the messages above")
 
 
 # ---------------------------------------------------------------------------- mod
