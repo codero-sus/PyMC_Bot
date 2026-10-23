@@ -2,7 +2,7 @@
 
 | Notebook | Runs on | What it does |
 | --- | --- | --- |
-| [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, exports **GGUF and safetensors** and uploads both to Hugging Face (`…-GGUF` and the 16-bit merged safetensors repo next to it) |
+| [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, uploads the compact 16-bit **safetensors** first, then **GGUF** quants made from them (Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, each uploaded as soon as it is ready), both with `tokenizer.json` and the configs |
 
 **Quick start**
 
@@ -15,7 +15,7 @@
 4. Edit the settings cell. The first time, use `QUICK_TEST = True`, which takes about 15 minutes. Then **Run All**.
 5. On your PC: `python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF`.
    The safetensors edition, `<your-hf-name>/Minecraftism-4B-Uncensored`, is for transformers, vLLM or further
-   fine-tuning. Its model card has the code.
+   fine-tuning. Its model card has the code. Other GGUF sizes: `ollama run hf.co/<your-hf-name>/Minecraftism-4B-Uncensored-GGUF:Q8_0`.
 
 Full guide: [docs/MINECRAFT_LLM.md](../docs/MINECRAFT_LLM.md). The same notebook is attached to every GitHub release.
 

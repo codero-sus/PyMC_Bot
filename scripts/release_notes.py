@@ -68,8 +68,12 @@ def downloads(version: str) -> list[str]:
         f"| `pymcbot-{version}-all-versions.zip` | all mod jars in one zip |",
         "| `pymc-minecraft-llm-kit.zip` | **Your own Minecraft LLM**: ready-made training data (mob database, "
         "game situations, Minecraft Wiki pages) - upload `llm_data` to Kaggle |",
-        "| `PyMC_Minecraft_LLM_Kaggle.ipynb` · `train_minecraft_llm.py` | the Kaggle notebook (GPU T4 x2) and "
-        "the trainer it runs; afterwards `python -m pymc_bot llm import pymc-minecraft` "
+        "| `PyMC_Minecraft_LLM_Kaggle.ipynb` · `train_minecraft_llm.py` | **Train Minecraftism** on Kaggle "
+        "(GPU T4 x2): the notebook and the trainer it runs. Every edition is uploaded to Hugging Face **twice**: "
+        "**safetensors** first (`<you>/Minecraftism-4B-Uncensored`, the compact 16-bit merged model for "
+        "transformers / vLLM / fine-tuning; `SAFETENSORS = True`), then **GGUF** quants made from it "
+        "(`<you>/Minecraftism-4B-Uncensored-GGUF`: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, each uploaded as soon as it "
+        "is ready; `GGUF_QUANTS`), both with `tokenizer.json` and the configs. Afterwards `python -m pymc_bot llm import --hf <you>/Minecraftism-4B-Uncensored-GGUF` "
         "(guide: `docs/MINECRAFT_LLM.md` in the source zip) |",
         "| `pymc-bot-node-modules.zip` | **mineflayer, prebuilt** for players who can't (or don't want to) use npm: "
         "`python -m pymc_bot setup` fetches it by itself when needed, or offline: "

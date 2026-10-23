@@ -18,20 +18,47 @@ and the notebook can publish it to Hugging Face for you.
 ```
 your PC                                Kaggle (GPU T4 x2)                      your PC
 python -m pymc_bot llm build   ──►   PyMC_Minecraft_LLM_Kaggle.ipynb   ──►   python -m pymc_bot llm import
-(train.jsonl + eval.jsonl +           (Unsloth QLoRA, eval, GGUF +             --hf you/Minecraftism-4B-GGUF
- images/ + the training script)        safetensors export, upload to HF)       (Ollama model + bot settings)
+(train.jsonl + eval.jsonl +           (Unsloth QLoRA, eval, safetensors ->      --hf you/Minecraftism-4B-GGUF
+ images/ + the training script)        GGUF quants, upload to HF)              (Ollama model + bot settings)
 ```
 
 Every edition is published in **two formats**, each in its own Hugging Face repo:
 
 | Repo | Format | Use it with |
 | --- | --- | --- |
-| `you/Minecraftism-4B-GGUF` | GGUF `q4_k_m` (+ `mmproj` projector for VL), `Modelfile`, `params` | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
-| `you/Minecraftism-4B` | **safetensors**: the LoRA merged into the base, 16-bit (~8 GB, VL ~9 GB) | transformers, vLLM, further fine-tuning, your own quantisations (AWQ, EXL2, other GGUF sizes) |
+| `you/Minecraftism-4B` | **safetensors**: the LoRA merged into the base, 16-bit (~8 GB, VL ~9 GB), `tokenizer.json` + configs | transformers, vLLM, further fine-tuning, your own quantisations (AWQ, EXL2) |
+| `you/Minecraftism-4B-GGUF` | GGUF `Q8_0`, `Q6_K`, `Q5_K_M`, `Q4_K_M` (default), `Q3_K_M` (+ `mmproj` projector for VL), `Modelfile`, `params`, `tokenizer.json` + configs | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
 
 The safetensors repo is the GGUF repo's name without `-GGUF` (uncensored: `Minecraftism-4B-Uncensored`). Both
 model cards link to each other; the safetensors card has transformers and vLLM code. `llm import --hf` on a
 safetensors repo uses its GGUF twin automatically, since Ollama runs GGUF.
+
+**The order:** the safetensors are saved, compacted and uploaded first. Then llama.cpp converts *those exact
+weights* into one F16 GGUF (in `/tmp`, off Kaggle's 20 GB output disk) and `llama-quantize` makes every quant from it.
+Each quant is uploaded as soon as it is ready and deleted, so the disk never holds more than the F16 file and one
+quant. The GGUF card lists every file with its size (`ollama run hf.co/you/Minecraftism-4B-GGUF:Q8_0` picks one;
+`llm import --hf ... --quant Q8_0` does it for the bot). llama.cpp comes from its newest GitHub release (Linux
+build + source at the same tag; `llama-quantize` is compiled when the prebuilt one cannot run), or from
+`$LLAMA_CPP_DIR`. If that route fails, Unsloth's own GGUF exporter makes the same quants.
+
+| Quant | 4B file | VL 4B file | Use it when |
+| --- | --- | --- | --- |
+| `Q8_0` | ~4.3 GB | ~4.5 GB | best quality, near the 16-bit model |
+| `Q6_K` | ~3.3 GB | ~3.5 GB | very close to Q8_0 |
+| `Q5_K_M` | ~2.9 GB | ~3.1 GB | a good middle |
+| `Q4_K_M` | ~2.5 GB | ~2.7 GB | the default: small and good |
+| `Q3_K_M` | ~2.1 GB | ~2.2 GB | low RAM / old PCs, some quality loss |
+
+(VL editions add the `mmproj` vision projector, ~0.8 GB.)
+
+**Why the safetensors are ~8 GB, and why that is the smallest a 4B model gets in 16-bit:** each of the ~4.0 billion
+weights takes 2 bytes. A LoRA merge can make the files *bigger* than the base - float32 leftovers (4 bytes a weight)
+and a second copy of the ~0.4B-weight embedding matrix as an untied `lm_head` - which is how a 4B model ends up the size
+of a 5-6B one. The trainer **compacts** the merge (`--no-compact` turns it off): float32 becomes the model's 16-bit type,
+the `lm_head` copy is dropped when `tie_word_embeddings` says the base shares it, `model.safetensors.index.json` is
+rewritten, and the report shows the real parameter count (`params_b`). An older trainer also had a bug that could
+name Unsloth's ~8 GB F16 intermediate `...Q4_K_M.gguf`: the GGUF for each quant is now picked by its name. Real
+*distillation* would mean training a different, smaller model - for small files use the GGUF quants.
 
 ## The four editions
 
@@ -118,7 +145,8 @@ The settings cell:
 | `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |
 | `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
 | `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
-| `SAFETENSORS` | `True` | also export the merged 16-bit safetensors edition and upload it to `<repo without -GGUF>` (`--safetensors none` = GGUF only) |
+| `SAFETENSORS` | `True` | also export the merged 16-bit safetensors edition and upload it to `<repo without -GGUF>` (`--safetensors none` = GGUF only, made by Unsloth) |
+| `GGUF_QUANTS` | `"q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m"` | GGUFs made from the safetensors and uploaded one by one (only when uploading; `""` = only `q4_k_m`) |
 | `QUICK_TEST` | `False` | short test run of the whole pipeline |
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
@@ -135,7 +163,8 @@ editions another day. The notebook dry-runs every edition first and skips the on
 
 The script trains a LoRA adapter (4-bit QLoRA, r=32, loss on the replies only; VL editions train the
 language layers and keep the vision encoder frozen unless you pass `--vision-layers 1`). It evaluates on
-held-out rows, exports `q4_k_m` GGUF and, for VL editions, the **vision projector** (`mmproj`). Each edition
+held-out rows, saves the compact safetensors and makes the GGUFs from them (`q4_k_m` stays in the folder; when uploading
+also `Q8_0`, `Q6_K`, `Q5_K_M`, `Q3_K_M`) and, for VL editions, the **vision projector** (`mmproj`). Each edition
 gets its own folder, e.g. `/kaggle/working/minecraftism-vl`:
 
 ```
@@ -146,19 +175,22 @@ params                                  sampling for "ollama pull hf.co/..." (wr
 README.md                               the model card shown on Hugging Face
 pymc_model.json                         edition, loss, eval + test scores, system prompt, what PyMC Bot reads on import
 tests.json                              every test question and answer (with RUN_TESTS)
+tokenizer.json, config.json, ...        tokenizer, configs and chat template (also uploaded to the GGUF repo)
 lora/                                   the adapter (optional, for training further)
 safetensors/                            the safetensors edition: model-*.safetensors, config, tokenizer /
                                         processor, its own README.md (with SAFETENSORS, the default)
 ```
 
-With `HF_REPO = "auto"` each edition is uploaded twice: the GGUF files to `<your HF name>/<repo from the table>`,
-e.g. `you/Minecraftism-4B-GGUF`, and `safetensors/` to the same name without `-GGUF`, e.g. `you/Minecraftism-4B`.
+With `HF_REPO = "auto"` each edition is uploaded twice: first `safetensors/` to `<your HF name>/<repo without -GGUF>`,
+e.g. `you/Minecraftism-4B`, then the GGUF quants (one by one) and the folder to `<your HF name>/<repo from the table>`,
+e.g. `you/Minecraftism-4B-GGUF`.
 The local copy is cleaned up afterwards (`CLEAN_AFTER_UPLOAD`) so four editions fit into Kaggle's 20 GB; the
 safetensors folder is only deleted once its own upload worked. If an upload fails, the files stay in
 `/kaggle/working`. Without an upload an edition takes ~11 GB (GGUF + safetensors): download it from the Output tab
 before training the next one, or set `SAFETENSORS = False`.
 
-Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0`, `--hub-private`,
+Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0` (the main GGUF),
+`--gguf-quants q8_0,q4_k_m` (which others), `--gguf-scratch <folder>`, `--no-compact`, `--hub-private`,
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
 `--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
 

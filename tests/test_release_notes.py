@@ -45,3 +45,11 @@ def test_notes_list_every_release_file():
                  "pymc-minecraft-llm-kit.zip", "PyMC_Minecraft_LLM_Kaggle.ipynb", "train_minecraft_llm.py",
                  "SHA256SUMS.txt", f"pymc_bot-{release_notes.wheel_version()}-py3-none-any.whl"):
         assert f"`{name}`" in text, name
+
+
+def test_notes_say_the_notebook_uploads_safetensors_then_gguf_quants():
+    text = release_notes.notes()
+    assert "`PyMC_Minecraft_LLM_Kaggle.ipynb`" in text
+    assert "**safetensors**" in text and "**GGUF**" in text and "SAFETENSORS = True" in text
+    assert text.index("**safetensors**") < text.index("**GGUF**")
+    assert "Q8_0" in text and "Q4_K_M" in text and "`GGUF_QUANTS`" in text and "`tokenizer.json`" in text
