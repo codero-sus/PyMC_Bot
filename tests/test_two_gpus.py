@@ -246,9 +246,14 @@ def _run_exit(monkeypatch, reports, run_type, auto_exit=True):
     fake_os = types.SimpleNamespace(environ={"KAGGLE_KERNEL_RUN_TYPE": run_type}, _exit=lambda code: calls.append(("exit", code)))
     fake_subprocess = types.SimpleNamespace(Popen=lambda command, **kw: calls.append(("popen", command)))
     env = {"os": fake_os, "subprocess": fake_subprocess, "time": types.SimpleNamespace(sleep=lambda _s: None),
-           "READY": list(reports), "report_of": reports.get, "AUTO_EXIT": auto_exit}
+           "READY": list(reports), "report_of": reports.get, "AUTO_EXIT": auto_exit, "DISCORD_STATE": {},
+           "discord": lambda text, title="", level="info", ping=False: calls.append(("discord", title)),
+           "discord_flush": lambda seconds=20: None}
     exec(_exit_cell(), env)
-    return calls
+    assert env["DISCORD_STATE"]["finished"] is True  # the server closing after the last cell is expected
+    told = [call for call in calls if call[0] == "discord"]
+    assert len(told) == 1  # Discord hears how the session ends, every time
+    return [call for call in calls if call[0] != "discord"]
 
 
 def test_auto_exit_ends_an_interactive_session_only_when_everything_is_uploaded(monkeypatch, capsys):
