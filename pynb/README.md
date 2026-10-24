@@ -36,9 +36,9 @@ down once everything is on Hugging Face.
 * **Kaggle server online**, with the notebook's URL (set `NOTEBOOK_URL`), its GPUs, RAM and disk
 * **Server status** every `DISCORD_EVERY_MIN` minutes (30 by default): GPU load and memory, RAM, free disk, each edition's
   step / loss / ETA, time left. If these messages stop coming, the server is gone
-* **Warnings 60, 30 and 10 minutes before Kaggle's 12 h limit closes the server**, and when the disk or RAM is almost full
+* A **THE 12 HOURs countdown** before Kaggle's 12 h limit kills the server: 3 h, 2 h, 1 h, 30 / 15 / 10 min, then **every minute of the last 5** and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk; and when the disk or RAM is almost full
 * **Server closing** when the kernel shuts down before the notebook finished (stopped, restarted, timed out), or
-  **Server closed** after a normal finish
+  **Server closed** after a normal finish - both with the full report once more (so does **Session finished**)
 * each edition's start, "learned" (loss stopped falling), every upload with its Hugging Face URL, the results, failures
   (with the end of the log) and notebook errors
 

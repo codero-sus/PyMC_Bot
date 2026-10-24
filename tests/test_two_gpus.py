@@ -219,7 +219,7 @@ def _notebook():
 
 def test_notebook_uses_both_t4s_and_the_deadline():
     nb, code = _notebook()
-    assert 'GPU_MODE = "parallel"' in code and "FAST = True" in code and "MAX_HOURS = 11.5" in code
+    assert 'GPU_MODE = "parallel"' in code and "FAST = True" in code and "MAX_HOURS = 11.75" in code
     assert '{"merge": "ddp", "merged": "ddp"}.get(GPU_MODE, GPU_MODE)' in code  # merge = both T4s on every edition
     assert 'if MODE in ("auto", "parallel"):' in code  # parallel by default, one edition -> both T4s merge on it
     assert "used = list(range(n_gpus))" in code  # the last edition left takes both T4s when the other is free
@@ -229,7 +229,8 @@ def test_notebook_uses_both_t4s_and_the_deadline():
     assert 'SLOTS = {"parallel": [[0], [1]], "ddp": [[0, 1]]}' in code
     assert "training it again on one T4" in code  # DDP problem -> same edition on one T4
     assert '--deadline {DEADLINE:.0f} --export-lock {TMP}/locks/export.lock --tools-dir {TOOLS}' in code
-    assert 'FLAGS += " --token-budget 12288 --loader-workers 2 --eval-limit 60" if FAST' in code
+    assert 'FLAGS += f" --token-budget 12288 --loader-workers {LOADER_WORKERS} --eval-limit 60" if FAST' in code
+    assert "LOADER_WORKERS = max(2, min(4, CPUS // max(1, len(gpus))))" in code
     assert '"--vllm-python", "--tools-dir"))' in code  # an older trainer is replaced by the newest
     assert "!python" not in "".join(nb["cells"][6]["source"])
 
@@ -248,7 +249,7 @@ def _run_exit(monkeypatch, reports, run_type, auto_exit=True):
     env = {"os": fake_os, "subprocess": fake_subprocess, "time": types.SimpleNamespace(sleep=lambda _s: None),
            "READY": list(reports), "report_of": reports.get, "AUTO_EXIT": auto_exit, "DISCORD_STATE": {},
            "discord": lambda text, title="", level="info", ping=False: calls.append(("discord", title)),
-           "discord_flush": lambda seconds=20: None}
+           "discord_flush": lambda seconds=20: None, "cliff_report": lambda quick=False: "report"}
     exec(_exit_cell(), env)
     assert env["DISCORD_STATE"]["finished"] is True  # the server closing after the last cell is expected
     told = [call for call in calls if call[0] == "discord"]
