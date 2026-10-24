@@ -155,7 +155,7 @@ The settings cell:
 | `CLEAN_AFTER_UPLOAD` | `True` | deletes the big local files once an edition is on Hugging Face |
 | `GPU_MODE` | `"merge"` | `"merge"`: both T4s train every edition together (DDP via HF Accelerate, fp16), editions one after another; `"parallel"`: one edition per T4 at the same time; `"single"`: one T4, one edition after another; `"auto"` = parallel with 2+ editions, merge with one |
 | `DISTILL` | `True` | Qwen3's strong-to-weak distillation from a bigger teacher ([below](#distillation-the-qwen3-recipe)) |
-| `TEACHER` | `"auto"` | `unsloth/Qwen3-8B` (4-bit), or `huihui-ai/Huihui-Qwen3-8B-abliterated-v2` with `UNCENSORED`; any Qwen3 with the same tokenizer, e.g. `"unsloth/Qwen3-14B"` |
+| `TEACHER` | `"auto"` | the best teacher for each phase: `Qwen/Qwen3-14B-AWQ` writes the answers (on vLLM) and `unsloth/Qwen3-8B` grades; with `UNCENSORED`, `huihui-ai/Huihui-Qwen3-8B-abliterated-v2` does both. A name (any Qwen3 with the same tokenizer, e.g. `"unsloth/Qwen3-14B"`) is used for both phases |
 | `DISTILL_ROWS`, `DISTILL_MINUTES` | `1500`, `40` | answers the teacher writes (phase 1) and the most minutes it may spend on them |
 | `ONPOLICY_STEPS` | `60` | on-policy steps (phase 2, text editions), 4 student replies per T4 each; `0` = phase 1 only |
 | `VLLM_TEACHER` | `True` | the teacher writes its answers with vLLM on both T4s (installed in its own venv in the background); transformers if vLLM can't run |
@@ -172,14 +172,29 @@ the `HF_TOKEN` secret, and prints the trainer flags.
 
 Alibaba made the small Qwen3 models (0.6B–14B) strong without training each one from scratch: they *distilled* them
 from the big ones (the Qwen3 technical report calls it **strong-to-weak distillation**). It has two phases, and
-`DISTILL = True` runs both, with **Qwen3-8B** as the teacher of the 4B editions. The teacher is twice the size, has
-the same tokenizer (151,936 tokens) and is Apache-2.0, so a `COMMERCIAL_ONLY` run stays commercial. Loaded in 4-bit,
-it takes ~5.7 GB of a T4. With `UNCENSORED` the teacher is huihui-ai's abliterated Qwen3-8B, so it doesn't teach the
-uncensored student to refuse again.
+`DISTILL = True` runs both. Each phase gets the best teacher that runs on Kaggle's 2× T4. Both teachers are Qwen3 with
+the same tokenizer (151,936 tokens) and the same way of thinking as the 4B, and both are Apache-2.0, so a
+`COMMERCIAL_ONLY` run stays commercial.
+
+#### Which teacher, and why
+
+| phase | needs | teacher (`TEACHER = "auto"`) |
+| --- | --- | --- |
+| 1. writes the answers | only its text; runs alone on both T4s in vLLM | **Qwen3-14B** (`Qwen/Qwen3-14B-AWQ`, Qwen's own 4-bit build, ~10 GB). It falls back to Qwen3-8B without vLLM, or if the 14B doesn't start |
+| 2. grades the student's replies | the same tokenizer; fits on one T4 *next to* the student | **Qwen3-8B** (4-bit, ~5.7 GB). A 4-bit 14B (~10.5 GB) plus the student plus the 152k-token probabilities don't fit in 15 GB |
+| both, with `UNCENSORED` | a teacher that doesn't refuse | **huihui-ai's abliterated Qwen3-8B**. No 4-bit *uncensored* 14B runs on a T4 (the community AWQ builds need Ampere kernels) |
+
+Why not something bigger or newer:
+* **Qwen3-30B-A3B / 32B:** their 4-bit builds need Marlin kernels, which a T4 (Turing) doesn't have, and a 32B
+  would be several times slower.
+* **Qwen3.5 / 3.6:** they use a different tokenizer (248k tokens), so they can't grade a Qwen3 student, and their
+  linear-attention layers are untested on a T4.
+* **Qwen3.5 or Llama students** (`--preset qwen3.5-4b`, `llama-3.2-3b`): the trainer checks that the tokenizers
+  match and skips phase 2 when they don't. Phase 1 still uses the teacher's answers.
 
 1. **Off-policy (response distillation), `DISTILL_ROWS = 1500`.** Before training, the teacher writes the answers:
    * **everyday chat:** the human-written answers are replaced by the teacher's. Thinking editions also get the
-     teacher's own `<think>` trace (Qwen3-8B is hybrid: `enable_thinking` on for them, off for the others);
+     teacher's own `<think>` trace (Qwen3-14B and 8B are hybrid: `enable_thinking` on for them, off for the others);
    * **Minecraft Q&A:** each one is rewritten in a natural voice, *around the exact answer*. The answer from
      minecraft-data goes into the teacher's prompt as a reference, and a rewrite is used only if every number in
      that reference is in it;
