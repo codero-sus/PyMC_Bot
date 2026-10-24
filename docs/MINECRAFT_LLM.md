@@ -136,7 +136,7 @@ The settings cell:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `EDITIONS` | `["minecraftism"]` | editions to train this session, in order |
+| `editions_to_be_trained` | `{txt}` | **only these editions are trained**: any of `{txt, txt_think, vl, vl_think}` (= `minecraftism`, `-thinking`, `-vl`, `-vl-thinking`), e.g. `{txt, vl}`; `"all"` = all four. Quotes are optional. They run longest first |
 | `DATA` | `"auto"` | your dataset (Add Input), else the kit from the newest GitHub release; or a path |
 | `TRAINER` | `"auto"` | the dataset's trainer, or the newest from GitHub when it is too old; `"latest"` / `"dataset"` |
 | `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
@@ -154,7 +154,7 @@ The settings cell:
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
 | `CLEAN_AFTER_UPLOAD` | `True` | deletes the big local files once an edition is on Hugging Face |
 | `GPU_MODE` | `"auto"` | `"parallel"`: one edition per T4 at the same time; `"ddp"`: both T4s train one edition; `"single"`: one T4, one edition after another. `"auto"` = parallel with 2+ editions, DDP with one |
-| `FAST` | `True` | length-grouped batches, 2 data-loader workers per GPU, 60 eval rows instead of 150 |
+| `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
 | `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
@@ -168,22 +168,45 @@ A Kaggle GPU session stops after **12 hours** and the weekly GPU quota is about 
 leaves a T4 idle:
 
 * **Two or more editions → one edition per T4** (`GPU_MODE = "parallel"`). Each edition runs in its own process with
-  `CUDA_VISIBLE_DEVICES` set to its own T4, so two editions finish in the time of one. When a T4 is free, the next
-  edition in `EDITIONS` starts on it. The exports take turns (an export lock), so two big safetensors / llama.cpp steps
-  never fill the 20 GB disk or the RAM at the same time; training on the other T4 continues meanwhile.
+  `CUDA_VISIBLE_DEVICES` set to its own T4, so two editions finish in the time of one. The editions run **longest
+  first** (`vl_think`, `vl`, `txt_think`, `txt`), so both T4s finish at about the same time. When a T4 is free, the next
+  edition starts on it. The merges and the GGUF steps each take turns (two locks), so two of them never fill the
+  20 GB disk or the RAM at the same time; training on the other T4 continues meanwhile.
 * **One edition → both T4s train it** (`GPU_MODE = "ddp"`, started with `torchrun`). Each T4 holds the 4-bit model and
   trains half of every batch; the gradients are averaged, so the result matches one T4 with the same effective batch
   (gradient accumulation is halved). Expect roughly 1.6–1.9× the speed of one T4. Only the first process reads the
   data, streams the extra rows and exports. If the DDP run fails before training ends, the notebook trains the same
   edition again on one T4, so a session isn't lost.
-* **`FAST = True`** groups rows of similar length into a batch (less padding; text editions), loads batches with 2
-  worker processes per GPU and evaluates on 60 held-out rows instead of 150. It has no effect on what the model learns.
+* **`FAST = True`**:
+  * **Batches sized by tokens** (`--token-budget 12288`, text editions). Unsloth trains *padding-free*, so a batch
+    costs only its real tokens; the trainer measures the rows (95% of them are shorter than N tokens) and puts as
+    many rows into one forward pass as fit ~12k tokens, e.g. all 8 rows of an optimizer step in **one** pass instead
+    of 4 passes of 2. The effective batch (rows per optimizer step) stays the same, so the model learns the same.
+    If a T4 runs out of memory before the first step, the batch is halved and training starts again. If it happens
+    later, the notebook trains the edition again with the preset's batch (`--token-budget 0`).
+  * **Streamed once, used by every edition** (`--stream-cache`). The everyday chat, Minecraft Q&A, minecraft-data
+    facts and pictures are downloaded by the first edition that needs them. The next ones (e.g. `vl` after `txt`, or
+    `vl_think` after `vl`) reuse them instead of streaming the same rows again. If two editions start together, one
+    waits for the other's download.
+  * 2 data-loader workers per GPU, 60 eval rows instead of 150, and `HF_XET_HIGH_PERFORMANCE=1` (Hugging Face's
+    downloads and uploads use all CPU cores and the full bandwidth).
+* **Faster export ("distillation")**, always on:
+  * the safetensors upload runs **in the background while llama.cpp makes the F16 GGUF and the quants**, and each
+    quant uploads while the next one is being made (same upload order as before: safetensors, then each quant);
+  * with `CLEAN_AFTER_UPLOAD`, the ~8 GB safetensors folder is deleted as soon as it is on Hugging Face and in the
+    F16 GGUF, not at the very end;
+  * **with more editions than T4s, the GGUF step leaves the GPU** (`--defer-gguf`). Once the safetensors are saved,
+    the training process ends and a CPU-only `--export-only` process makes the quants and uploads them, while that
+    T4 already trains the next edition. That's ~20–40 minutes of T4 time per edition that used to wait for llama.cpp
+    and the uploads. This happens only when llama.cpp is ready; otherwise the edition exports in place, with
+    Unsloth's exporter as the fallback.
+* The dry runs of all editions run side by side.
 * **`MAX_HOURS = 11.5`**: the trainer gets a deadline. When the time left drops below the export reserve (60 min, or 90
   with two editions in parallel), training stops at the current step, the model is saved, exported and uploaded as
   usual, and `pymc_model.json` records `stopped_early` (step N of M). An edition that wouldn't even have time to start
   is skipped (exit code 3) and the results cell says so. Train it in the next session.
 
-With `GPU_MODE = "auto"`, two editions such as `["minecraftism", "minecraftism-thinking"]` take one session
+With `GPU_MODE = "auto"`, two editions such as `{txt, txt_think}` take one session
 (~2–3 h), and all four fit into one 12 h session with uploads in between (`CLEAN_AFTER_UPLOAD` keeps the disk free).
 
 **Ending the session.** Kaggle has no command that stops a session from inside it. For long runs use
@@ -228,7 +251,8 @@ Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0` (the
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
 `--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
 Speed flags (the notebook sets them): `--deadline <unix time>` + `--reserve-minutes 60`, `--export-lock <file>`,
-`--clean-after-upload`, `--group-by-length`, `--loader-workers 2`. Two T4s on one edition:
+`--clean-after-upload`, `--token-budget 12288`, `--loader-workers 2`, `--stream-cache <folder>`, `--defer-gguf` (then
+`--export-only <out>` makes the GGUFs on the CPU), `--group-by-length` (without `--token-budget`). Two T4s on one edition:
 `torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py --data ... --preset minecraftism`.
 
 ## Uncensored and everyday use

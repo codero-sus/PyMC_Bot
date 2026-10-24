@@ -615,6 +615,8 @@ even without your own screenshots. It can also run an **optional test suite**: b
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
 #   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
 #   both T4s work: one edition per T4 at once, or both on one edition (DDP); MAX_HOURS keeps the upload inside 12 h
+#   editions_to_be_trained = {txt, txt_think, vl, vl_think} picks what is trained; FAST: token-sized batches,
+#   data streamed once for all editions, GGUFs made on the CPU while the T4 trains the next edition
 python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
 #   the notebook first publishes <you>/Minecraftism-4B (compact 16-bit safetensors, for transformers / vLLM), then
 #   GGUF quants made from it to <you>/Minecraftism-4B-GGUF: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M (--quant Q8_0)

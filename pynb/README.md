@@ -12,9 +12,12 @@
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
      is downloaded from the newest GitHub release.
    * **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token) to publish the model.
-4. Edit the settings cell. `GPU_MODE = "auto"` keeps both T4s busy: with two or more editions each T4 trains its own
+4. Edit the settings cell. Pick the editions with `editions_to_be_trained = {txt, txt_think, vl, vl_think}`
+   (only those are trained, e.g. `{txt}` or `{txt, vl}`). `GPU_MODE = "auto"` keeps both T4s busy: with two or more editions each T4 trains its own
    edition at the same time; with one edition both T4s train it together (DDP). `MAX_HOURS` makes training stop early
-   enough for the export and upload to finish before Kaggle's 12 h limit. The first time, use `QUICK_TEST = True`, which takes about 15 minutes. Then **Run All**.
+   enough for the export and upload to finish before Kaggle's 12 h limit. `FAST = True` sizes batches by tokens,
+   streams the shared data once for all editions, uploads while llama.cpp makes the GGUFs and, with more editions
+   than T4s, makes the GGUFs on the CPU while the T4 already trains the next edition. The first time, use `QUICK_TEST = True`, which takes about 15 minutes. Then **Run All**.
 5. On your PC: `python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF`.
    The safetensors edition, `<your-hf-name>/Minecraftism-4B-Uncensored`, is for transformers, vLLM or further
    fine-tuning. Its model card has the code. Other GGUF sizes: `ollama run hf.co/<your-hf-name>/Minecraftism-4B-Uncensored-GGUF:Q8_0`.

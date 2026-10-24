@@ -123,3 +123,54 @@ def test_pictures_are_reused_only_while_they_exist(tmp_path):
     assert llm_train._pictures_exist([{"images": [str(picture)]}, {"messages": []}])
     picture.unlink()
     assert not llm_train._pictures_exist([{"images": [str(picture)]}])
+
+
+# --------------------------------------------------------------------------- the notebook
+def _notebook():
+    from pathlib import Path
+
+    nb = json.loads((Path(__file__).resolve().parents[1] / "pynb/PyMC_Minecraft_LLM_Kaggle.ipynb").read_text("utf-8"))
+    return ["".join(cell["source"]) for cell in nb["cells"]]
+
+
+def _pick(expression):
+    cells = _notebook()
+    env: dict = {}
+    exec(cells[1], env)  # the settings cell defines txt, txt_think, vl, vl_think
+    env["editions_to_be_trained"] = eval(expression, env)
+    check = cells[3]
+    exec("import re\n" + check[check.index("# ---- the editions picked"):check.index("def check(")], env)
+    return env["EDITIONS"]
+
+
+@pytest.mark.parametrize(("expression", "editions"), [
+    ("{txt}", ["minecraftism"]),
+    ("{txt, txt_think, vl, vl_think}", ["minecraftism-vl-thinking", "minecraftism-vl", "minecraftism-thinking",
+                                        "minecraftism"]),  # longest first: both T4s finish at about the same time
+    ('{"vl", "txt"}', ["minecraftism-vl", "minecraftism"]),
+    ('"all"', ["minecraftism-vl-thinking", "minecraftism-vl", "minecraftism-thinking", "minecraftism"]),
+    ('"txt_think, vl"', ["minecraftism-vl", "minecraftism-thinking"]),
+    ('["minecraftism-vl", "qwen3-8b", "TXT"]', ["minecraftism-vl", "minecraftism", "qwen3-8b"]),
+])
+def test_editions_to_be_trained_picks_only_those(expression, editions, capsys):
+    assert _pick(expression) == editions
+    assert "editions to train (longest first)" in capsys.readouterr().out
+
+
+def test_unknown_or_no_edition_is_refused_before_any_gpu_time():
+    with pytest.raises(ValueError, match="txt, txt_think, vl, vl_think"):
+        _pick('{"vl_thinking"}')
+    with pytest.raises(AssertionError):
+        _pick("set()")
+
+
+def test_notebook_speed_flags_and_deferred_ggufs():
+    cells = _notebook()
+    code = "\n".join(cells)
+    assert "editions_to_be_trained = {txt}" in cells[1] and "\nEDITIONS = [" not in cells[1]
+    assert 'os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")' in code
+    assert '--stream-cache /tmp/pymc-stream-cache' in code
+    assert 'RUN_FLAGS += " --defer-gguf"' in code and '"--export-only"' in code
+    assert '"CUDA_VISIBLE_DEVICES": ""' in code  # the GGUF process never touches a T4
+    assert '"--token-budget 0"' in code  # out of memory with the big batches -> the preset's batch
+    assert "subprocess.Popen" in cells[4]  # the dry runs run side by side

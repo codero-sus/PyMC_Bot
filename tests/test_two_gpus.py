@@ -224,8 +224,8 @@ def test_notebook_uses_both_t4s_and_the_deadline():
     assert 'SLOTS = {"parallel": [[0], [1]], "ddp": [[0, 1]]}' in code
     assert "training it again on one T4" in code  # DDP problem -> same edition on one T4
     assert '--deadline {DEADLINE:.0f} --export-lock /tmp/pymc-export.lock' in code
-    assert 'FLAGS += " --group-by-length --loader-workers 2 --eval-limit 60" if FAST' in code
-    assert '"--deadline", "--export-lock"))' in code  # an older trainer is replaced by the newest
+    assert 'FLAGS += " --token-budget 12288 --loader-workers 2 --eval-limit 60" if FAST' in code
+    assert '"--token-budget", "--defer-gguf"))' in code  # an older trainer is replaced by the newest
     assert "!python" not in "".join(nb["cells"][6]["source"])
 
 
