@@ -161,11 +161,13 @@ The settings cell:
 | `DISTILL_ROWS`, `DISTILL_MINUTES` | `1500`, `40` | answers the teacher writes (phase 1) and the most minutes it may spend on them |
 | `ONPOLICY_STEPS` | `60` | on-policy steps (phase 2, text editions), 4 student replies per T4 each; `0` = phase 1 only |
 | `VLLM_TEACHER` | `True` | the teacher writes its answers with vLLM on both T4s (installed in its own venv in the background); transformers if vLLM can't run |
+| `VLLM_PREFLIGHT` | `True` | starts the teacher once on vLLM while the T4s are still idle (during the data check): a broken vLLM shows its cause in ~5 min of idle time instead of costing ~40 min of training time, and the teacher is downloaded by then |
+| `SLOW_TEACHER` | `False` | when vLLM can't run, the teacher writes no new phase-1 answers with transformers (~10x slower); cached answers are still used and phase 2 still runs. `True` = write with transformers for up to `DISTILL_MINUTES` |
 | `TEACHER_CACHE` | `True` | keeps the teacher's answers in a private Hugging Face dataset (`<you>/Minecraftism-teacher-answers`) so later sessions reuse them |
 | `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
-| `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
+| `MAX_HOURS` | `11.75` | everything (training, tests, export, upload) is done 15 min before THE 12 HOURs, Kaggle's cut-off: training stops early enough that the export and upload still fit |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
-| `DISCORD` | `True` | Discord webhook messages: server online (with `NOTEBOOK_URL`), status, warnings 60/30/10 min before Kaggle's 12 h limit closes the server, low disk/RAM, server closing, edition starts, uploads with their URLs, results, failures, errors |
+| `DISCORD` | `True` | Discord webhook messages: server online (with `NOTEBOOK_URL`), status, a THE 12 HOURs countdown before Kaggle's 12 h limit kills the server: 3 h, 2 h, 1 h, 30 / 15 / 10 min, then every minute of the last 5 and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk, low disk/RAM, server closing (with the full report once more), edition starts, uploads with their URLs, results, failures, errors |
 | `DISCORD_SECRET` | `"discord_webhook_inform_me1"` | name of the Kaggle secret that holds the webhook URL (never put the URL in the notebook) |
 | `DISCORD_EVERY_MIN` | `30` | a server status every N minutes (GPUs, RAM, disk, step / loss / ETA, time left); 0 = events and warnings only |
 | `DISCORD_MENTION` | `""` | who is pinged on results, errors and closing warnings, e.g. `"<@your user ID>"` or `"@here"` |
@@ -317,7 +319,10 @@ leaves a T4 idle:
     and the uploads. This happens only when llama.cpp is ready; otherwise the edition exports in place, with
     Unsloth's exporter as the fallback.
 * The dry runs of all editions run side by side.
-* **`MAX_HOURS = 11.5`**: the trainer gets a deadline. When the time left drops below the export reserve (60 min, or 90
+* **Every core and the idle minutes work too**: tokenizers and data loaders use all CPU cores, and while vLLM installs and
+  the data is checked, the first editions' base models and the grading teacher download in the background and the
+  vLLM teacher is test-started on the idle T4s (`VLLM_PREFLIGHT`).
+* **`MAX_HOURS = 11.75`**: the trainer gets a deadline 15 min before THE 12 HOURs. When the time left drops below the export reserve (60 min, or 90
   with two editions in parallel), training stops at the current step, the model is saved, exported and uploaded as
   usual, and `pymc_model.json` records `stopped_early` (step N of M). An edition that wouldn't even have time to start
   is skipped (exit code 3) and the results cell says so. Train it in the next session.

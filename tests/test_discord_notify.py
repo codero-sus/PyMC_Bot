@@ -122,23 +122,34 @@ def test_server_warnings_before_kaggle_closes_it(monkeypatch, tmp_path):
     start = 1_000_000.0
     env.update({"SESSION_START": start, "DEADLINE": start + 11.5 * 3600, "NOTEBOOK_URL": "https://www.kaggle.com/code/me/nb",
                 "DISCORD_EVERY_MIN": 0, "WORK": str(tmp_path), "TMP": str(tmp_path), "shutil": shutil,
-                "subprocess": subprocess, "os": __import__("os"), "DISCORD_URL": ""})  # "" = no monitor thread
+                "subprocess": subprocess, "os": __import__("os"), "DISCORD_URL": "", "CPUS": 4,
+                "EDITIONS": ["minecraftism"]})  # "" = no monitor thread
     exec(_block(_cells()[3], "# ---- Discord server monitor", "# ---- end Discord server monitor"), env)  # noqa: S102
     warned = {}
-    assert env["server_warnings"](start + 10 * 3600, warned) == []
+    assert env["server_warnings"](start + 8 * 3600, warned) == []
+    titles = [(t, p) for t, _x, p in env["server_warnings"](start + 9 * 3600, warned)]
+    assert titles == [("THE 12 HOURs: 3 h left", False)]  # the wind rises
+    assert [t for t, _x, _p in env["server_warnings"](start + 10 * 3600 + 30, warned)] == ["THE 12 HOURs: 2 h left"]
     first = env["server_warnings"](start + 11 * 3600 + 60, warned)
-    assert [title for title, _text, ping in first if ping] == ["Server closes in 59 min"]
-    assert "https://www.kaggle.com/code/me/nb" in first[0][1]
+    assert [title for title, _text, ping in first if ping] == ["THE 12 HOURs: 59 min left"]
+    assert "https://www.kaggle.com/code/me/nb" in first[0][1] and "branch" in first[0][1]
     assert env["server_warnings"](start + 11 * 3600 + 120, warned) == []  # said once
-    titles = [t for t, _x, _p in env["server_warnings"](start + 12 * 3600 - 300, warned)]
-    assert titles == ["Server closes in 5 min", "Server closes in 5 min"]  # the 30 and 10 minute warnings
+    late = env["server_warnings"](start + 12 * 3600 - 300, warned)  # 30, 15, 10 and 5 due: only the newest is sent
+    assert [t for t, _x, _p in late] == ["THE 12 HOURs: 5 min left"]
+    assert "Holding on" in late[0][1] and "0/1 edition(s) safe" in late[0][1]
+    for minute in (4, 3, 2, 1):  # every minute of the last five
+        due = env["server_warnings"](start + 12 * 3600 - minute * 60, warned)
+        assert [t for t, _x, p in due if p] == [f"THE 12 HOURs: {minute} min left"]
+    final = env["server_warnings"](start + 12 * 3600 - 30, warned)
+    assert [t for t, _x, _p in final] == ["THE 12 HOURs: 30 s left"] and "final report" in final[0][1]
+    assert env["server_warnings"](start + 12 * 3600 - 10, warned) == []
     status = env["server_status"]()
     assert "https://www.kaggle.com/code/me/nb" in status and "Disk free" in status
 
 
 def test_server_closing_message(monkeypatch):
     env, _asked, sent = _helper(monkeypatch, mention="<@1>")
-    env.update({"SERVER_URL": "u"})
+    env.update({"SERVER_URL": "u", "KAGGLE_LIMIT": time.time() + 3600, "cliff_report": lambda quick=False: "REPORT"})
     exec(_block(_cells()[3], "def server_closing", "\n\nif DISCORD_URL:\n    import atexit"), env)  # noqa: S102
     env["server_closing"]()
     env["server_closing"]()  # only once
