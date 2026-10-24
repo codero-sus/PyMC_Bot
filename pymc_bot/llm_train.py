@@ -3022,7 +3022,8 @@ def _distill_file(out: Path, part: int | None = None) -> Path:
 
 
 def free_gpu(*objects: Any) -> None:
-    """Drop a model and give its GPU memory back (the teacher leaves before the student needs the space)."""
+    """Give GPU memory back (the teacher leaves before the student needs the space). The caller must drop its own
+    references first (``teacher = None``): passing a model that a local name still holds frees nothing."""
     import gc
 
     del objects
@@ -3103,7 +3104,8 @@ def teacher_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, sec
             if done_batches % 10 == 0:
                 log(f"teacher: {start}/{len(prompts)} answers written")
     finally:
-        free_gpu(model)
+        model = None  # our reference goes first, or the 8B teacher stays on the GPU
+        free_gpu()
     return answers
 
 
@@ -3608,7 +3610,8 @@ def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: An
     except Exception as exc:  # noqa: BLE001
         print(f"on-policy distillation skipped: the teacher did not load ({type(exc).__name__}: {exc})")
     if _all_ranks(teacher is None):
-        free_gpu(teacher)
+        teacher = None
+        free_gpu()
         os.environ.pop("UNSLOTH_RETURN_LOGITS", None)
         return {}
     print(f"on-policy distillation: {steps} steps x {batch} replies x {world} GPU(s), teacher {teacher_id}")
@@ -3705,7 +3708,11 @@ def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: An
         if _all_ranks(time.time() > stop_at):
             print("on-policy distillation: stopping early to leave time for the export")
             break
-    free_gpu(teacher, optimizer)
+    # drop the references first: passing the teacher alone kept the 8B teacher on the GPU, and the eval after it ran
+    # out of memory with ~100 MB free
+    teacher = optimizer = scaler = None
+    pending = []
+    free_gpu()
     os.environ.pop("UNSLOTH_RETURN_LOGITS", None)
     tokenizer.padding_side = padding_side  # the saved tokenizer keeps its own setting
     FastLanguageModel.for_training(model)
@@ -3801,6 +3808,7 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
             args.onpolicy_report = onpolicy_distill(args, preset, model, tokenizer, rows, world, rank)
         except Exception as exc:  # noqa: BLE001 - the fine-tuned model is kept as it is
             print(f"on-policy distillation failed ({type(exc).__name__}: {exc}) - keeping the fine-tuned model")
+        free_gpu()  # whatever the teacher left behind goes before the eval and the export
     if world > 1:
         end_ddp()
         if rank > 0:
@@ -3824,16 +3832,27 @@ def text_generator(model: Any, tokenizer: Any, preset: dict[str, Any], batch: in
         tokenizer.padding_side = "left"
         pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         replies: list[str] = []
+        size, start = batch, 0
         try:
-            for start in range(0, len(rows), batch):
-                prompts = [render(tokenizer, row["messages"][:-1], preset, generation=True)
-                           for row in rows[start:start + batch]]
-                inputs = tokenizer(text=prompts, return_tensors="pt", padding=True,
-                                   add_special_tokens=False).to(model.device)
-                output = model.generate(**inputs, max_new_tokens=preset.get("max_new_tokens", 256), temperature=0.3,
-                                        top_p=0.8, top_k=20, do_sample=True, pad_token_id=pad)
+            while start < len(rows):
+                chunk = rows[start:start + size]
+                prompts = [render(tokenizer, row["messages"][:-1], preset, generation=True) for row in chunk]
+                try:
+                    inputs = tokenizer(text=prompts, return_tensors="pt", padding=True,
+                                       add_special_tokens=False).to(model.device)
+                    output = model.generate(**inputs, max_new_tokens=preset.get("max_new_tokens", 256),
+                                            temperature=0.3, top_p=0.8, top_k=20, do_sample=True, pad_token_id=pad)
+                except Exception as exc:  # noqa: BLE001 - out of memory: half the batch, not one at a time
+                    if not is_oom(exc) or size == 1:
+                        raise
+                    inputs = output = None
+                    free_gpu()
+                    size = max(1, size // 2)
+                    print(f"answers: out of GPU memory - {size} at a time")
+                    continue
                 width = inputs["input_ids"].shape[1]
                 replies += [tokenizer.decode(sequence[width:], skip_special_tokens=True) for sequence in output]
+                start += len(chunk)
         finally:
             tokenizer.padding_side = side
         return replies
