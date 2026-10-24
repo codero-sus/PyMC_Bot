@@ -200,3 +200,22 @@ def test_every_stage_and_every_upload_pings(monkeypatch):
     assert "content" not in sent[-1]["payload"]  # small progress notes stay silent
     assert "Setup ready - training starts\", \"ok\", ping=True" in _cells()[6]
     assert 'is ready", "ok", ping=True' in _cells()[7]
+
+
+def test_no_gpu_stops_early_with_a_clear_reason(monkeypatch):
+    """Accelerator: None (no nvidia-smi at all) must not crash with FileNotFoundError: it stops with the fix."""
+    cell = _cells()[3]
+    probe = _block(cell, "NO_GPU = (", "try:\n    socket.create_connection")
+    printed = []
+
+    def missing(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "nvidia-smi")
+
+    scope = {"subprocess": types.SimpleNamespace(run=missing, SubprocessError=subprocess.SubprocessError),
+             "check": lambda ok, good, bad: printed.append(good if ok else bad) or ok}
+    exec(probe, scope)
+    assert scope["gpus"] == [] and "Accelerator > GPU T4 x2" in printed[0]
+    stop = cell.index("if not gpus:")
+    assert cell.index("# ---- end Discord\n") < stop < cell.index("SYSTEM_FILE =")
+    assert "raise RuntimeError(NO_GPU)" in cell[stop:stop + 200]
+    assert "discord_flush(15)" in _block(cell, "def discord_on_error", "\n\nif DISCORD_URL:")
