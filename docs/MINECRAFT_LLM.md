@@ -155,7 +155,7 @@ The settings cell:
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
 | `CLEAN_AFTER_UPLOAD` | `True` | deletes the big local files once an edition is on Hugging Face |
-| `GPU_MODE` | `"merge"` | `"merge"`: both T4s train every edition together (DDP via HF Accelerate, fp16), editions one after another; `"parallel"`: one edition per T4 at the same time; `"single"`: one T4, one edition after another; `"auto"` = parallel with 2+ editions, merge with one |
+| `GPU_MODE` | `"parallel"` | `"parallel"`: one edition per T4 at the same time; with one edition (or the last one left) both T4s merge on it; `"merge"`: both T4s train every edition together (DDP via HF Accelerate, fp16), editions one after another; `"single"`: one T4, one edition after another; `"auto"` = same as parallel |
 | `DISTILL` | `True` | Qwen3's strong-to-weak distillation from a bigger teacher ([below](#distillation-the-qwen3-recipe)) |
 | `TEACHER` | `"auto"` | the best teacher for each phase: `Qwen/Qwen3-14B-AWQ` writes the answers (on vLLM) and `unsloth/Qwen3-8B` grades; with `UNCENSORED`, `huihui-ai/Huihui-Qwen3-8B-abliterated-v2` does both. A name (any Qwen3 with the same tokenizer, e.g. `"unsloth/Qwen3-14B"`) is used for both phases |
 | `DISTILL_ROWS`, `DISTILL_MINUTES` | `1500`, `40` | answers the teacher writes (phase 1) and the most minutes it may spend on them |
@@ -270,12 +270,15 @@ keeps using the output folder and the system temp folder, as before. `--tools-di
 A Kaggle GPU session stops after **12 hours** and the weekly GPU quota is about 30 hours, so the notebook never
 leaves a T4 idle:
 
-* **Both T4s merged on every edition** (`GPU_MODE = "merge"`, the default). Every edition is launched with
+* **One edition per T4** (`GPU_MODE = "parallel"`, the default) is described two bullets below. With a single
+  edition, or when only the last edition is left and the other T4 is free, both T4s merge on it instead, so a T4
+  never idles.
+* **Both T4s merged on every edition** (`GPU_MODE = "merge"`). Every edition is launched with
   **HF Accelerate** (`accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16`; plain `torchrun` if
   Accelerate is missing) and trained by both T4s as described in the DDP bullet below. The editions run one after
   another, and with more than one edition the GGUFs are made on the CPU while both T4s train the next one. Both T4s
   also share the distillation teacher's work.
-* **Or one edition per T4** (`GPU_MODE = "parallel"`). Each edition runs in its own process with
+* **One edition per T4** (`GPU_MODE = "parallel"`, the default). Each edition runs in its own process with
   `CUDA_VISIBLE_DEVICES` set to its own T4, so two editions finish in the time of one. The editions run **longest
   first** (`vl_think`, `vl`, `txt_think`, `txt`), so both T4s finish at about the same time. When a T4 is free, the next
   edition starts on it. The merges and the GGUF steps each take turns (two locks), so two of them never fill the

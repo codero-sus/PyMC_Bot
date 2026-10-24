@@ -219,8 +219,10 @@ def _notebook():
 
 def test_notebook_uses_both_t4s_and_the_deadline():
     nb, code = _notebook()
-    assert 'GPU_MODE = "merge"' in code and "FAST = True" in code and "MAX_HOURS = 11.5" in code
+    assert 'GPU_MODE = "parallel"' in code and "FAST = True" in code and "MAX_HOURS = 11.5" in code
     assert '{"merge": "ddp", "merged": "ddp"}.get(GPU_MODE, GPU_MODE)' in code  # merge = both T4s on every edition
+    assert 'if MODE in ("auto", "parallel"):' in code  # parallel by default, one edition -> both T4s merge on it
+    assert "used = list(range(n_gpus))" in code  # the last edition left takes both T4s when the other is free
     assert '"accelerate.commands.launch", "--multi_gpu"' in code and '"--mixed_precision=fp16"' in code
     assert '"torch.distributed.run", "--standalone"' in code and '"CUDA_VISIBLE_DEVICES"' in code  # no accelerate
     assert '"PYMC_RUN_ID": f"{edition}-{time.time_ns()}"' in code
@@ -259,3 +261,41 @@ def test_auto_exit_ends_an_interactive_session_only_when_everything_is_uploaded(
     assert _run_exit(monkeypatch, {"a": done}, "Batch") == []  # Save & Run All ends by itself, Output kept
     assert _run_exit(monkeypatch, {"a": done}, "Interactive", auto_exit=False) == []
     assert _run_exit(monkeypatch, {}, "Interactive") == []  # nothing trained: nothing to end for
+
+
+def _scheduler(mode, editions, slow=0.05):
+    """Run the notebook's worker code with fake training to see which T4s each edition gets."""
+    import threading
+    import time as _time
+    _nb, code = _notebook()
+    body = code[code.index("BUSY = set()"):code.index("\n\n\nthreads = [")]
+    calls = []
+
+    def run_edition(edition, used, extra=""):
+        calls.append((edition, tuple(used)))
+        _time.sleep(slow if len(calls) > 1 else slow * 3)
+        return 0, ""
+
+    env = {"MODE": mode, "n_gpus": 2, "queue": list(editions), "queue_lock": threading.Lock(), "FAST": True,
+           "run_edition": run_edition, "failed": lambda code, edition: False, "note": lambda *a: None,
+           "export_job": lambda edition: "/nonexistent", "CODES": {}, "clean_up": lambda edition: None,
+           "EXPORTS": [], "threading": threading, "os": __import__("os"), "run_export": lambda edition: None}
+    exec(body, env)  # noqa: S102 - the notebook's own scheduler
+    slots = {"parallel": [[0], [1]], "ddp": [[0, 1]]}[mode]
+    threads = [threading.Thread(target=env["worker"], args=(slot,)) for slot in slots]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    return calls
+
+
+def test_parallel_is_the_default_and_never_leaves_a_t4_idle():
+    # two editions: one per T4, at the same time
+    calls = _scheduler("parallel", ["vl", "txt"])
+    assert sorted(used for _, used in calls) == [(0,), (1,)]
+    # three editions: the last one starts when the other T4 is still busy -> one T4 each
+    calls = _scheduler("parallel", ["vl_think", "vl", "txt"])
+    assert len(calls) == 3 and all(len(used) == 1 for _, used in calls)
+    # merge mode: both T4s on every edition
+    assert all(used == (0, 1) for _, used in _scheduler("ddp", ["txt", "vl"]))
