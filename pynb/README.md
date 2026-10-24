@@ -7,8 +7,8 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/b021cb6fe050364ed7ade581a389c01aa17426ba/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/b021cb6fe050364ed7ade581a389c01aa17426ba/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/1a7f8df15f2a810a80d3823ef615c07b9b959eab/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/1a7f8df15f2a810a80d3823ef615c07b9b959eab/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
@@ -42,7 +42,7 @@ down once everything is on Hugging Face.
 * each edition's start, "learned" (loss stopped falling), every upload with its Hugging Face URL, the results, failures
   (with the end of the log) and notebook errors
 
-`DISCORD_MENTION = "<@your user ID>"` pings you on results, errors and closing warnings. The webhook URL is never printed.
+`DISCORD_MENTION = "<@your user ID>"` pings you rarely: when the session ends, 5 min before THE 12 HOURs, on a failure or error and if the server closes early; everything else is silent. The webhook URL is never printed.
 
 **Where files go:** things needed again stay in `/kaggle/working`: models until uploaded, reports, logs, the data kit,
 `cache/` (streamed data and teacher answers, shared by every edition) and `tools/` (llama.cpp). Throwaway files go to
