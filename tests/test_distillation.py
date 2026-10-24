@@ -535,3 +535,52 @@ def test_vllm_asks_only_for_the_gpu_memory_that_is_free(tmp_path, monkeypatch):
                                "safe": True, "jobs": []}))
     assert llm_train.main(["--vllm-worker", str(job), str(tmp_path / "out.json")]) == 0
     assert seen["options"]["max_num_seqs"] == 64 and seen["options"]["enforce_eager"] is True
+
+
+def test_batched_answers_halve_on_out_of_memory_instead_of_one_at_a_time():
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    class Ids(list):
+        shape = (0, 2)
+
+    class Inputs(dict):
+        def to(self, _device):
+            return self
+
+    class Tok:
+        padding_side, pad_token_id, eos_token_id = "right", 0, 0
+
+        def apply_chat_template(self, messages, **_):
+            return messages[-1]["content"]
+
+        def __call__(self, text, **_):
+            return Inputs(input_ids=Ids(), prompts=text)
+
+        def decode(self, sequence, **_):
+            return sequence
+
+    sizes = []
+
+    class Model:
+        device = "cpu"
+
+        def generate(self, prompts, **_):
+            sizes.append(len(prompts))
+            if len(prompts) > 4:
+                raise OutOfMemoryError("CUDA out of memory")
+            return [["x", "y", f"r{p}"] for p in prompts]
+
+    rows = [{"messages": [{"role": "user", "content": str(i)}, {"role": "assistant", "content": "-"}]}
+            for i in range(10)]
+    generate = llm_train.text_generator(Model(), Tok(), llm_train.PRESETS["minecraftism"], batch=16)
+    replies = llm_train.answer_all(generate, rows)
+    assert replies == [[f"r{i}"] for i in range(10)]
+    assert sizes == [10, 8, 4, 4, 2]  # 16 -> 8 -> 4 at a time, never one by one
+
+
+def test_the_teacher_really_leaves_the_gpu_after_on_policy():
+    source = Path(llm_train.__file__).read_text(encoding="utf-8")
+    body = source[source.index("def onpolicy_distill("):source.index("def train(args")]
+    assert "free_gpu(teacher" not in body  # a local name still held it: the eval then ran out of memory
+    assert "teacher = optimizer = scaler = None" in body
