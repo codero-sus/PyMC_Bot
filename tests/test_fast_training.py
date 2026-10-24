@@ -174,3 +174,39 @@ def test_notebook_speed_flags_and_deferred_ggufs():
     assert '"CUDA_VISIBLE_DEVICES": ""' in code  # the GGUF process never touches a T4
     assert '"--token-budget 0"' in code  # out of memory with the big batches -> the preset's batch
     assert "subprocess.Popen" in cells[4]  # the dry runs run side by side
+
+
+def test_thinking_edition_fills_up_with_everyday_chat_when_few_traces_fit(tmp_path, monkeypatch, capsys):
+    """Nemotron's math traces are mostly far longer than --max-seq (a Kaggle run kept 16 of 12000): the thinking
+    edition then gets everyday chat for the rest instead of almost no everyday rows."""
+    calls = []
+
+    def records(name, split, limit, seed, buffer=10_000, factor=3):
+        calls.append(name)
+        if "Nemotron" in name:
+            short = [{"messages": [{"role": "user", "content": f"2+{i}?"},
+                                   {"role": "assistant", "content": f"<think>add</think>{2 + i}"}]} for i in range(2)]
+            return short + [{"messages": [{"role": "user", "content": "prove it"},
+                                          {"role": "assistant", "content": "<think>" + "x" * 50_000 + "</think>done"}]}] * 20
+        return [{"messages": [{"role": "user", "content": f"question {i}?"},
+                              {"role": "assistant", "content": f"A helpful answer number {i}."}]} for i in range(30)]
+
+    monkeypatch.setattr(llm_train, "load_hub_records", records)
+    argv = ["--general", "10", "--no-identity", "--stream-cache", str(tmp_path / "cache"), "--commercial"]
+    import random
+
+    out = {}
+    for preset in ("minecraftism-thinking", "minecraftism"):
+        args = llm_train.build_parser().parse_args(argv + ["--preset", preset, "--out", str(tmp_path / preset)])
+        args.system_prompt = "S"
+        llm_train.resolve_datasets(args)
+        out[preset] = llm_train.extra_rows(args, llm_train.PRESETS[preset], random.Random(1))
+    thinking = out["minecraftism-thinking"]
+    assert sum(row["source"] == "reasoning" for row in thinking) == 2
+    assert sum(row["source"] == "general" for row in thinking) == 8 and len(thinking) == 10
+    assert "thinking traces: 2 of 22 streamed fit --max-seq" in capsys.readouterr().out
+    assert len(calls) == 2  # the text edition reused the chat the thinking edition streamed
+    args = llm_train.build_parser().parse_args(argv + ["--preset", "minecraftism-thinking"])
+    llm_train.resolve_datasets(args)
+    assert llm_train.used_datasets(args, llm_train.PRESETS["minecraftism-thinking"]) == [
+        llm_train.COMMERCIAL_REASONING_DATASET, llm_train.COMMERCIAL_GENERAL_DATASET]
