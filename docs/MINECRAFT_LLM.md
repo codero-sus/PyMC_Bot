@@ -153,7 +153,11 @@ The settings cell:
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
 | `CLEAN_AFTER_UPLOAD` | `True` | deletes the big local files once an edition is on Hugging Face |
-| `GPU_MODE` | `"auto"` | `"parallel"`: one edition per T4 at the same time; `"ddp"`: both T4s train one edition; `"single"`: one T4, one edition after another. `"auto"` = parallel with 2+ editions, DDP with one |
+| `GPU_MODE` | `"merge"` | `"merge"`: both T4s train every edition together (DDP via HF Accelerate, fp16), editions one after another; `"parallel"`: one edition per T4 at the same time; `"single"`: one T4, one edition after another; `"auto"` = parallel with 2+ editions, merge with one |
+| `DISTILL` | `True` | Qwen3's strong-to-weak distillation from a bigger teacher ([below](#distillation-the-qwen3-recipe)) |
+| `TEACHER` | `"auto"` | `unsloth/Qwen3-8B` (4-bit), or `huihui-ai/Huihui-Qwen3-8B-abliterated-v2` with `UNCENSORED`; any Qwen3 with the same tokenizer, e.g. `"unsloth/Qwen3-14B"` |
+| `DISTILL_ROWS`, `DISTILL_MINUTES` | `1500`, `40` | answers the teacher writes (phase 1) and the most minutes it may spend on them |
+| `ONPOLICY_STEPS` | `60` | on-policy steps (phase 2, text editions), 4 student replies per T4 each; `0` = phase 1 only |
 | `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
 | `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
@@ -162,17 +166,60 @@ The settings cell:
 Before any training starts, the notebook checks the GPU, the internet, the free disk, the dataset and
 the `HF_TOKEN` secret, and prints the trainer flags.
 
+### Distillation: the Qwen3 recipe
+
+Alibaba made the small Qwen3 models (0.6B–14B) strong without training each one from scratch: they *distilled* them
+from the big ones (the Qwen3 technical report calls it **strong-to-weak distillation**). It has two phases, and
+`DISTILL = True` runs both, with **Qwen3-8B** as the teacher of the 4B editions. The teacher is twice the size, has
+the same tokenizer (151,936 tokens) and is Apache-2.0, so a `COMMERCIAL_ONLY` run stays commercial. Loaded in 4-bit,
+it takes ~5.7 GB of a T4. With `UNCENSORED` the teacher is huihui-ai's abliterated Qwen3-8B, so it doesn't teach the
+uncensored student to refuse again.
+
+1. **Off-policy (response distillation), `DISTILL_ROWS = 1500`.** Before training, the teacher writes the answers:
+   * **everyday chat:** the human-written answers are replaced by the teacher's. Thinking editions also get the
+     teacher's own `<think>` trace (Qwen3-8B is hybrid: `enable_thinking` on for them, off for the others);
+   * **Minecraft Q&A:** each one is rewritten in a natural voice, *around the exact answer*. The answer from
+     minecraft-data goes into the teacher's prompt as a reference, and a rewrite is used only if every number in
+     that reference is in it;
+   * **not touched:** game turns keep their rule-checked JSON, and the Nemotron thinking rows keep their traces
+     (they already came from a far bigger model);
+   * **dropped:** cut-off answers, empty answers and (when `UNCENSORED`) refusals. Those rows keep their original
+     answer.
+
+   With `GPU_MODE = "merge"` both T4s write answers, half each. They are saved in the stream cache, so the next
+   edition of the session reuses them (VL editions use the text answers too). The teacher gets at most
+   `DISTILL_MINUTES`, and never more than 40% of the time left before `MAX_HOURS`.
+2. **On-policy (logit distillation), `ONPOLICY_STEPS = 60`, text editions.** After fine-tuning, the 4B **answers
+   prompts itself** (sampled, as it would really answer) and the teacher scores **every token of those answers**. The
+   student then minimises the per-token **reverse KL(student ‖ teacher)** on its own replies, so it learns the
+   teacher's full probabilities instead of copying one sampled answer, on exactly the kind of text it produces.
+   Qwen reports that this beats reinforcement learning at a tenth of the GPU hours. Some details:
+   * each T4 takes different prompts and the LoRA gradients are averaged;
+   * the KL is computed in fp32 in chunks;
+   * for a non-thinking student the teacher reads the reply after Qwen3's empty `<think></think>` marker, so it never
+     pulls the student towards thinking;
+   * on running out of memory the batch is halved, and any failure keeps the fine-tuned model as it is.
+
+The model card gets a **Distillation** section (teacher, rows rewritten, KL at the start and end) and lists the teacher
+in the data table. Cost per session: ~25–40 min of both T4s for the teacher's answers (once; cached for the other
+editions) and ~15–20 min per text edition for the on-policy phase. `DISTILL = False` trains as before.
+
 ### Speed: both T4s, every minute
 
 A Kaggle GPU session stops after **12 hours** and the weekly GPU quota is about 30 hours, so the notebook never
 leaves a T4 idle:
 
-* **Two or more editions → one edition per T4** (`GPU_MODE = "parallel"`). Each edition runs in its own process with
+* **Both T4s merged on every edition** (`GPU_MODE = "merge"`, the default). Every edition is launched with
+  **HF Accelerate** (`accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16`; plain `torchrun` if
+  Accelerate is missing) and trained by both T4s as described in the DDP bullet below. The editions run one after
+  another, and with more than one edition the GGUFs are made on the CPU while both T4s train the next one. Both T4s
+  also share the distillation teacher's work.
+* **Or one edition per T4** (`GPU_MODE = "parallel"`). Each edition runs in its own process with
   `CUDA_VISIBLE_DEVICES` set to its own T4, so two editions finish in the time of one. The editions run **longest
   first** (`vl_think`, `vl`, `txt_think`, `txt`), so both T4s finish at about the same time. When a T4 is free, the next
   edition starts on it. The merges and the GGUF steps each take turns (two locks), so two of them never fill the
   20 GB disk or the RAM at the same time; training on the other T4 continues meanwhile.
-* **One edition → both T4s train it** (`GPU_MODE = "ddp"`, started with `torchrun`). Each T4 holds the 4-bit model and
+* **DDP: both T4s train one edition.** Each T4 holds the 4-bit model and
   trains half of every batch; the gradients are averaged, so the result matches one T4 with the same effective batch
   (gradient accumulation is halved). Expect roughly 1.6–1.9× the speed of one T4. Only the first process reads the
   data, streams the extra rows and exports. If the DDP run fails before training ends, the notebook trains the same
@@ -206,7 +253,7 @@ leaves a T4 idle:
   usual, and `pymc_model.json` records `stopped_early` (step N of M). An edition that wouldn't even have time to start
   is skipped (exit code 3) and the results cell says so. Train it in the next session.
 
-With `GPU_MODE = "auto"`, two editions such as `{txt, txt_think}` take one session
+Two editions such as `{txt, txt_think}` take one session
 (~2–3 h), and all four fit into one 12 h session with uploads in between (`CLEAN_AFTER_UPLOAD` keeps the disk free).
 
 **Ending the session.** Kaggle has no command that stops a session from inside it. For long runs use
@@ -253,7 +300,10 @@ Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0` (the
 Speed flags (the notebook sets them): `--deadline <unix time>` + `--reserve-minutes 60`, `--export-lock <file>`,
 `--clean-after-upload`, `--token-budget 12288`, `--loader-workers 2`, `--stream-cache <folder>`, `--defer-gguf` (then
 `--export-only <out>` makes the GGUFs on the CPU), `--group-by-length` (without `--token-budget`). Two T4s on one edition:
-`torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py --data ... --preset minecraftism`.
+`accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16 train_minecraft_llm.py --data ... --preset minecraftism`
+(or `torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py ...`).
+Distillation flags: `--distill-rows 1500`, `--distill-minutes 40`, `--onpolicy-steps 60`, `--teacher auto`,
+`--onpolicy-batch 4`, `--onpolicy-tokens 256`, `--onpolicy-lr 5e-5` (all off by default; the notebook turns them on).
 
 ## Uncensored and everyday use
 

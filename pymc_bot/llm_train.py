@@ -871,6 +871,14 @@ def data_sources(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[d
         out.append({"name": hub_split(name, "")[0], "license": licence, "commercial": commercial, "url": link,
                     "rows": sum(1 for row in rows if (by_source.get(str(row.get("source") or ""), "pymc-bot")
                                                       or "pymc-bot") == name)})
+    teachers: dict[str, int] = {}
+    for row in rows:
+        if row.get("teacher"):
+            teachers[str(row["teacher"])] = teachers.get(str(row["teacher"]), 0) + 1
+    for name, count in teachers.items():  # distillation: the answers were rewritten by a bigger model
+        known = name in (TEACHER_MODEL, UNCENSORED_TEACHER) or name.split("/")[-1].startswith(("Qwen3-", "Huihui-Qwen3-"))
+        out.append({"name": f"{name} (teacher answers)", "rows": count, "url": f"https://huggingface.co/{name}",
+                    "license": "Apache-2.0 (Qwen3)" if known else "see the teacher's model card", "commercial": known})
     return out
 
 
@@ -2209,6 +2217,25 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     sources = report.get("data") or []
     data_cell = (", ".join(f"[{d['name']}]({d['url']})" for d in sources) if sources else
                  f"PyMC Bot rules + mob database, Minecraft Wiki text, recorded play{' and screenshots' if vision else ''}")
+    distill = report.get("distill") or {}
+    distill_text = ""
+    if distill:
+        lines = []
+        off, on = distill.get("offpolicy") or {}, distill.get("onpolicy") or {}
+        if off:
+            lines.append(f"- **Off-policy:** the teacher wrote {off.get('used', 0)} of the training answers "
+                         f"({off.get('general', 0)} everyday chat, {off.get('mcqa', 0)} Minecraft facts rewritten "
+                         "around the exact answer"
+                         + (", with its own thinking traces" if reasoning else "") + "). Game turns kept their "
+                         "rule-checked JSON.")
+        if on:
+            lines.append(f"- **On-policy:** {on.get('steps', 0)} steps ({on.get('replies', 0)} replies written by the "
+                         f"student and graded token by token by the teacher, reverse KL "
+                         f"{on.get('kl_start', '?')} -> {on.get('kl_end', '?')}).")
+        teacher = distill.get("teacher", "")
+        distill_text = (f"\n## Distillation\n\nTrained with Qwen3's *strong-to-weak* distillation recipe, with "
+                        f"[{teacher}](https://huggingface.co/{teacher}) as the teacher (same tokenizer, Apache-2.0):\n\n"
+                        + "\n".join(lines) + "\n")
     data_text = ""
     if sources:
         data_text = ("\n## Training data\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
@@ -2327,7 +2354,7 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 | Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
 | Data | {data_cell} |
 | Size | {size} |
-{eval_lines}{test_lines}{data_text}{system_text}
+{eval_lines}{test_lines}{distill_text}{data_text}{system_text}
 ## Files
 
 {chr(10).join(files)}
@@ -2433,8 +2460,22 @@ def dist_info() -> tuple[int, int]:
         return 0, 1
 
 
+_STARTED = time.time()
+
+
+def _fresh(path: Path) -> bool:
+    """A hand-over file written during this run (not one left over by an earlier launch)."""
+    try:
+        return path.is_file() and path.stat().st_mtime >= _STARTED - 5
+    except OSError:
+        return False
+
+
 def _rows_file(out: Path) -> Path:
-    run = re.sub(r"[^A-Za-z0-9_.-]", "_", os.environ.get("TORCHELASTIC_RUN_ID") or os.environ.get("MASTER_PORT") or "run")
+    run = os.environ.get("PYMC_RUN_ID") or os.environ.get("TORCHELASTIC_RUN_ID") or ""
+    if run in ("", "none"):  # accelerate launch leaves the elastic run id at "none"
+        run = os.environ.get("MASTER_PORT") or "run"
+    run = re.sub(r"[^A-Za-z0-9_.-]", "_", run)
     return Path(out) / f".ddp-rows-{run}.json"
 
 
@@ -2449,13 +2490,22 @@ def share_rows(out: Path, rows: list[dict[str, Any]] | None, eval_rows: list[dic
     os.replace(temp, target)
 
 
-def wait_for_rows(out: Path, timeout: float = 6 * 3600, poll: float = 5.0) -> dict[str, Any] | None:
-    """DDP, ranks > 0: wait for rank 0's data (``None`` = rank 0 is not training)."""
+def wait_for_rows(out: Path, timeout: float = 6 * 3600, poll: float = 5.0, on_job: Any = None) -> dict[str, Any] | None:
+    """DDP, ranks > 0: wait for rank 0's data (``None`` = rank 0 is not training). ``on_job()`` runs once if rank 0
+    asks this GPU to write its half of the teacher's answers first (distillation)."""
     target = _rows_file(out)
     end = time.time() + timeout
-    while not target.is_file():
+    served = False
+    while not _fresh(target):
         if time.time() > end:
             raise TimeoutError(f"rank 0 never shared the training data ({target})")
+        if on_job is not None and not served and _fresh(_distill_file(out)):
+            served = True
+            try:
+                on_job()
+            except Exception:  # noqa: BLE001 - rank 0 keeps the original answers for this share
+                pass
+            continue
         time.sleep(poll)
     shared = json.loads(target.read_text(encoding="utf-8"))
     return shared if shared.get("rows") is not None else None
@@ -2645,6 +2695,498 @@ def clean_uploaded(out: Path, report: dict[str, Any]) -> list[str]:
     return removed
 
 
+# --------------------------------------------------------------------------- distillation (Qwen3's strong-to-weak recipe)
+#: The teacher in Qwen3's two-phase "strong-to-weak" distillation: a bigger Qwen3 with the same tokenizer as the 4B
+#: students (vocabulary 151,936), so its token probabilities line up with theirs one to one. Apache-2.0: its answers
+#: keep a commercial-only run commercial.
+TEACHER_MODEL = "unsloth/Qwen3-8B"
+UNCENSORED_TEACHER = "huihui-ai/Huihui-Qwen3-8B-abliterated-v2"
+TEACHER_LICENSE = ("Apache-2.0 (Qwen3)", True, "https://huggingface.co/Qwen/Qwen3-8B")
+#: Qwen3's own "not thinking" marker. The hybrid teacher scores a non-thinking student's reply after it, so the
+#: teacher never pushes the student to open with ``<think>``.
+NO_THINK_PREFIX = "<think>\n\n</think>\n\n"
+#: Qwen's sampling advice for each mode, used while the teacher writes answers.
+TEACHER_SAMPLING = {True: {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_new_tokens": 1536},
+                    False: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "max_new_tokens": 768}}
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def teacher_model(args: argparse.Namespace) -> str:
+    """``--teacher auto``: Qwen3-8B, or its abliterated twin for an uncensored run (a censored teacher would teach
+    the uncensored student to refuse again)."""
+    chosen = str(getattr(args, "teacher", "auto") or "auto").strip()
+    if chosen.lower() != "auto":
+        return chosen
+    return UNCENSORED_TEACHER if getattr(args, "uncensored", False) else TEACHER_MODEL
+
+
+def _job_key(teacher: str, messages: list[dict[str, str]], thinking: bool) -> str:
+    import hashlib
+
+    blob = json.dumps([teacher, bool(thinking), messages], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+
+def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int, teacher: str) -> list[dict[str, Any]]:
+    """The rows the teacher answers in phase 1 (off-policy distillation).
+
+    * everyday chat (human-written answers) gets the teacher's answer, with a thinking trace for thinking editions;
+    * Minecraft Q&A is rewritten around its exact answer (it goes in as a reference, so nothing is invented);
+    * game turns keep their rule-checked JSON, and Nemotron's thinking rows were already distilled from a far bigger
+      model, so neither is touched."""
+    thinking = bool(preset.get("reasoning"))
+    general = [i for i, row in enumerate(rows)
+               if row.get("kind") == "general" and row.get("source") != "reasoning" and not row.get("images")]
+    facts = [i for i, row in enumerate(rows) if row.get("kind") == "mcqa" and not row.get("images")]
+    picked: list[int] = []
+    for a, b in zip(general, facts, strict=False):  # both kinds, half and half while both last
+        picked += [a, b]
+    longer = general if len(general) > len(facts) else facts
+    picked += longer[min(len(general), len(facts)):]
+    jobs = []
+    for index in picked[:max(0, int(limit))]:
+        row = rows[index]
+        if not row.get("messages") or row["messages"][-1].get("role") != "assistant":
+            continue
+        messages = [dict(m) for m in row["messages"][:-1]]
+        reference = row["messages"][-1]["content"] if row.get("kind") == "mcqa" else ""
+        if reference:
+            note = ("Reference facts for your answer (exact, from the game's own data): " + reference
+                    + "\nAnswer the user naturally and helpfully in your own words. Keep every fact, number and name "
+                      "exactly as in the reference and add nothing you are not sure about. Never mention the reference.")
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] = messages[0]["content"] + "\n\n" + note
+            else:
+                messages.insert(0, {"role": "system", "content": note})
+        jobs.append({"row": index, "messages": messages, "reference": reference, "thinking": thinking,
+                     "key": _job_key(teacher, messages, thinking)})
+    return jobs
+
+
+def split_teacher_reply(text: str, thinking: bool) -> tuple[str, str] | None:
+    """``(trace, answer)`` from what the teacher wrote, ``None`` when it is unusable (cut off, empty)."""
+    text = str(text or "").strip()
+    if thinking:
+        if "</think>" not in text:
+            return None  # ran out of tokens while still thinking
+        trace, answer = text.split("</think>", 1)
+        trace = re.sub(r"\s+\n", "\n", trace.replace("<think>", "")).strip()
+        trace = trace.replace("{", "(").replace("}", ")")  # traces never carry JSON (the bot parses the reply)
+        answer = answer.strip()
+        return (trace, answer) if trace and answer and "<think>" not in answer else None
+    answer = strip_thinking(text).strip()
+    return ("", answer) if answer and "<think>" not in answer and "</think>" not in answer else None
+
+
+def accept_teacher_answer(job: dict[str, Any], trace: str, answer: str, uncensored: bool) -> str:
+    """Why a teacher answer is dropped (``""`` = keep it)."""
+    if len(answer) < 2:
+        return "empty"
+    if uncensored and is_refusal(answer):
+        return "refusal"
+    if job.get("reference"):
+        said = set(_NUMBER.findall(answer))
+        if any(number not in said for number in _NUMBER.findall(job["reference"])):
+            return "changed a fact"
+        if "reference" in (trace + " " + answer).lower():
+            return "mentioned the reference"
+    return ""
+
+
+def apply_teacher_answers(rows: list[dict[str, Any]], jobs: list[dict[str, Any]], answers: dict[str, str],
+                          teacher: str, uncensored: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Rows with the teacher's answers in place of the originals (an original stays when its answer is unusable)."""
+    out = list(rows)
+    stats: dict[str, Any] = {"teacher": teacher, "asked": len(jobs), "used": 0, "general": 0, "mcqa": 0, "dropped": {}}
+    for job in jobs:
+        text = answers.get(job["key"])
+        parsed = split_teacher_reply(text, job["thinking"]) if text is not None else None
+        why = "missing" if text is None else "cut off" if parsed is None else accept_teacher_answer(
+            job, parsed[0], parsed[1], uncensored)
+        if why:
+            stats["dropped"][why] = stats["dropped"].get(why, 0) + 1
+            continue
+        trace, answer = parsed  # type: ignore[misc]
+        row = dict(out[job["row"]])
+        row["messages"] = [dict(m) for m in row["messages"]]
+        row["messages"][-1]["content"] = answer
+        if job["thinking"]:
+            row["reasoning"] = trace
+        row["teacher"] = teacher
+        out[job["row"]] = row
+        stats["used"] += 1
+        stats[str(row.get("kind"))] = stats.get(str(row.get("kind")), 0) + 1
+    return out, stats
+
+
+def _answers_file(args: argparse.Namespace, teacher: str) -> Path | None:
+    folder = getattr(args, "stream_cache", None)
+    if not folder:
+        return None
+    import hashlib
+
+    return Path(folder) / f"teacher-{hashlib.sha256(teacher.encode('utf-8')).hexdigest()[:16]}.json"
+
+
+def load_teacher_answers(args: argparse.Namespace, teacher: str) -> dict[str, str]:
+    """Answers the teacher already wrote this session (every edition shares them through ``--stream-cache``)."""
+    path = _answers_file(args, teacher)
+    if path is None or not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_teacher_answers(args: argparse.Namespace, teacher: str, answers: dict[str, str]) -> None:
+    path = _answers_file(args, teacher)
+    if path is None or not answers:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with export_lock(str(path) + ".lock", waiting="waiting for another edition to save the teacher's answers..."):
+        merged = load_teacher_answers(args, teacher)
+        merged.update(answers)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
+
+
+def _distill_file(out: Path, part: int | None = None) -> Path:
+    run = _rows_file(out).name[len(".ddp-rows-"):-len(".json")]
+    return Path(out) / (f".distill-{run}.json" if part is None else f".distill-{run}-{part}.json")
+
+
+def free_gpu(*objects: Any) -> None:
+    """Drop a model and give its GPU memory back (the teacher leaves before the student needs the space)."""
+    import gc
+
+    del objects
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - nothing to free without torch
+        pass
+
+
+def load_teacher(teacher: str, max_seq: int) -> tuple[Any, Any]:
+    """The teacher, 4-bit (an 8B is ~5.7 GB), on this process's GPU."""
+    from unsloth import FastLanguageModel  # noqa: I001
+    import torch
+
+    load: dict[str, Any] = {"model_name": teacher, "max_seq_length": max_seq, "load_in_4bit": True}
+    if torch.cuda.is_available():
+        if dist_info()[1] > 1:  # DDP: each process uses its own T4 (both see both)
+            torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+        load["device_map"] = {"": torch.cuda.current_device()}
+    model, tokenizer = FastLanguageModel.from_pretrained(**load)
+    FastLanguageModel.for_inference(model)
+    return model, tokenizer
+
+
+def teacher_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, seconds: float, batch: int = 0,
+                     log: Any = print) -> dict[str, str]:
+    """The teacher writes the answers (batched, shortest prompts first). Cut-off answers are left out; whatever is
+    not done when ``seconds`` run out keeps its original answer."""
+    if not jobs:
+        return {}
+    import torch
+
+    model, tokenizer = load_teacher(teacher, max_seq)
+    answers: dict[str, str] = {}
+    try:
+        tokenizer.padding_side = "left"
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        stop_ids = {tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id} - {None}
+        thinking = bool(jobs[0]["thinking"])
+        sampling = dict(TEACHER_SAMPLING[thinking])
+        new_tokens = sampling.pop("max_new_tokens")
+        size = batch or (8 if thinking else 16)
+        prompts = [(job["key"], tokenizer.apply_chat_template(job["messages"], tokenize=False, add_generation_prompt=True,
+                                                              enable_thinking=thinking)) for job in jobs]
+        prompts.sort(key=lambda item: len(item[1]))
+        end, start, done_batches = time.time() + max(0.0, seconds), 0, 0
+        while start < len(prompts):
+            if time.time() > end:
+                log(f"teacher: time is up after {len(answers)}/{len(prompts)} answers - the rest keep their originals")
+                break
+            chunk = prompts[start:start + size]
+            try:
+                inputs = tokenizer([text for _, text in chunk], return_tensors="pt", padding=True,
+                                   add_special_tokens=False).to(model.device)
+                with torch.no_grad():
+                    output = model.generate(**inputs, max_new_tokens=new_tokens, do_sample=True,
+                                            pad_token_id=tokenizer.pad_token_id, **sampling)
+            except Exception as exc:  # noqa: BLE001 - smaller batches on OOM, otherwise give up on the teacher
+                if is_oom(exc) and size > 1:
+                    size = max(1, size // 2)
+                    torch.cuda.empty_cache()
+                    log(f"teacher: out of GPU memory - {size} answers at a time")
+                    continue
+                raise
+            width = inputs["input_ids"].shape[1]
+            for (key, _), sequence in zip(chunk, output, strict=False):
+                generated = sequence[width:].tolist()
+                if not any(token in stop_ids for token in generated):
+                    continue  # cut off by max_new_tokens
+                answers[key] = tokenizer.decode(generated, skip_special_tokens=True)
+            start += len(chunk)
+            done_batches += 1
+            if done_batches % 10 == 0:
+                log(f"teacher: {start}/{len(prompts)} answers written")
+    finally:
+        free_gpu(model)
+    return answers
+
+
+def serve_distill_job(out: Path, rank: int, world: int) -> None:
+    """DDP, ranks > 0: write this GPU's share of the teacher answers rank 0 asked for."""
+    job = json.loads(_distill_file(out).read_text(encoding="utf-8"))
+    answers: dict[str, str] = {}
+    try:
+        answers = teacher_generate(job["teacher"], job["jobs"][rank::world], int(job["max_seq"]), float(job["seconds"]),
+                                   log=lambda *_: None)
+    finally:  # an empty share is fine (those rows keep their originals); a missing one would make rank 0 wait
+        target = _distill_file(out, rank)
+        temp = target.with_name(target.name + ".tmp")
+        temp.write_text(json.dumps(answers, ensure_ascii=False), encoding="utf-8")
+        temp.replace(target)
+
+
+def _wait_for_parts(out: Path, world: int, timeout: float, poll: float = 5.0) -> dict[str, str]:
+    answers: dict[str, str] = {}
+    end = time.time() + timeout
+    for part in range(1, world):
+        target = _distill_file(out, part)
+        while not _fresh(target):
+            if time.time() > end:
+                print(f"teacher: GPU {part} did not finish its answers - its rows keep their originals")
+                return answers
+            time.sleep(poll)
+        try:
+            answers.update(json.loads(target.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+    return answers
+
+
+def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str, Any]], world: int = 1,
+                      generate: Any = None) -> list[dict[str, Any]]:
+    """Phase 1 of Qwen3's strong-to-weak distillation: the teacher answers up to ``--distill-rows`` prompts and the
+    student is fine-tuned on those answers. With DDP both T4s write answers (half each). The answers are cached for
+    the session, so the next edition only waits for the ones it has not seen."""
+    limit = int(getattr(args, "distill_rows", 0) or 0)
+    if limit <= 0:
+        return rows
+    teacher = teacher_model(args)
+    jobs = teacher_jobs(rows, preset, limit, teacher)
+    known = load_teacher_answers(args, teacher)
+    todo = [job for job in jobs if job["key"] not in known]
+    print(f"distillation (Qwen3 strong-to-weak): teacher {teacher} - {len(jobs)} answers ({len(jobs) - len(todo)} "
+          f"cached, {len(todo)} to write on {world} GPU(s), up to {args.distill_minutes:.0f} min)"
+          + (f"; then {args.onpolicy_steps} on-policy steps" if getattr(args, "onpolicy_steps", 0) and not
+             preset.get("vision") else ""))
+    if args.dry_run or not jobs:
+        return rows
+    seconds = float(args.distill_minutes) * 60
+    if args.deadline:  # never let the teacher eat the time the training needs
+        seconds = min(seconds, max(0.0, (args.deadline - time.time() - (args.reserve_minutes + 20) * 60) * 0.4))
+    if todo and seconds > 60:
+        started = time.time()
+        fresh: dict[str, str] = {}
+        try:
+            if generate is not None:
+                fresh = generate(teacher, todo, args.max_seq, seconds)
+            elif world > 1:
+                target = _distill_file(Path(args.out))
+                temp = target.with_name(target.name + ".tmp")
+                temp.write_text(json.dumps({"teacher": teacher, "jobs": todo, "max_seq": args.max_seq,
+                                            "seconds": seconds}, ensure_ascii=False), encoding="utf-8")
+                temp.replace(target)
+                fresh = teacher_generate(teacher, todo[0::world], args.max_seq, seconds)
+                fresh.update(_wait_for_parts(Path(args.out), world, seconds + 1800))
+            else:
+                fresh = teacher_generate(teacher, todo, args.max_seq, seconds)
+        except Exception as exc:  # noqa: BLE001 - the original answers still train a good model
+            print(f"distillation: the teacher failed ({type(exc).__name__}: {exc}) - training on the original answers")
+        known.update(fresh)
+        save_teacher_answers(args, teacher, fresh)
+        print(f"teacher wrote {len(fresh)} answers in {(time.time() - started) / 60:.0f} min")
+    elif todo:
+        print("distillation: not enough session time left for the teacher - training on the original answers")
+    distilled, stats = apply_teacher_answers(rows, jobs, known, teacher, bool(getattr(args, "uncensored", False)))
+    print(f"distillation: {stats['used']}/{stats['asked']} rows now carry the teacher's answer"
+          + (f" (kept the original for: {json.dumps(stats['dropped'])})" if stats["dropped"] else ""))
+    args.distill_report = stats
+    return distilled
+
+
+def reverse_kl(student: Any, teacher: Any, chunk: int = 256) -> Any:
+    """Mean per-token KL(student || teacher) over ``[tokens, vocab]`` logits (fp32, in chunks to save memory).
+    Reverse KL is "mode seeking": the student learns the teacher's best answers instead of spreading itself thin
+    over everything the bigger model could say - the loss of Qwen3's on-policy phase."""
+    import torch
+
+    vocab = min(student.shape[-1], teacher.shape[-1])
+    total = student.new_zeros((), dtype=torch.float32)
+    count = student.shape[0]
+    for start in range(0, count, chunk):
+        own = torch.log_softmax(student[start:start + chunk, :vocab].float(), dim=-1)
+        ref = torch.log_softmax(teacher[start:start + chunk, :vocab].float(), dim=-1)
+        total = total + (own.exp() * (own - ref)).sum()
+    return total / max(1, count)
+
+
+def token_logits(model: Any, sequences: list[list[int]], starts: list[int], lengths: list[int], pad_id: int) -> Any:
+    """Logits that predicted each reply token: ``[sum(lengths), vocab]`` (right-padded batch)."""
+    import torch
+
+    device = next(model.parameters()).device
+    width = max(len(sequence) for sequence in sequences)
+    ids = torch.full((len(sequences), width), int(pad_id), dtype=torch.long, device=device)
+    mask = torch.zeros_like(ids)
+    for i, sequence in enumerate(sequences):
+        ids[i, :len(sequence)] = torch.tensor(sequence, dtype=torch.long, device=device)
+        mask[i, :len(sequence)] = 1
+    logits = model(input_ids=ids, attention_mask=mask).logits
+    return torch.cat([logits[i, starts[i] - 1:starts[i] - 1 + lengths[i]] for i in range(len(sequences))])
+
+
+def onpolicy_prompts(rows: list[dict[str, Any]], steps: int, batch: int, world: int, seed: int) -> list[list[dict[str, str]]]:
+    """Prompts for the on-policy phase: everyday chat and Minecraft questions (game turns keep their rule-checked
+    JSON - the teacher never saw the bot's rules)."""
+    import random
+
+    prompts = [row["messages"][:-1] for row in rows if row.get("kind") in ("general", "mcqa") and not row.get("images")
+               and row.get("messages") and row["messages"][-1].get("role") == "assistant"]
+    if not prompts:
+        return []
+    random.Random(seed + 7).shuffle(prompts)
+    need = steps * batch * world
+    return (prompts * (need // len(prompts) + 1))[:need]
+
+
+def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any,
+                     rows: list[dict[str, Any]], world: int = 1, rank: int = 0) -> dict[str, Any]:
+    """Phase 2 of Qwen3's strong-to-weak distillation (on-policy): the student writes replies to real prompts and the
+    teacher grades every token of them; the student minimises reverse KL to the teacher on its own replies. Qwen
+    found it beats reinforcement learning at a tenth of the GPU time. With DDP each T4 takes different prompts and
+    the LoRA gradients are averaged. Any failure keeps the fine-tuned model as it is."""
+    steps, batch = int(getattr(args, "onpolicy_steps", 0) or 0), max(1, int(getattr(args, "onpolicy_batch", 4) or 4))
+    if steps <= 0 or preset.get("vision"):
+        return {}
+    prompts = onpolicy_prompts(rows, steps, batch, world, args.seed)
+    if not prompts:
+        return {}
+    from unsloth import FastLanguageModel  # noqa: I001
+    import torch
+    import torch.distributed as dist
+
+    teacher_id = teacher_model(args)
+    os.environ["UNSLOTH_RETURN_LOGITS"] = "1"  # Unsloth hands out real logits only when asked
+    teacher = None
+    try:
+        teacher, _ = load_teacher(teacher_id, args.max_seq)
+    except Exception as exc:  # noqa: BLE001
+        print(f"on-policy distillation skipped: the teacher did not load ({type(exc).__name__}: {exc})")
+    if _all_ranks(teacher is None):
+        free_gpu(teacher)
+        os.environ.pop("UNSLOTH_RETURN_LOGITS", None)
+        return {}
+    print(f"on-policy distillation: {steps} steps x {batch} replies x {world} GPU(s), teacher {teacher_id}")
+    mine = prompts[rank::world]
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=float(args.onpolicy_lr), weight_decay=0.0)
+    half = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16  # T4: fp16, like the Trainer
+    scaler = (torch.amp.GradScaler("cuda", enabled=half == torch.float16) if hasattr(torch, "amp")
+              and hasattr(torch.amp, "GradScaler") else torch.cuda.amp.GradScaler(enabled=half == torch.float16))
+    prefix = [] if preset.get("reasoning") else tokenizer(NO_THINK_PREFIX, add_special_tokens=False)["input_ids"]
+    stop_ids = {tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id} - {None}
+    pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    stop_at = (args.deadline - (args.reserve_minutes + 5) * 60) if args.deadline else float("inf")
+    started, losses, step = time.time(), [], 0
+    while step < steps:
+        ok, value = True, 0.0
+        try:
+            FastLanguageModel.for_inference(model)
+            tokenizer.padding_side = "left"
+            texts = [render(tokenizer, messages, preset, generation=True) for messages in mine[step * batch:(step + 1) * batch]]
+            encoded = tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(model.device)
+            with torch.no_grad():  # 1. the student writes (sampled, as it would answer)
+                output = model.generate(**encoded, max_new_tokens=int(args.onpolicy_tokens), do_sample=True,
+                                        temperature=1.0, top_p=1.0, top_k=0, pad_token_id=pad)
+            width = encoded["input_ids"].shape[1]
+            samples = []
+            for i in range(len(texts)):
+                prompt = encoded["input_ids"][i][encoded["attention_mask"][i].bool()].tolist()
+                reply = output[i, width:].tolist()
+                cut = next((k + 1 for k, token in enumerate(reply) if token in stop_ids), len(reply))
+                if reply[:cut]:
+                    samples.append((prompt, reply[:cut]))
+            FastLanguageModel.for_training(model)
+            if samples:  # 2. both score the student's tokens: reverse KL on them
+                lengths = [len(reply) for _, reply in samples]
+                with torch.autocast("cuda", dtype=half):
+                    own = token_logits(model, [p + r for p, r in samples], [len(p) for p, _ in samples], lengths, pad)
+                with torch.no_grad(), torch.autocast("cuda", dtype=half):
+                    ref = token_logits(teacher, [p + prefix + r for p, r in samples],
+                                       [len(p) + len(prefix) for p, _ in samples], lengths, pad)
+                loss = reverse_kl(own, ref)  # fp32
+                scaler.scale(loss).backward()  # fp16 needs loss scaling or small gradients vanish
+                value = float(loss.detach())
+                del own, ref, loss
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            optimizer.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+            if is_oom(exc) and batch > 1 and not losses:
+                batch = max(1, batch // 2)
+                mine = prompts[rank::world]
+                print(f"on-policy distillation: out of GPU memory - {batch} replies per step")
+            else:
+                print(f"on-policy distillation stopped at step {step}: {type(exc).__name__}: {exc}")
+                batch = 0
+        if _all_ranks(not ok):  # every GPU retries or stops together, or DDP hangs
+            optimizer.zero_grad(set_to_none=True)
+            if _all_ranks(batch == 0) or losses:
+                break
+            continue
+        if world > 1 and dist.is_available() and dist.is_initialized():
+            for param in params:
+                if param.grad is None:
+                    param.grad = torch.zeros_like(param)
+                dist.all_reduce(param.grad)  # same scale on both GPUs, so an overflow is seen by both
+                param.grad.div_(world)
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(params, 1.0)
+        scaler.step(optimizer)  # skipped (and the scale lowered) if a gradient overflowed
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+        losses.append(value)
+        step += 1
+        if step % 10 == 0 or step == steps:
+            print(f"on-policy step {step}/{steps}: KL {sum(losses[-10:]) / len(losses[-10:]):.4f}")
+        if _all_ranks(time.time() > stop_at):
+            print("on-policy distillation: stopping early to leave time for the export")
+            break
+    free_gpu(teacher, optimizer)
+    os.environ.pop("UNSLOTH_RETURN_LOGITS", None)
+    FastLanguageModel.for_training(model)
+    if not losses:
+        return {}
+    head, tail = losses[:max(1, len(losses) // 5)], losses[-max(1, len(losses) // 5):]
+    report = {"teacher": teacher_id, "steps": len(losses), "replies": len(losses) * batch * world,
+              "kl_start": round(sum(head) / len(head), 4), "kl_end": round(sum(tail) / len(tail), 4),
+              "minutes": round((time.time() - started) / 60, 1)}
+    print(f"on-policy distillation: KL {report['kl_start']} -> {report['kl_end']} in {report['minutes']} min")
+    return report
+
+
 def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str, Any]], eval_rows: list[dict[str, Any]]) -> int:
     rank, world = dist_info()
     if world == 1 and not args.split:
@@ -2722,6 +3264,11 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
 
     stats = run_training(build(), rebuild, world)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
+    if getattr(args, "onpolicy_steps", 0) > 0:
+        try:
+            args.onpolicy_report = onpolicy_distill(args, preset, model, tokenizer, rows, world, rank)
+        except Exception as exc:  # noqa: BLE001 - the fine-tuned model is kept as it is
+            print(f"on-policy distillation failed ({type(exc).__name__}: {exc}) - keeping the fine-tuned model")
     if world > 1:
         end_ddp()
         if rank > 0:
@@ -2865,6 +3412,10 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
                               "uncensored": bool(preset.get("uncensored")), "system_prompt": args.system_prompt,
                               "general_rows": sum(1 for row in rows if row.get("kind") == "general"),
                               "commercial": bool(getattr(args, "commercial", False)), "data": data_sources(rows, args)}
+    distill = {key: value for key, value in (("offpolicy", getattr(args, "distill_report", None)),
+                                             ("onpolicy", getattr(args, "onpolicy_report", None))) if value}
+    if distill:
+        report["distill"] = dict(distill, teacher=teacher_model(args))
     if eval_rows and args.eval_limit:
         for_inference()
         results = []
@@ -3104,6 +3655,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-side", type=int, default=IMAGE_SIDE, help="vision editions: longest side of a picture")
     parser.add_argument("--vision-layers", type=int, default=0, choices=[0, 1],
                         help="vision editions: 1 = also fine-tune the image encoder (slower, more memory)")
+    parser.add_argument("--distill-rows", type=int, default=0,
+                        help="distillation phase 1 (off-policy, Qwen3 strong-to-weak): a bigger Qwen3 teacher answers "
+                             "up to N chat and Minecraft prompts and the student learns its answers (0 = off)")
+    parser.add_argument("--onpolicy-steps", type=int, default=0,
+                        help="distillation phase 2 (on-policy, text editions): after fine-tuning, the student writes "
+                             "replies and learns the teacher's token probabilities on them (reverse KL); 0 = off")
+    parser.add_argument("--teacher", default="auto",
+                        help=f"teacher model: auto = {TEACHER_MODEL} ({UNCENSORED_TEACHER} with --uncensored); "
+                             "any Qwen3 with the same tokenizer works, e.g. unsloth/Qwen3-14B")
+    parser.add_argument("--distill-minutes", type=float, default=40.0,
+                        help="most minutes the teacher may spend writing answers (unwritten rows keep theirs)")
+    parser.add_argument("--onpolicy-batch", type=int, default=4, help="replies per GPU per on-policy step")
+    parser.add_argument("--onpolicy-tokens", type=int, default=256, help="longest student reply in the on-policy phase")
+    parser.add_argument("--onpolicy-lr", type=float, default=5e-5, help="learning rate of the on-policy phase")
     parser.add_argument("--uncensored", action="store_true",
                         help="train on the abliterated base (no refusals) and drop refusals from the extra chat data")
     parser.add_argument("--system-prompt-file", help="the model's default system prompt (default: the built-in "
@@ -3171,7 +3736,7 @@ def main(argv: list[str] | None = None) -> int:
     rank, world = dist_info()
     if world > 1 and rank > 0:  # DDP: the other T4 trains on the rows rank 0 prepares (and prints nothing twice)
         sys.stdout = open(os.devnull, "w")  # noqa: SIM115 - for the life of the process
-        shared = wait_for_rows(Path(args.out))
+        shared = wait_for_rows(Path(args.out), on_job=lambda: serve_distill_job(Path(args.out), rank, world))
         if shared is None:
             return 0
         args.data_dir = shared["data_dir"]
@@ -3265,6 +3830,7 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
         ["safetensors 16-bit"] if args.safetensors != "none" else [])
     print(f"exports: {', '.join(editions) or 'only the LoRA adapter'}")
     if args.dry_run:
+        distill_offpolicy(args, preset, rows, dist_info()[1])  # prints the plan only
         sample = prepare_messages(rows[0], preset)[-1]["content"]
         print("dry run: data is fine. Sample reply:", sample[:400])
         return stop(0)
@@ -3272,6 +3838,8 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
         print(f"not enough session time left for {args.preset} (training + {args.reserve_minutes:.0f} min export) - "
               "train it in the next session")
         return stop(3)
+    if getattr(args, "distill_rows", 0) > 0:
+        rows = distill_offpolicy(args, preset, rows, dist_info()[1])
     if share:
         share_rows(Path(args.out), rows, eval_rows, args.data_dir)
     return train(args, preset, rows, eval_rows)
