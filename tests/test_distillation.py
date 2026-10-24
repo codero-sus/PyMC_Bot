@@ -476,7 +476,7 @@ def test_notebook_installs_vllm_in_its_own_venv_and_passes_it_only_when_it_works
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
     assert "VLLM_TEACHER = True" in code and "TEACHER_CACHE = True" in code
-    assert f'VLLM_VERSION = "{llm_train.VLLM_VERSION}"' in code and 'VLLM_PYTHON = "/tmp/pymc-vllm/bin/python"' in code
+    assert f'VLLM_VERSION = "{llm_train.VLLM_VERSION}"' in code and 'VLLM_PYTHON = f"{TMP}/vllm/bin/python"' in code
     assert '"uv", "venv"' in code and '"import vllm, torch; assert torch.cuda.is_available()"' in code
     assert 'FLAGS += " --onpolicy-refresh 4" if FAST' in code
     assert 'FLAGS += " --teacher-cache-repo auto" if TEACHER_CACHE and HF_REPO' in code

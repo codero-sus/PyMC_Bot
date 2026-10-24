@@ -169,7 +169,7 @@ def test_notebook_speed_flags_and_deferred_ggufs():
     code = "\n".join(cells)
     assert "editions_to_be_trained = {txt}" in cells[1] and "\nEDITIONS = [" not in cells[1]
     assert 'os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")' in code
-    assert '--stream-cache /tmp/pymc-stream-cache' in code
+    assert 'FLAGS += f" --stream-cache {CACHE}"' in code and 'CACHE = f"{WORK}/cache"' in code
     assert 'RUN_FLAGS += " --defer-gguf"' in code and '"--export-only"' in code
     assert '"CUDA_VISIBLE_DEVICES": ""' in code  # the GGUF process never touches a T4
     assert '"--token-budget 0"' in code  # out of memory with the big batches -> the preset's batch

@@ -560,7 +560,8 @@ def cached(args: argparse.Namespace, key: str, load: Any, what: str = "data", ch
     import hashlib
 
     path = Path(folder) / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}.json"
-    with export_lock(str(path) + ".lock", waiting=f"waiting for another edition to finish streaming the {what}..."):
+    path.parent.mkdir(parents=True, exist_ok=True)  # else nothing is ever shared
+    with export_lock(lock_file(path), waiting=f"waiting for another edition to finish streaming the {what}..."):
         if path.is_file():
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
@@ -1460,7 +1461,9 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
             try:
                 key = (f"pictures:{args.vision_dataset}:{args.stream_vision}:{args.seed}:{bool(args.uncensored)}:"
                        f"{args.system_prompt}")
-                where = Path(args.out) / "stream_images"
+                where = scratch_for(Path(args.out), "stream_images")  # only this run needs them (paths are absolute)
+                if where == Path(args.out):
+                    where = Path(args.out) / "stream_images"
                 if getattr(args, "stream_cache", None):  # both VL editions use the same pictures: stream them once
                     import hashlib
 
@@ -2044,13 +2047,58 @@ class Uploader:
             self.jobs.join()
 
 
+def scratch_root() -> Path | None:
+    """Where throwaway files go: ``$PYMC_SCRATCH``, else ``/kaggle/tmp`` on Kaggle (~60 GB, not saved, not counted in
+    the 20 GB of ``/kaggle/working``, which keeps only what is needed again). ``None`` elsewhere."""
+    chosen = os.environ.get("PYMC_SCRATCH")
+    if chosen:
+        return Path(chosen)
+    if not Path("/kaggle/working").is_dir():
+        return None
+    try:
+        Path("/kaggle/tmp").mkdir(parents=True, exist_ok=True)  # Kaggle doesn't create it
+    except OSError:  # not writable: not a real Kaggle session
+        return None
+    return Path("/kaggle/tmp")
+
+
+def scratch_for(out: Path, what: str) -> Path:
+    """A throwaway folder for one output folder (``out`` itself when there is no scratch disk)."""
+    root = scratch_root()
+    if root is None:
+        return Path(out)
+    import hashlib
+
+    where = Path(out).resolve()
+    return root / what / f"{where.name}-{hashlib.sha256(str(where).encode('utf-8')).hexdigest()[:8]}"
+
+
+def lock_file(path: Path | str) -> str:
+    """The lock for ``path``: on the scratch disk, so no empty ``.lock`` files pile up next to kept files."""
+    root = scratch_root()
+    if root is None:
+        return str(path) + ".lock"
+    import hashlib
+
+    return str(root / "locks" / f"{Path(path).name}-{hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:8]}.lock")
+
+
 def gguf_scratch(args: argparse.Namespace, out: Path) -> Path:
-    """Where the F16 GGUF and the quants are made: the root disk (``/tmp``), not Kaggle's 20 GB output folder."""
+    """Where the F16 GGUF and the quants are made: the scratch disk (``/kaggle/tmp``, else ``/tmp``), never
+    Kaggle's 20 GB output folder."""
     if getattr(args, "gguf_scratch", None):
         return Path(args.gguf_scratch)
+    root = scratch_root()
+    if root is not None:
+        return root / "gguf" / Path(out).name
     import tempfile
 
     return Path(tempfile.gettempdir()) / "pymc-gguf" / Path(out).name
+
+
+def tools_dir(args: argparse.Namespace, out: Path) -> Path:
+    """Where llama.cpp is downloaded (``--tools-dir``: kept and reused, e.g. ``/kaggle/working/tools``)."""
+    return Path(args.tools_dir) if getattr(args, "tools_dir", None) else gguf_scratch(args, out).parent
 
 
 def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any, out: Path,
@@ -2096,7 +2144,7 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
         try:
             print(f"making GGUFs {', '.join(q.upper() for q in quants)} from the safetensors (llama.cpp)")
             result = make_ggufs(Path(st_dir), scratch, stem, quants, vision=bool(preset.get("vision")),
-                                tools=tools or llama_cpp_tools(scratch.parent), on_file=on_file, run=run,
+                                tools=tools or llama_cpp_tools(tools_dir(args, out)), on_file=on_file, run=run,
                                 on_base=on_base)
             result["route"] = "llama.cpp"
         except Exception as exc:
@@ -2472,7 +2520,7 @@ def _rows_file(out: Path) -> Path:
     if run in ("", "none"):  # accelerate launch leaves the elastic run id at "none"
         run = os.environ.get("MASTER_PORT") or "run"
     run = re.sub(r"[^A-Za-z0-9_.-]", "_", run)
-    return Path(out) / f".ddp-rows-{run}.json"
+    return scratch_for(out, "handover") / f".ddp-rows-{run}.json"
 
 
 def share_rows(out: Path, rows: list[dict[str, Any]] | None, eval_rows: list[dict[str, Any]] | None = None,
@@ -2841,7 +2889,7 @@ def save_teacher_answers(args: argparse.Namespace, teacher: str, answers: dict[s
     if path is None or not answers:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with export_lock(str(path) + ".lock", waiting="waiting for another edition to save the teacher's answers..."):
+    with export_lock(lock_file(path), waiting="waiting for another edition to save the teacher's answers..."):
         merged = load_teacher_answers(args, teacher)
         merged.update(answers)
         temp = path.with_name(path.name + ".tmp")
@@ -2850,8 +2898,10 @@ def save_teacher_answers(args: argparse.Namespace, teacher: str, answers: dict[s
 
 
 def _distill_file(out: Path, part: int | None = None) -> Path:
-    run = _rows_file(out).name[len(".ddp-rows-"):-len(".json")]
-    return Path(out) / (f".distill-{run}.json" if part is None else f".distill-{run}-{part}.json")
+    rows = _rows_file(out)
+    run = rows.name[len(".ddp-rows-"):-len(".json")]
+    rows.parent.mkdir(parents=True, exist_ok=True)
+    return rows.parent / (f".distill-{run}.json" if part is None else f".distill-{run}-{part}.json")
 
 
 def free_gpu(*objects: Any) -> None:
@@ -2963,7 +3013,10 @@ def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, second
     import tempfile
 
     run = run or subprocess.run
-    work = Path(tempfile.mkdtemp(prefix="pymc-vllm-"))
+    root = scratch_root()
+    if root is not None:
+        (root / "vllm-jobs").mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="pymc-vllm-", dir=str(root / "vllm-jobs") if root is not None else None))
     answers: dict[str, str] = {}
     for eager in (False, True):
         job, out, journal = work / "job.json", work / "answers.json", work / "vllm.log"
@@ -3143,7 +3196,7 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
     if args.deadline:  # never let the teacher eat the time the training needs
         seconds = min(seconds, max(0.0, (args.deadline - time.time() - (args.reserve_minutes + 20) * 60) * 0.4))
     folder = getattr(args, "stream_cache", None)
-    lock = str(Path(folder) / ".teacher.lock") if folder else None
+    lock = lock_file(Path(folder) / "teacher") if folder else None
     with export_lock(lock, waiting="waiting for the other edition's teacher (its answers are reused)..."):
         known = load_teacher_answers(args, teacher)  # the other edition may just have written some
         remote = teacher_cache_remote(args, teacher) if any(job["key"] not in known for job in jobs) else None
@@ -3429,7 +3482,7 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
             warmup_steps=10, num_train_epochs=args.epochs,
             max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr, logging_steps=10,
             optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
-            output_dir=str(out / "checkpoints"), save_strategy="no", report_to="none", **options,
+            output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", **options,
         )
         built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
                            callbacks=[callback] if callback else None)
@@ -3605,7 +3658,7 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
         per_device_train_batch_size=preset["batch"], warmup_steps=10,
         num_train_epochs=args.epochs, max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr,
         logging_steps=10, optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
-        output_dir=str(out / "checkpoints"), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
+        output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
         remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
         max_length=args.max_seq, **speed_options(args, preset, world, text=False),
     )
@@ -3703,7 +3756,7 @@ def defer_export(args: argparse.Namespace, preset: dict[str, Any], out: Path, re
     if not getattr(args, "defer_gguf", False) or args.test_gguf or not gguf_quants(args) or not report.get("safetensors"):
         return False
     try:
-        llama_cpp_tools(gguf_scratch(args, out).parent)
+        llama_cpp_tools(tools_dir(args, out))
     except Exception as exc:  # noqa: BLE001 - then the GGUFs are made here, with the fallback available
         print(f"GGUFs are made in this process (llama.cpp is not ready: {type(exc).__name__}: {exc})")
         return False
@@ -3800,6 +3853,8 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
             report["gguf_test"] = test_gguf(out, preset, prompts, picture)
     uploader.wait()
     shutil.rmtree(out / "checkpoints", ignore_errors=True)
+    if scratch_for(out, "checkpoints") != out:
+        shutil.rmtree(scratch_for(out, "checkpoints"), ignore_errors=True)
     report.update({"minutes": round((time.time() - started) / 60, 1), "created": time.strftime("%Y-%m-%d %H:%M:%S")})
     write_cards(out, args.preset, preset, report, repo)
     # 4. the GGUF repo: the main quant, mmproj, Modelfile, model card, report and the essentials
@@ -3815,6 +3870,8 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
         report.pop("hub_repo", None)
         write_cards(out, args.preset, preset, report, repo)
     shutil.rmtree(out / "stream_images", ignore_errors=True)  # streamed training pictures are not needed any more
+    if scratch_for(out, "stream_images") != out:
+        shutil.rmtree(scratch_for(out, "stream_images"), ignore_errors=True)
     if getattr(args, "clean_after_upload", False):
         removed = clean_uploaded(out, report)
         if removed:
@@ -3906,6 +3963,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-cache-repo", default="",
                         help="keep the teacher's answers in this private Hugging Face dataset so later sessions reuse "
                              f"them (needs HF_TOKEN; auto = <you>/{TEACHER_CACHE_REPO})")
+    parser.add_argument("--tools-dir", default=None,
+                        help="where llama.cpp is downloaded and kept for the next editions (default: next to the "
+                             "GGUF scratch folder)")
     parser.add_argument("--vllm-worker", nargs=2, metavar=("JOB", "OUT"), help=argparse.SUPPRESS)
     parser.add_argument("--uncensored", action="store_true",
                         help="train on the abliterated base (no refusals) and drop refusals from the extra chat data")

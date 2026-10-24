@@ -34,7 +34,7 @@ model cards link to each other; the safetensors card has transformers and vLLM c
 safetensors repo uses its GGUF twin automatically, since Ollama runs GGUF.
 
 **The order:** the safetensors are saved, compacted and uploaded first. Then llama.cpp converts *those exact
-weights* into one F16 GGUF (in `/tmp`, off Kaggle's 20 GB output disk) and `llama-quantize` makes every quant from it.
+weights* into one F16 GGUF (in `/kaggle/tmp`, off Kaggle's 20 GB output disk) and `llama-quantize` makes every quant from it.
 Each quant is uploaded as soon as it is ready and deleted, so the disk never holds more than the F16 file and one
 quant. The GGUF card lists every file with its size (`ollama run hf.co/you/Minecraftism-4B-GGUF:Q8_0` picks one;
 `llm import --hf ... --quant Q8_0` does it for the bot). llama.cpp comes from its newest GitHub release (Linux
@@ -208,7 +208,7 @@ in the data table. `DISTILL = False` trains as before.
 **Making distillation fast:**
 
 * **The teacher writes with vLLM** (`VLLM_TEACHER = True`). vLLM 0.18.1, the version validated on Kaggle's 2× T4, is
-  installed with `uv` into its own venv (`/tmp/pymc-vllm`) in the background while the data is checked, so
+  installed with `uv` into its own venv (`/kaggle/tmp/vllm`) in the background while the data is checked, so
   Unsloth's torch stays untouched. The trainer then runs the teacher in a separate process:
   * fp16, split over **both T4s** (tensor parallelism), with paged attention, continuous batching and prefix caching;
   * typically several times faster than transformers' `generate`;
@@ -224,6 +224,24 @@ in the data table. `DISTILL = False` trains as before.
 
 Rough cost (estimates, not measured): with vLLM, a few minutes of both T4s plus ~3 min to start the engine for
 1500 answers (transformers: ~25–40 min); then ~10–15 min per text edition for the on-policy phase.
+
+### Where files go
+
+Kaggle gives two disks. The notebook keeps what is needed again on the saved one and puts the throwaway files on
+the big scratch one:
+
+| `/kaggle/working`: 20 GB, kept (Output tab, file persistence) | `/kaggle/tmp`: ~60 GB, thrown away |
+| --- | --- |
+| each edition's folder (model until uploaded, `report.json`, `export_job.json`) | downloaded base and teacher models (`hf-cache/`) |
+| the logs (`<edition>.log`, `vllm-install.log`) | the vLLM venv (`vllm/`) and its job folders |
+| the data kit (`kit/`) and `train_minecraft_llm.py` | the F16 GGUF and the quants before upload (`gguf/`) |
+| **`cache/`**: chat, Q&A, pictures and teacher answers, fetched once and used by every edition | checkpoints, GPU hand-over files, locks |
+| **`tools/`**: llama.cpp, downloaded once for every edition | temp files (`TMPDIR`), pip/uv caches, Unsloth's compiled cache, the kit zip, the system prompt |
+
+So the 20 GB output disk only fills with real results, and a crash never leaves gigabytes of junk in the Output.
+With the notebook's file persistence on, `cache/` and `tools/` carry over to the next session. The trainer finds
+the scratch disk by itself on Kaggle (`/kaggle/tmp`; `PYMC_SCRATCH=<folder>` picks another one). Elsewhere it
+keeps using the output folder and the system temp folder, as before. `--tools-dir <folder>` sets where llama.cpp goes.
 
 ### Speed: both T4s, every minute
 
@@ -319,13 +337,13 @@ Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0` (the
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
 `--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
 Speed flags (the notebook sets them): `--deadline <unix time>` + `--reserve-minutes 60`, `--export-lock <file>`,
-`--clean-after-upload`, `--token-budget 12288`, `--loader-workers 2`, `--stream-cache <folder>`, `--defer-gguf` (then
+`--clean-after-upload`, `--token-budget 12288`, `--loader-workers 2`, `--stream-cache <folder>`, `--tools-dir <folder>`, `--defer-gguf` (then
 `--export-only <out>` makes the GGUFs on the CPU), `--group-by-length` (without `--token-budget`). Two T4s on one edition:
 `accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16 train_minecraft_llm.py --data ... --preset minecraftism`
 (or `torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py ...`).
 Distillation flags: `--distill-rows 1500`, `--distill-minutes 40`, `--onpolicy-steps 60`, `--teacher auto`,
 `--onpolicy-batch 4`, `--onpolicy-tokens 256`, `--onpolicy-lr 5e-5`, `--onpolicy-refresh 4`,
-`--vllm-python /tmp/pymc-vllm/bin/python` (`--teacher-engine auto|vllm|hf`), `--teacher-cache-repo auto`
+`--vllm-python /kaggle/tmp/vllm/bin/python` (`--teacher-engine auto|vllm|hf`), `--teacher-cache-repo auto`
 (all off by default; the notebook turns them on).
 
 ## Uncensored and everyday use
