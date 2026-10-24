@@ -131,15 +131,15 @@ def test_server_warnings_before_kaggle_closes_it(monkeypatch, tmp_path):
     assert titles == [("THE 12 HOURs: 3 h left", False)]  # the wind rises
     assert [t for t, _x, _p in env["server_warnings"](start + 10 * 3600 + 30, warned)] == ["THE 12 HOURs: 2 h left"]
     first = env["server_warnings"](start + 11 * 3600 + 60, warned)
-    assert [title for title, _text, ping in first if ping] == ["THE 12 HOURs: 59 min left"]
+    assert [(title, ping) for title, _text, ping in first] == [("THE 12 HOURs: 59 min left", False)]  # silent
     assert "https://www.kaggle.com/code/me/nb" in first[0][1] and "branch" in first[0][1]
     assert env["server_warnings"](start + 11 * 3600 + 120, warned) == []  # said once
     late = env["server_warnings"](start + 12 * 3600 - 300, warned)  # 30, 15, 10 and 5 due: only the newest is sent
-    assert [t for t, _x, _p in late] == ["THE 12 HOURs: 5 min left"]
+    assert [(t, p) for t, _x, p in late] == [("THE 12 HOURs: 5 min left", True)]  # the countdown's only ping
     assert "Holding on" in late[0][1] and "0/1 edition(s) safe" in late[0][1]
     for minute in (4, 3, 2, 1):  # every minute of the last five
         due = env["server_warnings"](start + 12 * 3600 - minute * 60, warned)
-        assert [t for t, _x, p in due if p] == [f"THE 12 HOURs: {minute} min left"]
+        assert [(t, p) for t, _x, p in due] == [(f"THE 12 HOURs: {minute} min left", False)]
     final = env["server_warnings"](start + 12 * 3600 - 30, warned)
     assert [t for t, _x, _p in final] == ["THE 12 HOURs: 30 s left"] and "final report" in final[0][1]
     assert env["server_warnings"](start + 12 * 3600 - 10, warned) == []
