@@ -236,7 +236,7 @@ def test_notebook_turns_distillation_on():
     assert "--distill-rows {min(DISTILL_ROWS, 32) if QUICK_TEST else DISTILL_ROWS}" in code
     assert "--onpolicy-steps {min(ONPOLICY_STEPS, 3) if QUICK_TEST else ONPOLICY_STEPS}" in code
     intro = "".join(nb["cells"][0]["source"])
-    assert "strong-to-weak" in intro and 'GPU_MODE = "merge"' in intro
+    assert "strong-to-weak" in intro and 'GPU_MODE = "parallel"' in intro
 
 
 # ---------------------------------------------------------------- the maths (needs torch: CI's training job)
