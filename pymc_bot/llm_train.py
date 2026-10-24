@@ -37,6 +37,7 @@ Only the standard library is imported at the top so presets and ``--dry-run`` wo
 from __future__ import annotations
 
 import argparse
+import functools
 import glob
 import json
 import os
@@ -2665,6 +2666,64 @@ def deadline_callback(args: argparse.Namespace, clock: Any = time.time) -> Any:
     return StopBeforeDeadline()
 
 
+class LossPlateau:
+    """``--stop-when-learned``: the training loss (mean of the last 10 logs = 100 steps) has not fallen by 3% for
+    ``patience`` steps (10% of the run, at least 200) after at least a quarter of the run and 3/4 of one epoch (most
+    rows seen once): the model knows the data, and the rest would cost hours of weekly GPU time for (almost) nothing."""
+
+    def __init__(self, window: int = 10, gain: float = 0.03, min_part: float = 0.25) -> None:
+        self.window, self.gain, self.min_part = window, gain, min_part
+        self.losses: list[float] = []
+        self.best, self.best_step = float("inf"), 0
+
+    def add(self, step: int, loss: float, total: int, epochs: float = 1.0) -> bool:
+        self.losses.append(float(loss))
+        recent = self.losses[-self.window:]
+        if len(recent) < max(3, self.window // 2):
+            return False
+        smooth = sum(recent) / len(recent)
+        if smooth < self.best * (1 - self.gain):
+            self.best, self.best_step = smooth, step
+        total = max(1, int(total))
+        first = max(total * self.min_part, 0.75 * total / max(1.0, float(epochs or 1.0)))
+        return step >= first and step - self.best_step >= max(200, total // 10)
+
+
+def learned_callback(args: argparse.Namespace, agree: Any = None) -> Any:
+    """A TrainerCallback that ends training when the loss stops falling (see :class:`LossPlateau`); ``None``
+    unless ``--stop-when-learned``."""
+    if not getattr(args, "stop_when_learned", False):
+        return None
+    from transformers import TrainerCallback
+
+    agree = agree or _all_ranks
+    plateau = LossPlateau()
+
+    class StopWhenLearned(TrainerCallback):
+        flat = False
+
+        def on_log(self, train_args: Any, state: Any, control: Any, logs: Any = None, **_kwargs: Any) -> Any:
+            if logs and "loss" in logs:
+                self.flat = plateau.add(int(state.global_step), float(logs["loss"]), int(state.max_steps),
+                                        float(getattr(state, "num_train_epochs", 1) or 1))
+            return control
+
+        def on_step_end(self, train_args: Any, state: Any, control: Any, **_kwargs: Any) -> Any:
+            if state.global_step % 10 == 0 and agree(self.flat) and not control.should_training_stop:
+                print(f"learned: the loss stopped falling (~{plateau.best:.3f}) - stopping at step "
+                      f"{state.global_step}/{state.max_steps}, the time goes to the next edition", flush=True)
+                args.stopped_early = {"step": int(state.global_step), "of": int(state.max_steps), "reason": "learned"}
+                control.should_training_stop = True
+            return control
+
+    return StopWhenLearned()
+
+
+def training_callbacks(args: argparse.Namespace) -> list[Any] | None:
+    found = [cb for cb in (deadline_callback(args), learned_callback(args)) if cb is not None]
+    return found or None
+
+
 def run_training(trainer: Any, rebuild: Any, world: int, tries: int = 4) -> Any:
     """``trainer.train()``. When it fails before the first step, ``rebuild(exc)`` may return a safer trainer
     (half the batch after a CUDA out-of-memory, no length grouping when an Unsloth / TRL combination cannot group)
@@ -3078,6 +3137,68 @@ def vllm_root_cause(text: str, lines: int = 12) -> str:
     return "\n".join(picked[-lines:])
 
 
+#: Variables torchrun / accelerate give each training process. The vLLM teacher is started from inside one of them and
+#: must not inherit them: TORCHELASTIC_USE_AGENT_STORE=True makes every vLLM worker wait for a TCPStore server nobody
+#: starts (it hangs ~10 min per try, then "Engine core initialization failed"), RANK / WORLD_SIZE confuse its own
+#: tensor-parallel group.
+_LAUNCHER_ENV = ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "GROUP_RANK", "GROUP_WORLD_SIZE", "ROLE_RANK",
+                 "ROLE_NAME", "ROLE_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT")
+_LAUNCHER_PREFIXES = ("TORCHELASTIC_", "TORCH_ELASTIC_", "ACCELERATE_")
+#: A healthy vLLM start (download of the 16 GB teacher, loading, memory profiling) takes ~5-8 min on Kaggle.
+VLLM_STARTUP_SECONDS = 15 * 60
+
+
+def vllm_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment of the vLLM teacher: ours without the DDP launcher's variables."""
+    env = {key: value for key, value in (os.environ if base is None else base).items()
+           if key not in _LAUNCHER_ENV and not key.startswith(_LAUNCHER_PREFIXES)}
+    env["VLLM_LOGGING_LEVEL"] = "INFO"  # the full log is kept; only the cause is printed
+    return env
+
+
+def _stop_group(proc: Any) -> None:
+    """Stop the vLLM worker *and* its engine / GPU processes (they would keep the T4s' memory)."""
+    import signal
+
+    for sig, wait in ((signal.SIGTERM, 30), (signal.SIGKILL, 10)):
+        try:
+            os.killpg(proc.pid, sig)
+        except (OSError, AttributeError):
+            proc.kill()
+        try:
+            proc.wait(timeout=wait)
+            return
+        except Exception:  # noqa: BLE001 - next signal
+            continue
+
+
+def run_vllm_process(command: list[str], stdout: Any = None, stderr: Any = None, env: Any = None,
+                     timeout: float | None = None, ready: Path | None = None,
+                     startup: float = VLLM_STARTUP_SECONDS, poll: float = 5.0) -> Any:
+    """``subprocess.run`` for the vLLM worker, in its own process group: stopped as a whole at ``timeout``, or when
+    the engine is not ready (``ready`` written by the worker) after ``startup`` seconds - a hang, not a slow start."""
+    import subprocess
+
+    proc = subprocess.Popen(command, stdout=stdout, stderr=stderr, env=env, start_new_session=True)
+    started = time.time()
+    try:
+        while proc.poll() is None:
+            waited = time.time() - started
+            hung = ready is not None and not ready.exists() and waited > startup
+            if hung or (timeout and waited > timeout):
+                if stdout is not None and hasattr(stdout, "write"):
+                    why = f"engine not ready after {waited / 60:.0f} min - stopped (it hangs)" if hung else "time limit"
+                    stdout.write(f"\npymc: {why}\n")
+                    stdout.flush()
+                _stop_group(proc)
+                return type("Done", (), {"returncode": 124 if hung else 125})()
+            time.sleep(poll)
+    finally:
+        if proc.poll() is None:
+            _stop_group(proc)
+    return proc
+
+
 def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, seconds: float, python: str,
                   run: Any = None, log: Any = print) -> dict[str, str]:
     """The teacher writes the answers with vLLM in a separate process (``--vllm-worker``): every T4 this process
@@ -3101,10 +3222,13 @@ def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, second
                                    "jobs": [{"key": j["key"], "messages": j["messages"], "thinking": j["thinking"]}
                                             for j in jobs]}, ensure_ascii=False), encoding="utf-8")
         started = time.time()
+        ready = Path(str(out) + ".ready")
+        ready.unlink(missing_ok=True)
+        runner = run or functools.partial(run_vllm_process, ready=ready, startup=min(VLLM_STARTUP_SECONDS,
+                                                                                      max(300.0, seconds)))
         with open(journal, "w", encoding="utf-8") as handle:
-            code = run([python, os.path.abspath(__file__), "--vllm-worker", str(job), str(out)], stdout=handle,
-                       stderr=subprocess.STDOUT, env={**os.environ, "VLLM_LOGGING_LEVEL": "WARNING"},
-                       timeout=seconds + 900).returncode
+            code = runner([python, os.path.abspath(__file__), "--vllm-worker", str(job), str(out)], stdout=handle,
+                          stderr=subprocess.STDOUT, env=vllm_env(), timeout=seconds + 900).returncode
         if out.is_file():
             try:
                 answers.update(json.loads(out.read_text(encoding="utf-8")))
@@ -3125,8 +3249,9 @@ def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, second
                 pass
         log(f"teacher: vLLM {'(low memory) ' if safe else ''}failed after {(time.time() - started) / 60:.1f} min "
             f"(exit {code}). Cause:\n{vllm_root_cause(text) or text[-800:]}{kept}")
-        seconds = max(0.0, seconds - (time.time() - started))
-        if seconds < 120:
+        took = time.time() - started
+        seconds = max(0.0, seconds - took)
+        if seconds < 300 or took > 8 * 60:  # a slow failure is a hang: a second try would only hang again
             break
     raise RuntimeError("vLLM could not run the teacher")
 
@@ -3169,6 +3294,7 @@ def vllm_worker(job_path: str, out_path: str) -> int:
     if gpus < 2 and not prequantized(str(job["teacher"])):  # 16 GB of fp16 don't fit one T4: 4-bit while loading
         options["quantization"] = "bitsandbytes"
     llm = LLM(**options)
+    Path(out_path + ".ready").write_text("ready", encoding="utf-8")  # the engine started: no hang
     tokenizer = llm.get_tokenizer()
     params = SamplingParams(max_tokens=new_tokens, **sampling)
     prompts = []
@@ -3279,6 +3405,38 @@ def _wait_for_parts(out: Path, world: int, timeout: float, poll: float = 5.0) ->
     return answers
 
 
+def _vllm_failed_file() -> Path | None:
+    root = scratch_root()  # /kaggle/tmp: gone with the session, so a new session tries vLLM again
+    return root / "vllm-failed.json" if root is not None else None
+
+
+def _vllm_failures(session: float) -> list[str]:
+    marker = _vllm_failed_file()
+    try:
+        saved = json.loads(marker.read_text(encoding="utf-8")) if marker is not None and marker.is_file() else {}
+        return list(saved.get("failed", [])) if float(saved.get("session", -1)) == float(session) else []
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
+def vllm_failed_before(teacher: str, session: float) -> bool:
+    """True when vLLM already failed with this teacher in this session (``session`` = its ``--deadline``): the next
+    edition doesn't lose its teacher time on it again."""
+    return bool(session) and teacher in _vllm_failures(session)
+
+
+def remember_vllm_failure(teacher: str, session: float) -> None:
+    marker = _vllm_failed_file()
+    if marker is None or not session:
+        return
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        failed = sorted(set(_vllm_failures(session)) | {teacher})
+        marker.write_text(json.dumps({"session": float(session), "failed": failed}), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str, Any]], world: int = 1,
                       generate: Any = None) -> list[dict[str, Any]]:
     """Phase 1 of Qwen3's strong-to-weak distillation: the teacher answers up to ``--distill-rows`` prompts and the
@@ -3290,6 +3448,10 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
     teacher = teacher_model(args, "answers")
     jobs = teacher_jobs(rows, preset, limit, teacher)
     python = use_vllm(args)
+    session = float(getattr(args, "deadline", 0) or 0)
+    if python and vllm_failed_before(teacher, session):
+        print(f"teacher: vLLM already failed with {teacher} in this session - using transformers")
+        python = ""
     engine = "vLLM" if python else "transformers"
     known = load_teacher_answers(args, teacher)
     todo = [job for job in jobs if job["key"] not in known]
@@ -3325,6 +3487,7 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
                         try:
                             fresh = vllm_generate(teacher, todo, args.max_seq, seconds, python)
                         except Exception as exc:  # noqa: BLE001 - the 8B, or transformers, can still do it
+                            remember_vllm_failure(teacher, session)
                             retry_with = None if fresh else smaller_writer(args, teacher)
                             print(f"teacher: {teacher} did not run on vLLM ({exc}) - "
                                   + (f"{retry_with} writes instead" if retry_with else "writing with transformers"))
@@ -3332,6 +3495,9 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
                     seconds = max(0.0, seconds - (time.time() - started))
                     if retry_with:
                         pass  # after the lock is released: the 8B writes (on vLLM if it can)
+                    elif not python and seconds < 300:  # loading the teacher alone takes ~4 min
+                        print(f"teacher: only {seconds / 60:.0f} min of its time left - not loading it with transformers;"
+                              " the rows keep their original answers")
                     elif not python and world > 1:
                         target = _distill_file(Path(args.out))
                         temp = target.with_name(target.name + ".tmp")
@@ -3591,7 +3757,7 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in rows]
     dataset = Dataset.from_dict({"text": texts})
     user, assistant = TURN_MARKERS[preset["family"]]
-    callback = deadline_callback(args)
+    callbacks = training_callbacks(args)
     plan = plan_batches(token_lengths(tokenizer, texts) if args.token_budget > 0 else [], preset, world,
                         args.max_seq, args.token_budget)
     if plan["p95"]:
@@ -3612,7 +3778,7 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
             output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", **options,
         )
         built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
-                           callbacks=[callback] if callback else None)
+                           callbacks=callbacks)
         return train_on_responses_only(built, instruction_part=user, response_part=assistant)
 
     def rebuild(exc: BaseException) -> Any:
@@ -3789,9 +3955,9 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
         remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
         max_length=args.max_seq, **speed_options(args, preset, world, text=False),
     )
-    callback = deadline_callback(args)
+    callbacks = training_callbacks(args)
     trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config,
-                         callbacks=[callback] if callback else None)
+                         callbacks=callbacks)
     stats = trainer.train()
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
     if world > 1:
@@ -4019,6 +4185,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-data", help="eval.jsonl (default: next to train.jsonl)")
     parser.add_argument("--out", default=None, help="output folder (default: /kaggle/working/<preset> on Kaggle, ./<preset> elsewhere)")
     parser.add_argument("--epochs", type=float, default=1.0)
+    parser.add_argument("--stop-when-learned", action="store_true",
+                        help="end an edition early once its training loss stops falling (saves hours of GPU time)")
     parser.add_argument("--max-steps", type=int, default=0, help="stop after N steps (0 = full epochs)")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--rank", type=int, default=32, help="LoRA rank")
