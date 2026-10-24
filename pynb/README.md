@@ -31,6 +31,19 @@ For long runs use **Save Version → Save & Run All**: the session ends by itsel
 `/kaggle/working` is kept as the Output. In an interactive session, `AUTO_EXIT = True` (the last cell) shuts the kernel
 down once everything is on Hugging Face.
 
+**Discord updates:** add your channel's webhook URL as the Kaggle secret `discord_webhook_inform_me1`
+(**Add-ons → Secrets**; the name is `DISCORD_SECRET` in the settings). The notebook then posts:
+* **Kaggle server online**, with the notebook's URL (set `NOTEBOOK_URL`), its GPUs, RAM and disk
+* **Server status** every `DISCORD_EVERY_MIN` minutes (30 by default): GPU load and memory, RAM, free disk, each edition's
+  step / loss / ETA, time left. If these messages stop coming, the server is gone
+* **Warnings 60, 30 and 10 minutes before Kaggle's 12 h limit closes the server**, and when the disk or RAM is almost full
+* **Server closing** when the kernel shuts down before the notebook finished (stopped, restarted, timed out), or
+  **Server closed** after a normal finish
+* each edition's start, "learned" (loss stopped falling), every upload with its Hugging Face URL, the results, failures
+  (with the end of the log) and notebook errors
+
+`DISCORD_MENTION = "<@your user ID>"` pings you on results, errors and closing warnings. The webhook URL is never printed.
+
 **Where files go:** things needed again stay in `/kaggle/working`: models until uploaded, reports, logs, the data kit,
 `cache/` (streamed data and teacher answers, shared by every edition) and `tools/` (llama.cpp). Throwaway files go to
 `/kaggle/tmp` (~60 GB, not saved): model downloads, vLLM, GGUF work files, checkpoints, locks and temp files.

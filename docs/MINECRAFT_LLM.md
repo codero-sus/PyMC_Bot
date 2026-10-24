@@ -165,6 +165,11 @@ The settings cell:
 | `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
 | `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
+| `DISCORD` | `True` | Discord webhook messages: server online (with `NOTEBOOK_URL`), status, warnings 60/30/10 min before Kaggle's 12 h limit closes the server, low disk/RAM, server closing, edition starts, uploads with their URLs, results, failures, errors |
+| `DISCORD_SECRET` | `"discord_webhook_inform_me1"` | name of the Kaggle secret that holds the webhook URL (never put the URL in the notebook) |
+| `DISCORD_EVERY_MIN` | `30` | a server status every N minutes (GPUs, RAM, disk, step / loss / ETA, time left); 0 = events and warnings only |
+| `DISCORD_MENTION` | `""` | who is pinged on results, errors and closing warnings, e.g. `"<@your user ID>"` or `"@here"` |
+| `NOTEBOOK_URL` | `""` | this notebook's Kaggle address, shown in the messages |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
 | `STOP_WHEN_LEARNED` | `True` | ends an edition once its training loss has stopped falling for 10% of the run (only after 3/4 of the first epoch): templated data is learned long before the last epoch, so hours of weekly GPU time go to the next edition instead |
 
