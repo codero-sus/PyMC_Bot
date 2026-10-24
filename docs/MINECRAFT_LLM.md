@@ -164,6 +164,7 @@ The settings cell:
 | `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
+| `STOP_WHEN_LEARNED` | `True` | ends an edition once its training loss has stopped falling for 10% of the run (only after 3/4 of the first epoch): templated data is learned long before the last epoch, so hours of weekly GPU time go to the next edition instead |
 
 Before any training starts, the notebook checks the GPU, the internet, the free disk, the dataset and
 the `HF_TOKEN` secret, and prints the trainer flags.
@@ -228,8 +229,12 @@ in the data table. `DISTILL = False` trains as before.
   * fp16, split over **both T4s** (tensor parallelism), with paged attention, continuous batching and prefix caching;
   * typically several times faster than transformers' `generate`;
   * with one visible T4 (`GPU_MODE = "parallel"`), the model is quantized to 4-bit while loading;
-  * if the engine doesn't start, it retries without CUDA graphs, and after that transformers takes over (half the
-    prompts per T4).
+  * eager mode (no CUDA graphs), with as much GPU memory as is free, and **without the DDP launcher's variables**:
+    inheriting `TORCHELASTIC_USE_AGENT_STORE` from torchrun / accelerate made vLLM's workers hang ~20 min per try;
+  * an engine that isn't ready after 15 min is stopped with all its processes. A quick failure gets one retry with
+    less memory; then transformers takes over (half the prompts per T4), unless under 5 min of teacher time is left;
+  * a failure prints its cause and keeps the full log as `/kaggle/working/vllm-teacher.log`; the next edition of
+    the same session goes straight to transformers.
 * **Answers are written once.** They're kept for the session (two editions side by side take turns, and the second
   reuses the first one's answers). With `TEACHER_CACHE` and an `HF_TOKEN`, they're also saved to a private
   Hugging Face dataset, so the next session downloads them instead of writing them again.
@@ -248,7 +253,7 @@ the big scratch one:
 | `/kaggle/working`: 20 GB, kept (Output tab, file persistence) | `/kaggle/tmp`: ~60 GB, thrown away |
 | --- | --- |
 | each edition's folder (model until uploaded, `report.json`, `export_job.json`) | downloaded base and teacher models (`hf-cache/`) |
-| the logs (`<edition>.log`, `vllm-install.log`) | the vLLM venv (`vllm/`) and its job folders |
+| the logs (`<edition>.log`, `vllm-install.log`, `vllm-teacher.log` if the teacher failed) | the vLLM venv (`vllm/`) and its job folders |
 | the data kit (`kit/`) and `train_minecraft_llm.py` | the F16 GGUF and the quants before upload (`gguf/`) |
 | **`cache/`**: chat, Q&A, pictures and teacher answers, fetched once and used by every edition | checkpoints, GPU hand-over files, locks |
 | **`tools/`**: llama.cpp, downloaded once for every edition | temp files (`TMPDIR`), pip/uv caches, Unsloth's compiled cache, the kit zip, the system prompt |
