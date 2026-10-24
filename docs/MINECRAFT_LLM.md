@@ -158,6 +158,8 @@ The settings cell:
 | `TEACHER` | `"auto"` | `unsloth/Qwen3-8B` (4-bit), or `huihui-ai/Huihui-Qwen3-8B-abliterated-v2` with `UNCENSORED`; any Qwen3 with the same tokenizer, e.g. `"unsloth/Qwen3-14B"` |
 | `DISTILL_ROWS`, `DISTILL_MINUTES` | `1500`, `40` | answers the teacher writes (phase 1) and the most minutes it may spend on them |
 | `ONPOLICY_STEPS` | `60` | on-policy steps (phase 2, text editions), 4 student replies per T4 each; `0` = phase 1 only |
+| `VLLM_TEACHER` | `True` | the teacher writes its answers with vLLM on both T4s (installed in its own venv in the background); transformers if vLLM can't run |
+| `TEACHER_CACHE` | `True` | keeps the teacher's answers in a private Hugging Face dataset (`<you>/Minecraftism-teacher-answers`) so later sessions reuse them |
 | `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
 | `MAX_HOURS` | `11.5` | training stops early enough that the export and upload still finish before Kaggle's 12 h cut-off |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
@@ -201,8 +203,27 @@ uncensored student to refuse again.
    * on running out of memory the batch is halved, and any failure keeps the fine-tuned model as it is.
 
 The model card gets a **Distillation** section (teacher, rows rewritten, KL at the start and end) and lists the teacher
-in the data table. Cost per session: ~25–40 min of both T4s for the teacher's answers (once; cached for the other
-editions) and ~15–20 min per text edition for the on-policy phase. `DISTILL = False` trains as before.
+in the data table. `DISTILL = False` trains as before.
+
+**Making distillation fast:**
+
+* **The teacher writes with vLLM** (`VLLM_TEACHER = True`). vLLM 0.18.1, the version validated on Kaggle's 2× T4, is
+  installed with `uv` into its own venv (`/tmp/pymc-vllm`) in the background while the data is checked, so
+  Unsloth's torch stays untouched. The trainer then runs the teacher in a separate process:
+  * fp16, split over **both T4s** (tensor parallelism), with paged attention, continuous batching and prefix caching;
+  * typically several times faster than transformers' `generate`;
+  * with one visible T4 (`GPU_MODE = "parallel"`), the model is quantized to 4-bit while loading;
+  * if the engine doesn't start, it retries without CUDA graphs, and after that transformers takes over (half the
+    prompts per T4).
+* **Answers are written once.** They're kept for the session (two editions side by side take turns, and the second
+  reuses the first one's answers). With `TEACHER_CACHE` and an `HF_TOKEN`, they're also saved to a private
+  Hugging Face dataset, so the next session downloads them instead of writing them again.
+* **Batched on-policy replies** (`--onpolicy-refresh 4` with `FAST`): the student writes the replies for 4 steps in one
+  batched call. They are at most 3 small LoRA steps old, which is practically on-policy.
+* The eval and the test suite ask **16 prompts per batch** instead of one at a time.
+
+Rough cost (estimates, not measured): with vLLM, a few minutes of both T4s plus ~3 min to start the engine for
+1500 answers (transformers: ~25–40 min); then ~10–15 min per text edition for the on-policy phase.
 
 ### Speed: both T4s, every minute
 
@@ -303,7 +324,9 @@ Speed flags (the notebook sets them): `--deadline <unix time>` + `--reserve-minu
 `accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16 train_minecraft_llm.py --data ... --preset minecraftism`
 (or `torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py ...`).
 Distillation flags: `--distill-rows 1500`, `--distill-minutes 40`, `--onpolicy-steps 60`, `--teacher auto`,
-`--onpolicy-batch 4`, `--onpolicy-tokens 256`, `--onpolicy-lr 5e-5` (all off by default; the notebook turns them on).
+`--onpolicy-batch 4`, `--onpolicy-tokens 256`, `--onpolicy-lr 5e-5`, `--onpolicy-refresh 4`,
+`--vllm-python /tmp/pymc-vllm/bin/python` (`--teacher-engine auto|vllm|hf`), `--teacher-cache-repo auto`
+(all off by default; the notebook turns them on).
 
 ## Uncensored and everyday use
 
