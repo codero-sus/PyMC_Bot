@@ -182,6 +182,6 @@ def test_notebook_exports_and_uploads_both_editions():
     assert '"--safetensors", "--gguf-quants", "--deadline"' in code  # an older trainer without them is replaced by the newest
     assert 'GGUF_QUANTS = "q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m"' in code
     assert """FLAGS += f' --gguf-quants "{GGUF_QUANTS or "none"}"'""" in code and '" --gguf-quants none"' in code
-    assert 'shutil.disk_usage("/tmp")' in code
+    assert 'shutil.disk_usage(TMP)' in code and 'WORK, TMP = "/kaggle/working", "/kaggle/tmp"' in code
     assert 'info.get("safetensors_uploaded")' in code  # never deletes a folder that is not on Hugging Face
     assert "Minecraftism-4B-Uncensored-GGUF" in text and "`you/Minecraftism-4B-Uncensored`" in text
