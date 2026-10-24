@@ -820,7 +820,9 @@ def resolve_datasets(args: argparse.Namespace) -> None:
 def used_datasets(args: argparse.Namespace, preset: dict[str, Any]) -> list[str]:
     used = []
     if getattr(args, "general", 0) > 0:
-        used.append(args.reasoning_dataset if preset.get("reasoning") else args.general_dataset)
+        if preset.get("reasoning"):
+            used.append(args.reasoning_dataset)
+        used.append(args.general_dataset)  # thinking editions too: it fills what the traces don't
     if getattr(args, "minecraft_qa", 0) > 0:
         used.append(args.minecraft_qa_dataset)
     if getattr(args, "stream_vision", 0) > 0 and preset.get("vision"):
@@ -1411,21 +1413,28 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
     """Identity, candor, everyday chat and streamed Minecraft rows added on top of the Minecraft data."""
     rows = [] if args.no_identity else identity_rows(args.system_prompt, MODEL_NAME, rng, candor=bool(args.uncensored))
     if args.general > 0:
-        source = args.reasoning_dataset if preset.get("reasoning") else args.general_dataset
         if offline:
-            print(f"would add up to {args.general} everyday rows from {source} (downloaded when training)")
-        elif preset.get("reasoning"):
-            limit = max(1, args.general // 2)  # traces are long: half as many rows
-            name, split = hub_split(args.reasoning_dataset, "cot")
-            factor = 3 if split == "cot" else 8
-            records = cached(args, f"hub:{name}:{split}:{limit}:{args.seed}:{factor}",
-                             lambda: load_hub_records(name, split, limit, args.seed, factor=factor), "thinking traces")
-            rows += reasoning_rows(records, limit, args.system_prompt, max_chars=args.max_seq * 3)
+            print(f"would add up to {args.general} everyday rows: "
+                  + (f"real thinking traces from {args.reasoning_dataset} (the ones that fit --max-seq), the rest "
+                     if preset.get("reasoning") else "") + f"chat from {args.general_dataset} (downloaded when training)")
         else:
-            name, split = hub_split(args.general_dataset, "train")
-            records = cached(args, f"hub:{name}:{split}:{args.general}:{args.seed}:3",
-                             lambda: load_hub_records(name, split, args.general, args.seed), "everyday chat")
-            rows += general_rows(records, args.general, args.system_prompt, bool(args.uncensored))
+            wanted = args.general
+            if preset.get("reasoning"):
+                limit = max(1, args.general // 2)  # traces are long: at most half of the everyday rows
+                name, split = hub_split(args.reasoning_dataset, "cot")
+                factor = 3 if split == "cot" else 8
+                records = cached(args, f"hub:{name}:{split}:{limit}:{args.seed}:{factor}",
+                                 lambda: load_hub_records(name, split, limit, args.seed, factor=factor), "thinking traces")
+                traces = reasoning_rows(records, limit, args.system_prompt, max_chars=args.max_seq * 3)
+                rows += traces
+                wanted = args.general - len(traces)
+                print(f"thinking traces: {len(traces)} of {len(records)} streamed fit --max-seq {args.max_seq}; "
+                      f"{wanted} everyday chat rows fill the rest (the teacher writes their thinking when DISTILL is on)")
+            if wanted > 0:
+                name, split = hub_split(args.general_dataset, "train")
+                records = cached(args, f"hub:{name}:{split}:{args.general}:{args.seed}:3",
+                                 lambda: load_hub_records(name, split, args.general, args.seed), "everyday chat")
+                rows += general_rows(records, wanted, args.system_prompt, bool(args.uncensored))
     if args.minecraft_qa > 0:
         generated = args.minecraft_qa_dataset == MINECRAFT_DATA
         version = getattr(args, "minecraft_data_version", MINECRAFT_DATA_VERSION)
@@ -3054,10 +3063,27 @@ def use_vllm(args: argparse.Namespace) -> str:
     return python if python and Path(python).is_file() else ""
 
 
+_VLLM_CAUSE = re.compile(r"(?:Error|Exception|error:|CUDA|out of memory|not supported|unsupported|Free memory|"
+                         r"No available memory|Killed|NCCL)", re.I)
+
+
+def vllm_root_cause(text: str, lines: int = 12) -> str:
+    """The lines of a vLLM log that say *why* it failed (the end of the log is only the engine's wrapper error)."""
+    picked: list[str] = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if (_VLLM_CAUSE.search(line) and "site-packages" not in line and not line.strip().startswith(("~", "^"))
+                and "Engine core initialization failed" not in line and line not in picked):
+            picked.append(line)
+    return "\n".join(picked[-lines:])
+
+
 def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, seconds: float, python: str,
                   run: Any = None, log: Any = print) -> dict[str, str]:
     """The teacher writes the answers with vLLM in a separate process (``--vllm-worker``): every T4 this process
-    sees, by tensor parallelism. Tries once more in eager mode (no CUDA graphs) if the engine does not start."""
+    sees, by tensor parallelism. Eager mode first (no CUDA graphs / torch.compile: the setup validated on Kaggle's
+    T4s; a failed graph capture there cost a whole engine start); if the engine still does not start, once more
+    with less GPU memory and fewer prompts at once. The full log of a failure is kept in ``$PYMC_LOGS``."""
     import subprocess
     import tempfile
 
@@ -3067,9 +3093,11 @@ def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, second
         (root / "vllm-jobs").mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="pymc-vllm-", dir=str(root / "vllm-jobs") if root is not None else None))
     answers: dict[str, str] = {}
-    for eager in (False, True):
+    for safe in (False, True):
+        eager = True
         job, out, journal = work / "job.json", work / "answers.json", work / "vllm.log"
         job.write_text(json.dumps({"teacher": teacher, "max_seq": max_seq, "seconds": seconds, "eager": eager,
+                                   "safe": safe,
                                    "jobs": [{"key": j["key"], "messages": j["messages"], "thinking": j["thinking"]}
                                             for j in jobs]}, ensure_ascii=False), encoding="utf-8")
         started = time.time()
@@ -3083,13 +3111,39 @@ def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, second
             except ValueError:
                 pass
         if code == 0 or answers:
-            log(f"teacher (vLLM{', eager' if eager else ''}): {len(answers)} answers in "
+            log(f"teacher (vLLM{', low memory' if safe else ''}): {len(answers)} answers in "
                 f"{(time.time() - started) / 60:.1f} min")
             return answers
-        tail = journal.read_text(encoding="utf-8", errors="replace")[-1500:] if journal.is_file() else ""
-        log(f"teacher: vLLM {'(eager) ' if eager else ''}failed (exit {code}):\n{tail}")
+        text = journal.read_text(encoding="utf-8", errors="replace") if journal.is_file() else ""
+        kept = ""
+        if os.environ.get("PYMC_LOGS"):
+            try:
+                target = Path(os.environ["PYMC_LOGS"]) / f"vllm-teacher{'-low-memory' if safe else ''}.log"
+                target.write_text(text, encoding="utf-8")
+                kept = f"\n(full log: {target})"
+            except OSError:
+                pass
+        log(f"teacher: vLLM {'(low memory) ' if safe else ''}failed after {(time.time() - started) / 60:.1f} min "
+            f"(exit {code}). Cause:\n{vllm_root_cause(text) or text[-800:]}{kept}")
         seconds = max(0.0, seconds - (time.time() - started))
+        if seconds < 120:
+            break
     raise RuntimeError("vLLM could not run the teacher")
+
+
+def vllm_memory_share(wanted: float, run: Any = None) -> float:
+    """vLLM refuses to start when ``gpu_memory_utilization`` x the T4's memory is more than is free (the training
+    processes already hold some): ask nvidia-smi (no CUDA context of our own) and stay a bit under the free part."""
+    import subprocess
+
+    run = run or subprocess.run
+    try:
+        out = run(["nvidia-smi", "--query-gpu=memory.free,memory.total", "--format=csv,noheader,nounits"],
+                  capture_output=True, text=True, timeout=20).stdout
+        free = min(float(a) / float(b) for a, b in (line.split(",") for line in out.strip().splitlines()))
+    except Exception:  # noqa: BLE001 - no nvidia-smi: vLLM's default check decides
+        return wanted
+    return round(max(0.3, min(wanted, free - 0.05)), 2)
 
 
 def vllm_worker(job_path: str, out_path: str) -> int:
@@ -3104,10 +3158,14 @@ def vllm_worker(job_path: str, out_path: str) -> int:
     new_tokens = int(sampling.pop("max_new_tokens"))
     gpus = torch.cuda.device_count()
     limit = int(job["max_seq"]) + new_tokens
+    share = vllm_memory_share(0.75 if job.get("safe") else 0.88)
     options: dict[str, Any] = {"model": job["teacher"], "dtype": "float16", "max_model_len": limit,
-                               "tensor_parallel_size": 2 if gpus >= 2 else 1, "gpu_memory_utilization": 0.88,
+                               "tensor_parallel_size": 2 if gpus >= 2 else 1, "gpu_memory_utilization": share,
                                "disable_custom_all_reduce": True, "enable_prefix_caching": True,
                                "enforce_eager": bool(job.get("eager"))}
+    if job.get("safe"):
+        options["max_num_seqs"] = 64
+    print(f"vLLM: {options}", flush=True)
     if gpus < 2 and not prequantized(str(job["teacher"])):  # 16 GB of fp16 don't fit one T4: 4-bit while loading
         options["quantization"] = "bitsandbytes"
     llm = LLM(**options)
@@ -4187,8 +4245,14 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
         eval_rows = eval_rows + held
     rows = rows + extra
     rng.shuffle(rows)
-    print(f"persona: {persona} Q&A rows use the everyday system prompt; +{len(extra)} identity/everyday rows"
-          f"{' (uncensored)' if args.uncensored else ''}")
+    kinds: dict[str, int] = {}
+    for row in extra:
+        kind = {"identity": "identity", "persona": "identity", "general": "everyday chat", "reasoning": "thinking traces",
+                "minecraft-data": "Minecraft Q&A", "minecraft-qa": "Minecraft Q&A", "minecraft-vlp": "pictures",
+                "minecraft-raytrace": "pictures"}.get(str(row.get("source")), str(row.get("source") or "other"))
+        kinds[kind] = kinds.get(kind, 0) + 1
+    print(f"persona: {persona} Q&A rows use the everyday system prompt; +{len(extra)} rows "
+          f"({', '.join(f'{n} {k}' for k, n in kinds.items()) or 'none'}){' (uncensored)' if args.uncensored else ''}")
     plan = estimate(rows, preset, args.epochs, args.max_steps)
     sources: dict[str, int] = {}
     for row in rows:

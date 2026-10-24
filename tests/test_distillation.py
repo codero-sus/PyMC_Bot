@@ -314,11 +314,11 @@ def test_vllm_generate_runs_the_worker_and_retries_in_eager_mode(tmp_path):
     assert answers == {job["key"]: "answer" for job in jobs}
     command = calls[0]["command"]
     assert command[0] == "/venv/python" and command[2] == "--vllm-worker" and command[1].endswith(".py")
-    assert calls[0]["job"]["eager"] is False and calls[0]["timeout"] == 600 + 900
+    assert calls[0]["job"]["eager"] is True and calls[0]["timeout"] == 600 + 900  # eager first: validated on T4s
     run, calls = _fake_run([(1, False), (0, True)])
     logs = []
     assert len(llm_train.vllm_generate("t", jobs, 2048, 600, "/p", run=run, log=logs.append)) == 3
-    assert [c["job"]["eager"] for c in calls] == [False, True] and "engine log line" in logs[0]
+    assert [c["job"]["safe"] for c in calls] == [False, True] and "engine log line" in logs[0]
     run, _ = _fake_run([(1, False), (1, False)])
     with pytest.raises(RuntimeError):
         llm_train.vllm_generate("t", jobs, 2048, 600, "/p", run=run, log=lambda *_: None)
@@ -495,3 +495,43 @@ def test_notebook_installs_vllm_in_its_own_venv_and_passes_it_only_when_it_works
     env = {"DISTILL": True, "RUN_FLAGS": "--data x"}  # no install started (DISTILL off / no internet)
     exec(gate, env)
     assert env["RUN_FLAGS"] == "--data x"
+
+
+def test_a_failed_vllm_start_shows_its_real_cause_and_keeps_the_log(tmp_path, monkeypatch):
+    log_text = ("INFO loading weights\n"
+                "(EngineCore pid=88) ERROR Traceback (most recent call last):\n"
+                '  File "/kaggle/tmp/vllm/lib/python3.13/site-packages/vllm/v1/engine/core.py", line 9, in run\n'
+                "torch._inductor.exc.InductorError: RuntimeError: Triton does not support this GPU\n"
+                "    ~~~~^^^^^^\n"
+                "RuntimeError: Engine core initialization failed. See root cause above.\n")
+    cause = llm_train.vllm_root_cause(log_text)
+    assert "Triton does not support this GPU" in cause and "site-packages" not in cause
+    assert "Engine core initialization failed" not in cause
+
+    def run(command, stdout=None, stderr=None, env=None, timeout=None):
+        stdout.write(log_text)
+        return type("Done", (), {"returncode": 1})()
+
+    monkeypatch.setenv("PYMC_LOGS", str(tmp_path))
+    logs = []
+    jobs = llm_train.teacher_jobs(_rows(), llm_train.PRESETS["minecraftism"], 2, "t")
+    with pytest.raises(RuntimeError):
+        llm_train.vllm_generate("t", jobs, 2048, 600, "/p", run=run, log=logs.append)
+    assert "Triton does not support this GPU" in logs[0] and "vllm-teacher.log" in logs[0]
+    assert (tmp_path / "vllm-teacher.log").read_text() == log_text
+    assert (tmp_path / "vllm-teacher-low-memory.log").is_file()
+
+
+def test_vllm_asks_only_for_the_gpu_memory_that_is_free(tmp_path, monkeypatch):
+    def smi(text):
+        return lambda *a, **k: type("Out", (), {"stdout": text})()
+
+    assert llm_train.vllm_memory_share(0.88, run=smi("14800, 15360\n14900, 15360\n")) == 0.88
+    assert llm_train.vllm_memory_share(0.88, run=smi("13000, 15360\n14900, 15360\n")) == 0.80  # DDP holds some
+    assert llm_train.vllm_memory_share(0.88, run=lambda *a, **k: (_ for _ in ()).throw(OSError())) == 0.88
+    seen = _fake_vllm(monkeypatch, gpus=2)
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"teacher": "unsloth/Qwen3-8B", "max_seq": 10, "seconds": 600, "eager": True,
+                               "safe": True, "jobs": []}))
+    assert llm_train.main(["--vllm-worker", str(job), str(tmp_path / "out.json")]) == 0
+    assert seen["options"]["max_num_seqs"] == 64 and seen["options"]["enforce_eager"] is True

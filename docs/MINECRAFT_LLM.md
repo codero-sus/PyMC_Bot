@@ -404,8 +404,8 @@ commercial use:
 
 | Part | Dataset | Licence | What the trainer does with it |
 | --- | --- | --- | --- |
-| Everyday chat (`GENERAL_CHAT`) | [`OpenAssistant/oasst_top1_2023-08-25`](https://huggingface.co/datasets/OpenAssistant/oasst_top1_2023-08-25) | Apache-2.0 | ~13k chats written by people, multilingual |
-| Thinking traces (thinking editions) | [`nvidia/Nemotron-Post-Training-Dataset-v1`](https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1), `math` split | CC BY 4.0 | maths with real `<think>` traces (DeepSeek-R1 / Qwen3 answers); long traces are skipped |
+| Everyday chat (`GENERAL_CHAT`) | [`OpenAssistant/oasst_top1_2023-08-25`](https://huggingface.co/datasets/OpenAssistant/oasst_top1_2023-08-25) | Apache-2.0 | ~13k chats written by people, multilingual. Thinking editions get it too: it fills every everyday row the traces below don't, and with `DISTILL` the teacher writes the thinking for up to `DISTILL_ROWS` of them |
+| Thinking traces (thinking editions) | [`nvidia/Nemotron-Post-Training-Dataset-v1`](https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1), `math` split | CC BY 4.0 | maths with real `<think>` traces (DeepSeek-R1 answers). Only traces that fit `--max-seq` are used; most are far longer, so expect a few dozen rows (the log says how many) |
 | Minecraft Q&A (`MINECRAFT_QA`) | [`PrismarineJS/minecraft-data`](https://github.com/PrismarineJS/minecraft-data), Java 1.21.8 | MIT | about 3,300 exact facts made into Q&A: recipes with their layout, which pickaxe a block needs, block drops, light levels, hardness and blast resistance, stack sizes, durability, food, mob drops and hitboxes, enchantments, effects, biomes. Each fact has up to 3 phrasings, so about 10k rows at most |
 | Pictures (`STREAM_PICTURES`) | [`shinohararin/minecraft-raytrace`](https://huggingface.co/datasets/shinohararin/minecraft-raytrace) | MIT | 10,222 first-person 1.21.8 frames with raycast labels. Two exact Q&A per frame: biome, time of day, rain or snow, the block at the crosshair and its distance, the blocks in view, the mobs in view, a short description |
 
