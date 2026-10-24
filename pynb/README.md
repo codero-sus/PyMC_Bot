@@ -7,8 +7,8 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/1a7f8df15f2a810a80d3823ef615c07b9b959eab/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/1a7f8df15f2a810a80d3823ef615c07b9b959eab/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/0732b5549aa6d132bf09c7266819da589281f0b0/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/0732b5549aa6d132bf09c7266819da589281f0b0/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
@@ -36,13 +36,13 @@ down once everything is on Hugging Face.
 * **Kaggle server online**, with the notebook's URL (set `NOTEBOOK_URL`), its GPUs, RAM and disk
 * **Server status** every `DISCORD_EVERY_MIN` minutes (30 by default): GPU load and memory, RAM, free disk, each edition's
   step / loss / ETA, time left. If these messages stop coming, the server is gone
-* A **THE 12 HOURs countdown** before Kaggle's 12 h limit kills the server: 3 h, 2 h, 1 h, 30 / 15 / 10 min, then **every minute of the last 5** and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk; and when the disk or RAM is almost full
+* A **THE 12 HOURs countdown** before Kaggle's 12 h limit kills the server: 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 min, then **every minute of the last 5** and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk; and when the disk or RAM is almost full
 * **Server closing** when the kernel shuts down before the notebook finished (stopped, restarted, timed out), or
   **Server closed** after a normal finish - both with the full report once more (so does **Session finished**)
 * each edition's start, "learned" (loss stopped falling), every upload with its Hugging Face URL, the results, failures
   (with the end of the log) and notebook errors
 
-`DISCORD_MENTION = "<@your user ID>"` pings you rarely: when the session ends, 5 min before THE 12 HOURs, on a failure or error and if the server closes early; everything else is silent. The webhook URL is never printed.
+`DISCORD_MENTION = "<@your user ID>"` pings you on: setup ready, now training / distilling / quantizing / uploading, every model upload to Hugging Face, each model ready, THE 12 HOURs at 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 / 5 / 1 min and the 30 s final report, the close, low disk, failures and errors (server status and the 4 / 3 / 2 min updates come silently). The webhook URL is never printed.
 
 **Where files go:** things needed again stay in `/kaggle/working`: models until uploaded, reports, logs, the data kit,
 `cache/` (streamed data and teacher answers, shared by every edition) and `tools/` (llama.cpp). Throwaway files go to
