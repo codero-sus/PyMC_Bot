@@ -120,8 +120,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/1a7f8df15f2a810a80d3823ef615c07b9b959eab/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/1a7f8df15f2a810a80d3823ef615c07b9b959eab/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/0732b5549aa6d132bf09c7266819da589281f0b0/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/0732b5549aa6d132bf09c7266819da589281f0b0/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -167,10 +167,10 @@ The settings cell:
 | `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
 | `MAX_HOURS` | `11.75` | everything (training, tests, export, upload) is done 15 min before THE 12 HOURs, Kaggle's cut-off: training stops early enough that the export and upload still fit |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
-| `DISCORD` | `True` | Discord webhook messages: server online (with `NOTEBOOK_URL`), status, a THE 12 HOURs countdown before Kaggle's 12 h limit kills the server: 3 h, 2 h, 1 h, 30 / 15 / 10 min, then every minute of the last 5 and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk, low disk/RAM, server closing (with the full report once more), edition starts, uploads with their URLs, results, failures, errors |
+| `DISCORD` | `True` | Discord webhook messages: server online (with `NOTEBOOK_URL`), status, a THE 12 HOURs countdown before Kaggle's 12 h limit kills the server: 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 min, then every minute of the last 5 and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk, low disk/RAM, server closing (with the full report once more), edition starts, uploads with their URLs, results, failures, errors |
 | `DISCORD_SECRET` | `"discord_webhook_inform_me1"` | name of the Kaggle secret that holds the webhook URL (never put the URL in the notebook) |
 | `DISCORD_EVERY_MIN` | `30` | a server status every N minutes (GPUs, RAM, disk, step / loss / ETA, time left); 0 = events and warnings only |
-| `DISCORD_MENTION` | `""` | who is pinged - rarely: session end, 5 min before THE 12 HOURs, failures / errors, the server closing early; e.g. `"<@your user ID>"` or `"@here"` |
+| `DISCORD_MENTION` | `""` | who is pinged: setup ready, now training / distilling / quantizing / uploading, every model upload to Hugging Face, each model ready, THE 12 HOURs at 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 / 5 / 1 min and the 30 s final report, the close, low disk, failures and errors (server status and the 4 / 3 / 2 min updates come silently); e.g. `"<@your user ID>"` or `"@here"` |
 | `NOTEBOOK_URL` | `""` | this notebook's Kaggle address, shown in the messages |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
 | `STOP_WHEN_LEARNED` | `True` | ends an edition once its training loss has stopped falling for 10% of the run (only after 3/4 of the first epoch): templated data is learned long before the last epoch, so hours of weekly GPU time go to the next edition instead |
