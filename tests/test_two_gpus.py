@@ -219,13 +219,16 @@ def _notebook():
 
 def test_notebook_uses_both_t4s_and_the_deadline():
     nb, code = _notebook()
-    assert 'GPU_MODE = "auto"' in code and "FAST = True" in code and "MAX_HOURS = 11.5" in code
-    assert '"torch.distributed.run", "--standalone"' in code and '"CUDA_VISIBLE_DEVICES"' in code
+    assert 'GPU_MODE = "merge"' in code and "FAST = True" in code and "MAX_HOURS = 11.5" in code
+    assert '{"merge": "ddp", "merged": "ddp"}.get(GPU_MODE, GPU_MODE)' in code  # merge = both T4s on every edition
+    assert '"accelerate.commands.launch", "--multi_gpu"' in code and '"--mixed_precision=fp16"' in code
+    assert '"torch.distributed.run", "--standalone"' in code and '"CUDA_VISIBLE_DEVICES"' in code  # no accelerate
+    assert '"PYMC_RUN_ID": f"{edition}-{time.time_ns()}"' in code
     assert 'SLOTS = {"parallel": [[0], [1]], "ddp": [[0, 1]]}' in code
     assert "training it again on one T4" in code  # DDP problem -> same edition on one T4
     assert '--deadline {DEADLINE:.0f} --export-lock /tmp/pymc-export.lock' in code
     assert 'FLAGS += " --token-budget 12288 --loader-workers 2 --eval-limit 60" if FAST' in code
-    assert '"--token-budget", "--defer-gguf"))' in code  # an older trainer is replaced by the newest
+    assert '"--defer-gguf", "--distill-rows", "--onpolicy-steps"))' in code  # an older trainer is replaced
     assert "!python" not in "".join(nb["cells"][6]["source"])
 
 

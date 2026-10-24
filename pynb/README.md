@@ -13,11 +13,13 @@
      is downloaded from the newest GitHub release.
    * **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token) to publish the model.
 4. Edit the settings cell. Pick the editions with `editions_to_be_trained = {txt, txt_think, vl, vl_think}`
-   (only those are trained, e.g. `{txt}` or `{txt, vl}`). `GPU_MODE = "auto"` keeps both T4s busy: with two or more editions each T4 trains its own
-   edition at the same time; with one edition both T4s train it together (DDP). `MAX_HOURS` makes training stop early
+   (only those are trained, e.g. `{txt}` or `{txt, vl}`). `GPU_MODE = "merge"` puts both T4s on every edition (DDP launched with HF Accelerate, fp16; `"parallel"` = one
+   edition per T4 instead). `DISTILL = True` runs Qwen3's strong-to-weak distillation: Qwen3-8B (4-bit) writes the answers to
+   `DISTILL_ROWS` chat and Minecraft prompts, then teaches the fine-tuned 4B token by token on its own replies
+   (`ONPOLICY_STEPS`, reverse KL). `MAX_HOURS` makes training stop early
    enough for the export and upload to finish before Kaggle's 12 h limit. `FAST = True` sizes batches by tokens,
    streams the shared data once for all editions, uploads while llama.cpp makes the GGUFs and, with more editions
-   than T4s, makes the GGUFs on the CPU while the T4 already trains the next edition. The first time, use `QUICK_TEST = True`, which takes about 15 minutes. Then **Run All**.
+   than T4s, makes the GGUFs on the CPU while the T4 already trains the next edition. The first time, use `QUICK_TEST = True`, which takes about 15-25 minutes. Then **Run All**.
 5. On your PC: `python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF`.
    The safetensors edition, `<your-hf-name>/Minecraftism-4B-Uncensored`, is for transformers, vLLM or further
    fine-tuning. Its model card has the code. Other GGUF sizes: `ollama run hf.co/<your-hf-name>/Minecraftism-4B-Uncensored-GGUF:Q8_0`.

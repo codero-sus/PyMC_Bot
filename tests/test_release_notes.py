@@ -51,6 +51,7 @@ def test_notes_say_the_notebook_uploads_safetensors_then_gguf_quants():
     text = release_notes.notes()
     assert "`PyMC_Minecraft_LLM_Kaggle.ipynb`" in text
     assert "Both T4s train" in text and "MAX_HOURS" in text and "AUTO_EXIT" in text
+    assert "strong-to-weak distillation" in text and 'GPU_MODE = "merge"' in text
     assert "editions_to_be_trained = {txt, txt_think, vl, vl_think}" in text
     assert "**safetensors**" in text and "**GGUF**" in text and "SAFETENSORS = True" in text
     assert text.index("**safetensors**") < text.index("**GGUF**")

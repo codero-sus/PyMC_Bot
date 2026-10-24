@@ -214,7 +214,7 @@ jobs:
       - name: Transformer engine tests
         run: |
           set -o pipefail
-          pytest tests/test_train.py tests/test_local_model.py -q 2>&1 | tee pytest.log
+          pytest tests/test_train.py tests/test_local_model.py tests/test_distillation.py -q 2>&1 | tee pytest.log
       - name: Publish test failure diagnostics
         if: failure()
         env:
