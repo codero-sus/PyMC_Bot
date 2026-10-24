@@ -1,0 +1,1249 @@
+"""High level player controller: movement, mining, chat, stats.
+
+Everything in here is plain Python and works against any
+:class:`pymc_bot.backends.BaseBackend`, so the exact same code drives the
+simulated world (tests, demos) and a real Minecraft server.
+
+Minecraft angle conventions used throughout:
+  * yaw 0 faces +Z, yaw pi/2 faces -X, increasing yaw turns left
+  * pitch -pi/2 looks straight up, +pi/2 looks straight down
+"""
+
+from __future__ import annotations
+
+import math
+import random
+import threading
+import time
+from collections import deque
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import Any
+
+from pymc_bot.backends import BackendError, BaseBackend, create_backend
+from pymc_bot.config import AppSettings, ConfigStore
+from pymc_bot.events import EventLog
+from pymc_bot.inventory import (
+    ARMOR_SLOTS,
+    HOTBAR_SIZE,
+    Inventory,
+    armor_slot_for,
+    is_food,
+    short,
+)
+
+STATE_DISCONNECTED = "disconnected"
+STATE_CONNECTING = "connecting"
+STATE_CONNECTED = "connected"
+STATE_ERROR = "error"
+STATE_WAITING = "waiting"  # the server is asleep (free host) and the bot waits for someone to start it
+
+STEER_INTERVAL = 0.05
+STUCK_WINDOW = 1.2
+STUCK_DISTANCE = 0.6
+
+
+def yaw_to(dx: float, dz: float) -> float:
+    """Yaw that faces the vector ``(dx, dz)``."""
+    return math.atan2(-dx, dz)
+
+
+def wrap_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def pitch_to(dx: float, dy: float, dz: float) -> float:
+    """Pitch that looks from the origin at the offset ``(dx, dy, dz)``."""
+    horizontal = math.hypot(dx, dz)
+    return math.atan2(-dy, horizontal)
+
+
+class MinecraftBot:
+    """Owns the backend connection and exposes player-ish verbs."""
+
+    def __init__(
+        self,
+        store: ConfigStore,
+        log: EventLog | None = None,
+        auto_reconnect: bool = True,
+        max_reconnects: int | None = 3,
+        backend: BaseBackend | None = None,
+        rejoin_seconds: float | None = None,
+    ) -> None:
+        self.store = store
+        self.log = log or EventLog()
+        self.auto_reconnect = auto_reconnect
+        # None -> keep re-joining forever (what "populate the server" wants)
+        self.max_reconnects = max_reconnects
+        self.rejoin_seconds = rejoin_seconds
+        self._backend: BaseBackend | None = backend
+        self._injected_backend = backend is not None
+        self._state = STATE_DISCONNECTED
+        self._lock = threading.RLock()
+        self._motion_lock = threading.RLock()  # re-entrant: mine() -> wander() -> walk_to()
+        self._cancel = threading.Event()
+        self._stop_requested = False
+        self._configured_username: str | None = None
+        self._monitor: threading.Thread | None = None
+        self._reconnects = 0
+        self._history: deque[dict[str, Any]] = deque(maxlen=100)
+        self._greeted: set[str] = set()
+        self._stats: dict[str, Any] = {
+            "actions": 0,
+            "chats_sent": 0,
+            "blocks_mined": 0,
+            "blocks_placed": 0,
+            "mobs_killed": 0,
+            "skills_used": 0,
+            "distance_walked": 0.0,
+            "started_at": None,
+        }
+        self._last_position: tuple[float, float] | None = None
+        self._active_actions = 0
+        self._current_action: str | None = None
+        self._last_activity = time.time()
+        self._wait_deadline: float | None = None
+        self.wait_poll_seconds = 15.0
+        # Called after a delayed join (wait-for-server) succeeds; the fleet uses it to start the AI.
+        self.on_connected: Callable[[], Any] | None = None
+        # True while an LLM brain runs this bot: it answers chat itself, so no canned replies.
+        self.llm_chat = False
+
+    # -------------------------------------------------------------- activity
+    @contextmanager
+    def activity(self, name: str) -> Iterator[None]:
+        """Mark the bot as busy with ``name`` while the block runs.
+
+        The anti-AFK keeper watches this so it never fights the AI or a human
+        command for the keyboard.
+        """
+        with self._lock:
+            self._active_actions += 1
+            self._current_action = name
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active_actions -= 1
+                if self._active_actions <= 0:
+                    self._active_actions = 0
+                    self._current_action = None
+                self._last_activity = time.time()
+
+    def touch_activity(self) -> None:
+        """Record that something (AI, human, anti-AFK) just used this bot."""
+        with self._lock:
+            self._last_activity = time.time()
+
+    @property
+    def busy(self) -> bool:
+        """True while an action owns the bot (walking, mining, following...)."""
+        with self._lock:
+            return self._active_actions > 0
+
+    @property
+    def current_action(self) -> str | None:
+        with self._lock:
+            return self._current_action
+
+    @property
+    def idle_seconds(self) -> float:
+        with self._lock:
+            return max(0.0, time.time() - self._last_activity)
+
+    def can_poke(self, min_idle: float = 0.0) -> bool:
+        """True when the anti-AFK keeper may take over for a moment."""
+        return self.connected and not self.busy and self.idle_seconds >= min_idle
+
+    # ---------------------------------------------------------- cancellation
+    def cancel_actions(self) -> None:
+        """Ask any in-flight movement/building action to stop early."""
+        self._cancel.set()
+
+    def clear_cancel(self) -> None:
+        self._cancel.clear()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel.is_set()
+
+    # ------------------------------------------------------------ properties
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+    @property
+    def backend(self) -> BaseBackend | None:
+        with self._lock:
+            return self._backend
+
+    @property
+    def connected(self) -> bool:
+        with self._lock:
+            return self._state == STATE_CONNECTED and self._backend is not None and self._backend.connected
+
+    @property
+    def username(self) -> str:
+        """In-game name of this bot (falls back to the configured username).
+
+        With Microsoft auth the configured username is the account *email*, so
+        the real name is read back from the server snapshot.
+        """
+        snapshot_name = ""
+        backend = self.backend
+        if backend is not None:
+            snapshot_name = str(backend.snapshot().get("username") or "")
+        with self._lock:
+            return snapshot_name or self._configured_username or self.store.settings.minecraft.username
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            data = dict(self._stats)
+            data["current_action"] = self._current_action
+            data["idle_seconds"] = round(max(0.0, time.time() - self._last_activity), 1)
+            started = data.get("started_at")
+            data["uptime"] = round(time.time() - started, 1) if started else 0.0
+            data["reconnects"] = self._reconnects
+            return data
+
+    @property
+    def chat_history(self) -> list[dict[str, Any]]:
+        return list(self._history)
+
+    def recent_chat(self, limit: int = 8) -> list[str]:
+        return [f"<{entry['username']}> {entry['message']}" for entry in list(self._history)[-limit:]]
+
+    # ------------------------------------------------------------- lifecycle
+    def start(self, settings: AppSettings | None = None) -> None:
+        settings = settings or self.store.settings
+        with self._lock:
+            if self._state in (STATE_CONNECTING, STATE_CONNECTED, STATE_WAITING):
+                return
+            self._state = STATE_CONNECTING
+            self._stop_requested = False
+            self._configured_username = settings.minecraft.username
+        self.log.add(
+            f"Starting bot '{settings.minecraft.username}' -> {settings.minecraft.host}:{settings.minecraft.port} "
+            f"({settings.minecraft.account_label})",
+            "info",
+            "bot",
+        )
+        try:
+            self._connect(settings)
+        except Exception as exc:
+            asleep = getattr(self._backend, "server_asleep", None) if isinstance(exc, BackendError) else None
+            if asleep and settings.minecraft.wait_for_server and not self._stop_requested:
+                self._begin_waiting(settings, str(exc))
+                return
+            with self._lock:
+                self._state = STATE_ERROR
+                self._wait_deadline = None
+            self.log.add(f"Could not start the bot: {exc}", "error", "bot")
+            raise
+        if not self._wait_for_backend(timeout=min(20.0, settings.minecraft.connect_timeout)):
+            with self._lock:
+                self._state = STATE_ERROR
+                backend = self._backend
+            if backend is not None:
+                backend.stop()
+            raise BackendError(
+                "The backend never reported a connection - check the server address and that it is online."
+            )
+        with self._lock:
+            self._state = STATE_CONNECTED
+            self._stats["started_at"] = time.time()
+            self._reconnects = 0
+            self._wait_deadline = None
+        self._start_monitor()
+        self.log.add("Bot is connected and ready.", "success", "bot")
+
+    # ------------------------------------------------------- wait for server
+    def _begin_waiting(self, settings: AppSettings, reason: str) -> None:
+        """The free host's server is asleep: poll its ping and join once someone has started it."""
+        with self._lock:
+            self._state = STATE_WAITING
+            if self._wait_deadline is None:
+                self._wait_deadline = time.monotonic() + settings.minecraft.wait_minutes * 60.0
+            remaining = max(0.0, self._wait_deadline - time.monotonic())
+        self.log.add(
+            f"{reason} Waiting up to {remaining / 60:.0f} min for it to come online "
+            f"(checking every {self.wait_poll_seconds:.0f} s; PyMC_Bot never starts the server itself).",
+            "info",
+            "bot",
+        )
+        threading.Thread(target=self._wait_loop, args=(settings,), name="wait-for-server", daemon=True).start()
+
+    def _wait_loop(self, settings: AppSettings) -> None:
+        from pymc_bot.hosting import probe_server
+
+        while True:
+            deadline = self._wait_deadline
+            if deadline is None or time.monotonic() >= deadline:
+                break
+            for _ in range(max(1, int(self.wait_poll_seconds * 10))):
+                if self._stop_requested or self._state != STATE_WAITING:
+                    return
+                time.sleep(0.1)
+            result = probe_server(settings.minecraft.host, settings.minecraft.port)
+            if result.get("ok") and result.get("online"):
+                self.log.add("The server is online now - joining.", "success", "bot")
+                with self._lock:
+                    if self._state != STATE_WAITING or self._stop_requested:
+                        return
+                    self._state = STATE_DISCONNECTED
+                try:
+                    self.start(settings)
+                except Exception:
+                    return  # start() already logged why
+                if self.connected and self.on_connected is not None:
+                    self.on_connected()
+                return
+        with self._lock:
+            if self._state != STATE_WAITING:
+                return
+            self._state = STATE_ERROR
+            self._wait_deadline = None
+        self.log.add(
+            f"Gave up waiting for {settings.minecraft.host}:{settings.minecraft.port} to start "
+            f"({settings.minecraft.wait_minutes:g} min). Start the server, then press Connect.",
+            "error",
+            "bot",
+        )
+
+    def _wait_for_backend(self, timeout: float = 10.0) -> bool:
+        """Block until the backend reports a live connection."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            backend = self.backend
+            if backend is None or backend.connected:
+                return True
+            if self._state == STATE_ERROR or self._stop_requested:
+                return False
+            time.sleep(0.05)
+        return bool(self.backend and self.backend.connected)
+
+    def _connect(self, settings: AppSettings) -> None:
+        with self._lock:
+            if self._backend is None:
+                self._backend = create_backend(settings, self.log)
+            elif not self._injected_backend:
+                # A fresh backend per connection keeps the adapter state clean.
+                self._backend.stop()
+                self._backend = create_backend(settings, self.log)
+            backend = self._backend
+        backend.start()
+        backend.on_chat(self._on_chat)
+        if hasattr(backend, "connect"):  # NodeBridgeBackend
+            backend.connect(settings.minecraft)  # type: ignore[attr-defined]
+        elif hasattr(backend, "set_server"):
+            backend.set_server(
+                settings.minecraft.host,
+                settings.minecraft.port,
+                settings.minecraft.version,
+                settings.minecraft.username,
+            )
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._state == STATE_DISCONNECTED:
+                return
+            self._stop_requested = True
+            backend = self._backend
+            self._state = STATE_DISCONNECTED
+            self._wait_deadline = None
+        if backend is not None:
+            try:
+                backend.stop()
+            except Exception as exc:  # pragma: no cover - shutdown must not raise
+                self.log.add(f"Error while stopping the backend: {exc}", "warn", "bot")
+        self._stats["started_at"] = None
+        self.log.add("Bot stopped.", "info", "bot")
+
+    # -------------------------------------------------------------- monitoring
+    def _start_monitor(self) -> None:
+        if self._monitor and self._monitor.is_alive():
+            return
+        self._monitor = threading.Thread(target=self._monitor_loop, name="bot-monitor", daemon=True)
+        self._monitor.start()
+
+    def _monitor_loop(self) -> None:
+        while not self._stop_requested:
+            time.sleep(2.0)
+            backend = self.backend
+            if backend is None or self._stop_requested:
+                continue
+            started = self._stats.get("started_at")
+            if started is not None and time.time() - started < 3.0:
+                continue  # grace period right after connecting
+            if self._state == STATE_CONNECTED and not backend.connected:
+                self.log.add("Lost the connection to the server.", "warn", "bot")
+                with self._lock:
+                    self._state = STATE_DISCONNECTED
+                unlimited = self.max_reconnects is None
+                if self.auto_reconnect and (unlimited or self._reconnects < self.max_reconnects):
+                    self._try_reconnect()
+                elif self.auto_reconnect:
+                    self.log.add(
+                        f"Gave up after {self._reconnects} reconnect attempts.", "error", "bot"
+                    )
+                    with self._lock:
+                        self._state = STATE_ERROR
+
+    def _try_reconnect(self) -> None:
+        self._reconnects += 1
+        base = self.rejoin_seconds or self.store.settings.minecraft.rejoin_seconds
+        delay = min(60.0, base * min(self._reconnects, 3))
+        attempt = f"{self._reconnects}" if self.max_reconnects is None else f"{self._reconnects}/{self.max_reconnects}"
+        self.log.add(f"Reconnecting in {delay:.0f}s (attempt {attempt})...", "info", "bot")
+        for _ in range(int(delay * 10)):
+            if self._stop_requested:
+                return
+            time.sleep(0.1)
+        if self._stop_requested:
+            return
+        try:
+            self._connect(self._settings_for_reconnect())
+            with self._lock:
+                self._state = STATE_CONNECTED
+            self._reconnects = 0
+            self.log.add("Reconnected.", "success", "bot")
+            self._start_monitor()
+        except Exception as exc:
+            self.log.add(f"Reconnect failed: {exc}", "error", "bot")
+            with self._lock:
+                self._state = STATE_ERROR
+
+    def _settings_for_reconnect(self) -> AppSettings:
+        """Config to reconnect with: the (possibly overridden) username we started with."""
+        settings = self.store.settings
+        with self._lock:
+            username = self._configured_username
+        if username and username != settings.minecraft.username:
+            settings = settings.model_copy(
+                update={"minecraft": settings.minecraft.model_copy(update={"username": username})}
+            )
+        return settings
+
+    # ----------------------------------------------------------------- sensing
+    def snapshot(self) -> dict[str, Any]:
+        backend = self.backend
+        if backend is None:
+            return {"status": STATE_DISCONNECTED, "backend": None}
+        data = backend.snapshot()
+        data["state"] = self.state
+        data["busy"] = self.busy
+        data["idle_seconds"] = self.idle_seconds
+        return data
+
+    def position(self) -> dict[str, float] | None:
+        return self.snapshot().get("position")
+
+    def yaw(self) -> float:
+        return float(self.snapshot().get("yaw") or 0.0)
+
+    def players(self) -> list[dict[str, Any]]:
+        return list(self.snapshot().get("players") or [])
+
+    def find_player(self, name: str) -> dict[str, Any] | None:
+        for player in self.players():
+            if player["name"].lower() == (name or "").lower():
+                return player
+        return None
+
+    def nearby_player(self, radius: float = 8.0) -> dict[str, Any] | None:
+        for player in self.players():
+            if player["distance"] <= radius:
+                return player
+        return None
+
+    # ------------------------------------------------------------------ chat
+    def _on_chat(self, username: str, message: str) -> None:
+        entry = {"time": time.time(), "username": username, "message": message}
+        self._history.append(entry)
+        if not self.connected:
+            return
+        settings = self.store.settings
+        if not username or username.lower() == self.username.lower():
+            return  # our own message echoed back by the server
+        if self.llm_chat:
+            return  # the LLM brain sees the chat and answers like a person
+        if settings.agent.greet_players and username not in self._greeted:
+            self._greeted.add(username)
+            greeting = random.choice(["hey {name}", "hi {name}!", "yo {name}", "hey {name}, what's up", "hii"])
+            self._say_later(greeting.format(name=username))
+        elif message.strip().lower().endswith(("pymc_bot", "bot?")) or self.username.lower() in message.lower():
+            self._say_later(random.choice(["yeah?", "hm?", "what's up", "yes?"]))
+
+    def say(self, text: str) -> bool:
+        backend = self.backend
+        settings = self.store.settings
+        if backend is None or not backend.connected:
+            return False
+        text = (text or "").strip().replace("\n", " ")[: settings.agent.max_chat_length]
+        if not text:
+            return False
+        with self.activity("say"):
+            backend.say(text)
+            with self._lock:
+                self._stats["chats_sent"] += 1
+                self._stats["actions"] += 1
+        self.log.add(f"<{self.username}> {text}", "bot", "bot")
+        return True
+
+    def _say_later(self, text: str) -> None:
+        """Reply after a short, human-looking pause (reading + typing) without blocking chat handling."""
+        from pymc_bot.mind import typing_delay
+
+        delay = typing_delay(text) if self.store.settings.agent.human_chat else 0.0
+        timer = threading.Timer(delay, lambda: self.say(text))
+        timer.daemon = True
+        timer.start()
+
+    def command(self, text: str) -> bool:
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        with self.activity("command"):
+            backend.command(text)
+        self.log.add(f"command -> /{text.lstrip('/')}", "info", "bot")
+        return True
+
+    # -------------------------------------------------------------- movement
+    def _current_pose(self) -> tuple[float, float, float, float] | None:
+        snap = self.snapshot()
+        pos = snap.get("position")
+        if not pos:
+            return None
+        return float(pos["x"]), float(pos["y"]), float(pos["z"]), float(snap.get("yaw") or 0.0)
+
+    def _stop_motion(self) -> None:
+        backend = self.backend
+        if backend is not None and backend.connected:
+            try:
+                backend.stop_motion()
+            except Exception as exc:  # pragma: no cover
+                self.log.add(f"Could not stop motion: {exc}", "warn", "bot")
+
+    def steer_towards(self, x: float, z: float, sprint: bool = True) -> bool:
+        """One steering tick: face the waypoint and press forward if aligned."""
+        backend = self.backend
+        pose = self._current_pose()
+        if backend is None or not backend.connected or pose is None:
+            return False
+        px, _py, pz, current_yaw = pose
+        dx, dz = x - px, z - pz
+        distance = math.hypot(dx, dz)
+        if distance < 1e-3:
+            return True
+        target_yaw = yaw_to(dx, dz)
+        try:
+            backend.look(target_yaw, 0.0)
+        except BackendError:
+            return False
+        error = wrap_angle(target_yaw - current_yaw)
+        aligned = abs(error) < 0.55
+        backend.set_control("forward", aligned)
+        backend.set_control("sprint", bool(aligned and sprint and distance > 2.5))
+        # Gently correct residual heading error by strafing.
+        strafe = 0.0
+        if aligned and abs(error) > 0.15:
+            strafe = 1.0 if error > 0 else -1.0
+        backend.set_control("right", strafe > 0)
+        backend.set_control("left", strafe < 0)
+        return True
+
+    def walk_to(
+        self,
+        x: float,
+        z: float,
+        y: float | None = None,
+        tolerance: float = 1.5,
+        timeout: float | None = None,
+    ) -> bool:
+        """Walk to a point, preferring the backend pathfinder, else steering."""
+        settings = self.store.settings
+        timeout = timeout if timeout is not None else settings.agent.action_timeout
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        if not self._motion_lock.acquire(timeout=timeout):
+            self.log.add("Another movement action is already running.", "warn", "bot")
+            return False
+        try:
+            start = time.monotonic()
+            with self.activity("walk"), self._lock:
+                self._stats["actions"] += 1
+            destination = f"({x:.0f}, {y:.0f}, {z:.0f})" if y is not None else f"({x:.0f}, {z:.0f})"
+            self.log.add(f"Walking to {destination}.", "info", "bot")
+            if backend.supports_pathfinder and y is not None:
+                if backend.pathfind_to(x, y, z, tolerance):
+                    if self._wait_until_near(x, z, tolerance, timeout):
+                        return True
+                    backend.stop_path()
+            return self._steer_to(x, z, tolerance, timeout, start)
+        finally:
+            self._stop_motion()
+            self._track_distance()
+            self._motion_lock.release()
+
+    def _wait_until_near(self, x: float, z: float, tolerance: float, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self.connected or self.cancelled:
+                return False
+            pose = self._current_pose()
+            if pose and math.hypot(pose[0] - x, pose[2] - z) <= tolerance:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _steer_to(
+        self, x: float, z: float, tolerance: float, timeout: float, start: float
+    ) -> bool:
+        """Iteratively press forward towards (x, z) until we arrive or get stuck."""
+        history: deque[tuple[float, float, float]] = deque(maxlen=40)
+        jumps = 0
+        while time.monotonic() - start < timeout:
+            if not self.connected or self.cancelled:
+                return False
+            pose = self._current_pose()
+            if pose is None:
+                time.sleep(STEER_INTERVAL)
+                continue
+            px, py, pz, _yaw = pose
+            history.append((time.monotonic(), px, pz))
+            distance = math.hypot(px - x, pz - z)
+            if distance <= tolerance:
+                return True
+            # Aim a short way ahead so walls are not hugged too tightly.
+            if distance > 3.0:
+                ratio = 2.5 / distance
+                self.steer_towards(px + (x - px) * ratio, pz + (z - pz) * ratio)
+            else:
+                self.steer_towards(x, z)
+            if self._is_stuck(history):
+                if jumps < 3:
+                    jumps += 1
+                    backend = self.backend
+                    if backend is not None:
+                        backend.jump()
+                    time.sleep(0.4)
+                else:
+                    return False
+            time.sleep(STEER_INTERVAL)
+        return False
+
+    @staticmethod
+    def _is_stuck(history: deque[tuple[float, float, float]]) -> bool:
+        if len(history) < int(STUCK_WINDOW / STEER_INTERVAL):
+            return False
+        first = history[0]
+        last = history[-1]
+        if last[0] - first[0] < STUCK_WINDOW:
+            return False
+        return math.hypot(last[1] - first[1], last[2] - first[2]) < STUCK_DISTANCE
+
+    def _track_distance(self) -> None:
+        pose = self._current_pose()
+        if pose is None:
+            return
+        if self._last_position is not None:
+            self._stats["distance_walked"] += math.dist(self._last_position, (pose[0], pose[2]))
+        self._last_position = (pose[0], pose[2])
+
+    def goto(self, x: float, z: float, y: float | None = None, tolerance: float = 1.5) -> bool:
+        return self.walk_to(x, z, y, tolerance=tolerance)
+
+    def wander(self, radius: int | None = None, steps: int = 3, rng: random.Random | None = None) -> bool:
+        """Random exploration: a few short hops in random directions.
+
+        ``rng`` lets callers (tests, the anti-AFK keeper) pick the directions themselves.
+        """
+        settings = self.store.settings
+        picker = rng or random
+        radius = radius or settings.agent.wander_radius
+        pose = self._current_pose()
+        if pose is None:
+            return False
+        origin = (pose[0], pose[2])
+        moved = False
+        for _ in range(max(1, steps)):
+            if self.cancelled:
+                break
+            angle = picker.uniform(0, 2 * math.pi)
+            distance = picker.uniform(radius * 0.4, radius)
+            tx = origin[0] + math.cos(angle) * distance
+            tz = origin[1] + math.sin(angle) * distance
+            if self.walk_to(tx, tz, tolerance=1.5, timeout=min(12.0, settings.agent.action_timeout)):
+                moved = True
+        if not moved:
+            self.log.add("Explored a bit but could not move far.", "warn", "bot")
+        return moved
+
+    def follow(self, player: str, seconds: float | None = None, distance: float = 3.0) -> bool:
+        settings = self.store.settings
+        seconds = seconds or settings.agent.action_timeout
+        deadline = time.monotonic() + seconds
+        self.log.add(f"Following {player}.", "info", "bot")
+        return self._run_follow(player, deadline, distance)
+
+    def _run_follow(self, player: str, deadline: float, distance: float) -> bool:
+        with self.activity("follow"):
+            return self._follow_loop(player, deadline, distance)
+
+    def _follow_loop(self, player: str, deadline: float, distance: float) -> bool:
+        while time.monotonic() < deadline:
+            if self.cancelled:
+                break
+            target = self.find_player(player)
+            if target is None:
+                self.log.add(f"{player} is not visible any more.", "warn", "bot")
+                return False
+            if target["distance"] <= distance:
+                self.look_at_player(player)
+                time.sleep(0.5)
+                continue
+            remaining = max(1.0, min(6.0, deadline - time.monotonic()))
+            self.walk_to(target["x"], target["z"], target.get("y"), tolerance=distance, timeout=remaining)
+        self._stop_motion()
+        return True
+
+    def look(self, yaw: float, pitch: float | None = None) -> bool:
+        """Turn the head (yaw only when pitch is omitted)."""
+        backend = self.backend
+        pose = self._current_pose()
+        if backend is None or not backend.connected or pose is None:
+            return False
+        try:
+            backend.look(yaw, pose[3] if pitch is None else pitch)
+        except BackendError:
+            return False
+        self.touch_activity()
+        return True
+
+    def swing_arm(self) -> bool:
+        """Swing the arm (a very cheap 'I am here' signal)."""
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        return bool(backend.swing_arm())
+
+    def control(self, name: str, state: bool) -> bool:
+        """Press or release one low level control (forward/back/left/right/jump/sneak/sprint).
+
+        This is the same primitive the Fabric mod records while a human plays, which is
+        what lets a model trained on playtime drive the bot directly.
+        """
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        try:
+            backend.set_control(name, bool(state))
+        except BackendError:
+            return False
+        self.touch_activity()
+        return True
+
+    def control_burst(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
+        """Hold a set of controls for a short burst, then release them.
+
+        Used by the trained playtime policy: the model predicts what the recorded player
+        pressed during the next sample, and the bot holds exactly that for one sample
+        interval. The burst registers as an activity so the anti-AFK keeper stays out of
+        the way, and it honours :meth:`cancel_actions` so a stop request is immediate.
+        """
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        pressed = {name: bool(state) for name, state in controls.items() if state}
+        if not pressed:
+            return True
+        with self.activity("trained"), self._lock:
+            try:
+                for name, state in pressed.items():
+                    backend.set_control(name, state)
+            except BackendError:
+                return False
+            self._stats["actions"] += 1
+        try:
+            deadline = time.monotonic() + max(0.05, min(10.0, seconds))
+            while time.monotonic() < deadline:
+                if self.cancelled:
+                    break
+                time.sleep(0.05)
+        finally:
+            with self._lock:
+                for name in pressed:
+                    try:
+                        backend.set_control(name, False)
+                    except BackendError:  # pragma: no cover - backend went away mid burst
+                        continue
+        self.touch_activity()
+        return True
+
+    def look_at_player(self, player: str) -> bool:
+        backend = self.backend
+        target = self.find_player(player)
+        pose = self._current_pose()
+        if backend is None or target is None or pose is None:
+            return False
+        dx = target["x"] - pose[0]
+        dy = target.get("y", pose[1] + 1.6) + 0.5 - (pose[1] + 1.6)
+        dz = target["z"] - pose[2]
+        with self.activity("look_at_player"):
+            try:
+                backend.look(yaw_to(dx, dz), pitch_to(dx, dy, dz))
+            except BackendError:
+                return False
+        return True
+
+    def jump(self) -> bool:
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        with self.activity("jump"), self._lock:
+            backend.jump()
+            self._stats["actions"] += 1
+        self.log.add("Jumped.", "debug", "bot")
+        return True
+
+    def stop_moving(self) -> bool:
+        self._stop_motion()
+        self.touch_activity()
+        self.log.add("Stopped moving.", "info", "bot")
+        return True
+
+    # ------------------------------------------------------------ interactions
+    def mine(self, block: str, attempts: int = 2) -> bool:
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        with self._motion_lock, self.activity("mine"):
+            with self._lock:
+                self._stats["actions"] += 1
+            # A player switches to the right tool first (pickaxe for stone, axe for logs...).
+            tool = self.inventory().best_tool(block)
+            if tool is not None:
+                self._hold_index(tool, quiet=True)
+            for attempt in range(max(1, attempts)):
+                if self.cancelled:
+                    return False
+                if backend.dig(block):
+                    with self._lock:
+                        self._stats["blocks_mined"] += 1
+                    self.log.add(f"Mined {block}.", "success", "bot")
+                    return True
+                if attempt + 1 < attempts:
+                    self.log.add(f"No {block} nearby - exploring to find some.", "info", "bot")
+                    self.wander(steps=1, radius=max(6, self.store.settings.agent.wander_radius // 2))
+            self.log.add(f"Could not mine {block}.", "warn", "bot")
+            return False
+
+    def attack(self, player: str) -> bool:
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        with self.activity("attack"), self._lock:
+            self._stats["actions"] += 1
+        return bool(backend.attack(player))
+
+    # ---------------------------------------------------- inventory & life
+    # Slots are numbered like the screen: 0-8 hotbar (keys 1-9), 9-35 backpack. Public methods
+    # that take a hotbar slot use the player's 1-9 numbering.
+    last_failure: str = ""
+
+    def inventory(self) -> Inventory:
+        """The current inventory (hotbar, backpack, armour, off-hand) from the snapshot."""
+        return Inventory.from_snapshot(self.snapshot())
+
+    def _perform(self, cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 10.0,
+                 activity: str | None = None, quiet: bool = False) -> tuple[bool, dict[str, Any]]:
+        backend = self.backend
+        if backend is None or not backend.connected:
+            self.last_failure = "not connected"
+            return False, {}
+        with self.activity(activity or cmd):
+            ok, why, result = backend.perform(cmd, params or {}, timeout=timeout)
+            with self._lock:
+                self._stats["actions"] += 1
+        self.last_failure = "" if ok else why
+        if not ok and not quiet:
+            self.log.add(f"Could not {cmd.replace('_', ' ')}: {why}", "info", "bot")
+        return ok, result
+
+    def _fail(self, why: str) -> bool:
+        self.last_failure = why
+        self.log.add(why, "info", "bot")
+        return False
+
+    @staticmethod
+    def _human_pause(low: float = 0.12, high: float = 0.35) -> None:
+        """The short gap between two clicks of a real player."""
+        time.sleep(random.uniform(low, high))
+
+    def select_slot(self, slot: int) -> bool:
+        """Press a hotbar key (1-9)."""
+        try:
+            index = int(slot) - 1
+        except (TypeError, ValueError):
+            return self._fail(f"hotbar slot must be 1-9, not {slot!r}")
+        if not 0 <= index < HOTBAR_SIZE:
+            return self._fail("hotbar slots are 1-9")
+        ok, _ = self._perform("select_slot", {"slot": index}, quiet=True)
+        return ok
+
+    def _hold_index(self, index: int, quiet: bool = False) -> bool:
+        """Get inventory slot ``index`` into the hand: press its key, or pull it into the hotbar first."""
+        inv = self.inventory()
+        if index < HOTBAR_SIZE:
+            if inv.selected == index:
+                return True
+            ok, _ = self._perform("select_slot", {"slot": index}, quiet=quiet)
+            return ok
+        target = inv.first_empty("hotbar")
+        if target is None:
+            target = inv.selected
+        ok, _ = self._perform("move_slot", {"from": index, "to": target}, quiet=quiet)
+        if not ok:
+            return False
+        self._human_pause()
+        if inv.selected != target:
+            ok, _ = self._perform("select_slot", {"slot": target}, quiet=quiet)
+        return ok
+
+    def _resolve(self, item: str) -> tuple[Inventory, int | None]:
+        snap = self.snapshot()
+        inv = Inventory.from_snapshot(snap)
+        return inv, inv.resolve(item, float(snap.get("food") or 20), float(snap.get("health") or 20))
+
+    def hold(self, item: str) -> bool:
+        """Hold an item: an id (``iron_pickaxe``) or a word (``sword``, ``food``, ``blocks``, ``axe``)."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        name = inv.slots[index].name
+        if self._hold_index(index):
+            self.log.add(f"Holding {name}.", "info", "bot")
+            return True
+        return False
+
+    def equip(self, item: str, to: str | None = None) -> bool:
+        """Put something on: armour goes to its slot, ``to="offhand"`` for a shield/torch, else the hand."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        name = inv.slots[index].name
+        destination = (to or "").lower().replace("-", "").replace("_", "") or armor_slot_for(name) or "hand"
+        destination = {"torso": "chest", "offhand": "offhand", "mainhand": "hand"}.get(destination, destination)
+        if destination == "hand":
+            return self.hold(name)
+        ok, _ = self._perform("equip", {"slot": index, "destination": destination})
+        if ok:
+            self.log.add(f"Put on {name} ({destination}).", "info", "bot")
+        return ok
+
+    def unequip(self, slot: str) -> bool:
+        """Take armour (head/chest/legs/feet) or the off-hand item off."""
+        slot = str(slot or "").lower().replace("-", "").replace("_", "")
+        slot = {"helmet": "head", "chestplate": "chest", "torso": "chest", "leggings": "legs", "boots": "feet"}.get(slot, slot)
+        ok, _ = self._perform("unequip", {"destination": slot})
+        return ok
+
+    def wear_best_armor(self) -> bool:
+        """Put on every armour piece that is better than what is worn (one click at a time)."""
+        worn = 0
+        for slot in ARMOR_SLOTS:
+            upgrades = self.inventory().armor_upgrades()
+            if slot not in upgrades:
+                continue
+            index = upgrades[slot]
+            name = self.inventory().slots[index].name
+            ok, _ = self._perform("equip", {"slot": index, "destination": slot}, activity="wear_armor")
+            if ok:
+                worn += 1
+                self.log.add(f"Put on {name}.", "info", "bot")
+                self._human_pause(0.25, 0.6)
+        return worn > 0 or self._fail("No better armour to wear.")
+
+    def swap_hands(self) -> bool:
+        """The F key: swap the main hand and the off-hand."""
+        ok, _ = self._perform("swap_hands", {})
+        return ok
+
+    def to_hotbar(self, item: str, slot: int | None = None) -> bool:
+        """Move an item from the backpack into the hotbar (slot 1-9, or the first free one)."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        if slot is None:
+            if index < HOTBAR_SIZE:
+                return True  # already in the hotbar
+            target = inv.first_empty("hotbar")
+            target = inv.selected if target is None else target
+        else:
+            try:
+                target = int(slot) - 1
+            except (TypeError, ValueError):
+                return self._fail("hotbar slots are 1-9")
+            if not 0 <= target < HOTBAR_SIZE:
+                return self._fail("hotbar slots are 1-9")
+        if target == index:
+            return True
+        ok, _ = self._perform("move_slot", {"from": index, "to": target}, activity="to_hotbar")
+        if ok:
+            self.log.add(f"Moved {inv.slots[index].name} to hotbar slot {target + 1}.", "info", "bot")
+        return ok
+
+    def to_inventory(self, slot: int | None = None, item: str | None = None) -> bool:
+        """Put a hotbar item (slot 1-9, or by name) back into the backpack."""
+        inv = self.inventory()
+        if item:
+            index = inv.find(short(item), "hotbar")
+            if index is None:
+                _, found = self._resolve(item)
+                index = found if found is not None and found < HOTBAR_SIZE else None
+            if index is None:
+                return self._fail(f"No {item} in the hotbar.")
+        else:
+            try:
+                index = (int(slot) - 1) if slot is not None else inv.selected
+            except (TypeError, ValueError):
+                return self._fail("hotbar slots are 1-9")
+            if not 0 <= index < HOTBAR_SIZE:
+                return self._fail("hotbar slots are 1-9")
+        if inv.slots[index] is None:
+            return self._fail(f"Hotbar slot {index + 1} is empty.")
+        target = inv.first_empty("backpack")
+        if target is None:
+            return self._fail("The backpack is full.")
+        ok, _ = self._perform("move_slot", {"from": index, "to": target}, activity="to_inventory")
+        if ok:
+            self.log.add(f"Put {inv.slots[index].name} into the backpack.", "info", "bot")
+        return ok
+
+    def organize_hotbar(self) -> bool:
+        """Lay the hotbar out like a tidy player: weapon, pickaxe, axe, shovel, blocks, torches, bow, -, food."""
+        snap = self.snapshot()
+        inv = Inventory.from_snapshot(snap)
+        moves = inv.plan_hotbar(float(snap.get("food") or 20), float(snap.get("health") or 20))
+        if not moves:
+            return self._fail("The hotbar is already tidy.")
+        done = 0
+        for source, target in moves:
+            if self.cancelled:
+                break
+            ok, _ = self._perform("move_slot", {"from": source, "to": target}, activity="organize", quiet=True)
+            if not ok:
+                break
+            done += 1
+            self._human_pause()
+        if done:
+            self.log.add(f"Sorted the hotbar ({done} move{'s' if done != 1 else ''}).", "info", "bot")
+        return done > 0
+
+    def drop(self, item: str, count: int | None = None) -> bool:
+        """Throw items on the ground (Q)."""
+        inv, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item}.")
+        params: dict[str, Any] = {"slot": index}
+        if count:
+            params["count"] = max(1, int(count))
+        ok, result = self._perform("toss", params, activity="drop")
+        if ok:
+            self.log.add(f"Dropped {result.get('count', count or '')} {inv.slots[index].name}.", "info", "bot")
+        return ok
+
+    def give(self, player: str, item: str, count: int | None = None) -> bool:
+        """Walk up to a player, look at them and throw them the item - how players hand things over."""
+        target = self.find_player(player)
+        if target is None:
+            return self._fail(f"I can't see {player}.")
+        _, index = self._resolve(item)
+        if index is None:
+            return self._fail(f"I have no {item} to give.")
+        if target.get("distance", 99) > 3:
+            self.walk_to(target["x"], target["z"], tolerance=2.5, timeout=20)
+        self.look_at_player(player)
+        self._human_pause(0.2, 0.5)
+        return self.drop(item, count)
+
+    def place_block(self, block: str = "blocks") -> bool:
+        """Place a block next to the bot (``blocks`` = the building block it has most of)."""
+        inv, index = self._resolve(block)
+        if index is None:
+            return self._fail(f"I have no {block} to place.")
+        ok, result = self._perform("place", {"slot": index}, activity="place")
+        if ok:
+            with self._lock:
+                self._stats["blocks_placed"] += 1
+            self.log.add(f"Placed {inv.slots[index].name}.", "info", "bot")
+        return ok
+
+    def use_item(self, seconds: float = 0.3) -> bool:
+        """Right-click with what is in the hand (bow, shield, bucket, flint and steel...)."""
+        ok, _ = self._perform("use_item", {"seconds": max(0.1, min(5.0, float(seconds)))}, timeout=8.0)
+        return ok
+
+    def eat(self) -> bool:
+        """Eat the best food for the moment (no steak on a full bar, golden apples only when hurt)."""
+        backend = self.backend
+        if backend is None or not backend.connected:
+            return False
+        snap = self.snapshot()
+        inv = Inventory.from_snapshot(snap)
+        index = inv.best_food(float(snap.get("food") or 20), float(snap.get("health") or 20))
+        if index is None and not any(is_food(stack.name) for _, stack in inv.items()):
+            if snap.get("slots") or snap.get("inventory"):
+                return self._fail("Nothing to eat.")
+        params = {} if index is None else {"slot": index}
+        ok, result = self._perform("eat", params, timeout=12.0, quiet=True)
+        if ok:
+            self.log.add(f"Ate {result.get('item') or 'some food'}.", "info", "bot")
+        else:
+            self.log.add(f"Could not eat: {self.last_failure or 'nothing to eat'}.", "info", "bot")
+        return ok
+
+    def sleep_in_bed(self) -> bool:
+        """Find a bed nearby and sleep (only works at night, like for a player)."""
+        ok, _ = self._perform("sleep", {}, timeout=25.0, activity="sleep")
+        if ok:
+            self.log.add("Went to bed.", "info", "bot")
+        return ok
+
+    def wake_up(self) -> bool:
+        ok, _ = self._perform("wake", {}, activity="wake")
+        return ok
+
+    def collect_items(self, radius: float = 12.0) -> bool:
+        """Walk over dropped items nearby to pick them up."""
+        with self._motion_lock:
+            ok, result = self._perform("collect", {"radius": radius, "seconds": 15}, timeout=20.0, activity="collect")
+        if ok:
+            self.log.add(f"Picked up {result.get('picked', 1)} dropped item(s).", "info", "bot")
+        return ok
+
+    def fight(self, mob: str | None = None) -> bool:
+        """Take out the best weapon and fight the nearest hostile mob (or a named one)."""
+        index = self.inventory().best_weapon()
+        if index is not None:
+            self._hold_index(index, quiet=True)
+        params: dict[str, Any] = {"seconds": 15}
+        if mob:
+            params["mob"] = short(mob)
+        with self._motion_lock:
+            ok, result = self._perform("attack_mob", params, timeout=20.0, activity="fight")
+        if ok:
+            if result.get("killed"):
+                with self._lock:
+                    self._stats["mobs_killed"] += 1
+            self.log.add(
+                f"Fought a {result.get('target', mob or 'mob')}"
+                + (" and won." if result.get("killed") else " - it got away."),
+                "info", "bot",
+            )
+        return ok
+
+    def flee(self, distance: float = 12.0) -> bool:
+        """Sprint away from the closest hostile mob."""
+        snap = self.snapshot()
+        pose = snap.get("position")
+        threats = [e for e in snap.get("entities") or [] if e.get("hostile")]
+        if not pose or not threats:
+            return self._fail("Nothing to run from.")
+        threat = min(threats, key=lambda e: e.get("dist", 99))
+        length = math.hypot(threat.get("dx", 0.0), threat.get("dz", 0.0)) or 1.0
+        x = pose["x"] - threat.get("dx", 0.0) / length * distance
+        z = pose["z"] - threat.get("dz", 0.0) / length * distance
+        self.log.add(f"Running away from a {short(threat.get('type')) or 'mob'}!", "warn", "bot")
+        return self.walk_to(x, z, tolerance=2.0, timeout=10)
+
+    def emote(self, kind: str = "wave") -> bool:
+        """Body language players use: wave (swing at someone), crouch (the sneak greeting), nod, shake, spin."""
+        kind = (kind or "wave").lower()
+        backend = self.backend
+        pose = self._current_pose()
+        if backend is None or not backend.connected or pose is None:
+            return False
+        near = self.nearby_player(10)
+        with self.activity("emote"):
+            if near:
+                self.look_at_player(near["name"])
+            yaw, pitch = pose[2], pose[3]
+            if near:
+                current = self._current_pose()
+                if current:
+                    yaw, pitch = current[2], current[3]
+            try:
+                if kind == "crouch":
+                    for _ in range(random.randint(2, 4)):
+                        backend.set_control("sneak", True)
+                        time.sleep(random.uniform(0.12, 0.2))
+                        backend.set_control("sneak", False)
+                        time.sleep(random.uniform(0.12, 0.2))
+                elif kind == "nod":
+                    for _ in range(2):
+                        backend.look(yaw, min(1.2, pitch + 0.45))
+                        time.sleep(0.18)
+                        backend.look(yaw, pitch)
+                        time.sleep(0.18)
+                elif kind == "shake":
+                    for _ in range(2):
+                        backend.look(yaw + 0.4, pitch)
+                        time.sleep(0.16)
+                        backend.look(yaw - 0.4, pitch)
+                        time.sleep(0.16)
+                    backend.look(yaw, pitch)
+                elif kind == "spin":
+                    for step in range(1, 9):
+                        backend.look(yaw + step * math.pi / 4, pitch)
+                        time.sleep(0.07)
+                else:  # wave
+                    for _ in range(random.randint(2, 3)):
+                        backend.swing_arm()
+                        time.sleep(random.uniform(0.18, 0.3))
+            except BackendError:
+                return False
+        return True
+
+    def look_around(self) -> bool:
+        """A few natural glances left, right, up and down."""
+        pose = self._current_pose()
+        if pose is None:
+            return False
+        yaw = pose[2]
+        with self.activity("look_around"):
+            for _ in range(random.randint(2, 4)):
+                if self.cancelled:
+                    break
+                self.look(yaw + random.uniform(-1.4, 1.4), max(-0.6, min(0.6, random.gauss(0.0, 0.25))))
+                time.sleep(random.uniform(0.35, 0.9))
+        return True
+
+    # ------------------------------------------------------------------ skills
+    def skill(self, name: str, params: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """Run one of the 44 skills (chop_tree, craft, harvest, go_home... see :mod:`pymc_bot.skills`)."""
+        from pymc_bot import skills
+
+        skill = skills.get(name)
+        if skill is None:
+            return False, f"unknown skill {name!r}"
+        if not self.connected:
+            return False, "not connected"
+        return skills.run_skill(self, skill, params)
+
+    def note_skill(self, name: str, result: dict[str, Any]) -> None:
+        """Keep the stats in step with what a bridge skill reported."""
+        with self._lock:
+            self._stats["skills_used"] += 1
+            self._stats["blocks_mined"] += int(result.get("mined") or 0)
+            self._stats["blocks_placed"] += int(result.get("placed_count") or 0)
+            self._stats["mobs_killed"] += int(result.get("kills") or 0)
+            self._last_skill = name
+
+    def reconnect(self) -> None:
+        self.stop()
+        self._reconnects = 0
+        self.start()

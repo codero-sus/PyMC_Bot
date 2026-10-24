@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local runtime state
+pymc_bot_config.json
+.pymc_profiles/
+.pymc_backup/
+.pymc_update.json
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local playtime recordings / datasets (the mod writes them into the game folder)
+/pymcbot/
+/pymc-playtime/
+
+# web lookup cache of the AI (pymc_bot.knowledge)
+knowledge_cache.json
+
+# Minecraft LLM training (python -m pymc_bot llm build / Kaggle output)
+llm_data/
+llm_turns.jsonl
+pymc-minecraft/
+*.gguf

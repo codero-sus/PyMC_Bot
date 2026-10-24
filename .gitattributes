@@ -1,0 +1,5 @@
+# Windows batch files must keep CRLF; shell scripts must keep LF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf
+mod/gradlew text eol=lf
