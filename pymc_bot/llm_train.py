@@ -2277,9 +2277,14 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
                          f"student and graded token by token by the teacher, reverse KL "
                          f"{on.get('kl_start', '?')} -> {on.get('kl_end', '?')}).")
         teacher = distill.get("teacher", "")
+        grader = distill.get("grader") or teacher
+        who = (f"[{teacher}](https://huggingface.co/{teacher}) as the teacher (same tokenizer, Apache-2.0)"
+               if grader == teacher else
+               f"[{teacher}](https://huggingface.co/{teacher}) writing the answers and "
+               f"[{grader}](https://huggingface.co/{grader}) grading the student's own replies (both Qwen3: same "
+               "tokenizer, Apache-2.0)")
         distill_text = (f"\n## Distillation\n\nTrained with Qwen3's *strong-to-weak* distillation recipe, with "
-                        f"[{teacher}](https://huggingface.co/{teacher}) as the teacher (same tokenizer, Apache-2.0):\n\n"
-                        + "\n".join(lines) + "\n")
+                        f"{who}:\n\n" + "\n".join(lines) + "\n")
     data_text = ""
     if sources:
         data_text = ("\n## Training data\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
@@ -2746,6 +2751,12 @@ def clean_uploaded(out: Path, report: dict[str, Any]) -> list[str]:
 TEACHER_MODEL = "unsloth/Qwen3-8B"
 UNCENSORED_TEACHER = "huihui-ai/Huihui-Qwen3-8B-abliterated-v2"
 TEACHER_LICENSE = ("Apache-2.0 (Qwen3)", True, "https://huggingface.co/Qwen/Qwen3-8B")
+#: Phase 1 only needs the teacher's *text*, so it can be the strongest model that runs on Kaggle's 2x T4: Qwen's own
+#: 4-bit AWQ Qwen3-14B (~10 GB; the T4 has vLLM's AWQ kernels, and it thinks like the 8B and the 4B). Phase 2 needs
+#: the teacher next to the student on one T4, where a 14B doesn't fit, so the 8B grades. There is no 4-bit
+#: uncensored 14B that runs on a T4 (the community AWQ builds need Ampere kernels), so uncensored runs keep the
+#: abliterated 8B for both phases (a censored writer would teach the student to refuse again).
+WRITER_MODEL = "Qwen/Qwen3-14B-AWQ"
 #: Qwen3's own "not thinking" marker. The hybrid teacher scores a non-thinking student's reply after it, so the
 #: teacher never pushes the student to open with ``<think>``.
 NO_THINK_PREFIX = "<think>\n\n</think>\n\n"
@@ -2755,13 +2766,51 @@ TEACHER_SAMPLING = {True: {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
-def teacher_model(args: argparse.Namespace) -> str:
-    """``--teacher auto``: Qwen3-8B, or its abliterated twin for an uncensored run (a censored teacher would teach
-    the uncensored student to refuse again)."""
+def teacher_model(args: argparse.Namespace, phase: str = "grade") -> str:
+    """``--teacher auto``: the best teacher for each phase.
+
+    * ``"answers"`` (phase 1, writes the answers): Qwen3-14B-AWQ on vLLM; Qwen3-8B without vLLM or if the 14B did not
+      start;
+    * ``"grade"`` (phase 2, grades the student's own replies token by token): Qwen3-8B, which fits next to the student.
+
+    An uncensored run uses the abliterated Qwen3-8B for both (a censored teacher would teach the uncensored student
+    to refuse again). An explicit ``--teacher`` is used for both phases."""
     chosen = str(getattr(args, "teacher", "auto") or "auto").strip()
     if chosen.lower() != "auto":
         return chosen
-    return UNCENSORED_TEACHER if getattr(args, "uncensored", False) else TEACHER_MODEL
+    uncensored = bool(getattr(args, "uncensored", False))
+    if phase == "answers" and not uncensored:
+        fallback = getattr(args, "writer_fallback", None)
+        if fallback:
+            return str(fallback)
+        if use_vllm(args):
+            return WRITER_MODEL
+    return UNCENSORED_TEACHER if uncensored else TEACHER_MODEL
+
+
+def smaller_writer(args: argparse.Namespace, teacher: str) -> str | None:
+    """The teacher that writes instead when ``teacher`` (the auto-picked 14B) does not run: the 8B."""
+    if str(getattr(args, "teacher", "auto") or "auto").strip().lower() != "auto" or getattr(args, "writer_fallback", None):
+        return None
+    fallback = UNCENSORED_TEACHER if getattr(args, "uncensored", False) else TEACHER_MODEL
+    return fallback if fallback != teacher else None
+
+
+def prequantized(model: str) -> bool:
+    """A checkpoint that already is 4-bit (AWQ / GPTQ): vLLM loads it as it is, never with bitsandbytes on top."""
+    return bool(re.search(r"(?i)[-_.](awq|gptq)(?:$|[-_.])", model))
+
+
+def same_tokenizer(student: Any, teacher: Any) -> bool:
+    """Phase 2 compares the two models' probabilities token id by token id, so both must cut text the same way
+    (Qwen3 and Qwen3-VL do; Qwen3.5 or Llama students do not)."""
+    probes = ("Hello! How do I craft a diamond pickaxe in Minecraft 1.21?",
+              "<|im_start|>user\nZombies at night: 12 or 13 hearts? Ça va? 你好 <|im_end|>")
+    try:
+        return all(list(student(p, add_special_tokens=False)["input_ids"])
+                   == list(teacher(p, add_special_tokens=False)["input_ids"]) for p in probes)
+    except Exception:  # noqa: BLE001 - can't tell: not the same
+        return False
 
 
 def _job_key(teacher: str, messages: list[dict[str, str]], thinking: bool) -> str:
@@ -3059,7 +3108,7 @@ def vllm_worker(job_path: str, out_path: str) -> int:
                                "tensor_parallel_size": 2 if gpus >= 2 else 1, "gpu_memory_utilization": 0.88,
                                "disable_custom_all_reduce": True, "enable_prefix_caching": True,
                                "enforce_eager": bool(job.get("eager"))}
-    if gpus < 2:  # 16 GB of fp16 weights don't fit one T4: quantize to 4-bit while loading
+    if gpus < 2 and not prequantized(str(job["teacher"])):  # 16 GB of fp16 don't fit one T4: 4-bit while loading
         options["quantization"] = "bitsandbytes"
     llm = LLM(**options)
     tokenizer = llm.get_tokenizer()
@@ -3180,7 +3229,7 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
     limit = int(getattr(args, "distill_rows", 0) or 0)
     if limit <= 0:
         return rows
-    teacher = teacher_model(args)
+    teacher = teacher_model(args, "answers")
     jobs = teacher_jobs(rows, preset, limit, teacher)
     python = use_vllm(args)
     engine = "vLLM" if python else "transformers"
@@ -3197,6 +3246,7 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
         seconds = min(seconds, max(0.0, (args.deadline - time.time() - (args.reserve_minutes + 20) * 60) * 0.4))
     folder = getattr(args, "stream_cache", None)
     lock = lock_file(Path(folder) / "teacher") if folder else None
+    retry_with: str | None = None
     with export_lock(lock, waiting="waiting for the other edition's teacher (its answers are reused)..."):
         known = load_teacher_answers(args, teacher)  # the other edition may just have written some
         remote = teacher_cache_remote(args, teacher) if any(job["key"] not in known for job in jobs) else None
@@ -3216,11 +3266,15 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
                     if python:
                         try:
                             fresh = vllm_generate(teacher, todo, args.max_seq, seconds, python)
-                        except Exception as exc:  # noqa: BLE001 - transformers can still do it
-                            print(f"teacher: vLLM unavailable ({exc}) - writing with transformers")
+                        except Exception as exc:  # noqa: BLE001 - the 8B, or transformers, can still do it
+                            retry_with = None if fresh else smaller_writer(args, teacher)
+                            print(f"teacher: {teacher} did not run on vLLM ({exc}) - "
+                                  + (f"{retry_with} writes instead" if retry_with else "writing with transformers"))
                             python = ""
                     seconds = max(0.0, seconds - (time.time() - started))
-                    if not python and world > 1:
+                    if retry_with:
+                        pass  # after the lock is released: the 8B writes (on vLLM if it can)
+                    elif not python and world > 1:
                         target = _distill_file(Path(args.out))
                         temp = target.with_name(target.name + ".tmp")
                         temp.write_text(json.dumps({"teacher": teacher, "jobs": todo, "max_seq": args.max_seq,
@@ -3234,11 +3288,17 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
                 print(f"distillation: the teacher failed ({type(exc).__name__}: {exc}) - training on the original answers")
             known.update(fresh)
             save_teacher_answers(args, teacher, fresh)
-            print(f"teacher wrote {len(fresh)} answers in {(time.time() - started) / 60:.0f} min")
+            if retry_with:
+                args.distill_minutes = max(1.0, float(args.distill_minutes) - (time.time() - started) / 60)
+            else:
+                print(f"teacher wrote {len(fresh)} answers in {(time.time() - started) / 60:.0f} min")
             if fresh:
                 push_teacher_answers(remote, known)
         elif todo:
             print("distillation: not enough session time left for the teacher - training on the original answers")
+    if retry_with:
+        args.writer_fallback = retry_with
+        return distill_offpolicy(args, preset, rows, world, generate)
     distilled, stats = apply_teacher_answers(rows, jobs, known, teacher, bool(getattr(args, "uncensored", False)))
     print(f"distillation: {stats['used']}/{stats['asked']} rows now carry the teacher's answer"
           + (f" (kept the original for: {json.dumps(stats['dropped'])})" if stats["dropped"] else ""))
@@ -3303,11 +3363,20 @@ def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: An
     prompts = onpolicy_prompts(rows, steps, batch, world, args.seed)
     if not prompts:
         return {}
+    teacher_id = teacher_model(args, "grade")
+    try:
+        from transformers import AutoTokenizer
+
+        if not same_tokenizer(tokenizer, AutoTokenizer.from_pretrained(teacher_id)):
+            print(f"on-policy distillation skipped: {teacher_id} cuts text into different tokens than this student "
+                  "(it needs a teacher from the same family; phase 1 still used the teacher's answers)")
+            return {}
+    except Exception as exc:  # noqa: BLE001 - loading the teacher below tells for sure
+        print(f"note: could not compare the tokenizers first ({type(exc).__name__})")
     from unsloth import FastLanguageModel  # noqa: I001
     import torch
     import torch.distributed as dist
 
-    teacher_id = teacher_model(args)
     os.environ["UNSLOTH_RETURN_LOGITS"] = "1"  # Unsloth hands out real logits only when asked
     teacher = None
     try:
@@ -3695,7 +3764,10 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
     distill = {key: value for key, value in (("offpolicy", getattr(args, "distill_report", None)),
                                              ("onpolicy", getattr(args, "onpolicy_report", None))) if value}
     if distill:
-        report["distill"] = dict(distill, teacher=teacher_model(args))
+        report["distill"] = dict(distill, teacher=(distill.get("offpolicy") or {}).get("teacher")
+                                 or teacher_model(args, "answers"))
+        if distill.get("onpolicy"):
+            report["distill"]["grader"] = distill["onpolicy"].get("teacher") or teacher_model(args, "grade")
     if eval_rows and args.eval_limit:
         for_inference()
         asked = eval_rows[: args.eval_limit]
@@ -3945,8 +4017,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="distillation phase 2 (on-policy, text editions): after fine-tuning, the student writes "
                              "replies and learns the teacher's token probabilities on them (reverse KL); 0 = off")
     parser.add_argument("--teacher", default="auto",
-                        help=f"teacher model: auto = {TEACHER_MODEL} ({UNCENSORED_TEACHER} with --uncensored); "
-                             "any Qwen3 with the same tokenizer works, e.g. unsloth/Qwen3-14B")
+                        help=f"teacher model: auto = {WRITER_MODEL} writes the answers on vLLM and {TEACHER_MODEL} "
+                             f"grades (both {UNCENSORED_TEACHER} with --uncensored); any Qwen3 with the same "
+                             "tokenizer works for both phases, e.g. unsloth/Qwen3-14B")
     parser.add_argument("--distill-minutes", type=float, default=40.0,
                         help="most minutes the teacher may spend writing answers (unwritten rows keep theirs)")
     parser.add_argument("--onpolicy-batch", type=int, default=4, help="replies per GPU per on-policy step")

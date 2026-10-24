@@ -72,7 +72,7 @@ def downloads(version: str) -> list[str]:
         "(GPU T4 x2): the notebook and the trainer it runs. Pick what to train with "
         "`editions_to_be_trained = {txt, txt_think, vl, vl_think}` - only those are trained. **Both T4s train** every edition together "
         "(`GPU_MODE = \"merge\"`: DDP via HF Accelerate, fp16; `\"parallel\"` = one edition per T4). `DISTILL` runs Qwen3's "
-        "strong-to-weak distillation: Qwen3-8B writes answers (on vLLM across both T4s, kept on Hugging Face for the next session), then teaches the 4B token by token (on-policy reverse KL). `MAX_HOURS` stops training in time for the export and upload "
+        "strong-to-weak distillation: Qwen3-14B writes answers (on vLLM across both T4s, kept on Hugging Face for the next session), then Qwen3-8B teaches the 4B token by token (on-policy reverse KL). `MAX_HOURS` stops training in time for the export and upload "
         "before Kaggle's 12 h limit, `FAST` sizes batches by tokens, streams shared data once and makes the GGUFs on the "
         "CPU (uploading meanwhile) while the T4 trains the next edition, and `AUTO_EXIT` ends the session when everything is on Hugging Face. Results, logs and the shared data cache stay in `/kaggle/working`; downloads, GGUF work files and other throwaway files go to `/kaggle/tmp`. Every edition is uploaded to Hugging Face **twice**: "
         "**safetensors** first (`<you>/Minecraftism-4B-Uncensored`, the compact 16-bit merged model for "

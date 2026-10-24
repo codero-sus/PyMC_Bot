@@ -615,7 +615,7 @@ even without your own screenshots. It can also run an **optional test suite**: b
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
 #   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
 #   GPU_MODE = "merge": both T4s train every edition (DDP via Accelerate, fp16); MAX_HOURS keeps the upload inside 12 h
-#   DISTILL: Qwen3-style strong-to-weak distillation - Qwen3-8B writes answers, then teaches the 4B token by token
+#   DISTILL: Qwen3-style strong-to-weak distillation - Qwen3-14B writes answers, Qwen3-8B teaches the 4B token by token
 #   (the teacher runs on vLLM over both T4s; its answers are kept on HF so the next session reuses them)
 #   editions_to_be_trained = {txt, txt_think, vl, vl_think} picks what is trained; FAST: token-sized batches,
 #   data streamed once for all editions, GGUFs made on the CPU while the T4 trains the next edition

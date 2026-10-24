@@ -14,9 +14,9 @@
    * **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token) to publish the model.
 4. Edit the settings cell. Pick the editions with `editions_to_be_trained = {txt, txt_think, vl, vl_think}`
    (only those are trained, e.g. `{txt}` or `{txt, vl}`). `GPU_MODE = "merge"` puts both T4s on every edition (DDP launched with HF Accelerate, fp16; `"parallel"` = one
-   edition per T4 instead). `DISTILL = True` runs Qwen3's strong-to-weak distillation: Qwen3-8B (4-bit) writes the answers to
-   `DISTILL_ROWS` chat and Minecraft prompts, then teaches the fine-tuned 4B token by token on its own replies
-   (`ONPOLICY_STEPS`, reverse KL). The teacher writes with vLLM on both T4s (`VLLM_TEACHER`, installed in its own venv in
+   edition per T4 instead). `DISTILL = True` runs Qwen3's strong-to-weak distillation: Qwen3-14B (4-bit AWQ) writes the answers to
+   `DISTILL_ROWS` chat and Minecraft prompts, then Qwen3-8B teaches the fine-tuned 4B token by token on its own replies
+   (`ONPOLICY_STEPS`, reverse KL; with `UNCENSORED` the abliterated Qwen3-8B does both). The teacher writes with vLLM on both T4s (`VLLM_TEACHER`, installed in its own venv in
    the background) and its answers are kept in a private HF dataset for the next session (`TEACHER_CACHE`). `MAX_HOURS` makes training stop early
    enough for the export and upload to finish before Kaggle's 12 h limit. `FAST = True` sizes batches by tokens,
    streams the shared data once for all editions, uploads while llama.cpp makes the GGUFs and, with more editions
