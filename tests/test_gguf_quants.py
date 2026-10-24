@@ -426,3 +426,104 @@ def test_local_import_takes_the_main_quant_not_the_biggest(tmp_path):
     assert llm_tools.find_gguf(tmp_path).name == "m.Q8_0.gguf"  # no report: the biggest, as before
     (tmp_path / "pymc_model.json").write_text(json.dumps({"gguf": "m.Q4_K_M.gguf"}))
     assert llm_tools.find_gguf(tmp_path).name == "m.Q4_K_M.gguf"
+
+
+# --------------------------------------------------------------------------- faster "distillation": deferred GGUFs
+def _deferred(tmp_path, monkeypatch, argv, model=None):
+    run = FakeRun()
+    monkeypatch.setattr(subprocess, "run", run)
+    tools = _tools(tmp_path / "tools")
+    monkeypatch.setattr(llm_train, "llama_cpp_tools", lambda scratch, **_: tools)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = llm_train.build_parser().parse_args(["--preset", "minecraftism", "--eval-limit", "0", "--out",
+                                                str(tmp_path / "out"), "--gguf-scratch", str(tmp_path / "work")] + argv)
+    args.system_prompt = "You are Minecraftism."
+    args.data_dir = str(tmp_path)
+    model = model or FakeModel()
+    code = llm_train.finish(args, llm_train.PRESETS["minecraftism"], model, FakeTokenizer(), [], [], 0.5, 0.0,
+                            generate=None, for_inference=lambda: None)
+    return code, model
+
+
+def test_defer_gguf_frees_the_gpu_and_export_only_finishes_the_edition(tmp_path, monkeypatch, hub, capsys):
+    code, model = _deferred(tmp_path, monkeypatch, ["--hub-repo", "auto", "--defer-gguf", "--clean-after-upload"])
+    out = tmp_path / "out"
+    assert code == 0 and model.calls == [("merged", "merged_16bit")]
+    assert (out / llm_train.EXPORT_JOB).is_file() and not (out / "pymc_model.json").exists()
+    assert hub == [] and (out / "safetensors").is_dir()  # nothing uploaded yet: the GPU process just ends
+    assert "the next edition can start on this GPU now" in capsys.readouterr().out
+
+    assert llm_train.main(["--export-only", str(out)]) == 0  # the CPU-only process, no model
+    import os
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
+    report = json.loads((out / "pymc_model.json").read_text())
+    kinds = [(e[0], e[1]) for e in hub]
+    assert kinds == [("create", "me/Minecraftism-4B"), ("folder", "me/Minecraftism-4B"),
+                     ("create", "me/Minecraftism-4B-GGUF")] + [("file", "me/Minecraftism-4B-GGUF")] * 4 + \
+                    [("create", "me/Minecraftism-4B-GGUF"), ("folder", "me/Minecraftism-4B-GGUF")]
+    assert [g["uploaded"] for g in report["ggufs"]] == [False, True, True, True, True]
+    assert report["safetensors_uploaded"] is True and report["gguf_route"] == "llama.cpp"
+    assert report["system_prompt"] == "You are Minecraftism." and "tokenizer.json" in report["essentials"]
+    assert not (out / llm_train.EXPORT_JOB).exists() and not (out / "safetensors").exists()
+    assert "~8 GB freed" in capsys.readouterr().out  # freed as soon as it was up and in the F16 GGUF
+
+
+def test_defer_gguf_only_when_the_cpu_route_is_ready(tmp_path, monkeypatch, hub):
+    def no_tools(scratch, **_):
+        raise RuntimeError("offline")
+
+    run = FakeRun()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(llm_train, "llama_cpp_tools", no_tools)
+    args = llm_train.build_parser().parse_args(["--preset", "minecraftism", "--eval-limit", "0", "--out",
+                                                str(tmp_path / "out"), "--gguf-scratch", str(tmp_path / "work"),
+                                                "--defer-gguf"])
+    args.system_prompt, args.data_dir = "", str(tmp_path)
+    model = FakeModel()
+    assert llm_train.finish(args, llm_train.PRESETS["minecraftism"], model, FakeTokenizer(), [], [], 0.5, 0.0,
+                            generate=None, for_inference=lambda: None) == 0
+    assert not (tmp_path / "out" / llm_train.EXPORT_JOB).exists()  # Unsloth's exporter needed the model: done here
+    assert model.calls[-1] == ("gguf", ["q4_k_m"])
+    assert llm_train.main(["--export-only", str(tmp_path / "out")]) == 2  # no job to finish
+
+
+def test_export_only_without_llama_cpp_keeps_the_job(tmp_path, monkeypatch, hub):
+    code, _model = _deferred(tmp_path, monkeypatch, ["--hub-repo", "auto", "--defer-gguf"])
+    assert code == 0
+
+    def broken(*_a, **_k):
+        raise RuntimeError("llama.cpp vanished")
+
+    monkeypatch.setattr(llm_train, "make_ggufs", broken)
+    assert llm_train.main(["--export-only", str(tmp_path / "out")]) == 1
+    assert (tmp_path / "out" / llm_train.EXPORT_JOB).is_file()  # can be tried again
+
+
+def test_quant_uploads_run_while_the_next_quant_is_made(tmp_path, monkeypatch, hub):
+    """The upload of a quant overlaps llama-quantize of the next one (a background thread)."""
+    import threading
+
+    threads = set()
+    real = hub.api.upload_file
+
+    def upload_file(self, **kwargs):
+        threads.add(threading.current_thread().name)
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(hub.api, "upload_file", upload_file)
+    code, _model, report = _finish(tmp_path, monkeypatch, ["--hub-repo", "auto"])
+    assert code == 0 and threads == {"hf-upload"} and all(g["uploaded"] for g in report["ggufs"][1:])
+
+
+def test_uploader_keeps_order_and_survives_a_failing_job(capsys):
+    done = []
+    uploader = llm_train.Uploader()
+    uploader.submit(done.append, "safetensors")
+    uploader.submit(lambda: 1 / 0)
+    uploader.submit(done.append, "Q8_0")
+    uploader.wait()
+    assert done == ["safetensors", "Q8_0"] and "ZeroDivisionError" in capsys.readouterr().out
+    inline = llm_train.Uploader(background=False)
+    inline.submit(done.append, "now")
+    assert done[-1] == "now" and inline.thread is None

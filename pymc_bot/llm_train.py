@@ -551,6 +551,38 @@ def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count:
     return rows
 
 
+def cached(args: argparse.Namespace, key: str, load: Any, what: str = "data", check: Any = None) -> Any:
+    """``load()``, shared through ``--stream-cache`` by every edition of a session: the first edition streams
+    (the others wait for it instead of streaming the same rows again), the next ones reuse its file."""
+    folder = getattr(args, "stream_cache", None)
+    if not folder:
+        return load()
+    import hashlib
+
+    path = Path(folder) / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}.json"
+    with export_lock(str(path) + ".lock", waiting=f"waiting for another edition to finish streaming the {what}..."):
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if check is None or check(value):
+                    print(f"reusing the {what} another edition streamed this session")
+                    return value
+            except ValueError:
+                pass
+        value = load()
+        try:
+            temp = path.with_name(path.name + ".tmp")
+            temp.write_text(json.dumps(value), encoding="utf-8")
+            os.replace(temp, path)
+        except (TypeError, ValueError, OSError):  # not JSON (or no space): simply not shared
+            path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+        return value
+
+
+def _pictures_exist(rows: Any) -> bool:
+    return all(Path(name).is_file() for row in rows for name in row.get("images") or [])
+
+
 def load_hub_records(name: str, split: str, limit: int, seed: int, buffer: int = 10_000,
                      factor: int = 3) -> list[dict[str, Any]]:
     """A shuffled sample of a Hugging Face dataset, **streamed**: only the rows that are used are downloaded,
@@ -1376,12 +1408,15 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
         elif preset.get("reasoning"):
             limit = max(1, args.general // 2)  # traces are long: half as many rows
             name, split = hub_split(args.reasoning_dataset, "cot")
-            records = load_hub_records(name, split, limit, args.seed, factor=3 if split == "cot" else 8)
+            factor = 3 if split == "cot" else 8
+            records = cached(args, f"hub:{name}:{split}:{limit}:{args.seed}:{factor}",
+                             lambda: load_hub_records(name, split, limit, args.seed, factor=factor), "thinking traces")
             rows += reasoning_rows(records, limit, args.system_prompt, max_chars=args.max_seq * 3)
         else:
             name, split = hub_split(args.general_dataset, "train")
-            rows += general_rows(load_hub_records(name, split, args.general, args.seed), args.general,
-                                 args.system_prompt, bool(args.uncensored))
+            records = cached(args, f"hub:{name}:{split}:{args.general}:{args.seed}:3",
+                             lambda: load_hub_records(name, split, args.general, args.seed), "everyday chat")
+            rows += general_rows(records, args.general, args.system_prompt, bool(args.uncensored))
     if args.minecraft_qa > 0:
         generated = args.minecraft_qa_dataset == MINECRAFT_DATA
         version = getattr(args, "minecraft_data_version", MINECRAFT_DATA_VERSION)
@@ -1392,12 +1427,16 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
         else:
             try:
                 if generated:
-                    data = load_minecraft_data(version, getattr(args, "minecraft_data_dir", None))
+                    folder = getattr(args, "minecraft_data_dir", None)
+                    data = cached(args, f"minecraft-data:{version}:{folder}", lambda: load_minecraft_data(version, folder),
+                                  "minecraft-data facts")
                     found = minecraft_data_rows(data, args.minecraft_qa, args.system_prompt, rng)
                     print(f"+{len(found)} Minecraft Q&A rows generated from minecraft-data {version}")
                 else:
                     name, split = hub_split(args.minecraft_qa_dataset, "train")
-                    records = load_hub_records(name, split, args.minecraft_qa, args.seed + 1)
+                    records = cached(args, f"hub:{name}:{split}:{args.minecraft_qa}:{args.seed + 1}:3",
+                                     lambda: load_hub_records(name, split, args.minecraft_qa, args.seed + 1),
+                                     "Minecraft Q&A")
                     found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
                     print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
                 rows += found
@@ -1411,13 +1450,20 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                      else "(only those pictures are downloaded)"))
         else:
             try:
+                key = (f"pictures:{args.vision_dataset}:{args.stream_vision}:{args.seed}:{bool(args.uncensored)}:"
+                       f"{args.system_prompt}")
                 where = Path(args.out) / "stream_images"
+                if getattr(args, "stream_cache", None):  # both VL editions use the same pictures: stream them once
+                    import hashlib
+
+                    where = Path(args.stream_cache) / f"pictures-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
                 if raytrace:
-                    rows += stream_raytrace_rows(args.stream_vision, where, args.system_prompt, args.seed,
-                                                 args.vision_dataset)
+                    stream = lambda: stream_raytrace_rows(args.stream_vision, where, args.system_prompt,  # noqa: E731
+                                                          args.seed, args.vision_dataset)
                 else:
-                    rows += stream_vision_rows(args.stream_vision, where, args.system_prompt, args.seed,
-                                               bool(args.uncensored), args.vision_dataset)
+                    stream = lambda: stream_vision_rows(args.stream_vision, where, args.system_prompt,  # noqa: E731
+                                                        args.seed, bool(args.uncensored), args.vision_dataset)
+                rows += cached(args, key, stream, "Minecraft pictures", check=_pictures_exist)
             except Exception as exc:  # noqa: BLE001
                 print(f"warning: could not stream pictures from {args.vision_dataset} ({type(exc).__name__}: {exc})")
     return rows
@@ -1862,7 +1908,7 @@ def _run_tool(run: Any, command: list[str], what: str, env: dict[str, str] | Non
 
 
 def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
-               tools: tuple[Path, Path], on_file: Any, run: Any = None) -> dict[str, Any]:
+               tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None) -> dict[str, Any]:
     """safetensors -> one F16 GGUF (+ the F16 vision projector) -> every quant with ``llama-quantize``.
 
     ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk); the F16
@@ -1892,6 +1938,8 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
             fresh[0].rename(mmproj)
         result["mmproj"] = mmproj.name
         on_file(mmproj, "MMPROJ")
+    if on_base is not None:  # the safetensors are not read any more: everything below works from the F16 GGUF
+        on_base()
     wanted = [q.upper() for q in quants]
     for quant in wanted:
         target = base if quant in ("F16", "BF16") else scratch / f"{stem}.{quant}.gguf"
@@ -1950,6 +1998,48 @@ def upload_hub_file(hub: dict[str, Any], repo: str, path: Path, message: str) ->
                     commit_message=message)
 
 
+class Uploader:
+    """Uploads in the background, in order - the safetensors first, then each GGUF quant - while llama.cpp goes on
+    converting and quantising, so neither waits for the other. ``background=False`` runs every job right away."""
+
+    def __init__(self, background: bool = True):
+        import queue
+
+        self.background = background
+        self.jobs: Any = queue.Queue()
+        self.thread: Any = None
+
+    def submit(self, job: Any, *job_args: Any) -> None:
+        if not self.background:
+            self._run(job, job_args)
+            return
+        if self.thread is None:
+            import threading
+
+            self.thread = threading.Thread(target=self._loop, name="hf-upload", daemon=True)
+            self.thread.start()
+        self.jobs.put((job, job_args))
+
+    @staticmethod
+    def _run(job: Any, job_args: tuple[Any, ...]) -> None:
+        try:
+            job(*job_args)
+        except Exception as exc:  # noqa: BLE001 - every job reports its own problems; never kill the thread
+            print(f"  background job failed ({type(exc).__name__}: {exc})", flush=True)
+
+    def _loop(self) -> None:
+        while True:
+            job, job_args = self.jobs.get()
+            try:
+                self._run(job, job_args)
+            finally:
+                self.jobs.task_done()
+
+    def wait(self) -> None:
+        if self.thread is not None:
+            self.jobs.join()
+
+
 def gguf_scratch(args: argparse.Namespace, out: Path) -> Path:
     """Where the F16 GGUF and the quants are made: the root disk (``/tmp``), not Kaggle's 20 GB output folder."""
     if getattr(args, "gguf_scratch", None):
@@ -1961,7 +2051,8 @@ def gguf_scratch(args: argparse.Namespace, out: Path) -> Path:
 
 def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any, out: Path,
                  st_dir: Path | None, quants: list[str], hub: dict[str, Any] | None = None,
-                 tools: Any = None, run: Any = None) -> dict[str, Any] | None:
+                 tools: Any = None, run: Any = None, uploader: Uploader | None = None,
+                 on_base: Any = None) -> dict[str, Any] | None:
     """Every GGUF in ``quants``; the first stays in ``out`` (Modelfile, test, import), the rest are uploaded to
     the GGUF repo one by one and deleted (or kept in ``out`` when there is no upload or it fails).
 
@@ -1973,29 +2064,45 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
     scratch = gguf_scratch(args, out)
     uploaded: dict[str, bool] = {}
 
-    def on_file(path: Path, quant: str) -> None:
-        if hub and quant not in (primary, "MMPROJ"):
-            try:
-                upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {quant} GGUF")
-                print(f"  uploaded {path.name} ({path.stat().st_size / 1e9:.2f} GB) -> {hub['gguf']}")
-                uploaded[quant] = True
-                path.unlink()
-                return
-            except Exception as exc:  # keep the file; the folder upload at the end tries again
-                print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {out}")
+    def keep(path: Path) -> None:
         if path.parent.resolve() != out.resolve():
             shutil.move(str(path), str(out / path.name))
+
+    def upload_quant(path: Path, quant: str) -> None:
+        try:
+            upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {quant} GGUF")
+            print(f"  uploaded {path.name} ({path.stat().st_size / 1e9:.2f} GB) -> {hub['gguf']}", flush=True)
+            uploaded[quant] = True
+            path.unlink()
+        except Exception as exc:  # keep the file; the folder upload at the end tries again
+            print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {out}", flush=True)
+            keep(path)
+
+    def on_file(path: Path, quant: str) -> None:
+        if hub and quant not in (primary, "MMPROJ"):
+            if uploader is not None:  # uploaded in the background while the next quant is being made
+                uploader.submit(upload_quant, path, quant)
+            else:
+                upload_quant(path, quant)
+            return
+        keep(path)
 
     result = None
     if st_dir is not None and Path(st_dir).is_dir():
         try:
             print(f"making GGUFs {', '.join(q.upper() for q in quants)} from the safetensors (llama.cpp)")
             result = make_ggufs(Path(st_dir), scratch, stem, quants, vision=bool(preset.get("vision")),
-                                tools=tools or llama_cpp_tools(scratch.parent), on_file=on_file, run=run)
+                                tools=tools or llama_cpp_tools(scratch.parent), on_file=on_file, run=run,
+                                on_base=on_base)
             result["route"] = "llama.cpp"
         except Exception as exc:
             print(f"llama.cpp GGUF route failed ({type(exc).__name__}: {exc}) - using Unsloth's exporter")
             result = None
+    if result is None and model is None:  # the CPU-only --export-only process has no model for Unsloth
+        print("no GGUF: llama.cpp failed and Unsloth's exporter needs the trained model (not loaded in this process)")
+        if uploader is not None:
+            uploader.wait()
+        return None
     if result is None:
         print(f"exporting GGUF ({', '.join(quants)}) with Unsloth - 10-20 minutes per quant")
         model.save_pretrained_gguf(str(out / "gguf"), tokenizer, quantization_method=list(quants))
@@ -2023,6 +2130,8 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
         for work in out.glob("gguf*"):  # Unsloth's merge + F16 intermediate
             if work.is_dir():
                 shutil.rmtree(work, ignore_errors=True)
+    if uploader is not None:
+        uploader.wait()  # every quant is up (or kept) before the scratch folder goes
     for item in result["files"]:
         item["uploaded"] = bool(uploaded.get(item["quant"]))
     if not any(item["quant"] == primary for item in result["files"]):
@@ -2352,11 +2461,47 @@ def wait_for_rows(out: Path, timeout: float = 6 * 3600, poll: float = 5.0) -> di
     return shared if shared.get("rows") is not None else None
 
 
-def speed_options(args: argparse.Namespace, preset: dict[str, Any], world: int, text: bool) -> dict[str, Any]:
+def token_lengths(tokenizer: Any, texts: list[str], chunk: int = 1000) -> list[int]:
+    """Tokens per training text (a rough 3.5 characters per token if the tokenizer cannot be called)."""
+    lengths: list[int] = []
+    try:
+        for start in range(0, len(texts), chunk):
+            ids = tokenizer(texts[start:start + chunk], add_special_tokens=False)["input_ids"]
+            lengths += [len(item) for item in ids]
+        return lengths
+    except Exception:  # noqa: BLE001 - only the batch size depends on it
+        return [max(1, round(len(text) / 3.5)) for text in texts]
+
+
+def plan_batches(lengths: list[int], preset: dict[str, Any], world: int, max_seq: int, token_budget: int) -> dict[str, Any]:
+    """Rows per GPU batch and accumulation steps for ``--token-budget``.
+
+    The effective batch (rows per optimizer step = the preset's ``batch * accum``) never changes, so the model
+    learns the same; it is just done in fewer, bigger forward passes (Unsloth trains padding-free, so a batch
+    costs its real tokens). The batch is sized by the 95th-percentile row so a batch is about ``token_budget``
+    tokens."""
+    world = max(1, world)
+    per_step = preset["batch"] * preset["accum"]
+    if token_budget <= 0 or not lengths:
+        return {"batch": preset["batch"], "accum": max(1, round(preset["accum"] / world)), "p95": None, "mean": None}
+    capped = sorted(min(int(n), max_seq) for n in lengths)
+    p95 = max(1, capped[min(len(capped) - 1, int(len(capped) * 0.95))])
+    per_gpu = max(1, -(-per_step // world))
+    batch = max(1, min(per_gpu, max(preset["batch"], token_budget // p95)))
+    return {"batch": batch, "accum": max(1, round(per_step / (batch * world))), "p95": p95,
+            "mean": round(sum(capped) / len(capped))}
+
+
+def is_oom(exc: BaseException) -> bool:
+    return "OutOfMemory" in type(exc).__name__ or "out of memory" in str(exc).lower()
+
+
+def speed_options(args: argparse.Namespace, preset: dict[str, Any], world: int, text: bool,
+                  plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """SFTConfig settings for speed. Under DDP each GPU takes its own batches, so gradient accumulation is divided
     by the number of GPUs: the same effective batch (same quality) in about half the steps."""
     options: dict[str, Any] = {
-        "gradient_accumulation_steps": max(1, round(preset["accum"] / max(1, world))),
+        "gradient_accumulation_steps": plan["accum"] if plan else max(1, round(preset["accum"] / max(1, world))),
         "dataloader_num_workers": max(0, int(getattr(args, "loader_workers", 0) or 0)),
     }
     if options["dataloader_num_workers"]:
@@ -2366,8 +2511,10 @@ def speed_options(args: argparse.Namespace, preset: dict[str, Any], world: int, 
         options["ddp_find_unused_parameters"] = False
     if text:
         options["dataset_num_proc"] = max(1, min(4, os.cpu_count() or 2))
-        if getattr(args, "group_by_length", False):
-            options["group_by_length"] = True  # batches of similar length: much less padding
+        if getattr(args, "group_by_length", False) and not (plan and plan.get("p95")):
+            # batches of similar length: much less padding (not with --token-budget: padding-free batches have no
+            # padding to save, and grouping the longest rows together would only raise the peak memory)
+            options["group_by_length"] = True
     return options
 
 
@@ -2410,18 +2557,23 @@ def deadline_callback(args: argparse.Namespace, clock: Any = time.time) -> Any:
     return StopBeforeDeadline()
 
 
-def run_training(trainer: Any, rebuild: Any, world: int) -> Any:
-    """``trainer.train()``; if length grouping breaks before the first step (an Unsloth / TRL combination that
-    cannot group), train again without it instead of losing the session."""
-    try:
-        return trainer.train()
-    except Exception as exc:
-        state = getattr(trainer, "state", None)
-        grouped = bool(getattr(getattr(trainer, "args", None), "group_by_length", False))
-        if world > 1 or not grouped or (state is not None and getattr(state, "global_step", 0) > 0):
-            raise
-        print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
-        return rebuild().train()
+def run_training(trainer: Any, rebuild: Any, world: int, tries: int = 4) -> Any:
+    """``trainer.train()``. When it fails before the first step, ``rebuild(exc)`` may return a safer trainer
+    (half the batch after a CUDA out-of-memory, no length grouping when an Unsloth / TRL combination cannot group)
+    instead of losing the session; ``None`` = give up. Under DDP the other GPU's process would wait forever for a
+    retry, so there the error goes up (the notebook then trains the edition on one T4)."""
+    for _ in range(tries):
+        try:
+            return trainer.train()
+        except Exception as exc:
+            state = getattr(trainer, "state", None)
+            if world > 1 or (state is not None and getattr(state, "global_step", 0) > 0):
+                raise
+            safer = rebuild(exc)
+            if safer is None:
+                raise
+            trainer = safer
+    return trainer.train()
 
 
 def end_ddp() -> None:
@@ -2440,8 +2592,9 @@ class export_lock:  # noqa: N801 - used as a context manager
     """Only one edition merges / converts / uploads at a time when two train side by side (RAM and the 20 GB
     output disk). A no-op without a path or on Windows."""
 
-    def __init__(self, path: str | None):
+    def __init__(self, path: str | None, waiting: str = "waiting for the other edition to finish its export / upload..."):
         self.path = path
+        self.waiting = waiting
         self.handle: Any = None
 
     def __enter__(self) -> export_lock:
@@ -2456,7 +2609,7 @@ class export_lock:  # noqa: N801 - used as a context manager
         try:
             fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            print("waiting for the other edition to finish its export / upload...", flush=True)
+            print(self.waiting, flush=True)
             fcntl.flock(self.handle, fcntl.LOCK_EX)
         return self
 
@@ -2531,13 +2684,20 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     dataset = Dataset.from_dict({"text": texts})
     user, assistant = TURN_MARKERS[preset["family"]]
     callback = deadline_callback(args)
+    plan = plan_batches(token_lengths(tokenizer, texts) if args.token_budget > 0 else [], preset, world,
+                        args.max_seq, args.token_budget)
+    if plan["p95"]:
+        print(f"batches: {plan['batch']} rows per GPU x {plan['accum']} accumulation x {world} GPU(s) "
+              f"(rows: ~{plan['mean']} tokens, 95% <= {plan['p95']}; same {preset['batch'] * preset['accum']} rows per "
+              f"step as before, in fewer passes)")
+    settings = {"group": True}
 
-    def build(group: bool = True) -> Any:
-        options = speed_options(args, preset, world, text=True)
-        if not group:
+    def build() -> Any:
+        options = speed_options(args, preset, world, text=True, plan=plan)
+        if not settings["group"]:
             options.pop("group_by_length", None)
         config = SFTConfig(
-            dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=preset["batch"],
+            dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=plan["batch"],
             warmup_steps=10, num_train_epochs=args.epochs,
             max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr, logging_steps=10,
             optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
@@ -2547,7 +2707,20 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
                            callbacks=[callback] if callback else None)
         return train_on_responses_only(built, instruction_part=user, response_part=assistant)
 
-    stats = run_training(build(), lambda: build(group=False), world)
+    def rebuild(exc: BaseException) -> Any:
+        if is_oom(exc) and plan["batch"] > 1:
+            plan["batch"] = max(1, plan["batch"] // 2)
+            plan["accum"] = max(1, round(preset["batch"] * preset["accum"] / (plan["batch"] * world)))
+            print(f"out of GPU memory - trying {plan['batch']} rows per batch x {plan['accum']} accumulation")
+            torch.cuda.empty_cache()
+            return build()
+        if settings["group"] and getattr(args, "group_by_length", False) and not is_oom(exc):
+            settings["group"] = False
+            print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
+            return build()
+        return None
+
+    stats = run_training(build(), rebuild, world)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
     if world > 1:
         end_ddp()
@@ -2708,14 +2881,87 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
 
     if getattr(args, "stopped_early", None):
         report["stopped_early"] = args.stopped_early
-    with export_lock(getattr(args, "export_lock", None)):
+    lock = getattr(args, "export_lock", None)
+    with export_lock(f"{lock}.merge" if lock else None, waiting="waiting for the other edition's merge (RAM)..."):
+        save_safetensors(args, model, tokenizer, out, report)
+    if defer_export(args, preset, out, report, started):
+        return 0
+    with export_lock(lock):
         return export_and_publish(args, preset, model, tokenizer, out, adapter, report, eval_rows, started)
+
+
+#: Written by ``--defer-gguf``: everything the CPU-only ``--export-only`` process needs.
+EXPORT_JOB = "export_job.json"
+
+
+def save_safetensors(args: argparse.Namespace, model: Any, tokenizer: Any, out: Path, report: dict[str, Any]) -> None:
+    """The safetensors edition (needs the trained model, so it runs in the training process): the LoRA merged into
+    the base in 16-bit, compacted to the base model's size."""
+    if getattr(args, "safetensors", "none") == "none":
+        return
+    st_dir = Path(out) / SAFETENSORS_DIR
+    print("saving the safetensors edition (LoRA merged into the base, 16-bit) - a few minutes")
+    try:
+        report["safetensors_gb"] = export_safetensors(model, tokenizer, st_dir)
+        report["safetensors"] = SAFETENSORS_DIR
+        if getattr(args, "compact", True):
+            try:
+                stats = compact_safetensors(st_dir)
+                report.update(compact=stats, params_b=stats["params_b"], safetensors_gb=stats["gb"])
+            except Exception as exc:  # the weights as saved are still a valid model
+                print(f"compacting skipped ({type(exc).__name__}: {exc}) - the weights stay as saved")
+        print(f"safetensors: {report['safetensors_gb']} GB in {st_dir}")
+    except Exception as exc:  # the adapter is safe; the GGUF falls back to Unsloth's exporter
+        print(f"safetensors export failed ({type(exc).__name__}: {exc}) - the LoRA adapter is fine")
+        for key in ("safetensors", "safetensors_gb", "compact", "params_b"):
+            report.pop(key, None)
+        shutil.rmtree(st_dir, ignore_errors=True)
+
+
+def defer_export(args: argparse.Namespace, preset: dict[str, Any], out: Path, report: dict[str, Any],
+                 started: float) -> bool:
+    """``--defer-gguf``: hand the GGUF quants and the uploads (CPU and network only) to an ``--export-only``
+    process, so this process ends and the next edition gets the GPU ~20-40 minutes earlier. Only when llama.cpp
+    is ready - Unsloth's fallback exporter needs the model, which is gone afterwards."""
+    if not getattr(args, "defer_gguf", False) or args.test_gguf or not gguf_quants(args) or not report.get("safetensors"):
+        return False
+    try:
+        llama_cpp_tools(gguf_scratch(args, out).parent)
+    except Exception as exc:  # noqa: BLE001 - then the GGUFs are made here, with the fallback available
+        print(f"GGUFs are made in this process (llama.cpp is not ready: {type(exc).__name__}: {exc})")
+        return False
+    job = {"args": vars(args), "preset": preset, "report": report, "started": started}
+    (Path(out) / EXPORT_JOB).write_text(json.dumps(job, default=str, indent=1), encoding="utf-8")
+    print(f"GPU work done in {(time.time() - started) / 60:.0f} min - the GGUF quants and uploads continue in a "
+          "CPU-only process (--export-only), so the next edition can start on this GPU now", flush=True)
+    return True
+
+
+def export_only(folder: str) -> int:
+    """Finish an edition trained with ``--defer-gguf``: GGUFs from its safetensors, uploads, model card."""
+    out = Path(folder)
+    job_file = out / EXPORT_JOB
+    if not job_file.is_file():
+        print(f"{job_file} is missing - train with --defer-gguf first")
+        return 2
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    args = build_parser().parse_args([])
+    for key, value in job["args"].items():
+        setattr(args, key, value)
+    args.export_only = None
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # never touch the GPU the next edition trains on
+    with export_lock(getattr(args, "export_lock", None)):
+        code = export_and_publish(args, job["preset"], None, None, out, out / "lora", job["report"], [], job["started"])
+    if code == 0:
+        job_file.unlink()
+    return code
 
 
 def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokenizer: Any, out: Path,
                        adapter: Path, report: dict[str, Any], eval_rows: list[dict[str, Any]], started: float) -> int:
-    """safetensors -> upload -> GGUF quants (each uploaded) -> GGUF repo; under ``--export-lock`` when two editions
-    train side by side."""
+    """safetensors upload (in the background) -> GGUF quants made from them meanwhile, each uploaded in turn ->
+    GGUF repo; under ``--export-lock`` when two editions train side by side. ``model`` is only needed for
+    Unsloth's fallback exporter (``None`` in the CPU-only ``--export-only`` process)."""
     hub = connect_hub(args, preset) if args.hub_repo else None
     repo = (hub or {}).get("gguf") or (args.hub_repo if args.hub_repo and "/" in args.hub_repo
                                          else f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}")
@@ -2724,38 +2970,36 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
     report.update({"family": preset["family"], "compact_tag": COMPACT_TAG, "compact_prompt": True,
                    "run_parameters": preset.get("run_parameters") or RUN_PARAMETERS})
     st_dir = out / SAFETENSORS_DIR
-    # 1. the safetensors edition: merge, compact to the base model's size, upload
-    if getattr(args, "safetensors", "none") != "none":
-        print("saving the safetensors edition (LoRA merged into the base, 16-bit) - a few minutes")
-        try:
-            report["safetensors_gb"] = export_safetensors(model, tokenizer, st_dir)
-            report["safetensors"] = SAFETENSORS_DIR
-            if getattr(args, "compact", True):
-                try:
-                    stats = compact_safetensors(st_dir)
-                    report.update(compact=stats, params_b=stats["params_b"], safetensors_gb=stats["gb"])
-                except Exception as exc:  # the weights as saved are still a valid model
-                    print(f"compacting skipped ({type(exc).__name__}: {exc}) - the weights stay as saved")
-            print(f"safetensors: {report['safetensors_gb']} GB in {st_dir}")
-        except Exception as exc:  # the adapter is safe; the GGUF falls back to Unsloth's exporter
-            print(f"safetensors export failed ({type(exc).__name__}: {exc}) - the LoRA adapter is fine")
-            for key in ("safetensors", "safetensors_gb", "compact", "params_b"):
-                report.pop(key, None)
-            shutil.rmtree(st_dir, ignore_errors=True)
+    uploader = Uploader(background=bool(hub))
+    # 1. the safetensors edition (merged by save_safetensors): uploaded in the background, first in the queue
     if hub and report.get("safetensors"):
         report["hub_repo_safetensors"] = hub["safetensors"]
         write_cards(out, args.preset, preset, report, repo)
-        try:
-            publish_safetensors(st_dir, hub["safetensors"], args.preset, hub["token"], private=args.hub_private)
-            report["safetensors_uploaded"] = True
-            print(f"uploaded the safetensors edition -> https://huggingface.co/{hub['safetensors']}")
-        except Exception as exc:  # keep the folder for another try; the GGUFs still get made
-            print(f"safetensors upload failed ({type(exc).__name__}: {exc}) - the files are still in {st_dir}")
-    # 2. the GGUFs, made from those safetensors: every quant, each uploaded as soon as it is ready
+
+        def upload_safetensors() -> None:
+            try:
+                publish_safetensors(st_dir, hub["safetensors"], args.preset, hub["token"], private=args.hub_private)
+                report["safetensors_uploaded"] = True
+                print(f"uploaded the safetensors edition -> https://huggingface.co/{hub['safetensors']}", flush=True)
+            except Exception as exc:  # keep the folder for another try; the GGUFs still get made
+                print(f"safetensors upload failed ({type(exc).__name__}: {exc}) - the files are still in {st_dir}",
+                      flush=True)
+
+        uploader.submit(upload_safetensors)
+    # tokenizer.json, configs and chat template next to the GGUFs too (before the safetensors may be deleted)
+    report["essentials"] = copy_essentials(st_dir if st_dir.is_dir() else adapter, out)
+
+    def free_safetensors() -> None:  # queued behind their upload, after the F16 GGUF exists: frees ~8 GB early
+        if getattr(args, "clean_after_upload", False) and report.get("safetensors_uploaded") and st_dir.is_dir():
+            shutil.rmtree(st_dir, ignore_errors=True)
+            print("the safetensors are on Hugging Face and in the F16 GGUF - deleted locally (~8 GB freed)", flush=True)
+
+    # 2. the GGUFs, made from those safetensors while they upload: every quant, each uploaded as soon as it is ready
     quants = gguf_quants(args)
     if quants:
         made = export_ggufs(args, preset, model, tokenizer, out, st_dir if report.get("safetensors") else None,
-                            quants, hub=hub)
+                            quants, hub=hub, uploader=uploader, on_base=lambda: uploader.submit(free_safetensors))
+        uploader.wait()
         if made is None:
             print("GGUF export produced no file - the LoRA adapter is in", adapter)
             return 1
@@ -2777,8 +3021,7 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
             if preset.get("vision") and picture is not None:
                 prompts.append("What do you see in this Minecraft screenshot?")
             report["gguf_test"] = test_gguf(out, preset, prompts, picture)
-    # 3. tokenizer.json, configs and chat template next to the GGUFs too
-    report["essentials"] = copy_essentials(st_dir if st_dir.is_dir() else adapter, out)
+    uploader.wait()
     shutil.rmtree(out / "checkpoints", ignore_errors=True)
     report.update({"minutes": round((time.time() - started) / 60, 1), "created": time.strftime("%Y-%m-%d %H:%M:%S")})
     write_cards(out, args.preset, preset, report, repo)
@@ -2843,6 +3086,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--group-by-length", action="store_true",
                         help="text editions: batches of similar length (less padding, faster)")
     parser.add_argument("--loader-workers", type=int, default=0, help="data-loader worker processes per GPU")
+    parser.add_argument("--token-budget", type=int, default=0,
+                        help="text editions: rows per GPU batch sized so a batch holds about this many tokens (padding-"
+                             "free, same effective batch, fewer accumulation steps; 0 = the preset's batch)")
+    parser.add_argument("--stream-cache", default=None,
+                        help="folder shared by the editions of a session: streamed chat / Q&A / pictures are "
+                             "downloaded once and reused by the next edition")
+    parser.add_argument("--defer-gguf", action="store_true",
+                        help="after the safetensors are saved, leave the GGUF quants + uploads to a CPU-only "
+                             "'--export-only <out>' process so the next edition can use this GPU right away")
+    parser.add_argument("--export-only", metavar="OUT", default=None,
+                        help="make the GGUFs and upload an edition that was trained with --defer-gguf (no GPU)")
     parser.add_argument("--hub-repo", help="upload to Hugging Face (needs HF_TOKEN): 'auto' = <you>/<edition repo>, "
                                            "a repo name, or user/repo")
     parser.add_argument("--hub-private", action="store_true", help="create the Hugging Face repo as private")
@@ -2892,6 +3146,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.export_only:
+        return export_only(args.export_only)
     if args.list_presets:
         print(f"{MODEL_NAME} editions:")
         for name, preset in PRESETS.items():
