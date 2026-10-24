@@ -94,14 +94,21 @@ def test_length_grouping_failure_retries_without_it(capsys):
         def train(self):
             return "trained"
 
-    assert llm_train.run_training(Broken(), Fine, world=1) == "trained"
-    assert "training without them" in capsys.readouterr().out
+    seen = []
+
+    def rebuild(exc):
+        seen.append(str(exc))
+        return Fine()
+
+    assert llm_train.run_training(Broken(), rebuild, world=1) == "trained" and seen == ["cannot group"]
     with pytest.raises(ValueError):  # under DDP both ranks must fail the same way, no silent retry
-        llm_train.run_training(Broken(), Fine, world=2)
+        llm_train.run_training(Broken(), rebuild, world=2)
     late = Broken()
     late.state = types.SimpleNamespace(global_step=50)
     with pytest.raises(ValueError):  # hours in: a real error, do not train again
-        llm_train.run_training(late, Fine, world=1)
+        llm_train.run_training(late, rebuild, world=1)
+    with pytest.raises(ValueError):  # nothing safer to try
+        llm_train.run_training(Broken(), lambda _exc: None, world=1)
 
 
 def test_ddp_rows_are_prepared_once_and_shared(tmp_path, monkeypatch):
