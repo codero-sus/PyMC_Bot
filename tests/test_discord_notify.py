@@ -126,22 +126,23 @@ def test_server_warnings_before_kaggle_closes_it(monkeypatch, tmp_path):
                 "EDITIONS": ["minecraftism"]})  # "" = no monitor thread
     exec(_block(_cells()[3], "# ---- Discord server monitor", "# ---- end Discord server monitor"), env)  # noqa: S102
     warned = {}
-    assert env["server_warnings"](start + 8 * 3600, warned) == []
+    assert env["server_warnings"](start + 6 * 3600, warned) == []
+    assert [(t, p) for t, _x, p in env["server_warnings"](start + 7 * 3600, warned)] == [("THE 12 HOURs: 5 h left", True)]
     titles = [(t, p) for t, _x, p in env["server_warnings"](start + 9 * 3600, warned)]
-    assert titles == [("THE 12 HOURs: 3 h left", False)]  # the wind rises
+    assert titles == [("THE 12 HOURs: 3 h left", True)]  # the wind rises (5 h, 4 h: earlier)
     assert [t for t, _x, _p in env["server_warnings"](start + 10 * 3600 + 30, warned)] == ["THE 12 HOURs: 2 h left"]
     first = env["server_warnings"](start + 11 * 3600 + 60, warned)
-    assert [(title, ping) for title, _text, ping in first] == [("THE 12 HOURs: 59 min left", False)]  # silent
+    assert [(title, ping) for title, _text, ping in first] == [("THE 12 HOURs: 59 min left", True)]
     assert "https://www.kaggle.com/code/me/nb" in first[0][1] and "branch" in first[0][1]
     assert env["server_warnings"](start + 11 * 3600 + 120, warned) == []  # said once
     late = env["server_warnings"](start + 12 * 3600 - 300, warned)  # 30, 15, 10 and 5 due: only the newest is sent
-    assert [(t, p) for t, _x, p in late] == [("THE 12 HOURs: 5 min left", True)]  # the countdown's only ping
+    assert [(t, p) for t, _x, p in late] == [("THE 12 HOURs: 5 min left", True)]
     assert "Holding on" in late[0][1] and "0/1 edition(s) safe" in late[0][1]
     for minute in (4, 3, 2, 1):  # every minute of the last five
         due = env["server_warnings"](start + 12 * 3600 - minute * 60, warned)
-        assert [(t, p) for t, _x, p in due] == [(f"THE 12 HOURs: {minute} min left", False)]
+        assert [(t, p) for t, _x, p in due] == [(f"THE 12 HOURs: {minute} min left", minute == 1)]  # 4, 3, 2 silent
     final = env["server_warnings"](start + 12 * 3600 - 30, warned)
-    assert [t for t, _x, _p in final] == ["THE 12 HOURs: 30 s left"] and "final report" in final[0][1]
+    assert [(t, p) for t, _x, p in final] == [("THE 12 HOURs: 30 s left", True)] and "final report" in final[0][1]
     assert env["server_warnings"](start + 12 * 3600 - 10, warned) == []
     status = env["server_status"]()
     assert "https://www.kaggle.com/code/me/nb" in status and "Disk free" in status
@@ -175,3 +176,27 @@ def test_log_lines_become_discord_events(monkeypatch):
     titles = [m["payload"]["embeds"][0]["description"] for m in sent]
     assert titles[0] == "minecraftism on GPU 0,1"
     assert any("huggingface.co/me/Minecraftism-4B-GGUF" in t for t in titles)
+
+
+def test_every_stage_and_every_upload_pings(monkeypatch):
+    env, _asked, sent = _helper(monkeypatch, mention="<@9>")
+    env["HF_REPO"] = "auto"
+    exec(_block(_cells()[6], "# ---- Discord events", "\n\ndef discord_tail"), env)  # noqa: S102
+    line = env["discord_line"]
+    stages = [("loading huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated (4-bit) on 2 GPU(s)", "now training"),
+              ("distillation (Qwen3 strong-to-weak): teacher x - 1500 answers", "now distilling"),
+              ("on-policy distillation: 60 steps x 4 replies x 2 GPU(s), teacher x", "now distilling"),
+              ("saving the safetensors edition (LoRA merged into the base, 16-bit) - a few minutes", "now uploading"),
+              ("making GGUFs Q8_0, Q4_K_M from the safetensors (llama.cpp)", "now quantizing"),
+              ("uploaded the safetensors edition -> https://huggingface.co/me/M", "model update on Hugging Face"),
+              ("  uploaded M.Q8_0.gguf (4.28 GB) -> me/M-GGUF", "model update on Hugging Face"),
+              ("  uploaded M.Q4_K_M.gguf (2.50 GB) -> me/M-GGUF", "model update on Hugging Face")]
+    for text, _what in stages:
+        assert line("minecraftism", text), text
+    assert line("minecraftism", "learned: the loss stopped falling (~0.020)")  # sent, silently
+    _wait(env)
+    pinged = [(m["payload"]["embeds"][0]["title"], m["payload"].get("content")) for m in sent]
+    assert pinged[:len(stages)] == [(f"minecraftism: {what}", "<@9>") for _text, what in stages]
+    assert "content" not in sent[-1]["payload"]  # small progress notes stay silent
+    assert "Setup ready - training starts\", \"ok\", ping=True" in _cells()[6]
+    assert 'is ready", "ok", ping=True' in _cells()[7]

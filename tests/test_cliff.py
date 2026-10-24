@@ -56,8 +56,7 @@ def test_closing_at_the_cliff_sends_everything_once_more(monkeypatch, tmp_path):
     env["server_closing"]()
     _wait(env)
     text = sent[0]["payload"]["embeds"][0]["description"]
-    assert "THE 12 HOURs has come" in text and "**minecraftism:**" in text
-    assert "content" not in sent[0]["payload"]  # no second ping: the 5-minute warning already pinged
+    assert "THE 12 HOURs has come" in text and "**minecraftism:**" in text and sent[0]["payload"]["content"] == "<@7>"
 
 
 def test_the_end_message_carries_the_full_report():
