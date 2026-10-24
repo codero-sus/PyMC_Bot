@@ -1508,11 +1508,7 @@ def test_rows(eval_rows: list[dict[str, Any]], preset: dict[str, Any], system: s
 def run_tests(generate: Any, rows: list[dict[str, Any]], log: Any = print) -> dict[str, Any]:
     """Ask every test row, print question + answer, return a summary (also saved as tests.json)."""
     results = []
-    for row in rows:
-        try:
-            reply = generate(row)
-        except Exception as exc:  # a failing prompt must not lose the trained model
-            reply = f"<error: {type(exc).__name__}: {exc}>"
+    for row, reply in zip(rows, answer_all(generate, rows), strict=False):  # a failing prompt never loses the model
         answer = strip_thinking(reply)
         result = {"test": row.get("test"), "prompt": row["messages"][-2]["content"][-300:], "reply": reply[:2000],
                   "refused": is_refusal(answer)}
@@ -2944,6 +2940,154 @@ def teacher_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, sec
     return answers
 
 
+#: vLLM for the teacher's answers: paged attention + continuous batching, several times faster than ``generate``.
+#: This version is validated on Kaggle's 2x T4 (torch 2.10 / CUDA 12.8, Triton attention on sm75). It lives in its own
+#: venv (the notebook installs it in the background), so Unsloth's torch is never touched.
+VLLM_VERSION = "0.18.1"
+VLLM_CHUNK = 512  # prompts per vLLM call (answers are saved and the time is checked between calls)
+
+
+def use_vllm(args: argparse.Namespace) -> str:
+    """The vLLM venv's python when the teacher should use it (``""`` = transformers' ``generate``)."""
+    if str(getattr(args, "teacher_engine", "auto")) == "hf":
+        return ""
+    python = getattr(args, "vllm_python", None) or os.environ.get("PYMC_VLLM_PYTHON") or ""
+    return python if python and Path(python).is_file() else ""
+
+
+def vllm_generate(teacher: str, jobs: list[dict[str, Any]], max_seq: int, seconds: float, python: str,
+                  run: Any = None, log: Any = print) -> dict[str, str]:
+    """The teacher writes the answers with vLLM in a separate process (``--vllm-worker``): every T4 this process
+    sees, by tensor parallelism. Tries once more in eager mode (no CUDA graphs) if the engine does not start."""
+    import subprocess
+    import tempfile
+
+    run = run or subprocess.run
+    work = Path(tempfile.mkdtemp(prefix="pymc-vllm-"))
+    answers: dict[str, str] = {}
+    for eager in (False, True):
+        job, out, journal = work / "job.json", work / "answers.json", work / "vllm.log"
+        job.write_text(json.dumps({"teacher": teacher, "max_seq": max_seq, "seconds": seconds, "eager": eager,
+                                   "jobs": [{"key": j["key"], "messages": j["messages"], "thinking": j["thinking"]}
+                                            for j in jobs]}, ensure_ascii=False), encoding="utf-8")
+        started = time.time()
+        with open(journal, "w", encoding="utf-8") as handle:
+            code = run([python, os.path.abspath(__file__), "--vllm-worker", str(job), str(out)], stdout=handle,
+                       stderr=subprocess.STDOUT, env={**os.environ, "VLLM_LOGGING_LEVEL": "WARNING"},
+                       timeout=seconds + 900).returncode
+        if out.is_file():
+            try:
+                answers.update(json.loads(out.read_text(encoding="utf-8")))
+            except ValueError:
+                pass
+        if code == 0 or answers:
+            log(f"teacher (vLLM{', eager' if eager else ''}): {len(answers)} answers in "
+                f"{(time.time() - started) / 60:.1f} min")
+            return answers
+        tail = journal.read_text(encoding="utf-8", errors="replace")[-1500:] if journal.is_file() else ""
+        log(f"teacher: vLLM {'(eager) ' if eager else ''}failed (exit {code}):\n{tail}")
+        seconds = max(0.0, seconds - (time.time() - started))
+    raise RuntimeError("vLLM could not run the teacher")
+
+
+def vllm_worker(job_path: str, out_path: str) -> int:
+    """``--vllm-worker JOB OUT`` (run by the vLLM venv's python): write the teacher's answers to OUT as they come."""
+    job = json.loads(Path(job_path).read_text(encoding="utf-8"))
+    import torch
+    from vllm import LLM, SamplingParams
+
+    jobs = job["jobs"]
+    thinking = bool(jobs and jobs[0]["thinking"])
+    sampling = dict(TEACHER_SAMPLING[thinking])
+    new_tokens = int(sampling.pop("max_new_tokens"))
+    gpus = torch.cuda.device_count()
+    limit = int(job["max_seq"]) + new_tokens
+    options: dict[str, Any] = {"model": job["teacher"], "dtype": "float16", "max_model_len": limit,
+                               "tensor_parallel_size": 2 if gpus >= 2 else 1, "gpu_memory_utilization": 0.88,
+                               "disable_custom_all_reduce": True, "enable_prefix_caching": True,
+                               "enforce_eager": bool(job.get("eager"))}
+    if gpus < 2:  # 16 GB of fp16 weights don't fit one T4: quantize to 4-bit while loading
+        options["quantization"] = "bitsandbytes"
+    llm = LLM(**options)
+    tokenizer = llm.get_tokenizer()
+    params = SamplingParams(max_tokens=new_tokens, **sampling)
+    prompts = []
+    for item in jobs:
+        text = tokenizer.apply_chat_template(item["messages"], tokenize=False, add_generation_prompt=True,
+                                             enable_thinking=thinking)
+        if len(tokenizer(text, add_special_tokens=False)["input_ids"]) <= int(job["max_seq"]):
+            prompts.append((item["key"], text))  # longer prompts keep their original answers
+    answers: dict[str, str] = {}
+    end = time.time() + float(job["seconds"])
+    for start in range(0, len(prompts), VLLM_CHUNK):
+        if time.time() > end:
+            print(f"time is up after {len(answers)} answers")
+            break
+        chunk = prompts[start:start + VLLM_CHUNK]
+        for (key, _), result in zip(chunk, llm.generate([text for _, text in chunk], params, use_tqdm=False),
+                                    strict=False):
+            if result.outputs and result.outputs[0].finish_reason == "stop":  # "length" = cut off
+                answers[key] = result.outputs[0].text
+        temp = Path(out_path + ".tmp")
+        temp.write_text(json.dumps(answers, ensure_ascii=False), encoding="utf-8")
+        temp.replace(out_path)
+        print(f"{min(start + VLLM_CHUNK, len(prompts))}/{len(prompts)} prompts done", flush=True)
+    if not prompts:
+        Path(out_path).write_text("{}", encoding="utf-8")
+    return 0
+
+
+#: Name of the private Hugging Face dataset that keeps the teacher's answers between Kaggle sessions.
+TEACHER_CACHE_REPO = "Minecraftism-teacher-answers"
+
+
+def teacher_cache_remote(args: argparse.Namespace, teacher: str, api: Any = None) -> tuple[Any, str, str] | None:
+    """``(api, repo, file)`` for ``--teacher-cache-repo`` (``auto`` = <you>/Minecraftism-teacher-answers)."""
+    repo = str(getattr(args, "teacher_cache_repo", "") or "")
+    token = os.environ.get("HF_TOKEN")
+    if not repo or not (token or api):
+        return None
+    import hashlib
+
+    try:
+        if api is None:
+            from huggingface_hub import HfApi
+
+            api = HfApi(token=token)
+        if "/" not in repo:
+            repo = f"{api.whoami().get('name')}/{TEACHER_CACHE_REPO if repo == 'auto' else repo}"
+    except Exception as exc:  # noqa: BLE001 - the session cache still works
+        print(f"teacher cache on Hugging Face unavailable ({type(exc).__name__}: {exc})")
+        return None
+    return api, repo, f"teacher-{hashlib.sha256(teacher.encode('utf-8')).hexdigest()[:16]}.json"
+
+
+def pull_teacher_answers(remote: tuple[Any, str, str] | None) -> dict[str, str]:
+    """Answers an earlier session uploaded (``{}`` when there are none yet)."""
+    if remote is None:
+        return {}
+    api, repo, name = remote
+    try:
+        path = api.hf_hub_download(repo_id=repo, filename=name, repo_type="dataset")
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
+    except Exception:  # noqa: BLE001 - first session: nothing there yet
+        return {}
+
+
+def push_teacher_answers(remote: tuple[Any, str, str] | None, answers: dict[str, str]) -> None:
+    if remote is None or not answers:
+        return
+    api, repo, name = remote
+    try:
+        api.create_repo(repo_id=repo, repo_type="dataset", private=True, exist_ok=True)
+        api.upload_file(path_or_fileobj=json.dumps(answers, ensure_ascii=False).encode("utf-8"), path_in_repo=name,
+                        repo_id=repo, repo_type="dataset", commit_message=f"{len(answers)} teacher answers")
+        print(f"teacher answers saved to https://huggingface.co/datasets/{repo} (private) for the next session")
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not save the teacher answers to Hugging Face ({type(exc).__name__}: {exc})")
+
+
 def serve_distill_job(out: Path, rank: int, world: int) -> None:
     """DDP, ranks > 0: write this GPU's share of the teacher answers rank 0 asked for."""
     job = json.loads(_distill_file(out).read_text(encoding="utf-8"))
@@ -2985,40 +3129,63 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
         return rows
     teacher = teacher_model(args)
     jobs = teacher_jobs(rows, preset, limit, teacher)
+    python = use_vllm(args)
+    engine = "vLLM" if python else "transformers"
     known = load_teacher_answers(args, teacher)
     todo = [job for job in jobs if job["key"] not in known]
     print(f"distillation (Qwen3 strong-to-weak): teacher {teacher} - {len(jobs)} answers ({len(jobs) - len(todo)} "
-          f"cached, {len(todo)} to write on {world} GPU(s), up to {args.distill_minutes:.0f} min)"
-          + (f"; then {args.onpolicy_steps} on-policy steps" if getattr(args, "onpolicy_steps", 0) and not
-             preset.get("vision") else ""))
+          f"cached, {len(todo)} to write with {engine} on {'every' if python else world} GPU(s), up to "
+          f"{args.distill_minutes:.0f} min)" + (f"; then {args.onpolicy_steps} on-policy steps" if getattr(
+              args, "onpolicy_steps", 0) and not preset.get("vision") else ""))
     if args.dry_run or not jobs:
         return rows
     seconds = float(args.distill_minutes) * 60
     if args.deadline:  # never let the teacher eat the time the training needs
         seconds = min(seconds, max(0.0, (args.deadline - time.time() - (args.reserve_minutes + 20) * 60) * 0.4))
-    if todo and seconds > 60:
-        started = time.time()
-        fresh: dict[str, str] = {}
-        try:
-            if generate is not None:
-                fresh = generate(teacher, todo, args.max_seq, seconds)
-            elif world > 1:
-                target = _distill_file(Path(args.out))
-                temp = target.with_name(target.name + ".tmp")
-                temp.write_text(json.dumps({"teacher": teacher, "jobs": todo, "max_seq": args.max_seq,
-                                            "seconds": seconds}, ensure_ascii=False), encoding="utf-8")
-                temp.replace(target)
-                fresh = teacher_generate(teacher, todo[0::world], args.max_seq, seconds)
-                fresh.update(_wait_for_parts(Path(args.out), world, seconds + 1800))
-            else:
-                fresh = teacher_generate(teacher, todo, args.max_seq, seconds)
-        except Exception as exc:  # noqa: BLE001 - the original answers still train a good model
-            print(f"distillation: the teacher failed ({type(exc).__name__}: {exc}) - training on the original answers")
-        known.update(fresh)
-        save_teacher_answers(args, teacher, fresh)
-        print(f"teacher wrote {len(fresh)} answers in {(time.time() - started) / 60:.0f} min")
-    elif todo:
-        print("distillation: not enough session time left for the teacher - training on the original answers")
+    folder = getattr(args, "stream_cache", None)
+    lock = str(Path(folder) / ".teacher.lock") if folder else None
+    with export_lock(lock, waiting="waiting for the other edition's teacher (its answers are reused)..."):
+        known = load_teacher_answers(args, teacher)  # the other edition may just have written some
+        remote = teacher_cache_remote(args, teacher) if any(job["key"] not in known for job in jobs) else None
+        earlier = pull_teacher_answers(remote)
+        if earlier:
+            known.update(earlier)
+            save_teacher_answers(args, teacher, earlier)
+            print(f"teacher: {len(earlier)} answers from an earlier session (Hugging Face)")
+        todo = [job for job in jobs if job["key"] not in known]
+        if todo and seconds > 60:
+            started = time.time()
+            fresh: dict[str, str] = {}
+            try:
+                if generate is not None:
+                    fresh = generate(teacher, todo, args.max_seq, seconds)
+                else:
+                    if python:
+                        try:
+                            fresh = vllm_generate(teacher, todo, args.max_seq, seconds, python)
+                        except Exception as exc:  # noqa: BLE001 - transformers can still do it
+                            print(f"teacher: vLLM unavailable ({exc}) - writing with transformers")
+                            python = ""
+                    seconds = max(0.0, seconds - (time.time() - started))
+                    if not python and world > 1:
+                        target = _distill_file(Path(args.out))
+                        temp = target.with_name(target.name + ".tmp")
+                        temp.write_text(json.dumps({"teacher": teacher, "jobs": todo, "max_seq": args.max_seq,
+                                                    "seconds": seconds}, ensure_ascii=False), encoding="utf-8")
+                        temp.replace(target)
+                        fresh = teacher_generate(teacher, todo[0::world], args.max_seq, seconds)
+                        fresh.update(_wait_for_parts(Path(args.out), world, seconds + 1800))
+                    elif not python:
+                        fresh = teacher_generate(teacher, todo, args.max_seq, seconds)
+            except Exception as exc:  # noqa: BLE001 - the original answers still train a good model
+                print(f"distillation: the teacher failed ({type(exc).__name__}: {exc}) - training on the original answers")
+            known.update(fresh)
+            save_teacher_answers(args, teacher, fresh)
+            print(f"teacher wrote {len(fresh)} answers in {(time.time() - started) / 60:.0f} min")
+            if fresh:
+                push_teacher_answers(remote, known)
+        elif todo:
+            print("distillation: not enough session time left for the teacher - training on the original answers")
     distilled, stats = apply_teacher_answers(rows, jobs, known, teacher, bool(getattr(args, "uncensored", False)))
     print(f"distillation: {stats['used']}/{stats['asked']} rows now carry the teacher's answer"
           + (f" (kept the original for: {json.dumps(stats['dropped'])})" if stats["dropped"] else ""))
@@ -3109,25 +3276,39 @@ def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: An
     stop_ids = {tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id} - {None}
     pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     stop_at = (args.deadline - (args.reserve_minutes + 5) * 60) if args.deadline else float("inf")
-    started, losses, step = time.time(), [], 0
+    refresh = max(1, int(getattr(args, "onpolicy_refresh", 1) or 1))
+    padding_side = tokenizer.padding_side
+    started, losses, step, position = time.time(), [], 0, 0
+    pending: list[list[tuple[list[int], list[int]]]] = []
+
+    def rollouts(count: int) -> list[tuple[list[int], list[int]]]:
+        """1. the student writes ``count`` replies (sampled, as it would answer) in one batched call."""
+        nonlocal position
+        FastLanguageModel.for_inference(model)
+        tokenizer.padding_side = "left"
+        texts = [render(tokenizer, mine[(position + i) % len(mine)], preset, generation=True) for i in range(count)]
+        position += count
+        encoded = tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(model.device)
+        with torch.no_grad():
+            output = model.generate(**encoded, max_new_tokens=int(args.onpolicy_tokens), do_sample=True,
+                                    temperature=1.0, top_p=1.0, top_k=0, pad_token_id=pad)
+        width = encoded["input_ids"].shape[1]
+        written = []
+        for i in range(len(texts)):
+            prompt = encoded["input_ids"][i][encoded["attention_mask"][i].bool()].tolist()
+            reply = output[i, width:].tolist()
+            cut = next((k + 1 for k, token in enumerate(reply) if token in stop_ids), len(reply))
+            if reply[:cut]:
+                written.append((prompt, reply[:cut]))
+        return written
+
     while step < steps:
         ok, value = True, 0.0
         try:
-            FastLanguageModel.for_inference(model)
-            tokenizer.padding_side = "left"
-            texts = [render(tokenizer, messages, preset, generation=True) for messages in mine[step * batch:(step + 1) * batch]]
-            encoded = tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(model.device)
-            with torch.no_grad():  # 1. the student writes (sampled, as it would answer)
-                output = model.generate(**encoded, max_new_tokens=int(args.onpolicy_tokens), do_sample=True,
-                                        temperature=1.0, top_p=1.0, top_k=0, pad_token_id=pad)
-            width = encoded["input_ids"].shape[1]
-            samples = []
-            for i in range(len(texts)):
-                prompt = encoded["input_ids"][i][encoded["attention_mask"][i].bool()].tolist()
-                reply = output[i, width:].tolist()
-                cut = next((k + 1 for k, token in enumerate(reply) if token in stop_ids), len(reply))
-                if reply[:cut]:
-                    samples.append((prompt, reply[:cut]))
+            if not pending:  # replies for the next `refresh` steps at once: one big generate call, not many small
+                written = rollouts(batch * min(refresh, steps - step))
+                pending = [written[i:i + batch] for i in range(0, len(written), batch)] or [[]]
+            samples = pending.pop(0)
             FastLanguageModel.for_training(model)
             if samples:  # 2. both score the student's tokens: reverse KL on them
                 lengths = [len(reply) for _, reply in samples]
@@ -3142,12 +3323,16 @@ def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: An
                 del own, ref, loss
         except Exception as exc:  # noqa: BLE001
             ok = False
+            pending = []
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
-            if is_oom(exc) and batch > 1 and not losses:
-                batch = max(1, batch // 2)
-                mine = prompts[rank::world]
-                print(f"on-policy distillation: out of GPU memory - {batch} replies per step")
+            if is_oom(exc) and (refresh > 1 or batch > 1) and not losses:
+                if refresh > 1:
+                    refresh = max(1, refresh // 2)
+                else:
+                    batch = max(1, batch // 2)
+                print(f"on-policy distillation: out of GPU memory - {batch} replies per step, written {refresh} "
+                      "steps at a time")
             else:
                 print(f"on-policy distillation stopped at step {step}: {type(exc).__name__}: {exc}")
                 batch = 0
@@ -3176,6 +3361,7 @@ def onpolicy_distill(args: argparse.Namespace, preset: dict[str, Any], model: An
             break
     free_gpu(teacher, optimizer)
     os.environ.pop("UNSLOTH_RETURN_LOGITS", None)
+    tokenizer.padding_side = padding_side  # the saved tokenizer keeps its own setting
     FastLanguageModel.for_training(model)
     if not losses:
         return {}
@@ -3278,7 +3464,7 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
                   text_generator(model, tokenizer, preset), lambda: FastLanguageModel.for_inference(model))
 
 
-def text_generator(model: Any, tokenizer: Any, preset: dict[str, Any]) -> Any:
+def text_generator(model: Any, tokenizer: Any, preset: dict[str, Any], batch: int = 16) -> Any:
     def generate(row: dict[str, Any]) -> str:
         prompt = render(tokenizer, row["messages"][:-1], preset, generation=True)
         inputs = tokenizer(text=prompt, return_tensors="pt", add_special_tokens=False).to(model.device)
@@ -3286,7 +3472,48 @@ def text_generator(model: Any, tokenizer: Any, preset: dict[str, Any]) -> Any:
                                 top_k=20, do_sample=True)
         return tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
+    def many(rows: list[dict[str, Any]]) -> list[str]:
+        """``batch`` prompts per generate call (left-padded): the eval and the tests take a fraction of the time."""
+        side = tokenizer.padding_side
+        tokenizer.padding_side = "left"
+        pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        replies: list[str] = []
+        try:
+            for start in range(0, len(rows), batch):
+                prompts = [render(tokenizer, row["messages"][:-1], preset, generation=True)
+                           for row in rows[start:start + batch]]
+                inputs = tokenizer(text=prompts, return_tensors="pt", padding=True,
+                                   add_special_tokens=False).to(model.device)
+                output = model.generate(**inputs, max_new_tokens=preset.get("max_new_tokens", 256), temperature=0.3,
+                                        top_p=0.8, top_k=20, do_sample=True, pad_token_id=pad)
+                width = inputs["input_ids"].shape[1]
+                replies += [tokenizer.decode(sequence[width:], skip_special_tokens=True) for sequence in output]
+        finally:
+            tokenizer.padding_side = side
+        return replies
+
+    generate.many = many  # type: ignore[attr-defined]
     return generate
+
+
+def answer_all(generate: Any, rows: list[dict[str, Any]]) -> list[str]:
+    """Replies to every row: batched when the generator can (``generate.many``), else one by one. A failing prompt
+    gives an ``<error: ...>`` reply instead of losing the trained model."""
+    many = getattr(generate, "many", None)
+    if many is not None and len(rows) > 1:
+        try:
+            replies = list(many(rows))
+            if len(replies) == len(rows):
+                return replies
+        except Exception as exc:  # noqa: BLE001 - one at a time still works
+            print(f"batched answers failed ({type(exc).__name__}: {exc}) - one at a time")
+    out = []
+    for row in rows:
+        try:
+            out.append(generate(row))
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"<error: {type(exc).__name__}: {exc}>")
+    return out
 
 
 def vision_generator(model: Any, processor: Any, preset: dict[str, Any], load_image: Any) -> Any:
@@ -3418,9 +3645,8 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         report["distill"] = dict(distill, teacher=teacher_model(args))
     if eval_rows and args.eval_limit:
         for_inference()
-        results = []
-        for row in eval_rows[: args.eval_limit]:
-            results.append(score(row, generate(row)))
+        asked = eval_rows[: args.eval_limit]
+        results = [score(row, reply) for row, reply in zip(asked, answer_all(generate, asked), strict=False)]
         report["eval"] = summarize(results)
         print("eval:", json.dumps(report["eval"]))
     if args.test:
@@ -3669,6 +3895,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--onpolicy-batch", type=int, default=4, help="replies per GPU per on-policy step")
     parser.add_argument("--onpolicy-tokens", type=int, default=256, help="longest student reply in the on-policy phase")
     parser.add_argument("--onpolicy-lr", type=float, default=5e-5, help="learning rate of the on-policy phase")
+    parser.add_argument("--onpolicy-refresh", type=int, default=1,
+                        help="the student writes the replies of N on-policy steps in one batched call (faster; "
+                             "1 = strictly on-policy)")
+    parser.add_argument("--teacher-engine", choices=("auto", "vllm", "hf"), default="auto",
+                        help="who runs the teacher: vLLM (needs --vllm-python) or transformers; auto = vLLM if given")
+    parser.add_argument("--vllm-python", default=None,
+                        help=f"python of a venv with vllm=={VLLM_VERSION}: the teacher writes its answers with vLLM "
+                             "(several times faster, both T4s), falling back to transformers")
+    parser.add_argument("--teacher-cache-repo", default="",
+                        help="keep the teacher's answers in this private Hugging Face dataset so later sessions reuse "
+                             f"them (needs HF_TOKEN; auto = <you>/{TEACHER_CACHE_REPO})")
+    parser.add_argument("--vllm-worker", nargs=2, metavar=("JOB", "OUT"), help=argparse.SUPPRESS)
     parser.add_argument("--uncensored", action="store_true",
                         help="train on the abliterated base (no refusals) and drop refusals from the extra chat data")
     parser.add_argument("--system-prompt-file", help="the model's default system prompt (default: the built-in "
@@ -3711,6 +3949,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.vllm_worker:  # the teacher's answers, inside the vLLM venv
+        return vllm_worker(*args.vllm_worker)
     if args.export_only:
         return export_only(args.export_only)
     if args.list_presets:

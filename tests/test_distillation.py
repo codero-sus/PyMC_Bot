@@ -273,3 +273,225 @@ def test_token_logits_takes_the_positions_that_predict_the_reply():
     rows = llm_train.token_logits(Echo(), [[1, 2, 3, 4], [5, 6, 7]], starts=[2, 1], lengths=[2, 2], pad_id=0)
     assert rows.shape == (4, 20)
     assert rows.argmax(-1).tolist() == [2, 3, 5, 6]  # replies 3,4 and 6,7: read at the positions just before them
+
+
+# ---------------------------------------------------------------- speed: vLLM teacher, HF cache, batching
+def test_speed_flags_default_to_the_safe_path():
+    args = llm_train.build_parser().parse_args(["--preset", "minecraftism"])
+    assert (args.onpolicy_refresh, args.teacher_engine, args.vllm_python, args.teacher_cache_repo) == (1, "auto", None, "")
+    assert llm_train.use_vllm(args) == ""
+
+
+def test_use_vllm_needs_a_real_python(tmp_path, monkeypatch):
+    python = tmp_path / "python"
+    python.write_text("")
+    monkeypatch.delenv("PYMC_VLLM_PYTHON", raising=False)
+    assert llm_train.use_vllm(_args(tmp_path, vllm_python=str(python))) == str(python)
+    assert llm_train.use_vllm(_args(tmp_path, vllm_python=str(python), teacher_engine="hf")) == ""
+    assert llm_train.use_vllm(_args(tmp_path, vllm_python=str(tmp_path / "missing"))) == ""
+
+
+def _fake_run(results):
+    """subprocess.run stand-in for the vLLM worker: each call pops (exit code, answers written)."""
+    calls = []
+
+    def run(command, stdout=None, stderr=None, env=None, timeout=None):
+        job = json.loads(Path(command[-2]).read_text())
+        calls.append({"command": command, "job": job, "timeout": timeout})
+        code, write = results.pop(0)
+        if write:
+            Path(command[-1]).write_text(json.dumps({j["key"]: "answer" for j in job["jobs"]}))
+        stdout.write("engine log line\n")
+        return type("Done", (), {"returncode": code})()
+
+    return run, calls
+
+
+def test_vllm_generate_runs_the_worker_and_retries_in_eager_mode(tmp_path):
+    jobs = llm_train.teacher_jobs(_rows(), llm_train.PRESETS["minecraftism"], 3, "t")
+    run, calls = _fake_run([(0, True)])
+    answers = llm_train.vllm_generate("t", jobs, 2048, 600, "/venv/python", run=run, log=lambda *_: None)
+    assert answers == {job["key"]: "answer" for job in jobs}
+    command = calls[0]["command"]
+    assert command[0] == "/venv/python" and command[2] == "--vllm-worker" and command[1].endswith(".py")
+    assert calls[0]["job"]["eager"] is False and calls[0]["timeout"] == 600 + 900
+    run, calls = _fake_run([(1, False), (0, True)])
+    logs = []
+    assert len(llm_train.vllm_generate("t", jobs, 2048, 600, "/p", run=run, log=logs.append)) == 3
+    assert [c["job"]["eager"] for c in calls] == [False, True] and "engine log line" in logs[0]
+    run, _ = _fake_run([(1, False), (1, False)])
+    with pytest.raises(RuntimeError):
+        llm_train.vllm_generate("t", jobs, 2048, 600, "/p", run=run, log=lambda *_: None)
+
+
+def _fake_vllm(monkeypatch, gpus):
+    import sys
+    import types
+
+    seen = {}
+
+    class Tokenizer:
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, enable_thinking):
+            seen["thinking"] = enable_thinking
+            return messages[-1]["content"]
+
+        def __call__(self, text, add_special_tokens):
+            return {"input_ids": text.split()}
+
+    class LLM:
+        def __init__(self, **options):
+            seen["options"] = options
+
+        def get_tokenizer(self):
+            return Tokenizer()
+
+        def generate(self, prompts, params, use_tqdm):
+            seen["prompts"] = prompts
+            return [types.SimpleNamespace(outputs=[types.SimpleNamespace(
+                text=f"re: {p}", finish_reason="length" if "cut" in p else "stop")]) for p in prompts]
+
+    monkeypatch.setitem(sys.modules, "vllm", types.SimpleNamespace(LLM=LLM, SamplingParams=lambda **kw: kw))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(
+        cuda=types.SimpleNamespace(device_count=lambda: gpus)))
+    return seen
+
+
+def test_vllm_worker_uses_both_t4s_and_keeps_only_finished_answers(tmp_path, monkeypatch):
+    seen = _fake_vllm(monkeypatch, gpus=2)
+    jobs = [{"key": "a", "messages": [{"role": "user", "content": "hello there"}], "thinking": True},
+            {"key": "b", "messages": [{"role": "user", "content": "cut off"}], "thinking": True},
+            {"key": "c", "messages": [{"role": "user", "content": "word " * 50}], "thinking": True}]
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"teacher": "unsloth/Qwen3-8B", "max_seq": 10, "seconds": 600, "eager": False,
+                               "jobs": jobs}))
+    out = tmp_path / "answers.json"
+    assert llm_train.main(["--vllm-worker", str(job), str(out)]) == 0
+    assert json.loads(out.read_text()) == {"a": "re: hello there"}  # b was cut off, c was too long to ask
+    options = seen["options"]
+    assert options["tensor_parallel_size"] == 2 and options["dtype"] == "float16" and "quantization" not in options
+    assert options["disable_custom_all_reduce"] and options["max_model_len"] == 10 + 1536 and seen["thinking"]
+    seen = _fake_vllm(monkeypatch, gpus=1)
+    llm_train.vllm_worker(str(job), str(out))
+    assert seen["options"]["tensor_parallel_size"] == 1 and seen["options"]["quantization"] == "bitsandbytes"
+
+
+def test_distillation_prefers_vllm_and_falls_back_to_transformers(tmp_path, monkeypatch):
+    python = tmp_path / "python"
+    python.write_text("")
+    used = []
+
+    def fake_vllm(teacher, jobs, max_seq, seconds, py):
+        used.append(("vllm", len(jobs)))
+        return _good_answers(jobs)
+
+    def fake_hf(teacher, jobs, max_seq, seconds, batch=0, log=print):
+        used.append(("hf", len(jobs)))
+        return _good_answers(jobs)
+
+    monkeypatch.setattr(llm_train, "vllm_generate", fake_vllm)
+    monkeypatch.setattr(llm_train, "teacher_generate", fake_hf)
+    rows = llm_train.distill_offpolicy(_args(tmp_path, vllm_python=str(python)), llm_train.PRESETS["minecraftism"],
+                                       _rows(), world=2)
+    assert used == [("vllm", 7)] and sum(1 for row in rows if row.get("teacher")) == 7  # rank 0 alone, both T4s
+
+    def broken(*_a):
+        raise RuntimeError("no engine")
+
+    monkeypatch.setattr(llm_train, "vllm_generate", broken)
+    used.clear()
+    args = _args(tmp_path / "other", vllm_python=str(python))
+    rows = llm_train.distill_offpolicy(args, llm_train.PRESETS["minecraftism"], _rows())
+    assert used == [("hf", 7)] and args.distill_report["used"] == 7
+
+
+class FakeHub:
+    def __init__(self, tmp_path, stored=None):
+        self.tmp_path, self.stored, self.uploads = tmp_path, stored, []
+
+    def whoami(self):
+        return {"name": "me"}
+
+    def hf_hub_download(self, repo_id, filename, repo_type):
+        if self.stored is None:
+            raise FileNotFoundError(filename)
+        path = self.tmp_path / "download.json"
+        path.write_text(json.dumps(self.stored))
+        return str(path)
+
+    def create_repo(self, repo_id, repo_type, private, exist_ok):
+        assert private and repo_type == "dataset"
+
+    def upload_file(self, path_or_fileobj, path_in_repo, repo_id, repo_type, commit_message):
+        self.uploads.append((repo_id, path_in_repo, json.loads(path_or_fileobj)))
+
+
+def test_teacher_answers_are_kept_on_hugging_face_between_sessions(tmp_path, monkeypatch):
+    rows = _rows()
+    jobs = llm_train.teacher_jobs(rows, llm_train.PRESETS["minecraftism"], 50, "unsloth/Qwen3-8B")
+    earlier = {job["key"]: f"teacher says {job['reference'] or 'hi'}" for job in jobs[:5]}
+    hub = FakeHub(tmp_path, stored=earlier)
+    real = llm_train.teacher_cache_remote
+    monkeypatch.setattr(llm_train, "teacher_cache_remote",
+                        lambda args, teacher: (hub, "me/Minecraftism-teacher-answers", "teacher-x.json"))
+    asked = []
+
+    def generate(teacher, todo, max_seq, seconds):
+        asked.append(len(todo))
+        return _good_answers(todo)
+
+    args = _args(tmp_path, teacher_cache_repo="auto")
+    llm_train.distill_offpolicy(args, llm_train.PRESETS["minecraftism"], rows, generate=generate)
+    assert asked == [2]  # 5 of 7 came from the earlier session
+    repo, name, uploaded = hub.uploads[-1]
+    assert repo == "me/Minecraftism-teacher-answers" and name == "teacher-x.json" and len(uploaded) == 7
+    remote = real(_args(tmp_path, teacher_cache_repo="auto"), "t", api=FakeHub(tmp_path))
+    assert remote[1] == "me/Minecraftism-teacher-answers" and remote[2].startswith("teacher-")
+    assert real(_args(tmp_path), "t", api=FakeHub(tmp_path)) is None  # off by default
+    assert llm_train.pull_teacher_answers((FakeHub(tmp_path), "me/x", "f.json")) == {}  # first session
+
+
+def test_answers_are_batched_with_a_safe_fallback():
+    rows = [{"messages": [{"role": "user", "content": str(i)}, {"role": "assistant", "content": "-"}]} for i in range(5)]
+    batches = []
+
+    def generate(row):
+        if row["messages"][0]["content"] == "3":
+            raise ValueError("bad prompt")
+        return "one " + row["messages"][0]["content"]
+
+    generate.many = lambda many_rows: batches.append(len(many_rows)) or [f"b{i}" for i in range(len(many_rows))]
+    assert llm_train.answer_all(generate, rows) == ["b0", "b1", "b2", "b3", "b4"] and batches == [5]
+
+    def broken(_rows):
+        raise RuntimeError("OOM")
+
+    generate.many = broken
+    replies = llm_train.answer_all(generate, rows)
+    assert replies[:3] == ["one 0", "one 1", "one 2"] and replies[3].startswith("<error: ValueError")
+    summary = llm_train.run_tests(lambda row: "fine", [dict(r, test="everyday") for r in rows], log=lambda *_: None)
+    assert summary["prompts"] == 5
+
+
+def test_notebook_installs_vllm_in_its_own_venv_and_passes_it_only_when_it_works():
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "VLLM_TEACHER = True" in code and "TEACHER_CACHE = True" in code
+    assert f'VLLM_VERSION = "{llm_train.VLLM_VERSION}"' in code and 'VLLM_PYTHON = "/tmp/pymc-vllm/bin/python"' in code
+    assert '"uv", "venv"' in code and '"import vllm, torch; assert torch.cuda.is_available()"' in code
+    assert 'FLAGS += " --onpolicy-refresh 4" if FAST' in code
+    assert 'FLAGS += " --teacher-cache-repo auto" if TEACHER_CACHE and HF_REPO' in code
+    cell = "".join(nb["cells"][6]["source"])
+    gate = cell[cell.index('if DISTILL and "VLLM_THREAD" in globals():'):cell.index('if MODE == "parallel" and not HF_REPO')]
+    import threading
+
+    for ready in (True, False):
+        event = threading.Event()
+        if ready:
+            event.set()
+        env = {"DISTILL": True, "VLLM_THREAD": threading.Thread(target=lambda: None), "VLLM_READY": event,
+               "VLLM_PYTHON": "/tmp/pymc-vllm/bin/python", "RUN_FLAGS": "--data x"}
+        exec(gate, env)
+        assert ('--vllm-python "/tmp/pymc-vllm/bin/python"' in env["RUN_FLAGS"]) is ready
+    env = {"DISTILL": True, "RUN_FLAGS": "--data x"}  # no install started (DISTILL off / no internet)
+    exec(gate, env)
+    assert env["RUN_FLAGS"] == "--data x"

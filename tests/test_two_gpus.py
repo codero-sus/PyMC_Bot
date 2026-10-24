@@ -228,7 +228,7 @@ def test_notebook_uses_both_t4s_and_the_deadline():
     assert "training it again on one T4" in code  # DDP problem -> same edition on one T4
     assert '--deadline {DEADLINE:.0f} --export-lock /tmp/pymc-export.lock' in code
     assert 'FLAGS += " --token-budget 12288 --loader-workers 2 --eval-limit 60" if FAST' in code
-    assert '"--defer-gguf", "--distill-rows", "--onpolicy-steps"))' in code  # an older trainer is replaced
+    assert '"--onpolicy-steps",\n                                             "--vllm-python"))' in code  # older trainer replaced
     assert "!python" not in "".join(nb["cells"][6]["source"])
 
 
