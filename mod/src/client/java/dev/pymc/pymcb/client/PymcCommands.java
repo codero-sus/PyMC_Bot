@@ -46,6 +46,7 @@ import net.minecraft.network.chat.Component;
  * /pymcbot bot auto on|off          the autopilot (auto-sleep, eat, fight back, torches...)
  * /pymcbot bot ai start|stop
  * /pymcbot bot panel [url]          which panel to talk to (default http://127.0.0.1:8000)
+ * /pymcbot bot token [token|clear]  the panel's API token (its login; python -m pymc_bot auth token)
  * </pre>
  *
  * <p>Every command that changes what gets recorded requires an <em>attended</em> run on
@@ -295,6 +296,20 @@ public final class PymcCommands {
                                     : "not a panel address: " + url + " (example: http://192.168.1.20:8000)");
                         }));
 
+        LiteralArgumentBuilder<FabricClientCommandSource> token = literal("token")
+                .executes(ctx -> feedback(ctx.getSource(), BotLink.token().isEmpty()
+                        ? "no API token set - " + BotLink.LOGIN_HINT
+                        : "an API token is set (" + BotLink.token().length() + " characters); /pymcbot bot token clear removes it"))
+                .then(guarded("clear").executes(ctx -> {
+                    PlaytimeConfig.get().setPanelToken("");
+                    return feedback(ctx.getSource(), "API token removed");
+                }))
+                .then(Mc.argument("token", StringArgumentType.greedyString()).requires(Mc::attended)
+                        .executes(ctx -> feedback(ctx.getSource(),
+                                PlaytimeConfig.get().setPanelToken(StringArgumentType.getString(ctx, "token"))
+                                        ? "API token saved - try /pymcbot bot status"
+                                        : "that does not look like a panel API token (it starts with pymc_)")));
+
         return literal("bot")
                 .executes(ctx -> feedback(ctx.getSource(), botHelp()))
                 .then(literal("help").executes(ctx -> feedback(ctx.getSource(), botHelp())))
@@ -323,7 +338,8 @@ public final class PymcCommands {
                         })))
                 .then(auto)
                 .then(ai)
-                .then(panel);
+                .then(panel)
+                .then(token);
     }
 
     private static int skill(String name, String optionsJson) {
@@ -370,7 +386,7 @@ public final class PymcCommands {
                 + "/pymcbot bot do <skill> [key=value ...]   e.g. do chop_tree count=12, do mine_ore iron\n"
                 + "/pymcbot bot come | follow | stop | home   /pymcbot bot say <text>\n"
                 + "/pymcbot bot auto on|off   (auto-sleep at night, eat, fight back, torches...)\n"
-                + "/pymcbot bot ai start|stop   /pymcbot bot panel [url]";
+                + "/pymcbot bot ai start|stop   /pymcbot bot panel [url]   /pymcbot bot token <token>";
     }
 
     /** Shown by {@code /pymcbot} on its own. */

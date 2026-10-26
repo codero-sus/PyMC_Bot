@@ -68,6 +68,9 @@ public class PymcClientGameTest implements FabricClientGameTest {
                 "skill options: " + BotLink.options("count=8 oak_log"));
         check(PlaytimeConfig.panelProp("http://192.168.1.20:8000/", "x").equals("http://192.168.1.20:8000"), "panel URL");
         check(PlaytimeConfig.panelProp("file:///etc/passwd", "x").equals("x"), "panel URL must be http(s)");
+        check(PlaytimeConfig.tokenProp("Bearer pymc_Ab-9_xyz", "x").equals("pymc_Ab-9_xyz"), "panel token");
+        check(PlaytimeConfig.tokenProp("", "x").isEmpty(), "an empty panel token clears it");
+        check(PlaytimeConfig.tokenProp("pymc bad token\n", "x").equals("x"), "panel token must be URL-safe");
         report.append("bot link: ok (").append(BotLink.panel()).append(")\n");
 
         try (TestSingleplayerContext singleplayer = context.worldBuilder().create()) {

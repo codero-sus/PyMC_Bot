@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% if setup %}Create your login{% else %}Log in{% endif %} — PyMC_Bot</title>
+  <meta name="author" content="codero-sus" />
+  <meta name="robots" content="noindex" />
+  <meta name="theme-color" content="#070b10" />
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    try { document.documentElement.dataset.theme = localStorage.getItem('pymc.theme') || 'midnight'; } catch (err) { /* defaults */ }
+  </script>
+</head>
+<body class="login-page">
+  <!-- made with ❤️ by codero-sus · https://github.com/codero-sus · https://codero.is-a.dev · https://the-codero.web.app/ -->
+  <div class="fx-backdrop" aria-hidden="true">
+    <div class="aurora"><span></span><span></span><span></span></div>
+    <div class="grid-overlay"></div>
+  </div>
+
+  <main class="login-wrap">
+    <form class="card login-card" id="login-form" data-mode="{% if setup %}setup{% else %}login{% endif %}" novalidate>
+      <header class="login-head">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 16 16" shape-rendering="crispEdges">
+            <rect x="3" y="4" width="3" height="3" fill="#06281d"/><rect x="10" y="4" width="3" height="3" fill="#06281d"/>
+            <rect x="6" y="8" width="4" height="2" fill="#06281d"/><rect x="5" y="10" width="2" height="3" fill="#06281d"/>
+            <rect x="9" y="10" width="2" height="3" fill="#06281d"/>
+          </svg>
+        </span>
+        <div>
+          <h1>PyMC_Bot</h1>
+          <p class="hint">v{{ version }} · control panel</p>
+        </div>
+      </header>
+
+      {% if setup %}
+      <h2 class="login-title">Create your login</h2>
+      <p class="note">First run: choose the account that protects this panel. The <b>setup code</b> is printed in the
+        console (terminal) that runs <code>python -m pymc_bot serve</code>.</p>
+      {% else %}
+      <h2 class="login-title">Log in</h2>
+      {% endif %}
+
+      <div class="fields">
+        {% if setup %}
+        <label>Setup code
+          <input id="login-code" name="code" type="text" autocomplete="one-time-code" placeholder="ABCD-1234-EF56"
+            spellcheck="false" required />
+        </label>
+        {% endif %}
+        <label>Username
+          <input id="login-username" name="username" type="text" autocomplete="username" maxlength="32"
+            value="{% if setup %}admin{% endif %}" spellcheck="false" required autofocus />
+        </label>
+        <label>Password
+          <input id="login-password" name="password" type="password"
+            autocomplete="{% if setup %}new-password{% else %}current-password{% endif %}" required />
+        </label>
+        {% if setup %}
+        <label>Repeat password
+          <input id="login-password2" name="password2" type="password" autocomplete="new-password" required />
+        </label>
+        <p class="hint">At least 8 characters.</p>
+        {% else %}
+        <label class="login-remember"><input id="login-remember" type="checkbox" /> Keep me logged in for 30 days</label>
+        {% endif %}
+      </div>
+
+      <div class="actions">
+        <button id="login-submit" type="submit" class="btn primary login-submit">
+          {% if setup %}Create account{% else %}Log in{% endif %}
+        </button>
+      </div>
+      <p class="note" id="login-status" role="alert" aria-live="polite"></p>
+    </form>
+  </main>
+
+  <footer class="footer login-footer">
+    <span class="made-with">Made with ❤️ by <a href="https://github.com/codero-sus" target="_blank" rel="noopener author">codero-sus</a></span>
+    <nav class="footer-links" aria-label="Credits">
+      <a href="https://codero.is-a.dev" target="_blank" rel="noopener">codero.is-a.dev</a>
+      <a href="https://the-codero.web.app/" target="_blank" rel="noopener">the-codero.web.app</a>
+    </nav>
+  </footer>
+  <script src="/static/login.js"></script>
+</body>
+</html>

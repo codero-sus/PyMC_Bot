@@ -61,6 +61,7 @@
       <button id="btn-connect" class="btn primary">Connect</button>
       <button id="btn-disconnect" class="btn">Disconnect</button>
       <button id="btn-reconnect" class="btn ghost" title="Stop and reconnect with the saved settings">Reconnect</button>
+      <button id="btn-logout" class="btn ghost icon-btn hidden" title="Log out" aria-label="Log out"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5M5 12h11"/></svg></button>
     </div>
   </header>
 
@@ -623,6 +624,29 @@
         </div>
         <p class="note" id="raw-config-status"></p>
       </details>
+      <details id="account-box" class="hidden">
+        <summary>Login &amp; API token <span id="account-user" class="hint"></span></summary>
+        <p class="note">The panel is protected by a login. Changing the password logs out every other browser.</p>
+        <div class="fields two">
+          <label>Current password <input id="account-current" type="password" autocomplete="current-password" /></label>
+          <label>New password <input id="account-new" type="password" autocomplete="new-password" minlength="8" /></label>
+        </div>
+        <div class="actions">
+          <button id="btn-account-password" class="btn">Change password</button>
+        </div>
+        <p class="note">An <b>API token</b> lets scripts and the Minecraft mod use the panel:
+          <code>Authorization: Bearer &lt;token&gt;</code>, <code>python -m pymc_bot action --token …</code> or in-game
+          <code>/pymcbot bot token &lt;token&gt;</code>. It is shown once; a new one replaces the old.</p>
+        <div class="account-token hidden" id="account-token-row">
+          <input id="account-token" type="text" readonly spellcheck="false" aria-label="New API token" />
+          <button id="btn-account-copy" class="btn small">Copy</button>
+        </div>
+        <div class="actions">
+          <button id="btn-account-token" class="btn">New API token</button>
+          <button id="btn-account-revoke" class="btn danger">Revoke token</button>
+        </div>
+        <p class="note" id="account-status"></p>
+      </details>
       <details>
         <summary>HTTP API</summary>
         <ul class="api-list">
@@ -636,6 +660,7 @@
           <li><code>GET /api/autopilot/status</code> · <code>POST /api/autopilot/run</code> <code>{"rule":"sleep"}</code></li>
           <li><code>GET|POST /api/setup/bridge</code> — install mineflayer without npm</li>
           <li><code>WS /ws</code> — live <code>event</code> / <code>status</code> frames</li>
+          <li><code>POST /api/auth/login|logout</code> · <code>GET /api/auth/status</code> — every other call needs the login cookie or <code>Authorization: Bearer &lt;token&gt;</code></li>
         </ul>
       </details>
     </section>

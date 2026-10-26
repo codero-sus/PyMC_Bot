@@ -1,6 +1,6 @@
 """Command line entry point.
 
-``python -m pymc_bot [serve|run|train|models|action|doctor|probe|search|mob|llm|stub|about]``
+``python -m pymc_bot [serve|run|train|models|action|auth|doctor|probe|search|mob|llm|stub|about]``
 """
 
 from __future__ import annotations
@@ -58,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--auto-agent", action="store_true", help="also start the AI loop on startup")
     serve.add_argument("--log-level", default="info", choices=["critical", "error", "warning", "info", "debug", "trace"])
     serve.add_argument("--reload", action="store_true", help="auto-reload on code changes (development)")
+    serve.add_argument("--no-auth", action="store_true",
+                       help="turn the login off (only for a panel nobody else can reach; also PYMC_BOT_NO_AUTH=1)")
 
     run = sub.add_parser("run", help="headless: connect the bot and play (optionally with the AI loop)")
     _add_config_arg(run)
@@ -127,6 +129,18 @@ def build_parser() -> argparse.ArgumentParser:
     action = sub.add_parser("action", help="send one manual action to a running panel")
     action.add_argument("payload", help='action JSON, e.g. \'{"action":"wander"}\' or {"action":"goto","x":10,"z":4}')
     action.add_argument("--url", default="http://127.0.0.1:8000", help="panel base URL")
+    action.add_argument("--token", default=None,
+                        help="the panel's API token (default: PYMC_BOT_TOKEN; create one with 'auth token')")
+
+    auth_cmd = sub.add_parser("auth", help="the panel's login: set the password, API token, status, reset")
+    _add_config_arg(auth_cmd)
+    auth_sub = auth_cmd.add_subparsers(dest="auth_command", metavar="{status,set-password,token,revoke-token,reset}")
+    auth_sub.add_parser("status", help="is there an account, is an API token set (default)")
+    set_pw = auth_sub.add_parser("set-password", help="create the account or change its password (asks for it)")
+    set_pw.add_argument("--username", default=None, help="account name (default: the current one, else 'admin')")
+    auth_sub.add_parser("token", help="create a new API token (printed once; replaces the old one)")
+    auth_sub.add_parser("revoke-token", help="remove the API token")
+    auth_sub.add_parser("reset", help="forget the account: the panel asks for a new one with a setup code")
 
     setup = sub.add_parser("setup", help="install the Minecraft bridge (mineflayer) without npm, and Node.js if missing",
                            aliases=["install-bridge"])
@@ -221,12 +235,25 @@ def cmd_serve(args: argparse.Namespace) -> int:
     host = args.host or settings.server.host
     port = args.port or settings.server.port
 
+    import os
+
+    from pymc_bot import auth
+
+    if getattr(args, "no_auth", False):
+        os.environ["PYMC_BOT_NO_AUTH"] = "1"
     app = create_app(
         config_path=args.config,
         autostart=args.autostart,
         auto_agent=args.auto_agent,
     )
     print(f"PyMC_Bot {__version__} control panel: http://{host}:{port}  (config: {store.path})")
+    if auth.auth_disabled():
+        print("WARNING: login is OFF - anyone who can reach this port controls your bots."
+              + (" Bind to 127.0.0.1 (--host 127.0.0.1) or drop --no-auth." if host not in ("127.0.0.1", "localhost") else ""))
+    else:
+        accounts = app.state.auth
+        print(f"login       : {'account ' + repr(accounts.username) if accounts.configured else 'not set up yet'}"
+              f"  ({accounts.path})")
     print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://codero.is-a.dev \u00b7 https://the-codero.web.app/")
     uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
     return 0
@@ -490,6 +517,8 @@ def cmd_models(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------- action
 def cmd_action(args: argparse.Namespace) -> int:
+    import os
+
     import httpx
 
     url = args.url.rstrip("/") + "/api/bot/action"
@@ -497,13 +526,74 @@ def cmd_action(args: argparse.Namespace) -> int:
         payload = json.loads(args.payload)
     except json.JSONDecodeError:
         payload = {"raw": args.payload}
+    token = getattr(args, "token", None) or os.environ.get("PYMC_BOT_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token.strip()}"} if token.strip() else {}
     try:
-        response = httpx.post(url, json=payload, timeout=60.0)
+        response = httpx.post(url, json=payload, headers=headers, timeout=60.0)
     except httpx.HTTPError as exc:
         print(f"Could not reach {url}: {exc}", file=sys.stderr)
         return 2
     print(response.status_code, response.text)
+    if response.status_code == 401:
+        print("The panel needs a login: pass --token (or set PYMC_BOT_TOKEN). Create a token in the panel "
+              "(Advanced > Login & API token) or with: python -m pymc_bot auth token", file=sys.stderr)
     return 0 if response.status_code < 400 else 1
+
+
+# ----------------------------------------------------------------------- auth
+def cmd_auth(args: argparse.Namespace) -> int:
+    import getpass
+
+    from pymc_bot import auth
+
+    path = auth.default_auth_path(ConfigStore(args.config, autoload=False).path)
+    accounts = auth.AuthStore(path)
+    command = args.auth_command or "status"
+    if command == "status":
+        info = accounts.status()
+        print(f"auth file   : {info['file']} {'(exists)' if path.exists() else '(not created yet)'}")
+        print(f"account     : {info['username'] if info['configured'] else 'none - the panel shows a setup form'}")
+        print(f"api token   : {'set' if info['token'] else 'none'}")
+        if auth.auth_disabled():
+            print("login       : OFF (PYMC_BOT_NO_AUTH is set)")
+        return 0
+    if command == "set-password":
+        username = args.username or accounts.username or "admin"
+        try:
+            auth.check_username(username)
+            password = getpass.getpass(f"New password for '{username}': ")
+            auth.check_password_rules(password)
+            if getpass.getpass("Repeat it: ") != password:
+                print("The two passwords are different - nothing changed.", file=sys.stderr)
+                return 1
+            accounts.set_account(username, password)
+        except auth.AuthError as exc:
+            print(f"Not changed: {exc}", file=sys.stderr)
+            return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\ncancelled", file=sys.stderr)
+            return 1
+        print(f"Saved. Log in to the panel as '{username}' (every other session was logged out).")
+        return 0
+    if command == "token":
+        if not accounts.configured:
+            print("Create the account first: python -m pymc_bot auth set-password", file=sys.stderr)
+            return 1
+        token = accounts.new_token()
+        print(token)
+        print("\nShown once - keep it safe. Use it as 'Authorization: Bearer <token>', with "
+              "'python -m pymc_bot action --token ...' (or PYMC_BOT_TOKEN), or in Minecraft: /pymcbot bot token <token>",
+              file=sys.stderr)
+        return 0
+    if command == "revoke-token":
+        accounts.revoke_token()
+        print("API token removed.")
+        return 0
+    if command == "reset":
+        accounts.reset()
+        print("Account removed. The panel now asks for a new one (the setup code is printed in its console).")
+        return 0
+    return 2  # pragma: no cover - argparse rejects other names
 
 
 # --------------------------------------------------------------------- doctor
@@ -523,6 +613,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"minecraft   : {mc_range['oldest']} - {mc_range['latest']} (newer servers need ViaVersion + ViaBackwards "
               "until mineflayer adds them; then run the updater or `python -m pymc_bot setup --force`)")
     print(f"config      : {store.path} {'(exists)' if store.path.exists() else '(will be created)'}")
+    from pymc_bot import auth as _auth
+
+    _accounts = _auth.AuthStore(_auth.default_auth_path(store.path))
+    print(f"panel login : {'OFF (PYMC_BOT_NO_AUTH)' if _auth.auth_disabled() else ('account ' + repr(_accounts.username) if _accounts.configured else 'not set up yet (setup code on first serve, or: auth set-password)')}")
     if store.load_error:
         print(f"config note : {store.load_error}")
     print(f"server      : {settings.minecraft.host}:{settings.minecraft.port} "
@@ -819,6 +913,7 @@ DISPATCH = {
     "train": cmd_train,
     "models": cmd_models,
     "action": cmd_action,
+    "auth": cmd_auth,
     "doctor": cmd_doctor,
     "setup": cmd_setup,
     "install-bridge": cmd_setup,

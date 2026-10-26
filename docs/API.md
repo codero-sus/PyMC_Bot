@@ -8,9 +8,39 @@ Errors use the usual FastAPI shape and these status codes:
 
 | Code | Meaning |
 | --- | --- |
+| `401` | not logged in: send the session cookie or `Authorization: Bearer <token>` (see [Login](#login)) |
+| `429` | too many failed logins from this address - wait `Retry-After` seconds |
 | `409` | the bot is not connected (or the AI loop cannot start yet) |
 | `422` | validation failed (bad config value, unknown action, unparseable JSON) |
 | `502` | the Minecraft bridge or Ollama could not be reached |
+
+---
+
+## Login
+
+Every endpoint except `/login`, `/healthz`, `/favicon.ico`, `/static/*` and the four public `/api/auth/*`
+calls below needs a login (unless the panel runs with `--no-auth` / `PYMC_BOT_NO_AUTH=1`):
+
+* **Browsers** log in with `POST /api/auth/login` and get the `pymc_session` cookie (signed, HttpOnly,
+  SameSite=Lax). Pages redirect to `/login?next=…`; API calls answer `401 {"detail": "login required"}`;
+  the WebSocket handshake is refused.
+* **Scripts and the mod** send `Authorization: Bearer <token>`. Create the token in the panel (*Advanced →
+  Login & API token*), with `POST /api/auth/token`, or with `python -m pymc_bot auth token`.
+
+| Method | Path | Login | Description |
+| --- | --- | --- | --- |
+| `GET` | `/api/auth/status` | no | `{"enabled", "configured", "authenticated", "username", "via": "cookie"\|"token", "token"}` |
+| `POST` | `/api/auth/login` | no | `{"username", "password", "remember": false}` → sets the cookie (12 h; 30 days with `remember`). `401` wrong, `409` no account yet, `429` locked out |
+| `POST` | `/api/auth/setup` | no | first run only: `{"username", "password", "code"}` - `code` is the setup code printed in the panel's console. `400` wrong code / weak password, `409` an account exists |
+| `POST` | `/api/auth/logout` | no | clears the cookie |
+| `POST` | `/api/auth/password` | cookie | `{"current", "new"}` - logs out every other session |
+| `POST` | `/api/auth/token` | cookie | `{"token": "pymc_…"}` - a new API token, shown once; replaces the old one |
+| `DELETE` | `/api/auth/token` | cookie | revokes the API token |
+
+```bash
+TOKEN=$(python -m pymc_bot auth token)
+curl -H "Authorization: Bearer $TOKEN" localhost:8000/api/status
+```
 
 ---
 

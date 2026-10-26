@@ -89,6 +89,10 @@ python -m pymc_bot serve          # or: python -m pymc_bot      (serve is the de
 # -> http://localhost:8000
 ```
 
+**First run: create your login.** The panel controls your bots, so it is protected by a login. The console
+prints a one-time **setup code**; open the panel, enter it with a username and password, and you are in
+(or run `python -m pymc_bot auth set-password` first). Details: [Login](#login).
+
 In the panel:
 
 1. **Minecraft server** – host, port, username (max 16 chars), version (`auto` sniffs it), auth
@@ -667,6 +671,32 @@ player model, live view, manual control, events and raw config, the panel has:
 | **Feedback** | toasts for every panel action and connection change, spinners on buttons while a request runs, a damage flash and low-health pulse on the meters, confirmation before destructive actions |
 | **Live view** | the minimap eases between status frames, scrolls its grid with the bot and draws a radar sweep |
 | **About** | ⓘ opens the credits (also `GET /api/about`) |
+| **Login** | log out (⇥ in the top bar), change the password and create the API token under *Advanced → Login & API token* |
+
+### Login
+
+The panel listens on `0.0.0.0` (your whole network) by default and can start bots, change the config and
+run training, so it is locked behind a small login (`pymc_bot/auth.py`, standard library only):
+
+* **One account** in `pymc_bot_auth.json` next to the config – a separate file, so `GET /api/config`
+  never shows it and *Reset to defaults* keeps it. The password is a salted PBKDF2-SHA256 hash; the file
+  is private (`0600`). It is ignored by git and kept by the updater.
+* **First run:** the panel shows *Create your login* and asks for the **setup code** printed in the
+  console, so nobody else on your network can claim the panel before you. Or, in a terminal:
+  `python -m pymc_bot auth set-password`.
+* **Sessions** are signed, HttpOnly cookies (12 h, or 30 days with *Keep me logged in*). Changing the
+  password logs out every other browser.
+* **API token** for scripts, `python -m pymc_bot action` and the mod's `/pymcbot bot …` commands:
+  `Authorization: Bearer <token>`. Create it in the panel or with `python -m pymc_bot auth token`; it
+  is shown once and only its hash is stored.
+* **Brute force:** 5 failed logins from one address within 5 minutes lock that address out for a minute.
+* **Forgot the password?** `python -m pymc_bot auth set-password` sets a new one; `auth reset` removes
+  the account (the panel asks for a new one with a fresh setup code).
+* **Turn it off** only for a panel nobody else can reach: `python -m pymc_bot serve --host 127.0.0.1 --no-auth`
+  (or `PYMC_BOT_NO_AUTH=1`).
+
+The login protects the panel, not the connection: on an untrusted network put it behind HTTPS (a reverse
+proxy or a tunnel) – the cookie gets the `Secure` flag automatically when the request is HTTPS.
 
 ---
 
@@ -700,11 +730,12 @@ PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and server
 
 | Command | What it does |
 | --- | --- |
-| `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent]` | run the web config panel (Uvicorn) |
+| `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent] [--no-auth]` | run the web config panel (Uvicorn), behind its [login](#login) |
+| `python -m pymc_bot auth [status\|set-password [--username NAME]\|token\|revoke-token\|reset]` | the panel's login: create the account / change the password, make an API token (printed once), reset |
 | `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|cortex\|trained] [--cortex-url URL] [--cortex-model ID]` | headless bot: connect and play (optionally populate the server), logs to stdout |
 | `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--min-episode S] [--idle-keep PCT] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
-| `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
+| `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000] [--token TOKEN]` | poke a running panel from the shell (token: `--token` or `PYMC_BOT_TOKEN`) |
 | `python -m pymc_bot setup [--method auto\|python\|bundle\|npm] [--zip FILE] [--node auto\|download\|skip] [--check]` | install the Minecraft bridge (mineflayer + a portable Node.js if needed) **without npm** |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |
 | `python -m pymc_bot probe [host[:port]] [--json]` | ping a server without joining: online / asleep / starting, version, players, SRV target, tips for Aternos & co (exit 0 online, 3 asleep, 1 unreachable) |
@@ -819,9 +850,13 @@ which stays gated). Invalid values are rejected with HTTP 422 and never overwrit
 
 ## HTTP API
 
-The panel is a thin client over a small JSON API – script it from anything:
+The panel is a thin client over a small JSON API – script it from anything. Every call except the login
+needs the API token ([Login](#login)):
 
 ```bash
+export PYMC=$(python -m pymc_bot auth token)        # or create it in the panel
+curl() { command curl -H "Authorization: Bearer $PYMC" "$@"; }   # every call below sends it
+
 # status: bot, AI, stats, backends, Ollama health
 curl -s localhost:8000/api/status | jq '.bot.state, .agent.running'
 
@@ -911,6 +946,10 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 
 | Symptom | Fix |
 | --- | --- |
+| The panel asks for a **setup code** | first run: it is printed in the console that runs `python -m pymc_bot serve` (a new one on every start until the account exists) – or create the account with `python -m pymc_bot auth set-password` |
+| Forgot the panel password | `python -m pymc_bot auth set-password` (works while the panel runs; other sessions are logged out) |
+| `401 login required` from scripts / `the panel needs a login` in Minecraft | create an API token (panel: *Advanced → Login & API token*, or `python -m pymc_bot auth token`) and send it: `Authorization: Bearer <token>`, `action --token`, or `/pymcbot bot token <token>` in game |
+| `too many failed logins` | 5 wrong passwords in 5 minutes lock that address out for a minute – wait, then try again |
 | `mineflayer is not installed` | run `python -m pymc_bot setup` (no npm needed; downloads a portable Node.js 22 too if yours is missing or older) - or click **Install mineflayer** in the panel |
 | Bot connects then immediately leaves | check the event stream: wrong version? try an explicit `version` instead of `auto` |
 | `unsupported protocol version` | set the app's version to the server's (e.g. `1.20.4`) |

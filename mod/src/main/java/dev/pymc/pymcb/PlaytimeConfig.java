@@ -92,6 +92,34 @@ public final class PlaytimeConfig {
     /** The PyMC Bot control panel the {@code /pymcbot bot ...} commands talk to. */
     public static final String DEFAULT_PANEL_URL = "http://127.0.0.1:8000";
     public String panelUrl = DEFAULT_PANEL_URL;
+    /** The panel's API token ({@code python -m pymc_bot auth token}); sent as {@code Authorization: Bearer}. */
+    public String panelToken = "";
+
+    /** Accepts a panel API token (URL-safe characters, at most 200); anything else keeps {@code fallback}. */
+    public static String tokenProp(String raw, String fallback) {
+        if (raw == null) {
+            return fallback;
+        }
+        String token = raw.trim();
+        if (token.startsWith("Bearer ") || token.startsWith("bearer ")) {
+            token = token.substring(7).trim();
+        }
+        if (!token.isEmpty() && !token.matches("[A-Za-z0-9_\\-.~]{8,200}")) {
+            return fallback;
+        }
+        return token;
+    }
+
+    /** Stores the token the {@code /pymcbot bot} commands log in with ("" = none); false when it is not a token. */
+    public boolean setPanelToken(String raw) {
+        String token = tokenProp(raw, null);
+        if (token == null) {
+            return false;
+        }
+        panelToken = token;
+        save();
+        return true;
+    }
 
     /** Accepts http(s)://host[:port] (a trailing slash is dropped); anything else keeps {@code fallback}. */
     public static String panelProp(String raw, String fallback) {
@@ -156,6 +184,7 @@ public final class PlaytimeConfig {
                 cfg.minEpisodeSeconds = intProp(props, "minEpisodeSeconds", cfg.minEpisodeSeconds, 0, 3600);
                 cfg.idleKeepPercent = intProp(props, "idleKeepPercent", cfg.idleKeepPercent, 0, 100);
                 cfg.panelUrl = panelProp(props.getProperty("panelUrl"), cfg.panelUrl);
+                cfg.panelToken = tokenProp(props.getProperty("panelToken"), cfg.panelToken);
             } catch (IOException ignored) {
                 // Fall back to defaults; the recorder still works.
             }
@@ -193,6 +222,7 @@ public final class PlaytimeConfig {
         props.setProperty("minEpisodeSeconds", Integer.toString(minEpisodeSeconds));
         props.setProperty("idleKeepPercent", Integer.toString(idleKeepPercent));
         props.setProperty("panelUrl", panelUrl);
+        props.setProperty("panelToken", panelToken);
         props.setProperty("_comment", "PyMC Bot - edit on the settings page (/pymcbot settings); sampleTicks=2 means one dataset sample every 100 ms");
         try {
             Files.createDirectories(path.getParent());

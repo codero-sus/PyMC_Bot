@@ -64,11 +64,24 @@ async function api(path, options = {}) {
   }
 }
 
+/* Not logged in (any more): go to the login page, then come back here. */
+let loginRedirect = false;
+function toLogin() {
+  if (loginRedirect) return;
+  loginRedirect = true;
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+}
+
 async function request(path, options) {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     ...options,
   });
+  if (response.status === 401 && !path.startsWith('/api/auth/')) {
+    toLogin();
+    throw new Error('Logged out - please log in again.');
+  }
   let data = null;
   const text = await response.text();
   if (text) {
@@ -1657,10 +1670,71 @@ function wireSkills() {
   $('btn-install-bridge').addEventListener('click', () => installBridge().catch(reportError));
 }
 
+/* ------------------------------------------------------------ login & token */
+async function loadAccount() {
+  let auth;
+  try { auth = await api('/api/auth/status'); } catch (err) { return; }
+  if (auth.enabled && !auth.authenticated) { toLogin(); return; }
+  const on = Boolean(auth.enabled);
+  $('btn-logout').classList.toggle('hidden', !on);
+  $('account-box').classList.toggle('hidden', !on || auth.via !== 'cookie');
+  $('account-user').textContent = on ? `· ${auth.username}${auth.token ? ' · API token set' : ''}` : '';
+}
+
+function wireAccount() {
+  const note = (message, state = '') => { $('account-status').textContent = message; $('account-status').dataset.state = state; };
+  $('btn-logout').addEventListener('click', async () => {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (err) { /* the cookie is gone either way */ }
+    location.href = '/login';
+  });
+  $('btn-account-password').addEventListener('click', async () => {
+    const current = $('account-current').value;
+    const next = $('account-new').value;
+    if (!current || next.length < 8) { note('Enter the current password and a new one of at least 8 characters.', 'error'); return; }
+    try {
+      await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ current, new: next }) });
+      $('account-current').value = '';
+      $('account-new').value = '';
+      note('Password changed. Other browsers were logged out.', 'online');
+      ui.toast('Password changed', 'success');
+    } catch (err) { note(err.message, 'error'); }
+  });
+  $('btn-account-token').addEventListener('click', async () => {
+    if (!window.confirm('Create a new API token? The old one stops working.')) return;
+    try {
+      const data = await api('/api/auth/token', { method: 'POST' });
+      $('account-token').value = data.token;
+      $('account-token-row').classList.remove('hidden');
+      $('account-token').select();
+      note('Copy it now - it is not shown again.', 'asleep');
+      loadAccount();
+    } catch (err) { note(err.message, 'error'); }
+  });
+  $('btn-account-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('account-token').value); note('Copied.', 'online'); } catch (err) {
+      $('account-token').select();
+      note('Press Ctrl+C to copy.', 'asleep');
+    }
+  });
+  $('btn-account-revoke').addEventListener('click', async () => {
+    if (!window.confirm('Revoke the API token? Scripts and the mod using it will need a new one.')) return;
+    try {
+      await api('/api/auth/token', { method: 'DELETE' });
+      $('account-token-row').classList.add('hidden');
+      $('account-token').value = '';
+      note('Token revoked.', 'online');
+      loadAccount();
+    } catch (err) { note(err.message, 'error'); }
+  });
+}
+
 /* --------------------------------------------------------------------- boot */
 async function boot() {
   wire();
   wireSkills();
+  wireAccount();
+  await loadAccount();
+  if (loginRedirect) return;
   try { await loadConfig(); } catch (err) { reportError(err); }
   try {
     const logs = await api('/api/logs?limit=120');

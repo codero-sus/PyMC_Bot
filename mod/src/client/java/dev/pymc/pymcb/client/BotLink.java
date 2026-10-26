@@ -46,6 +46,16 @@ public final class BotLink {
         return PlaytimeConfig.get().panelUrl;
     }
 
+    /** The panel's API token ({@code /pymcbot bot token <token>}), "" when none is set. */
+    public static String token() {
+        String token = PlaytimeConfig.get().panelToken;
+        return token == null ? "" : token;
+    }
+
+    /** What to do when the panel says "login required". */
+    static final String LOGIN_HINT = "the panel needs a login - create an API token in the panel (Advanced > Login & API"
+            + " token, or: python -m pymc_bot auth token) and run /pymcbot bot token <token>";
+
     /** GET {@code path}; {@code describe} turns the JSON answer into the chat line(s). */
     public static void get(String path, Function<Object, String> describe) {
         send("GET", path, null, describe);
@@ -61,10 +71,11 @@ public final class BotLink {
 
     static void send(String method, String path, String body, Function<Object, String> describe) {
         String base = panel();
+        String token = token();
         POOL.execute(() -> {
             String message;
             try {
-                message = describe.apply(request(base, method, path, body));
+                message = describe.apply(request(base, method, path, body, token));
             } catch (ConnectException exc) {
                 message = "the PyMC Bot panel is not running at " + base
                         + " - start it with: python -m pymc_bot   (other PC? /pymcbot bot panel <url>)";
@@ -78,13 +89,17 @@ public final class BotLink {
     }
 
     /** Synchronous request (called on the worker thread). Errors carry the panel's {@code detail}. */
-    static Object request(String base, String method, String path, String body) throws IOException {
+    static Object request(String base, String method, String path, String body, String token) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) URI.create(base + path).toURL().openConnection();
         connection.setRequestMethod(method);
         connection.setConnectTimeout(3000);
         connection.setReadTimeout(180_000); // skills such as chop_tree or fish take a while
+        connection.setInstanceFollowRedirects(false); // never carry the token to another address
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("User-Agent", "PyMC-Bot-mod");
+        if (token != null && !token.isEmpty()) {
+            connection.setRequestProperty("Authorization", "Bearer " + token);
+        }
         if (body != null) {
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             connection.setDoOutput(true);
@@ -113,6 +128,10 @@ public final class BotLink {
             doc = text.isBlank() ? null : Json.parse(text);
         } catch (IllegalArgumentException exc) {
             doc = text;
+        }
+        if (code == 401) {
+            throw new IOException(token == null || token.isEmpty() ? LOGIN_HINT
+                    : "the panel did not accept the API token - make a new one and run /pymcbot bot token <token>");
         }
         if (code >= 400) {
             Object detail = Json.get(doc, "detail");

@@ -1,5 +1,14 @@
 # PyMC Bot mod – changelog
 
+## 0.12.0
+
+- **The panel has a login now** (PyMC Bot app: `python -m pymc_bot serve`), so the `/pymcbot bot …`
+  commands log in with the panel's **API token**: create one in the panel (*Advanced → Login & API
+  token*) or with `python -m pymc_bot auth token`, then run `/pymcbot bot token <token>` once.
+  `/pymcbot bot token` shows whether one is set, `/pymcbot bot token clear` removes it (setting
+  `panelToken`). Without a token the commands say how to get one instead of a bare "HTTP 401".
+- The token is only sent to the panel address you set, and redirects are never followed with it.
+
 ## 0.11.0
 
 - **Control your bots from inside the game** with the new `/pymcbot bot …` commands. They talk to

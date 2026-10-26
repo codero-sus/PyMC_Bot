@@ -382,6 +382,7 @@ changed, so you can export again with other values. Training straight from the e
 | `/pymcbot bot auto on\|off\|status` | The autopilot: auto-sleep at night, eat, fight back, flee, swim up, torches, armour… |
 | `/pymcbot bot ai start\|stop` | Start / stop the LLM brain. |
 | `/pymcbot bot panel [url\|reset]` | Which PyMC Bot panel to talk to (default `http://127.0.0.1:8000`, setting `panelUrl`). |
+| `/pymcbot bot token [token\|clear]` | The panel's API token - its login (setting `panelToken`). Create one in the panel (*Advanced → Login & API token*) or with `python -m pymc_bot auth token`. |
 
 On Minecraft 26.2+ every command that changes the recorder needs an *attended* run (you typed it),
 so a server cannot start a recording through a clickable chat message; read-only commands
@@ -415,6 +416,10 @@ Requests go to the panel on a background thread; the answer shows in chat when t
 (skills can take a minute). The panel on another computer? Start it with `--host 0.0.0.0` and run
 `/pymcbot bot panel http://<that-pc>:8000`. These are the only network requests the mod makes, and only
 when you type them; recording never opens a connection.
+
+**The panel's login (0.12.0).** The panel is protected by a login, so the mod uses its **API token**:
+create one in the panel (*Advanced → Login & API token*) or with `python -m pymc_bot auth token`, then
+run `/pymcbot bot token <token>` once - it is saved in the mod's settings (`panelToken`).
 
 ## What is recorded
 

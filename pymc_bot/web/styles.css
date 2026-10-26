@@ -761,3 +761,20 @@ svg.i .fill { fill: currentColor; }
 .ap-rules .check { font-size: 0.78rem; }
 .ap-rules .check.emergency span::after { content: " ⚡"; font-size: 0.7rem; }
 .ap-rules .check .count { color: var(--muted); font-size: 0.7rem; margin-left: 0.15rem; }
+
+/* ------------------------------------------------------------ login page & account */
+.login-page { min-height: 100vh; display: flex; flex-direction: column; }
+.login-wrap { flex: 1; display: grid; place-items: center; padding: 2rem 1rem; }
+.login-card { width: min(380px, 100%); box-sizing: border-box; }
+.login-head { display: flex; align-items: center; gap: 0.75rem; justify-content: flex-start !important; }
+.login-head .logo { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; background: linear-gradient(135deg, var(--accent), var(--accent-3)); box-shadow: 0 10px 24px -12px var(--glow); }
+.login-head .logo svg { width: 26px; height: 26px; }
+.login-title { font-size: 1.05rem; margin: 0.2rem 0 0.4rem; }
+.login-card .fields { margin-top: 0.8rem; }
+.login-card input[type="text"], .login-card input[type="password"] { width: 100%; box-sizing: border-box; }
+.login-remember { flex-direction: row !important; align-items: center; gap: 0.45rem !important; cursor: pointer; }
+.login-submit { width: 100%; justify-content: center; }
+.login-submit:disabled { opacity: 0.6; cursor: wait; }
+.login-footer { justify-content: center; }
+.account-token { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+.account-token input { flex: 1; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.78rem; }

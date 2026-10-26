@@ -14,7 +14,7 @@ How it updates PyMC_Bot - always by downloading and extracting a ``.zip``, never
 1. asks GitHub which commit is newest on this build's update channel (one small API call);
 2. downloads that exact commit as a source ``.zip`` and checks it (complete archive, and the commit
    id stored inside the zip must match);
-3. extracts it over this folder. Your files are kept: ``pymc_bot_config.json``, ``.venv``,
+3. extracts it over this folder. Your files are kept: ``pymc_bot_config.json``, ``pymc_bot_auth.json``, ``.venv``,
    ``models/``, recordings, ``.git`` and anything else that is not part of the project are never
    touched, and every project file you changed is first copied to ``.pymc_backup/<time>/``;
 4. removes files the project deleted since your last update - but only files you never edited.
@@ -72,7 +72,7 @@ JAR_RE = re.compile(r"^(?P<id>pymcbot|pymcplaytime)-(?P<version>\d+(?:\.\d+)*)\+
 DEPENDENCY_FILES = ("requirements.txt", "requirements-train.txt", "requirements-dev.txt", "package.json")
 # Never written by a zip update, even if a future archive contained them.
 PROTECTED = (".git", ".venv", "venv", "node_modules", "models", ".pymc_profiles", BACKUP_DIR,
-             "pymc_bot_config.json", STATE_FILE, "pymc-playtime")
+             "pymc_bot_config.json", "pymc_bot_auth.json", STATE_FILE, "pymc-playtime")
 
 
 # ---------------------------------------------------------------------------- update channel

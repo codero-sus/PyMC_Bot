@@ -8,9 +8,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -28,6 +29,7 @@ from pymc_bot import (
     node_setup,
     skills,
 )
+from pymc_bot import auth as panel_auth
 from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
 from pymc_bot.backends import BackendError, available_backends, node_available
 from pymc_bot.bot import MinecraftBot
@@ -109,6 +111,32 @@ class BridgeSetupRequest(BaseModel):
     node: Literal["auto", "download", "skip"] = "auto"
     full: bool = False
     force: bool = False
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=panel_auth.MAX_PASSWORD)
+    remember: bool = False
+
+
+class SetupRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=panel_auth.MAX_PASSWORD)
+    code: str = Field(min_length=1, max_length=40)
+
+
+class PasswordRequest(BaseModel):
+    current: str = Field(min_length=1, max_length=panel_auth.MAX_PASSWORD)
+    new: str = Field(min_length=1, max_length=panel_auth.MAX_PASSWORD)
+
+
+# Reachable without logging in: the login page and what it needs.
+PUBLIC_PATHS = {"/login", "/healthz", "/favicon.ico", "/api/auth/status", "/api/auth/login",
+                "/api/auth/setup", "/api/auth/logout"}
+
+
+def _is_public(path: str) -> bool:
+    return path in PUBLIC_PATHS or path.startswith("/static/")
 
 
 class KnowledgeRequest(BaseModel):
@@ -197,9 +225,13 @@ def create_app(
     log: EventLog | None = None,
     bot: MinecraftBot | None = None,
     fleet: BotFleet | None = None,
+    auth: panel_auth.AuthStore | None = None,
 ) -> FastAPI:
     store = ConfigStore(config_path)
     store.load()
+    # the login (pymc_bot.auth): on unless PYMC_BOT_NO_AUTH / serve --no-auth
+    auth_on = not panel_auth.auth_disabled()
+    accounts = auth or panel_auth.AuthStore(panel_auth.default_auth_path(store.path))
     event_log = log or EventLog()
     bot_fleet = fleet or BotFleet(store, event_log)
     if bot is not None:  # injected bot (tests) becomes the primary player
@@ -405,9 +437,22 @@ def create_app(
         if auto_agent and bot_fleet.primary.connected:
             local_agent().start()
 
+    def setup_code() -> str:
+        """No account yet: the one-time code for the panel's "create account" form (console only)."""
+        if accounts.setup_code:
+            return accounts.setup_code
+        code = accounts.new_setup_code()
+        print(f"\n  PyMC_Bot: no login yet. Open the panel and create the account with the setup code:  {code}\n"
+              "  (or run: python -m pymc_bot auth set-password)\n", flush=True)
+        return code
+
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
         event_log.add(f"PyMC_Bot {__version__} control panel ready (config: {store.path}).", "info", "app")
+        if not auth_on:
+            event_log.add("Login is OFF (--no-auth): anyone who can reach this port controls the bots.", "warn", "app")
+        elif not accounts.configured:
+            setup_code()
         if store.load_error:
             event_log.add(store.load_error, "warn", "app")
         if autostart or auto_agent:
@@ -437,6 +482,135 @@ def create_app(
     app.state.fleet = bot_fleet
     app.state.bot = bot_fleet.primary
     app.state.agent = local_agent()
+    app.state.auth = accounts
+
+    # ------------------------------------------------------------------- login
+    def session_for(cookies: Any, headers: Any) -> panel_auth.Session | None:
+        if not auth_on:
+            return panel_auth.Session("", float("inf"), via="disabled")
+        return (accounts.verify_token(panel_auth.bearer_token(headers.get("authorization")))
+                or accounts.verify_session(cookies.get(panel_auth.COOKIE_NAME)))
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        session = session_for(request.cookies, request.headers)
+        request.state.session = session
+        path = request.url.path
+        if session is not None or _is_public(path):
+            return await call_next(request)
+        if request.method == "GET" and not path.startswith("/api/"):
+            target = path + (f"?{request.url.query}" if request.url.query else "")
+            return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
+        return JSONResponse({"detail": "login required", "login": "/login"}, status_code=401,
+                            headers={"WWW-Authenticate": 'Bearer realm="PyMC_Bot"'})
+
+    def client_address(request: Request) -> str:
+        return request.client.host if request.client else "?"
+
+    def set_session_cookie(request: Request, response: JSONResponse, remember: bool) -> None:
+        value, lifetime = accounts.issue_session(remember)
+        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").startswith("https")
+        response.set_cookie(panel_auth.COOKIE_NAME, value, max_age=lifetime if remember else None, httponly=True,
+                            samesite="lax", secure=secure, path="/")
+
+    def auth_status(request: Request) -> dict[str, Any]:
+        session = getattr(request.state, "session", None)
+        if not auth_on:
+            return {"enabled": False, "configured": False, "authenticated": True, "username": "", "via": "disabled",
+                    "token": False}
+        configured = accounts.configured
+        if not configured:
+            setup_code()
+        return {"enabled": True, "configured": configured, "authenticated": session is not None,
+                "username": accounts.username if session else "", "via": session.via if session else None,
+                "token": accounts.has_token if session else False}
+
+    @app.get("/api/auth/status")
+    def api_auth_status(request: Request) -> dict[str, Any]:
+        """Is the login on, is there an account, is this browser logged in?"""
+        return auth_status(request)
+
+    @app.post("/api/auth/login")
+    def api_auth_login(body: LoginRequest, request: Request) -> JSONResponse:
+        if not auth_on:
+            return JSONResponse({"ok": True, "detail": "login is off"})
+        if not accounts.configured:
+            raise HTTPException(status_code=409, detail="no account yet - create one with the setup code")
+        address = client_address(request)
+        try:
+            accounts.login(body.username, body.password, address)
+        except panel_auth.LockedOut as exc:
+            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.seconds)}) from exc
+        except panel_auth.AuthError as exc:
+            event_log.add(f"Failed panel login from {address}.", "warn", "auth")
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        event_log.add(f"{accounts.username} logged in to the panel from {address}.", "info", "auth")
+        response = JSONResponse({"ok": True, "username": accounts.username})
+        set_session_cookie(request, response, body.remember)
+        return response
+
+    @app.post("/api/auth/setup")
+    def api_auth_setup(body: SetupRequest, request: Request) -> JSONResponse:
+        """First run: create the panel's account (needs the setup code from the console)."""
+        if not auth_on:
+            raise HTTPException(status_code=409, detail="login is off (--no-auth)")
+        if accounts.configured:
+            raise HTTPException(status_code=409, detail="an account already exists - log in instead")
+        address = client_address(request)
+        try:
+            accounts.check_lockout(address)
+            accounts.setup(body.username, body.password, body.code)
+        except panel_auth.LockedOut as exc:
+            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.seconds)}) from exc
+        except panel_auth.AuthError as exc:
+            if "setup code" in str(exc):
+                accounts._record_failure(address)  # noqa: SLF001 - same throttle as logins
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        event_log.add(f"Panel account '{accounts.username}' created from {address}.", "info", "auth")
+        response = JSONResponse({"ok": True, "username": accounts.username})
+        set_session_cookie(request, response, False)
+        return response
+
+    @app.post("/api/auth/logout")
+    def api_auth_logout() -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(panel_auth.COOKIE_NAME, path="/")
+        return response
+
+    def require_browser_session(request: Request) -> None:
+        if not auth_on:
+            raise HTTPException(status_code=409, detail="login is off (--no-auth)")
+        session = getattr(request.state, "session", None)
+        if session is None or session.via != "cookie":
+            raise HTTPException(status_code=403, detail="log in with the password for this (an API token cannot)")
+
+    @app.post("/api/auth/password")
+    def api_auth_password(body: PasswordRequest, request: Request) -> JSONResponse:
+        """Change the password; every other browser is logged out."""
+        require_browser_session(request)
+        try:
+            accounts.change_password(body.current, body.new)
+        except panel_auth.AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        event_log.add("Panel password changed - other sessions were logged out.", "warn", "auth")
+        response = JSONResponse({"ok": True})
+        set_session_cookie(request, response, False)
+        return response
+
+    @app.post("/api/auth/token")
+    def api_auth_new_token(request: Request) -> dict[str, Any]:
+        """A new API token for scripts and the mod (shown once; replaces the old one)."""
+        require_browser_session(request)
+        token = accounts.new_token()
+        event_log.add("A new panel API token was created (the old one stopped working).", "info", "auth")
+        return {"ok": True, "token": token}
+
+    @app.delete("/api/auth/token")
+    def api_auth_revoke_token(request: Request) -> dict[str, Any]:
+        require_browser_session(request)
+        accounts.revoke_token()
+        event_log.add("The panel API token was revoked.", "info", "auth")
+        return {"ok": True}
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
@@ -448,6 +622,20 @@ def create_app(
         if templates is None:  # pragma: no cover - package without web assets
             return JSONResponse({"detail": "web assets missing", "api": "/api/status"}, status_code=500)
         return templates.TemplateResponse(request, "index.html", {"version": __version__, "about": about()})
+
+    @app.get("/login", include_in_schema=False)
+    def login_page(request: Request):
+        target = request.query_params.get("next") or "/"
+        if not target.startswith("/") or target.startswith("//"):
+            target = "/"  # never redirect off-site
+        if not auth_on or getattr(request.state, "session", None) is not None:
+            return RedirectResponse(target, status_code=303)
+        if templates is None:  # pragma: no cover - package without web assets
+            return JSONResponse({"detail": "web assets missing"}, status_code=500)
+        configured = accounts.configured
+        if not configured:
+            setup_code()
+        return templates.TemplateResponse(request, "login.html", {"version": __version__, "setup": not configured})
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Any:
@@ -1244,6 +1432,9 @@ def create_app(
     # --------------------------------------------------------------- websocket
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        if session_for(websocket.cookies, websocket.headers) is None:
+            await websocket.close(code=4401)  # not logged in (before accept: the handshake gets HTTP 403)
+            return
         await websocket.accept()
         loop = asyncio.get_running_loop()
         sub_id, queue = event_log.subscribe(loop)

@@ -410,8 +410,9 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         option(1, 3, () -> "Version in chat",
                 "Prints the mod, Minecraft and compatibility layer versions.",
                 () -> sayAll(PymcCommands.version()));
-        option(0, 4, () -> "Bot panel: " + cfg().panelUrl.replaceFirst("^https?://", ""),
-                "The PyMC Bot app that /pymcbot bot talks to. Change it: /pymcbot bot panel <url>.",
+        option(0, 4, () -> "Bot panel: " + cfg().panelUrl.replaceFirst("^https?://", "")
+                        + (cfg().panelToken.isEmpty() ? "" : " +token"),
+                "The PyMC Bot app that /pymcbot bot talks to: /pymcbot bot panel <url>, its login: /pymcbot bot token <token>.",
                 () -> sayAll(PymcCommands.botHelp()));
         option(1, 4, () -> "Bot status in chat",
                 "Asks the PyMC Bot app how your bot is doing (the app must be running).",

@@ -20,6 +20,18 @@ def _no_background_autopilot(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _panel_login_off(monkeypatch):
+    """The API tests drive the panel without logging in; tests/test_auth.py turns the login back on.
+
+    Fewer PBKDF2 rounds keep the login tests fast (the work factor is stored with every hash)."""
+    from pymc_bot import auth
+
+    monkeypatch.setenv("PYMC_BOT_NO_AUTH", "1")
+    monkeypatch.delenv("PYMC_BOT_AUTH_FILE", raising=False)
+    monkeypatch.setattr(auth, "PBKDF2_ITERATIONS", 1_000)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_web_search(monkeypatch):
     """Tests never hit the internet: real lookups fail unless a test injects a mock transport."""
     from pymc_bot import knowledge
