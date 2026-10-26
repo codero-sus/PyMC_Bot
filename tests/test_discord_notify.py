@@ -103,19 +103,40 @@ def test_settings_name_the_ping_role_secret():
     assert "`ping_role`" in _cells()[0]  # the intro says how to set it up
 
 
-def test_ping_role_secret_pings_the_role_on_every_message(monkeypatch, capsys):
+def test_ping_role_pings_the_role_on_important_messages_only(monkeypatch, capsys):
     env, asked, sent = _helper(monkeypatch, role=" 987654321098765432 ")
     assert asked == ["discord_webhook_inform_me1", "ping_role"] and env["DISCORD_ROLE"] == "987654321098765432"
-    env["discord"]("status", "status", "info")
-    env["discord"]("step 10/100", "minecraftism", "info", key="k", every=0)
-    env["discord"]("done", "result", "ok", ping=True)  # no DISCORD_MENTION: still just the role
+    env["discord"]("status", "Server status", "info")  # silent
+    env["discord"]("step 10/100", "minecraftism", "info", key="k", every=0)  # silent
+    env["discord"]("done", "result", "ok", ping=True)  # important: no DISCORD_MENTION, still the role
+    env["discord"]("Traceback ...", "minecraftism", "bad")  # an error pings the role even without `ping`
+    env["discord"]("29 min left", "THE 12 HOURs: 29 min left", "warn", ping=True, role=False)  # the last hour
     _wait(env)
-    assert len(sent) == 3
-    for message in sent:
+    assert len(sent) == 5
+    assert ["content" in message["payload"] for message in sent] == [False, False, True, True, False]
+    for message in (sent[2], sent[3]):
         assert message["payload"]["content"] == "<@&987654321098765432>"
         assert message["payload"]["allowed_mentions"] == {"parse": [], "roles": ["987654321098765432"]}
+    assert sent[0]["payload"]["allowed_mentions"] == {"parse": []}
     out = capsys.readouterr().out
     assert "ping_role loaded" in out and "987654321098765432" not in out  # never printed
+
+
+def test_role_hears_the_long_countdown_marks_only(monkeypatch, tmp_path):
+    env, _asked, _sent = _helper(monkeypatch)
+    start = 1_000_000.0
+    env.update({"SESSION_START": start, "DEADLINE": start + 11.5 * 3600, "NOTEBOOK_URL": "", "DISCORD_EVERY_MIN": 0,
+                "WORK": str(tmp_path), "TMP": str(tmp_path), "shutil": shutil, "subprocess": subprocess,
+                "os": __import__("os"), "DISCORD_URL": "", "CPUS": 4, "EDITIONS": ["minecraftism"]})
+    exec(_block(_cells()[3], "# ---- Discord server monitor", "# ---- end Discord server monitor"), env)  # noqa: S102
+    hears = env["role_hears"]
+    warned, heard = {}, {}
+    for minutes_left in (300, 180, 120, 60, 30, 15, 10, 5, 4, 3, 2, 1, 0.5):
+        for title, _text, ping in env["server_warnings"](env["KAGGLE_LIMIT"] - minutes_left * 60 + 1, warned):
+            heard[title] = (ping, hears(title, ping))
+    assert [role for _ping, role in heard.values()] == [True] * 4 + [False] * 9  # 5 h, 3 h, 2 h, 1 h
+    assert sum(ping for ping, _role in heard.values()) == 10  # DISCORD_MENTION keeps its marks (4/3/2 min silent)
+    assert hears("Disk almost full", True) and not hears("RAM almost full", False)
 
 
 def test_ping_role_with_mention_and_formats(monkeypatch, capsys):
@@ -124,8 +145,7 @@ def test_ping_role_with_mention_and_formats(monkeypatch, capsys):
     env["discord"]("status")
     env["discord"]("done", ping=True)
     _wait(env)
-    assert sent[0]["payload"]["content"] == "<@&555555555555555555>"
-    assert sent[0]["payload"]["allowed_mentions"] == {"parse": [], "roles": ["555555555555555555"]}
+    assert "content" not in sent[0]["payload"]  # a status message: silent
     assert sent[1]["payload"]["content"] == "<@&555555555555555555> <@42>"
     assert "roles" in sent[1]["payload"]["allowed_mentions"]["parse"]
     env, _asked, sent = _helper(monkeypatch, role="<@&555555555555555555>", mention="<@&555555555555555555>")

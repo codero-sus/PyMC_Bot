@@ -42,9 +42,10 @@ down once everything is on Hugging Face.
 * each edition's start, "learned" (loss stopped falling), every upload with its Hugging Face URL, the results, failures
   (with the end of the log) and notebook errors
 
-**Ping a role on every update:** add the Kaggle secret `ping_role` (the name is `PING_ROLE_SECRET` in the settings) with the
+**Ping a role:** add the Kaggle secret `ping_role` (the name is `PING_ROLE_SECRET` in the settings) with the
 role's ID (Discord: Developer Mode on, Server Settings → Roles → … → Copy Role ID, and turn on *Allow anyone to @mention this
-role*). Every message – status, countdown, progress, uploads, results, errors – then pings that role. No secret = no role ping.
+role*). That role is pinged on the important messages: startup (setup ready), each stage (training, distilling, quantizing, uploading), every Hugging Face upload, each model ready, errors and failures, low disk, THE 12 HOURs at 5 h, 3 h, 2 h and 1 h, the close and the notebook's end. Server status and the last-hour
+countdown stay silent. No secret = no role ping.
 
 `DISCORD_MENTION = "<@your user ID>"` pings you on: setup ready, now training / distilling / quantizing / uploading, every model upload to Hugging Face, each model ready, THE 12 HOURs at 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 / 5 / 1 min and the 30 s final report, the close, low disk, failures and errors (server status and the 4 / 3 / 2 min updates come silently). The webhook URL is never printed.
 
