@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PyMC_Bot — control panel</title>
+  <meta name="description" content="PyMC_Bot: a Python Minecraft player bot with a Uvicorn control panel, fleets, anti-AFK, Ollama/Cortex brains and a model trained on your own playtime." />
+  <meta name="author" content="codero-sus" />
+  <meta name="creator" content="codero-sus — https://github.com/codero-sus" />
+  <meta name="theme-color" content="#070b10" />
+  <meta property="og:title" content="PyMC_Bot — control panel" />
+  <meta property="og:description" content="Made with ❤️ by codero-sus · https://codero.is-a.dev · https://the-codero.web.app/" />
+  <meta property="og:url" content="https://github.com/codero-sus/PyMC_Bot" />
+  <link rel="author" href="https://github.com/codero-sus" />
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    /* apply the saved theme before first paint (no flash of the wrong theme) */
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem('pymc.theme') || 'midnight';
+      const motion = localStorage.getItem('pymc.motion');
+      if (motion) document.documentElement.dataset.motion = motion;
+    } catch (err) { /* storage blocked: defaults */ }
+  </script>
+</head>
+<body>
+  <!-- made with ❤️ by codero-sus · https://github.com/codero-sus · https://codero.is-a.dev · https://the-codero.web.app/ -->
+  <div class="fx-backdrop" aria-hidden="true">
+    <div class="aurora"><span></span><span></span><span></span></div>
+    <div class="grid-overlay"></div>
+    <canvas id="fx-canvas"></canvas>
+  </div>
+  <canvas id="confetti-canvas" aria-hidden="true"></canvas>
+  <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" id="brand-logo" title="PyMC_Bot by codero-sus" role="img" aria-label="PyMC_Bot logo">
+        <svg viewBox="0 0 16 16" aria-hidden="true" shape-rendering="crispEdges">
+          <rect x="3" y="4" width="3" height="3" fill="#06281d" class="eye"/>
+          <rect x="10" y="4" width="3" height="3" fill="#06281d" class="eye"/>
+          <rect x="6" y="8" width="4" height="2" fill="#06281d"/>
+          <rect x="5" y="10" width="2" height="3" fill="#06281d"/>
+          <rect x="9" y="10" width="2" height="3" fill="#06281d"/>
+        </svg>
+      </span>
+      <div>
+        <h1>PyMC_Bot</h1>
+        <p class="tagline">v{{ version }} &middot; <span id="tagline-rotator" class="rotator">Minecraft player bot</span>
+          &middot; by <a href="https://github.com/codero-sus" target="_blank" rel="noopener" title="codero-sus on GitHub">codero-sus</a></p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-palette" class="btn ghost palette-hint" title="Command palette (Ctrl+K)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg> <span>Search</span> <span class="kbd">Ctrl K</span></button>
+      <button id="btn-theme" class="btn ghost icon-btn" title="Theme: midnight / daylight / nether / end (Alt+T)" aria-label="Change theme"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" class="fill"/></svg></button>
+      <button id="btn-motion" class="btn ghost icon-btn" title="Animations on/off (Alt+M)" aria-label="Toggle animations"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></button>
+      <button id="btn-about" class="btn ghost icon-btn" title="About &amp; credits" aria-label="About and credits"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg></button>
+      <select id="topbar-select" title="Player the panel is controlling" class="topbar-select"></select>
+      <span id="stub-banner" class="badge warn hidden" title="The Ollama endpoint looks like the demo stub, not a real model.">demo brain (stub)</span>
+      <span id="status-pill" class="pill pill-off">disconnected</span>
+      <button id="btn-connect" class="btn primary">Connect</button>
+      <button id="btn-disconnect" class="btn">Disconnect</button>
+      <button id="btn-reconnect" class="btn ghost" title="Stop and reconnect with the saved settings">Reconnect</button>
+    </div>
+  </header>
+
+  <nav class="section-nav" id="section-nav" aria-label="Sections">
+    <a href="#card-server" data-target="card-server">🌐 Server</a>
+    <a href="#card-fleet" data-target="card-fleet">👥 Players</a>
+    <a href="#card-brain" data-target="card-brain">🧠 AI brain</a>
+    <a href="#card-training" data-target="card-training">🎓 Player model</a>
+    <a href="#card-world" data-target="card-world">🗺️ Live view</a>
+    <a href="#card-controls" data-target="card-controls">🎮 Controls</a>
+    <a href="#card-skills" data-target="card-skills">🛠️ Skills</a>
+    <a href="#card-autopilot" data-target="card-autopilot">🛡️ Autopilot</a>
+    <a href="#card-logs" data-target="card-logs">📜 Events</a>
+    <a href="#card-advanced" data-target="card-advanced">⚙️ Advanced</a>
+  </nav>
+
+  <section class="hero" id="hero" aria-label="Overview">
+    <div class="hero-tile"><span class="label">● connection</span><span class="value" id="hero-state">—</span><span class="sub" id="hero-server">not connected</span></div>
+    <div class="hero-tile"><span class="label">🧠 brain</span><span class="value" id="hero-brain">auto</span><span class="sub" id="hero-brain-sub">idle</span></div>
+    <div class="hero-tile"><span class="label">👥 players online</span><span class="value" id="hero-fleet">0</span><span class="sub" id="hero-fleet-sub">of 0 bots</span></div>
+    <div class="hero-tile"><span class="label">⚡ decisions</span><span class="value" id="hero-decisions">0</span><span class="sub" id="hero-last">no decision yet</span></div>
+    <div class="hero-tile"><span class="label">👣 walked</span><span class="value" id="hero-walked">0 m</span><span class="sub" id="hero-mined">0 blocks mined</span></div>
+    <div class="hero-tile"><span class="label">🎓 player model</span><span class="value" id="hero-model">—</span><span class="sub" id="hero-model-sub">nothing trained yet</span></div>
+  </section>
+
+  <main class="grid">
+    <!-- ------------------------------------------------------------ server -->
+    <section class="card" id="card-server">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🌐</span>Minecraft server</h2>
+        <span class="hint">cracked / offline-mode friendly</span>
+      </header>
+      <div class="fields two">
+        <label>Host <input id="cfg-host" type="text" placeholder="127.0.0.1 or name.aternos.me"
+          title="IP or address; host:port (e.g. from a hosting panel) also fills in the port" /></label>
+        <label>Port <input id="cfg-port" type="number" min="1" max="65535" /></label>
+        <label>Auth
+          <select id="cfg-auth">
+            <option value="offline">offline (cracked)</option>
+            <option value="microsoft">microsoft account</option>
+          </select>
+        </label>
+        <label id="username-field">Username
+          <input id="cfg-username" type="text" maxlength="254" placeholder="PyMC_Bot" />
+        </label>
+        <label>Version
+          <input id="cfg-version" type="text" list="versions" placeholder="auto" />
+          <datalist id="versions">
+            <option value="auto"></option><option value="26.1"></option><option value="1.21.11"></option>
+            <option value="1.21.4"></option><option value="1.21.1"></option>
+            <option value="1.20.4"></option><option value="1.20.1"></option><option value="1.19.4"></option>
+            <option value="1.18.2"></option><option value="1.16.5"></option><option value="1.12.2"></option>
+            <option value="1.8.9"></option>
+          </datalist>
+        </label>
+        <label>Backend
+          <select id="cfg-backend">
+            <option value="auto">auto (node if available)</option>
+            <option value="node">node / mineflayer</option>
+            <option value="simulated">simulated world</option>
+          </select>
+        </label>
+        <label>View distance
+          <select id="cfg-view">
+            <option value="far">far</option><option value="normal">normal</option>
+            <option value="short">short</option><option value="tiny">tiny</option>
+          </select>
+        </label>
+        <label>Connect timeout (s) <input id="cfg-timeout" type="number" min="1" max="180" step="1" /></label>
+        <label title="Free hosts put servers to sleep. The bot never starts a server; it only joins once someone has.">Server asleep?
+          <select id="cfg-wait">
+            <option value="off">report it and stop</option>
+            <option value="on">wait for it to start</option>
+          </select>
+        </label>
+        <label>Wait up to (min) <input id="cfg-wait-min" type="number" min="1" max="60" step="1" /></label>
+        <label title="Aternos does not allow bots to keep an empty server online, so there this is always on.">Leave when alone
+          <select id="cfg-leave">
+            <option value="auto">auto (hosts that require it, e.g. Aternos)</option>
+            <option value="always">always</option>
+          </select>
+        </label>
+        <label>…after (min) <input id="cfg-alone-min" type="number" min="1" max="60" step="1" /></label>
+      </div>
+      <div class="actions">
+        <button id="btn-save-connect" class="btn primary">Save &amp; connect</button>
+        <button id="btn-save" class="btn">Save settings</button>
+        <button id="btn-probe" class="btn" title="Ping the server without joining: online or asleep, version, players">Check server</button>
+      </div>
+      <p id="probe-note" class="note" aria-live="polite"></p>
+      <p id="hosting-note" class="note"></p>
+      <p id="auth-note" class="note"></p>
+      <p id="backend-note" class="note"></p>
+      <div class="actions" id="bridge-setup-row">
+        <button id="btn-install-bridge" class="btn" title="Downloads mineflayer straight from the npm registry with Python (checksums verified) and a portable Node.js if needed - npm is not required">⬇ Install mineflayer (no npm)</button>
+        <span id="bridge-setup-note" class="note" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------------- fleet -->
+    <section class="card" id="card-fleet">
+      <header>
+        <h2><span class="icon" aria-hidden="true">👥</span>Players <span class="tag">fleet</span></h2>
+        <span id="fleet-count" class="pill pill-unknown">0 / 25</span>
+      </header>
+      <p class="note">Fill the server with players. Offline bots use any name; <strong>premium</strong> bots each
+        need their own Microsoft account email (first join shows a device code in the log).</p>
+
+      <div class="inline">
+        <select id="fleet-select" title="Which player the panel controls"></select>
+        <button id="btn-fleet-select" class="btn" title="Make this the active player">Use</button>
+      </div>
+
+      <div class="fields two">
+        <label>Players to add <input id="fleet-count-input" type="number" min="1" max="200" value="5" /></label>
+        <label>Name pattern <input id="fleet-pattern" type="text" placeholder="PyMC_Bot_{n}" /></label>
+        <label>Fleet auth
+          <select id="fleet-auth">
+            <option value="offline">offline (cracked)</option>
+            <option value="microsoft">microsoft (premium)</option>
+          </select>
+        </label>
+        <label>Fleet AI
+          <select id="fleet-ai">
+            <option value="heuristic">heuristic (cheap)</option>
+            <option value="off">off (just stand there)</option>
+            <option value="ollama">ollama (uses the model)</option>
+            <option value="cortex">cortex (Cortex LLMHoster model)</option>
+            <option value="trained">trained (model from playtime)</option>
+          </select>
+        </label>
+        <label>Gap between joins (s) <input id="fleet-stagger" type="number" min="0" max="60" step="0.5" /></label>
+        <label>Max players <input id="fleet-max" type="number" min="1" max="200" /></label>
+      </div>
+      <div class="actions wrap">
+        <button id="btn-populate" class="btn primary">Add players</button>
+        <button id="btn-fleet-start" class="btn">Reconnect all</button>
+        <button id="btn-fleet-stop" class="btn">Disconnect all</button>
+        <button id="btn-fleet-remove-all" class="btn danger">Remove all extras</button>
+      </div>
+
+      <div class="inline premium-row">
+        <input id="premium-email" type="email" placeholder="premium@example.com (Microsoft account)" />
+        <select id="premium-ai">
+          <option value="heuristic">heuristic</option>
+          <option value="ollama">ollama</option>
+          <option value="cortex">cortex</option>
+          <option value="trained">trained</option>
+          <option value="off">off</option>
+        </select>
+        <button id="btn-add-premium" class="btn primary" title="Add a premium (Microsoft) player">Add premium player</button>
+      </div>
+      <div class="inline">
+        <input id="fleet-broadcast-input" type="text" placeholder="make every bot say this…" maxlength="200" />
+        <button id="btn-fleet-broadcast" class="btn">Broadcast</button>
+      </div>
+      <div class="permissions">
+        <label class="check"><input id="fleet-chatter" type="checkbox" /> idle chatter</label>
+        <label class="check"><input id="fleet-restore" type="checkbox" /> restore these players on restart</label>
+      </div>
+
+      <h3>Anti-AFK <span class="hint" id="antiafk-state">—</span></h3>
+      <p class="note">Every bot walks a step, hops, crouches, swings, scrolls its hotbar and turns its head in randomised bursts,
+        so servers do not kick it for standing still. The AI and manual commands always win.</p>
+      <div class="permissions">
+        <label class="check"><input id="antiafk-enabled" type="checkbox" /> keep bots active</label>
+        <label class="check antiafk-window">idle <input id="antiafk-min" type="number" min="1" max="600" step="1" /> – <input id="antiafk-max" type="number" min="1" max="900" step="1" /> s</label>
+        <label class="check"><input id="antiafk-look" type="checkbox" /> look around</label>
+        <label class="check"><input id="antiafk-walk" type="checkbox" /> walk / strafe</label>
+        <label class="check"><input id="antiafk-jump" type="checkbox" /> jump</label>
+        <label class="check"><input id="antiafk-sneak" type="checkbox" /> crouch</label>
+        <label class="check"><input id="antiafk-swing" type="checkbox" /> swing arm</label>
+        <label class="check"><input id="antiafk-hotbar" type="checkbox" /> scroll hotbar</label>
+      </div>
+      <div class="actions">
+        <button id="btn-antiafk-poke" class="btn">Poke all now</button>
+      </div>
+
+      <table class="fleet-table">
+        <thead>
+          <tr><th>player</th><th>auth</th><th>state</th><th>ai</th><th>idle</th><th>pos</th><th>actions</th></tr>
+        </thead>
+        <tbody id="fleet-body"><tr><td colspan="7" class="empty">no extra players yet</td></tr></tbody>
+      </table>
+    </section>
+
+    <!-- --------------------------------------------------------------- brain -->
+    <section class="card" id="card-brain">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🧠</span>AI brain <span class="tag">ollama · cortex</span></h2>
+        <span class="pills">
+          <span id="ollama-health" class="pill pill-unknown">checking…</span>
+          <span id="cortex-health" class="pill pill-unknown" title="Cortex LLMHoster">cortex…</span>
+        </span>
+      </header>
+      <label>Brain
+        <select id="cfg-agent-mode" title="Who decides the bot's actions">
+          <option value="auto">auto — Ollama, then Cortex when enabled, else heuristic</option>
+          <option value="heuristic">heuristic — built-in, no model</option>
+          <option value="ollama">ollama — the local LLM</option>
+          <option value="cortex">cortex — a model hosted by Cortex LLMHoster</option>
+          <option value="trained">trained — the model trained on playtime</option>
+        </select>
+      </label>
+      <label class="switch">
+        <input id="cfg-ollama-enabled" type="checkbox" />
+        <span>Let Ollama decide the bot's actions (brain = auto)</span>
+      </label>
+      <p class="note">When disabled (or unreachable) the bot runs a small built-in heuristic policy, so it always keeps playing.</p>
+      <div class="fields two">
+        <label>Ollama URL <input id="cfg-ollama-url" type="text" placeholder="http://127.0.0.1:11434" /></label>
+        <label>Model
+          <input id="cfg-ollama-model" type="text" list="models" placeholder="llama3.2" />
+          <datalist id="models"></datalist>
+        </label>
+        <label>Decision interval (s) <input id="cfg-ollama-interval" type="number" min="0.5" max="300" step="0.5" /></label>
+        <label>Temperature <input id="cfg-ollama-temp" type="number" min="0" max="2" step="0.05" /></label>
+      </div>
+      <div class="actions">
+        <button id="btn-ai-start" class="btn primary">Start AI</button>
+        <button id="btn-ai-stop" class="btn">Stop AI</button>
+        <button id="btn-ai-step" class="btn ghost" title="Decide and perform exactly one action">Step once</button>
+        <button id="btn-refresh-models" class="btn ghost">Refresh models</button>
+        <button id="btn-pull" class="btn ghost">Pull model</button>
+      </div>
+
+      <details id="cortex-box">
+        <summary>Cortex LLMHoster <span class="hint" id="cortex-summary">— local OpenAI-compatible model host</span></summary>
+        <label class="switch">
+          <input id="cfg-cortex-enabled" type="checkbox" />
+          <span>Let Cortex decide the bot's actions (brain = auto, when Ollama is off)</span>
+        </label>
+        <div class="fields two">
+          <label>Cortex URL <input id="cfg-cortex-url" type="text" placeholder="http://127.0.0.1:8624" /></label>
+          <label>API path <input id="cfg-cortex-path" type="text" placeholder="/v1" /></label>
+          <label>Model
+            <input id="cfg-cortex-model" type="text" list="cortex-models" placeholder="(blank = Cortex default)" />
+            <datalist id="cortex-models"></datalist>
+          </label>
+          <label>Key variable <input id="cfg-cortex-key-env" type="text" placeholder="CORTEX_API_KEY" title="NAME of the environment variable holding the Cortex bearer key - the key itself is never saved" /></label>
+          <label>Decision interval (s) <input id="cfg-cortex-interval" type="number" min="0.5" max="300" step="0.5" /></label>
+          <label>Temperature <input id="cfg-cortex-temp" type="number" min="0" max="2" step="0.05" /></label>
+          <label>Max tokens <input id="cfg-cortex-max-tokens" type="number" min="16" max="4096" step="16" /></label>
+          <label class="check"><input id="cfg-cortex-json" type="checkbox" /> ask for JSON (response_format)</label>
+        </div>
+        <p id="cortex-note" class="note">Start Cortex on this machine, then <em>Check Cortex</em>. The bearer key is read from the
+          environment variable named above when PyMC_Bot starts, never stored in the config.</p>
+        <div class="actions">
+          <button id="btn-cortex-check" class="btn ghost">Check Cortex</button>
+          <button id="btn-cortex-use" class="btn ghost" title="Save and switch the brain to cortex">Use Cortex as brain</button>
+        </div>
+      </details>
+      <details id="search-box">
+        <summary>Minecraft knowledge <span class="hint" id="search-summary">— let the AI look things up</span></summary>
+        <p class="note">Many models barely know Minecraft. The bot always knows the basics of every vanilla mob, and with
+          web search on, the Ollama / Cortex brain can look up a mob, block, recipe or mechanic (the <code>search</code>
+          action) and act on the answer in the same turn. Questions about one mob (hostile? damage? spawn time? which
+          version added it?) are answered offline from the built-in mob database - it even knows mobs newer than
+          mineflayer, like the 26.2 sulfur cube. Other questions go to the provider below; answers are cached.</p>
+        <label class="switch">
+          <input id="cfg-search-enabled" type="checkbox" />
+          <span>Allow web search</span>
+        </label>
+        <div class="fields two">
+          <label>Provider
+            <select id="cfg-search-provider">
+              <option value="minecraft_wiki">Minecraft Wiki (no key)</option>
+              <option value="duckduckgo">DuckDuckGo instant answers (no key)</option>
+              <option value="searxng">SearXNG (your instance)</option>
+              <option value="brave">Brave Search API (key in BRAVE_API_KEY)</option>
+            </select>
+          </label>
+          <label>SearXNG URL <input id="cfg-search-searxng" type="text" placeholder="http://127.0.0.1:8888" /></label>
+          <label>Lookups per turn <input id="cfg-search-per-turn" type="number" min="0" max="3" step="1" title="0 = the answer is used on the next turn" /></label>
+          <label>Max web requests / hour <input id="cfg-search-per-hour" type="number" min="1" max="600" step="1" /></label>
+          <label class="check"><input id="cfg-search-fallback" type="checkbox" /> fall back to DuckDuckGo</label>
+          <label class="check" title="Look up mobs the bot does not know, e.g. from mods"><input id="cfg-search-auto-mobs" type="checkbox" /> look up unknown mobs</label>
+          <label class="check" title="Answer questions about one mob (hostile? damage? spawn time? version?) from the built-in mob database, offline"><input id="cfg-search-mob-db" type="checkbox" /> answer mob questions from the mob database</label>
+        </div>
+        <div class="inline">
+          <input id="search-query" type="text" maxlength="200" placeholder="try it: is the sulphur cube hostile?" />
+          <button id="btn-search-test" class="btn ghost">Look up</button>
+        </div>
+        <pre id="search-result" class="note search-result" hidden></pre>
+      </details>
+      <details id="mind-box" open>
+        <summary>Bot behaviour <span class="hint" id="mind-summary">— how the Ollama / Cortex brain plays and talks</span></summary>
+        <p class="note">Pick how the bot should behave. Behind each choice is a detailed player prompt that makes
+          the LLM play like a real person: it keeps a goal, remembers what worked, answers people first and
+          chats casually without spamming. If someone sincerely asks whether it is a bot, it says so.</p>
+        <div id="behaviour-grid" class="behaviour-grid" role="radiogroup" aria-label="Bot behaviour"></div>
+        <label class="block">About the character <span class="hint">(optional, max 600 chars)</span>
+          <textarea id="cfg-persona-notes" rows="2" maxlength="600" placeholder="e.g. from Delhi, mixes Hindi and English, loves building bridges"></textarea>
+        </label>
+        <div class="fields two">
+          <label>Memory (recent actions) <input id="cfg-memory-turns" type="number" min="1" max="30" step="1" /></label>
+          <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
+          <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
+          <label class="check" title="For a model you trained with 'python -m pymc_bot llm' (docs/MINECRAFT_LLM.md): it already knows the rules, so it gets a short prompt and answers faster"><input id="cfg-compact-prompt" type="checkbox" /> Minecraft-trained model (short prompt)</label>
+          <label class="check" title="Saves every LLM turn (situation, reply, did it work) to llm_turns.jsonl next to the config - more training data for your own model"><input id="cfg-record-turns" type="checkbox" /> record LLM turns for training</label>
+          <label class="check" title="For vision models (Minecraftism VL or any Ollama/Cortex model that reads images): the bot sends a picture of what it sees. Needs the optional vision packages for the bridge (docs/MINECRAFT_LLM.md)"><input id="cfg-vision" type="checkbox" /> let the model see (vision)</label>
+          <label>Picture every N turns <input id="cfg-vision-every" type="number" min="1" max="20" step="1" /></label>
+        </div>
+      </details>
+      <div class="permissions">
+        <strong>AI permissions</strong>
+        <label class="check"><input id="cfg-allow-movement" type="checkbox" /> move</label>
+        <label class="check"><input id="cfg-allow-chat" type="checkbox" /> chat</label>
+        <label class="check"><input id="cfg-allow-mining" type="checkbox" /> mine</label>
+        <label class="check"><input id="cfg-allow-attack" type="checkbox" /> attack players</label>
+        <label class="check" title="hotbar, armour, moving items, dropping and giving"><input id="cfg-allow-inventory" type="checkbox" /> use inventory</label>
+        <label class="check" title="placing blocks and right-clicking items"><input id="cfg-allow-building" type="checkbox" /> build</label>
+        <label class="check"><input id="cfg-allow-mob-fighting" type="checkbox" /> fight mobs</label>
+        <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
+      </div>
+      <p id="ai-status" class="note"></p>
+    </section>
+
+
+    <!-- ----------------------------------------------------------- training -->
+    <section class="card span-2" id="card-training">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🎓</span>Player model <span class="tag">train on playtime</span></h2>
+        <span id="train-state" class="pill pill-unknown">idle</span>
+      </header>
+      <p class="note">The Fabric mod in <code>./mod</code> records your own playtime (position, look direction,
+        block neighbourhood, nearby entities and every key you pressed) into
+        <code>pymcbot/dataset.jsonl</code>. Train a model on it here — it checkpoints itself
+        as it goes and can then play the bot (<strong>brain = trained</strong>).</p>
+
+      <div class="fields three">
+        <label>Dataset <input id="train-dataset" type="text" placeholder="pymcbot/dataset.jsonl" /></label>
+        <label>Steps <input id="train-steps" type="number" min="1" max="2000000" step="50" /></label>
+        <label>Checkpoint every <input id="train-checkpoint" type="number" min="1" max="100000" step="10" /></label>
+        <label>Engine
+          <select id="train-engine">
+            <option value="mlp">mlp — NumPy, no extra deps</option>
+            <option value="transformer">transformer — tiny attention model (needs torch)</option>
+          </select>
+        </label>
+        <label>Batch size <input id="train-batch" type="number" min="1" max="4096" step="8" /></label>
+        <label>Learning rate <input id="train-lr" type="number" min="0.00001" max="1" step="0.0005" /></label>
+      </div>
+
+      <fieldset class="group" id="train-advanced-group">
+        <legend>Advanced training <span class="tag">entities + items</span></legend>
+        <p class="note">Learn which <strong>entities</strong> and <strong>items</strong> your playtime actually
+          contains and give each one its own inputs (how close, where relative to your view, how many, in
+          your hand) instead of the coarse “hostile / passive” buckets. Needs a recording made with
+          <code>/pymcbot advanced on</code> in the mod; the learned words are stored in the checkpoint, so the
+          bot encodes the live world exactly the same way. Leave the sliders at 0 to use the defaults
+          (24 entities, 32 items).</p>
+        <label class="check"><input id="train-advanced" type="checkbox" /> Advanced mode (entities + items)</label>
+        <div class="fields three">
+          <label>Entity words <input id="train-entity-slots" type="number" min="0" max="256" step="4" /></label>
+          <label>Item words <input id="train-item-slots" type="number" min="0" max="512" step="4" /></label>
+        </div>
+        <p id="train-advanced-status" class="note mono">nothing learned yet</p>
+      </fieldset>
+      <div class="actions wrap">
+        <button id="btn-train-start" class="btn primary">Train on playtime</button>
+        <button id="btn-train-stop" class="btn">Stop training</button>
+        <button id="btn-train-resume" class="btn ghost" title="Continue the run from its last checkpoint">Resume</button>
+        <button id="btn-train-simulate" class="btn ghost" title="No recording yet? Train on 5 minutes of synthetic playtime">Demo: simulate 5 min</button>
+        <button id="btn-policy-preview" class="btn ghost" title="Ask the active model what it would do right now">Preview next action</button>
+      </div>
+
+      <div class="progress" id="train-progress"><div id="train-progress-bar" class="progress-bar" style="width:0%"></div></div>
+      <p id="train-status" class="note">No dataset loaded yet.</p>
+      <p id="policy-preview" class="note mono"></p>
+
+      <h3>Checkpoints <span class="hint" id="models-dir">models/</span></h3>
+      <table class="fleet-table">
+        <thead>
+          <tr><th>run</th><th>engine</th><th>mode</th><th>step</th><th>params</th><th>val loss</th><th>val acc</th><th>actions</th></tr>
+        </thead>
+        <tbody id="model-body"><tr><td colspan="8" class="empty">nothing trained yet</td></tr></tbody>
+      </table>
+      <div class="actions wrap">
+        <button id="btn-model-activate" class="btn">Activate selected</button>
+        <button id="btn-model-export" class="btn ghost" title="Export the selected model to Ollama as a persona model">Export to Ollama</button>
+        <button id="btn-models-refresh" class="btn ghost">Refresh list</button>
+      </div>
+    </section>
+
+    <!-- --------------------------------------------------------------- world -->
+    <section class="card" id="card-world">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🗺️</span>Live view <span id="world-player" class="tag">—</span></h2>
+        <span id="world-backend" class="hint"></span>
+      </header>
+      <div class="meters">
+        <div class="meter"><span class="meter-label">health</span><div class="bar"><i id="bar-health" class="fill health"></i></div><span id="val-health" class="meter-val">–</span></div>
+        <div class="meter"><span class="meter-label">food</span><div class="bar"><i id="bar-food" class="fill food"></i></div><span id="val-food" class="meter-val">–</span></div>
+      </div>
+      <div class="stat-grid">
+        <div><span>position</span><strong id="val-pos">–</strong></div>
+        <div><span>yaw / pitch</span><strong id="val-yaw">–</strong></div>
+        <div><span>dimension</span><strong id="val-dim">–</strong></div>
+        <div><span>time</span><strong id="val-time">–</strong></div>
+        <div><span>uptime</span><strong id="val-uptime">–</strong></div>
+        <div><span>blocks mined</span><strong id="val-mined">0</strong></div>
+        <div><span>walked</span><strong id="val-walked">0 m</strong></div>
+        <div><span>chats sent</span><strong id="val-chats">0</strong></div>
+      </div>
+      <div class="two-col">
+        <div>
+          <h3>Players nearby</h3>
+          <ul id="player-list" class="list"><li class="empty">nobody in range</li></ul>
+        </div>
+        <div>
+          <h3>Inventory</h3>
+          <div id="hotbar" class="hotbar" role="toolbar" aria-label="hotbar - click a slot to select it"></div>
+          <p id="gear" class="note gear"></p>
+          <div id="inventory" class="chips"><span class="empty">empty</span></div>
+        </div>
+      </div>
+      <canvas id="minimap" width="640" height="220" aria-label="minimap"></canvas>
+    </section>
+
+    <!-- ------------------------------------------------------------ controls -->
+    <section class="card" id="card-controls">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🎮</span>Manual control</h2>
+        <span class="hint">humans override the AI</span>
+      </header>
+      <div class="inline">
+        <input id="chat-input" type="text" placeholder="say something in chat…" maxlength="200" />
+        <button id="btn-chat" class="btn primary">Send chat</button>
+      </div>
+      <div class="inline">
+        <input id="command-input" type="text" placeholder="/command (needs op)" maxlength="200" />
+        <button id="btn-command" class="btn">Run command</button>
+      </div>
+      <h3>Quick actions</h3>
+      <div class="actions wrap" id="quick-actions">
+        <button class="btn ghost" data-action='{"action":"wander"}'>wander</button>
+        <button class="btn ghost" data-action='{"action":"follow","player":"Steve"}'>follow Steve</button>
+        <button class="btn ghost" data-action='{"action":"mine","block":"oak_log"}'>mine oak_log</button>
+        <button class="btn ghost" data-action='{"action":"mine","block":"stone"}'>mine stone</button>
+        <button class="btn ghost" data-action='{"action":"jump"}'>jump</button>
+        <button class="btn ghost" data-action='{"action":"eat"}'>eat</button>
+        <button class="btn ghost" data-action='{"action":"stop"}'>stop</button>
+        <button class="btn ghost" data-action='{"action":"say","message":"Hello from Python!"}'>say hi</button>
+      </div>
+      <h3>Inventory &amp; life</h3>
+      <div class="actions wrap" id="life-actions">
+        <button class="btn ghost" data-action='{"action":"organize"}' title="weapon, pickaxe, axe, shovel, blocks, torches, bow, -, food">sort hotbar</button>
+        <button class="btn ghost" data-action='{"action":"wear_armor"}'>wear best armour</button>
+        <button class="btn ghost" data-action='{"action":"hold_item","item":"sword"}'>hold sword</button>
+        <button class="btn ghost" data-action='{"action":"hold_item","item":"pickaxe"}'>hold pickaxe</button>
+        <button class="btn ghost" data-action='{"action":"to_inventory"}' title="the selected hotbar slot goes into the backpack">hotbar → backpack</button>
+        <button class="btn ghost" data-action='{"action":"swap_hands"}'>swap hands</button>
+        <button class="btn ghost" data-action='{"action":"collect"}'>pick up items</button>
+        <button class="btn ghost" data-action='{"action":"fight"}'>fight nearest mob</button>
+        <button class="btn ghost" data-action='{"action":"flee"}'>flee</button>
+        <button class="btn ghost" data-action='{"action":"sleep"}'>sleep</button>
+        <button class="btn ghost" data-action='{"action":"place","block":"blocks"}'>place block</button>
+        <button class="btn ghost" data-action='{"action":"emote","kind":"wave"}'>wave</button>
+        <button class="btn ghost" data-action='{"action":"emote","kind":"crouch"}'>crouch hello</button>
+        <button class="btn ghost" data-action='{"action":"look_around"}'>look around</button>
+      </div>
+      <p class="note">Click a hotbar slot in <em>Inventory</em> to select it. Backpack → hotbar:
+        <code>{"action":"to_hotbar","item":"cobblestone","slot":5}</code></p>
+      <div class="inline">
+        <input id="action-input" type="text" placeholder='{"action":"goto","x":10,"y":64,"z":-20}' />
+        <button id="btn-action" class="btn">Run action</button>
+      </div>
+      <p class="note">Actions are the same JSON the AI emits — anything valid there works here.</p>
+    </section>
+
+    <!-- -------------------------------------------------------------- skills -->
+    <section class="card" id="card-skills">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🛠️</span>Skills <span id="skill-count" class="tag">—</span></h2>
+        <select id="skill-group" title="Show one group">
+          <option value="all">all groups</option>
+        </select>
+      </header>
+      <p class="note">Bigger jobs a player does: chop a tree, mine ore, farm, craft, smelt, fill a chest, trade,
+        build a shelter, go home… Click one to fill in its options, double-click to run it straight away.
+        The AI can use every skill too (switches in <em>AI brain</em> still apply).</p>
+      <div id="skill-list" class="skill-list" role="list"></div>
+      <div class="inline">
+        <input id="skill-name" type="text" placeholder="skill" list="skill-names" class="skill-name" />
+        <datalist id="skill-names"></datalist>
+        <input id="skill-params" type="text" placeholder='{"count": 8}' />
+        <button id="btn-skill" class="btn primary">Run skill</button>
+      </div>
+      <p id="skill-info" class="note" aria-live="polite"></p>
+    </section>
+
+    <!-- ----------------------------------------------------------- autopilot -->
+    <section class="card" id="card-autopilot">
+      <header>
+        <h2><span class="icon" aria-hidden="true">🛡️</span>Autopilot <span id="autopilot-tag" class="tag">—</span></h2>
+        <label class="check"><input id="ap-enabled" type="checkbox" /> on</label>
+      </header>
+      <p class="note">Reflexes every bot has on its own, so it can be left alone: respawn, swim up for air,
+        put out fire, totem, run at low health, eat, wear better armour, fight back, <strong>sleep at night</strong>,
+        torches in the dark, pick up items, toss junk… Emergencies interrupt; chores wait until the bot is idle.</p>
+      <div id="ap-rules" class="ap-rules"></div>
+      <div class="fields two">
+        <label>Eat below (food) <input id="ap-eat_below" type="number" min="0" max="20" step="1" data-ap="eat_below" /></label>
+        <label>Run away at (health) <input id="ap-flee_health" type="number" min="0" max="20" step="1" data-ap="flee_health" /></label>
+        <label>Totem at (health) <input id="ap-totem_health" type="number" min="0" max="20" step="1" data-ap="totem_health" /></label>
+        <label>Fight mobs within (blocks) <input id="ap-defend_range" type="number" min="1" max="16" step="1" data-ap="defend_range" /></label>
+        <label>Torch at light ≤ <input id="ap-torch_light" type="number" min="0" max="14" step="1" data-ap="torch_light" /></label>
+        <label>Pick up within (blocks) <input id="ap-collect_radius" type="number" min="1" max="16" step="1" data-ap="collect_radius" /></label>
+        <label title="Only while nobody gives orders and the AI is off">Idle job
+          <select id="ap-idle_job" data-ap="idle_job">
+            <option value="none">none</option>
+            <option value="farm">farm (harvest + replant)</option>
+            <option value="fish">fish</option>
+            <option value="chop">chop trees</option>
+            <option value="mine">mine ore</option>
+            <option value="gather_items">pick up items</option>
+          </select>
+        </label>
+        <label>…after idle (s) <input id="ap-idle_after" type="number" min="5" max="3600" step="5" data-ap="idle_after" /></label>
+      </div>
+      <div class="actions">
+        <button id="btn-ap-run" class="btn" title="Do the most urgent reflex for the selected bot now">Do it now</button>
+        <button id="btn-ap-pause" class="btn ghost" title="Pause / resume the autopilot for the selected bot">Pause this bot</button>
+      </div>
+      <p id="autopilot-state" class="note" aria-live="polite"></p>
+    </section>
+
+    <!-- ---------------------------------------------------------------- logs -->
+    <section class="card span-2" id="card-logs">
+      <header>
+        <h2><span class="icon" aria-hidden="true">📜</span>Event stream <span id="log-count" class="log-count">0 events</span></h2>
+        <div class="inline tight">
+          <label class="check"><input id="log-autoscroll" type="checkbox" checked /> autoscroll</label>
+          <select id="log-filter">
+            <option value="all">all levels</option>
+            <option value="chat">chat only</option>
+            <option value="ai">ai + chat</option>
+            <option value="warn">warnings/errors</option>
+          </select>
+          <button id="btn-clear-logs" class="btn ghost small">clear</button>
+        </div>
+      </header>
+      <div id="log" class="log" role="log" aria-live="polite"></div>
+    </section>
+
+    <!-- -------------------------------------------------------------- config -->
+    <section class="card span-2" id="card-advanced">
+      <header>
+        <h2><span class="icon" aria-hidden="true">⚙️</span>Advanced</h2>
+        <span id="config-path" class="hint"></span>
+      </header>
+      <details>
+        <summary>Raw config JSON (saved to disk)</summary>
+        <textarea id="raw-config" spellcheck="false" rows="18"></textarea>
+        <div class="actions">
+          <button id="btn-raw-save" class="btn primary">Save raw config</button>
+          <button id="btn-raw-reload" class="btn">Reload</button>
+          <button id="btn-reset" class="btn danger">Reset to defaults</button>
+        </div>
+        <p class="note" id="raw-config-status"></p>
+      </details>
+      <details>
+        <summary>HTTP API</summary>
+        <ul class="api-list">
+          <li><code>GET /api/status</code> — bot, AI, stats, backends, Ollama health</li>
+          <li><code>PUT /api/config</code> — partial config merge (JSON body)</li>
+          <li><code>POST /api/bot/start|stop|reconnect</code> — connection control</li>
+          <li><code>POST /api/bot/chat</code> <code>{"message":"hi"}</code></li>
+          <li><code>POST /api/bot/action</code> <code>{"action":"wander"}</code> or <code>{"raw":"{...}"}</code></li>
+          <li><code>POST /api/ai/start|stop|step</code> — the Ollama decision loop</li>
+          <li><code>GET /api/skills</code> · <code>POST /api/bot/skill</code> <code>{"name":"chop_tree","params":{"count":8}}</code></li>
+          <li><code>GET /api/autopilot/status</code> · <code>POST /api/autopilot/run</code> <code>{"rule":"sleep"}</code></li>
+          <li><code>GET|POST /api/setup/bridge</code> — install mineflayer without npm</li>
+          <li><code>WS /ws</code> — live <code>event</code> / <code>status</code> frames</li>
+        </ul>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer" id="credits">
+    <span class="made-with">Made with <span class="heart" id="heart" role="img" aria-label="❤️ love" title="thanks for using PyMC_Bot!"><svg class="heart-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 5.4 3.2 1.8-2 3.3-3.2 5.4-3.2 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z"/></svg></span> by
+      <a href="https://github.com/codero-sus" target="_blank" rel="noopener author">codero-sus</a></span>
+    <nav class="footer-links" aria-label="Credits">
+      <a href="https://github.com/codero-sus" target="_blank" rel="noopener author"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> codero-sus</a>
+      <a href="https://codero.is-a.dev" target="_blank" rel="noopener">🌐 codero.is-a.dev</a>
+      <a href="https://the-codero.web.app/" target="_blank" rel="noopener">🌍 the-codero.web.app</a>
+      <a href="https://github.com/codero-sus/PyMC_Bot" target="_blank" rel="noopener">📦 Source</a>
+      <a href="https://github.com/codero-sus/Cortex_LLMHoster" target="_blank" rel="noopener" title="Cortex LLMHoster, also by codero-sus">🧠 Cortex LLMHoster</a>
+      <button id="btn-about-footer" class="btn ghost small"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg> About &amp; credits</button>
+    </nav>
+    <div class="footer-meta">
+      <span>PyMC_Bot v{{ version }} &middot; free for personal, non-commercial use (PolyForm Noncommercial 1.0.0) &copy; 2026 codero-sus &middot; runs a real Minecraft client through mineflayer (Node), driven from Python.</span>
+      <span id="footer-conn" class="hint"></span>
+    </div>
+  </footer>
+
+  <!-- ------------------------------------------------------------- about -->
+  <dialog id="about-dialog" class="modal" aria-labelledby="about-title">
+    <button class="btn ghost icon-btn modal-close" data-close aria-label="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    <div class="modal-head">
+      <h2 id="about-title">PyMC_Bot <span class="tag">v{{ version }}</span></h2>
+      <p class="note">A Python Minecraft player bot: cracked &amp; premium players, fleets, human-like anti-AFK,
+        Ollama / Cortex brains and a model trained on your own playtime.</p>
+    </div>
+    <div class="modal-body">
+      <div class="credit-card">
+        <span class="avatar" aria-hidden="true">C</span>
+        <div>
+          <div class="who">{{ about.author }}</div>
+          <div class="hint">author &amp; maintainer &middot; Made with <span class="heart small" role="img" aria-label="❤️ love"><svg class="heart-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 5.4 3.2 1.8-2 3.3-3.2 5.4-3.2 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z"/></svg></span> by {{ about.author }}</div>
+          <div class="link-row" style="margin-top:0.5rem">
+            <a class="btn small" href="{{ about.author_github }}" target="_blank" rel="noopener author"><svg width="13" height="13" style="fill:currentColor;vertical-align:-2px" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> GitHub</a>
+            <a class="btn small" href="{{ about.websites[0] }}" target="_blank" rel="noopener">🌐 codero.is-a.dev</a>
+            <a class="btn small" href="{{ about.website }}" target="_blank" rel="noopener">🌍 the-codero.web.app</a>
+            <a class="btn small" href="{{ about.repository }}" target="_blank" rel="noopener">📦 Repository</a>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-top:0">Credits</h3>
+        <ul class="credit-list">
+          {% for credit in about.credits %}
+          <li><a href="{{ credit.url }}" target="_blank" rel="noopener">{{ credit.name }}</a><span>{{ credit.role }} &middot; by {{ credit.by }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-top:0">Built with</h3>
+        <div class="chips">
+          {% for item in about.built_with %}<a class="chip" href="{{ item.url }}" target="_blank" rel="noopener">{{ item.name }}</a>{% endfor %}
+        </div>
+      </div>
+      <p class="note">Licensed under {{ about.license }}. Minecraft is a trademark of Mojang/Microsoft; PyMC_Bot is not affiliated with them.</p>
+    </div>
+  </dialog>
+
+  <!-- ----------------------------------------------------- command palette -->
+  <dialog id="palette" class="modal palette" aria-label="Command palette">
+    <input id="palette-input" class="palette-input" type="text" placeholder="Type a command or jump to a section…" autocomplete="off" spellcheck="false" />
+    <ul id="palette-list" class="palette-list" role="listbox"></ul>
+    <div class="palette-foot"><span><span class="kbd">↑</span> <span class="kbd">↓</span> navigate</span><span><span class="kbd">Enter</span> run</span>
+      <span><span class="kbd">Esc</span> close</span><span><span class="kbd">Alt T</span> theme</span><span><span class="kbd">Alt M</span> motion</span></div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <button id="btn-to-top" class="btn to-top" title="Back to top" aria-label="Back to top"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+
+  <script src="/static/fx.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

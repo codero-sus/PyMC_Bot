@@ -1,0 +1,11 @@
+{
+  "name": "pymc-bot-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "mineflayer adapter used by the Python PyMC_Bot controller (npm install --prefix pymc_bot/node).",
+  "main": "minecraft_bridge.js",
+  "dependencies": {
+    "mineflayer": "^4.20.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
