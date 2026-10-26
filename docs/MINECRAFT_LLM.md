@@ -171,6 +171,7 @@ The settings cell:
 | `DISCORD_SECRET` | `"discord_webhook_inform_me1"` | name of the Kaggle secret that holds the webhook URL (never put the URL in the notebook) |
 | `DISCORD_EVERY_MIN` | `30` | a server status every N minutes (GPUs, RAM, disk, step / loss / ETA, time left); 0 = events and warnings only |
 | `DISCORD_MENTION` | `""` | who is pinged: setup ready, now training / distilling / quantizing / uploading, every model upload to Hugging Face, each model ready, THE 12 HOURs at 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 / 5 / 1 min and the 30 s final report, the close, low disk, failures and errors (server status and the 4 / 3 / 2 min updates come silently); e.g. `"<@your user ID>"` or `"@here"` |
+| `PING_ROLE_SECRET` | `"ping_role"` | name of the Kaggle secret that holds a Discord role ID (or `<@&ID>`); that role is pinged on **every** message - status, countdown, progress, uploads, results, errors. No secret = no role ping; never printed. Turn on *Allow anyone to @mention this role* in Discord |
 | `NOTEBOOK_URL` | `""` | this notebook's Kaggle address, shown in the messages |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
 | `STOP_WHEN_LEARNED` | `True` | ends an edition once its training loss has stopped falling for 10% of the run (only after 3/4 of the first epoch): templated data is learned long before the last epoch, so hours of weekly GPU time go to the next edition instead |

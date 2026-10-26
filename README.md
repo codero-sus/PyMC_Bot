@@ -615,6 +615,7 @@ even without your own screenshots. It can also run an **optional test suite**: b
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
 #   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
 #   Discord: secret discord_webhook_inform_me1 = your webhook URL -> server online + URL, status, warnings before it closes
+#   secret ping_role = a Discord role ID -> that role is pinged on every message
 #   latest notebook (Kaggle: File -> Import Notebook -> paste): https://github.com/codero-sus/PyMC_Bot/raw/e5b82ed65b9a9f75e3e208b3127e287f40052997/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb
 #   GPU_MODE = "parallel": two editions at once, one per T4 (one edition: both T4s merge on it); MAX_HOURS keeps the upload inside 12 h
 #   DISTILL: Qwen3-style strong-to-weak distillation - Qwen3-14B writes answers, Qwen3-8B teaches the 4B token by token

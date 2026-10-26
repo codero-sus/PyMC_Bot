@@ -26,14 +26,18 @@ def _block(cell, start, end):
     return cell[cell.index(start):cell.index(end)]
 
 
-def _helper(monkeypatch, url=HOOK, mention="", replies=None, extra=None):
-    """Run the notebook's Discord helper with a fake Kaggle secret and a fake Discord."""
+def _helper(monkeypatch, url=HOOK, mention="", replies=None, extra=None, role=None):
+    """Run the notebook's Discord helper with fake Kaggle secrets and a fake Discord (role=None: no ping_role secret)."""
     asked, sent = [], []
     replies = list(replies or [])
 
     class Secrets:
         def get_secret(self, name):
             asked.append(name)
+            if name == "ping_role":
+                if role is None:
+                    raise KeyError(name)  # Kaggle raises when the secret does not exist
+                return role
             return url
 
     monkeypatch.setitem(sys.modules, "kaggle_secrets", types.SimpleNamespace(UserSecretsClient=Secrets))
@@ -51,6 +55,7 @@ def _helper(monkeypatch, url=HOOK, mention="", replies=None, extra=None):
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
     env = {"re": re, "json": json, "time": time, "threading": threading, "urllib": urllib, "DiscordQueue": Queue,
            "DISCORD": True, "DISCORD_SECRET": "discord_webhook_inform_me1", "DISCORD_MENTION": mention,
+           "PING_ROLE_SECRET": "ping_role",
            "__name__": "notebook"}
     env.update(extra or {})
     exec(_block(_cells()[3], "# ---- Discord: the webhook URL", "# ---- end Discord\n"), env)  # noqa: S102
@@ -73,7 +78,7 @@ def test_settings_and_secret_name():
 
 def test_messages_use_the_secret_and_never_print_it(monkeypatch, capsys):
     env, asked, sent = _helper(monkeypatch)
-    assert asked == ["discord_webhook_inform_me1"]
+    assert asked == ["discord_webhook_inform_me1", "ping_role"]
     assert env["discord"]("step 10/100", "minecraftism", "info") is True
     _wait(env)
     assert len(sent) == 1 and sent[0]["url"] == HOOK
@@ -91,6 +96,48 @@ def test_ping_only_for_important_messages(monkeypatch):
     _wait(env)
     assert sent[0]["payload"]["content"] == "<@42>" and "users" in sent[0]["payload"]["allowed_mentions"]["parse"]
     assert "content" not in sent[1]["payload"]
+
+
+def test_settings_name_the_ping_role_secret():
+    assert 'PING_ROLE_SECRET = "ping_role"' in _cells()[1]
+    assert "`ping_role`" in _cells()[0]  # the intro says how to set it up
+
+
+def test_ping_role_secret_pings_the_role_on_every_message(monkeypatch, capsys):
+    env, asked, sent = _helper(monkeypatch, role=" 987654321098765432 ")
+    assert asked == ["discord_webhook_inform_me1", "ping_role"] and env["DISCORD_ROLE"] == "987654321098765432"
+    env["discord"]("status", "status", "info")
+    env["discord"]("step 10/100", "minecraftism", "info", key="k", every=0)
+    env["discord"]("done", "result", "ok", ping=True)  # no DISCORD_MENTION: still just the role
+    _wait(env)
+    assert len(sent) == 3
+    for message in sent:
+        assert message["payload"]["content"] == "<@&987654321098765432>"
+        assert message["payload"]["allowed_mentions"] == {"parse": [], "roles": ["987654321098765432"]}
+    out = capsys.readouterr().out
+    assert "ping_role loaded" in out and "987654321098765432" not in out  # never printed
+
+
+def test_ping_role_with_mention_and_formats(monkeypatch, capsys):
+    env, _asked, sent = _helper(monkeypatch, role="<@&555555555555555555>", mention="<@42>")
+    assert env["DISCORD_ROLE"] == "555555555555555555"
+    env["discord"]("status")
+    env["discord"]("done", ping=True)
+    _wait(env)
+    assert sent[0]["payload"]["content"] == "<@&555555555555555555>"
+    assert sent[0]["payload"]["allowed_mentions"] == {"parse": [], "roles": ["555555555555555555"]}
+    assert sent[1]["payload"]["content"] == "<@&555555555555555555> <@42>"
+    assert "roles" in sent[1]["payload"]["allowed_mentions"]["parse"]
+    env, _asked, sent = _helper(monkeypatch, role="<@&555555555555555555>", mention="<@&555555555555555555>")
+    env["discord"]("done", ping=True)
+    _wait(env)
+    assert sent[0]["payload"]["content"] == "<@&555555555555555555>"  # not twice
+    env, _asked, _sent = _helper(monkeypatch, role="not a role")
+    assert env["DISCORD_ROLE"] == "" and "not a Discord role ID" in capsys.readouterr().out
+    env, asked, _sent = _helper(monkeypatch, role=None)
+    assert env["DISCORD_ROLE"] == "" and "no ping_role secret" in capsys.readouterr().out
+    env, asked, _sent = _helper(monkeypatch, url="", role="123456789012345678")
+    assert asked == ["discord_webhook_inform_me1"] and env["DISCORD_ROLE"] == ""  # no webhook: role not even read
 
 
 def test_rate_limit_is_waited_out_and_a_dead_webhook_stops(monkeypatch, capsys):
