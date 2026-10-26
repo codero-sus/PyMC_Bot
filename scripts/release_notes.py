@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +53,28 @@ def wheel_version() -> str:
     return "0.0.0"
 
 
+NOTEBOOK_PATH = "pynb/PyMC_Minecraft_LLM_Kaggle.ipynb"
+
+
+def commit_sha() -> str:
+    """The full commit this release is built from (CI: GITHUB_SHA), or "" when unknown."""
+    sha = os.environ.get("GITHUB_SHA", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        try:
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                                 check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            sha = ""
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+
+
+def notebook_url(sha: str | None = None) -> str:
+    """The Kaggle notebook pinned to a commit (never a branch). The notebook is not a release asset any more:
+    Kaggle imports it straight from this link (File > Import Notebook)."""
+    sha = commit_sha() if sha is None else sha
+    return f"{REPO}/raw/{sha}/{NOTEBOOK_PATH}" if sha else f"{REPO}/blob/main/pynb/README.md"
+
+
 def downloads(version: str) -> list[str]:
     """Every file on the release besides the per-version jars (built by scripts/release_kit.py)."""
     wheel = wheel_version()
@@ -68,8 +93,9 @@ def downloads(version: str) -> list[str]:
         f"| `pymcbot-{version}-all-versions.zip` | all mod jars in one zip |",
         "| `pymc-minecraft-llm-kit.zip` | **Your own Minecraft LLM**: ready-made training data (mob database, "
         "game situations, Minecraft Wiki pages) - upload `llm_data` to Kaggle |",
-        "| `PyMC_Minecraft_LLM_Kaggle.ipynb` · `train_minecraft_llm.py` | **Train Minecraftism** on Kaggle "
-        "(GPU T4 x2): the notebook and the trainer it runs. Pick what to train with "
+        "| `train_minecraft_llm.py` | **Train Minecraftism** on Kaggle "
+        "(GPU T4 x2): the trainer the notebook runs. The notebook is not attached - import it on Kaggle "
+        f"(File → Import Notebook → paste) from `{notebook_url()}` (this release's commit). Pick what to train with "
         "`editions_to_be_trained = {txt, txt_think, vl, vl_think}` - only those are trained. **Both T4s train** every edition together "
         "(`GPU_MODE = \"parallel\"`: one edition per T4, both T4s merged on a single edition via HF Accelerate DDP, fp16; "
         "`\"merge\"` = both T4s on every edition). `DISTILL` runs Qwen3's "

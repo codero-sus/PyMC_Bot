@@ -53,6 +53,6 @@ countdown stay silent. No secret = no role ping.
 `cache/` (streamed data and teacher answers, shared by every edition) and `tools/` (llama.cpp). Throwaway files go to
 `/kaggle/tmp` (~60 GB, not saved): model downloads, vLLM, GGUF work files, checkpoints, locks and temp files.
 
-Full guide: [docs/MINECRAFT_LLM.md](../docs/MINECRAFT_LLM.md). The same notebook is attached to every GitHub release.
+Full guide: [docs/MINECRAFT_LLM.md](../docs/MINECRAFT_LLM.md). Releases do not attach the notebook: their notes link it pinned to the release's commit.
 
 Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/) – personal, non-commercial use (PolyForm Noncommercial 1.0.0).

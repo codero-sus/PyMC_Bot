@@ -412,7 +412,7 @@ jobs:
           if-no-files-found: error
 
   # Everything except the jars for the release: the updater, the bot (source zip + pip packages) and
-  # the Minecraft LLM kit (training data with Minecraft Wiki pages + the Kaggle notebook). Runs next
+  # the Minecraft LLM kit (training data with Minecraft Wiki pages + the trainer; the notebook is linked, not attached). Runs next
   # to the mod builds, so it adds no time.
   release-kit:
     name: release kit (updater, bot, LLM kit)

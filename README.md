@@ -73,7 +73,7 @@ Minecraft versions), and it is driven purely by JSON from Python.
 
 **No git?** Every [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) has all the downloads:
 `PyMC_Bot-source.zip` (the bot), `updater.py` / `updater.cmd` / `updater.sh`, the mod jar for each Minecraft
-version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + Kaggle notebook) and
+version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + trainer; the notebook is linked, pinned to the release commit) and
 `SHA256SUMS.txt`. Unzip the source, then continue from `python -m venv` below.
 
 ```bash

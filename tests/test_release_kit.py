@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import sys
 import zipfile
@@ -24,15 +25,18 @@ def test_offline_kit_has_every_file(tmp_path):
                              "--no-node-bundle", "--turns", "40"]) == 0
     names = {p.name for p in out.iterdir()}
     assert {"updater.py", "updater.sh", "updater.cmd", "PyMC_Bot-source.zip", "pymc-minecraft-llm-kit.zip",
-            "PyMC_Minecraft_LLM_Kaggle.ipynb", "train_minecraft_llm.py"} <= names
+            "train_minecraft_llm.py"} <= names
+    assert not any(name.endswith(".ipynb") for name in names)  # the notebook is linked, not attached
     for name in ("updater.py", "updater.sh", "updater.cmd"):
         assert (out / name).read_bytes() == (ROOT / name).read_bytes()
     with zipfile.ZipFile(out / "PyMC_Bot-source.zip") as source:
         assert {"PyMC_Bot/pymc_bot/__main__.py", "PyMC_Bot/updater.py", "PyMC_Bot/requirements.txt"} <= set(source.namelist())
     with zipfile.ZipFile(out / "pymc-minecraft-llm-kit.zip") as kit:
         listed = set(kit.namelist())
-        assert {"llm_data/train.jsonl", "llm_data/eval.jsonl", "llm_data/train_minecraft_llm.py", "README.txt",
-                "PyMC_Minecraft_LLM_Kaggle.ipynb"} <= listed
+        assert {"llm_data/train.jsonl", "llm_data/eval.jsonl", "llm_data/train_minecraft_llm.py", "README.txt"} <= listed
+        assert not any(name.endswith(".ipynb") for name in listed)
+        readme = kit.read("README.txt").decode()
+        assert re.search(r"/raw/[0-9a-f]{40}/pynb/PyMC_Minecraft_LLM_Kaggle\.ipynb", readme), readme
         assert not any("wiki_cache" in name for name in listed)
     sums = release_kit.checksums(out).read_text().splitlines()
     assert len(sums) == len(names)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -42,14 +43,16 @@ def test_notes_list_every_release_file():
     text = release_notes.notes()
     version = release_notes.mod_version()
     for name in ("PyMC_Bot-source.zip", "updater.py", "updater.cmd", "updater.sh", f"pymcbot-{version}-all-versions.zip",
-                 "pymc-minecraft-llm-kit.zip", "PyMC_Minecraft_LLM_Kaggle.ipynb", "train_minecraft_llm.py",
+                 "pymc-minecraft-llm-kit.zip", "train_minecraft_llm.py",
                  "SHA256SUMS.txt", f"pymc_bot-{release_notes.wheel_version()}-py3-none-any.whl"):
         assert f"`{name}`" in text, name
 
 
 def test_notes_say_the_notebook_uploads_safetensors_then_gguf_quants():
     text = release_notes.notes()
-    assert "`PyMC_Minecraft_LLM_Kaggle.ipynb`" in text
+    assert "`PyMC_Minecraft_LLM_Kaggle.ipynb`" not in text  # not a release asset any more ...
+    assert re.search(r"`https://github\.com/codero-sus/PyMC_Bot/raw/[0-9a-f]{40}/pynb/PyMC_Minecraft_LLM_Kaggle\.ipynb`",
+                     text)  # ... but linked, pinned to the release's commit
     assert "Both T4s train" in text and "MAX_HOURS" in text and "AUTO_EXIT" in text
     assert "strong-to-weak distillation" in text and 'GPU_MODE = "parallel"' in text
     assert "editions_to_be_trained = {txt, txt_think, vl, vl_think}" in text
