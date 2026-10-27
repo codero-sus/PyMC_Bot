@@ -519,9 +519,12 @@ only from the page text, and each pair has to pass every check:
 
 Rows confirmed by the game data or an independent page are `trust: high`, the rest `medium` (`KEEP = "high"`
 keeps only the confirmed ones). Rejected pairs and the reason go to `meta/rejected.jsonl`. It uploads every 30
-minutes and `RESUME = True` continues the topic list in the next session. Kaggle setup: Accelerator **None**,
+minutes and `RESUME = True` continues the topic list in the next session; **Stop** keeps and uploads what it has.
+The dataset is **private** by default (`PRIVATE = True`; an existing public repo is switched to private before every
+upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
+LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/5310fece18312cfbd3198643a9cfbb4394e2e442/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/96dbd6dd5abed4af3360f55a358409189bd19090/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
