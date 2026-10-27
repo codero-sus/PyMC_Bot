@@ -262,7 +262,7 @@ class _TextParser(HTMLParser):
         skip = tag in self.SKIP_TAGS or bool(self.SKIP_CLASS.search(values.get("class") or "")) \
             or values.get("style", "").replace(" ", "").find("display:none") != -1
         if tag in self.BLOCK:
-            self.parts.append("\n")
+            self.parts.append("\n## " if tag in ("h2", "h3") and not skip and not self._skipping() else "\n")
         elif tag in ("td", "th") and not self._skipping():
             self.parts.append(" | ")
         if tag not in self.VOID:
@@ -288,7 +288,7 @@ def html_to_text(markup: str) -> str:
     lines = []
     for line in "".join(parser.parts).splitlines():
         line = re.sub(r"\[\d+\]|\[edit\]", "", " ".join(line.split())).strip(" |")
-        if line and (not lines or lines[-1] != line):
+        if line and line.strip("# ") and (not lines or lines[-1] != line):
             lines.append(line)
     return "\n".join(lines)
 
@@ -356,6 +356,72 @@ def passages(text: str, query: str, size: int = 1400, top: int = 2) -> str:
 
     best = sorted(sorted(range(len(chunks)), key=score, reverse=True)[:top])
     return "\n".join(chunks[i].strip() for i in best if score(i) > 0)
+
+
+#: Sections that are not worth questions (version changelogs, pictures, links, sound files).
+SKIP_SECTIONS = {"history", "gallery", "references", "see also", "external links", "navigation", "issues", "video",
+                 "videos", "screenshots", "renders", "concept artwork", "sounds", "in other media", "data history",
+                 "development images", "textures", "external link", "notes and references"}
+
+
+def page_sections(text: str, size: int = 2800, limit: int = 0) -> list[str]:
+    """The WHOLE page in parts of about ``size`` characters, cut at line ends; short sections share a part, each
+    with its ``[heading]``. Without the changelog / gallery / link sections. ``limit`` > 0: only the first ones."""
+    parts: list[str] = []
+    current, skipping = "", False
+    for line in str(text or "").splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            skipping = norm(heading) in SKIP_SECTIONS
+            line = f"[{heading}]"
+            if skipping:
+                continue
+        if skipping:
+            continue
+        if current and len(current) + len(line) > size:
+            parts.append(current.strip())
+            current = ""
+        current += line[:size] + "\n"
+    if len(current.strip()) >= 80:  # the rest (not a lone heading)
+        parts.append(current.strip())
+    return parts[:limit] if limit > 0 else parts
+
+
+#: Fandom wiki titles that are not about the game itself: version / snapshot pages, other games, lists of versions.
+SKIP_TITLE = re.compile(
+    r"(?i)^(java|bedrock|pocket|legacy console|console|education|xbox 360|xbox one|playstation( \d| vita)?|wii u|"
+    r"nintendo switch|new nintendo 3ds|pi|minecraft (dungeons|legends|earth|story mode)|minecraftedu) |"
+    r"\b\d{2}w\d{2}[a-z]\b|pre-release|release candidate|\(disambiguation\)|\bbeta \d|\balpha v?\d|\binfdev\b|"
+    r"\bindev\b|^classic\b|^\d")
+
+
+def wiki_url(title: str) -> str:
+    title = re.sub(r" \((enchantment|status effect|biome)\)$", "", title)
+    return "https://minecraft.fandom.com/wiki/" + urllib.parse.quote(title.replace(" ", "_"))
+
+
+def wiki_titles(get: Callable[..., bytes] = http_get, cache: Path | None = None) -> list[str]:
+    """Every article of the Minecraft Fandom wiki (CC BY-SA) about the game: thousands of pages beyond the
+    game-data topics. Without redirects, version pages, other games and sub-pages (except tutorials)."""
+    if cache is not None and Path(cache).is_file():
+        return json.loads(Path(cache).read_text(encoding="utf-8"))
+    titles: list[str] = []
+    params = {"action": "query", "list": "allpages", "apnamespace": 0, "apfilterredir": "nonredirects",
+              "aplimit": 500, "format": "json"}
+    for _page in range(200):
+        data = json.loads(get("https://minecraft.fandom.com/api.php?" + urllib.parse.urlencode(params), 60,
+                              "application/json").decode("utf-8"))
+        titles += [str(p.get("title") or "") for p in (data.get("query") or {}).get("allpages") or []]
+        more = (data.get("continue") or {}).get("apcontinue")
+        if not more:
+            break
+        params["apcontinue"] = more
+    keep = [t for t in titles if t and ":" not in t and not SKIP_TITLE.search(t)
+            and ("/" not in t or t.startswith("Tutorials/"))]
+    if cache is not None:
+        Path(cache).parent.mkdir(parents=True, exist_ok=True)
+        Path(cache).write_text(json.dumps(keep), encoding="utf-8")
+    return keep
 
 
 # ---------------------------------------------------------------------------- web search
@@ -473,6 +539,23 @@ def topics(data: dict, rng: random.Random | None = None) -> list[str]:
         if key not in seen:
             seen.add(key)
             out.append(topic)
+    return out
+
+
+def all_topics(data: dict, tmp: Path, cfg: dict) -> list[str]:
+    """The game-data topics (mechanics, mobs, items, blocks...) first, then every other article of the wiki
+    (``WIKI_PAGES``): the more pages, the bigger the dataset. Same order in every session."""
+    out = topics(data, random.Random(int(cfg.get("seed", 0))))
+    if cfg.get("wiki_pages", True):
+        try:
+            titles = wiki_titles(cache=Path(tmp) / "wiki_titles.json")
+        except Exception as exc:  # noqa: BLE001 - the game-data topics alone still work
+            log(f"could not list the wiki pages ({type(exc).__name__}: {str(exc)[:160]}) - game-data topics only")
+            titles = []
+        known = {norm(re.sub(r" \(.*\)$", "", t)) for t in out}
+        extra = [t for t in titles if norm(t) not in known]
+        log(f"{len(out)} game-data topics + {len(extra)} more wiki pages")
+        out += extra
     return out
 
 
@@ -963,10 +1046,10 @@ def check_pair(pair: dict, page: str, llm: Any, book: dict) -> tuple[bool, dict[
 
 
 def corroborate(llm: Any, pair: dict, search: Callable[[str], list[dict]], fetch: Callable[[str], str],
-                skip: set[str]) -> tuple[str, str]:
+                skip: set[str], pages: int = 3) -> tuple[str, str]:
     """``(verdict, url)`` from an independent page: another site, or an official one, or another wiki page."""
     query = pair["question"] if "minecraft" in pair["question"].lower() else pair["question"] + " Minecraft"
-    for hit in search(query)[:5]:
+    for hit in search(query)[:pages]:
         url = hit["url"]
         if url in skip:
             continue
@@ -987,27 +1070,59 @@ def question_key(question: str) -> str:
 
 
 class Collector:
-    """The dataset on disk (``/kaggle/working/Minecraftism-dataset``): rows, rejects, progress, card."""
+    """The dataset on disk (``/kaggle/working/Minecraftism-dataset``): rows, rejects, progress, card. Each Kaggle
+    session writes only its own files (``data/train-01.jsonl``, ...; ``session`` = the ``SESSION`` setting), so
+    several sessions can run at the same time without overwriting each other; the rows and topics of the other
+    sessions are read too, so nothing is asked or done twice."""
 
-    def __init__(self, folder: Path, model: str) -> None:
+    LEGACY = {"data/train.jsonl": "data/train-{}.jsonl", "data/high/train.jsonl": "data/high/train-{}.jsonl",
+              "meta/rejected.jsonl": "meta/rejected-{}.jsonl", "meta/progress.json": "meta/progress-{}.json"}
+
+    def __init__(self, folder: Path, model: str, session: int = 1) -> None:
         self.folder, self.model = Path(folder), model
+        self.tag = f"{max(1, int(session)):02d}"
         self.rows: list[dict] = []
         self.rejected: list[dict] = []
         self.done: list[str] = []
+        self.done_elsewhere: set[str] = set()  # topics other sessions finished
+        self.pages: set[str] = set()  # pages already read (two topics can lead to the same page)
         self.keys: set[str] = set()
+        self.other_rows = self.other_high = 0
         self.started = time.time()
         self.load()
 
+    def path(self, name: str) -> Path:
+        return self.folder / self.LEGACY[name].format(self.tag)
+
     def load(self) -> None:
+        if self.tag == "01":  # a dataset from before the sessions: it becomes session 01's
+            for old, new in self.LEGACY.items():
+                if (self.folder / old).is_file() and not (self.folder / new.format(self.tag)).is_file():
+                    (self.folder / old).replace(self.folder / new.format(self.tag))
         for name, target in (("data/train.jsonl", self.rows), ("meta/rejected.jsonl", self.rejected)):
-            path = self.folder / name
+            path = self.path(name)
             if path.is_file():
                 target[:] = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        progress = self.folder / "meta" / "progress.json"
-        if progress.is_file():
-            self.done = list(json.loads(progress.read_text(encoding="utf-8")).get("done_topics") or [])
         self.keys = {question_key(r["question"]) for r in self.rows}
-        self.start_rows = len(self.rows)
+        for path in sorted((self.folder / "data").glob("train*.jsonl")):
+            if path != self.path("data/train.jsonl"):
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        row = json.loads(line)
+                        self.keys.add(question_key(row["question"]))
+                        self.other_rows += 1
+                        self.other_high += row.get("trust") == "high"
+        for path in sorted((self.folder / "meta").glob("progress*.json")):
+            progress = json.loads(path.read_text(encoding="utf-8"))
+            self.pages.update(progress.get("done_pages") or [])
+            if path == self.path("meta/progress.json"):
+                self.done = list(progress.get("done_topics") or [])
+            else:
+                self.done_elsewhere.update(progress.get("done_topics") or [])
+        self.start_rows = len(self.rows) + self.other_rows
+
+    def finished(self) -> set[str]:
+        return set(self.done) | self.done_elsewhere
 
     def seen(self, question: str) -> bool:
         return question_key(question) in self.keys
@@ -1020,18 +1135,26 @@ class Collector:
         high = [r for r in self.rows if r.get("trust") == "high"]
         for name, items in (("data/train.jsonl", self.rows), ("data/high/train.jsonl", high),
                             ("meta/rejected.jsonl", self.rejected)):
-            path = self.folder / name
+            path = self.path(name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in items), encoding="utf-8")
-        (self.folder / "meta" / "progress.json").write_text(json.dumps(
-            {"done_topics": self.done, "rows": len(self.rows), "rejected": len(self.rejected),
-             "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=1), encoding="utf-8")
-        (self.folder / "README.md").write_text(dataset_card(self.rows, self.rejected, self.model), encoding="utf-8")
+        self.path("meta/progress.json").write_text(json.dumps(
+            {"done_topics": self.done, "done_pages": sorted(self.pages), "rows": len(self.rows),
+             "rejected": len(self.rejected), "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+            indent=1), encoding="utf-8")
+        stats = self.stats()
+        (self.folder / "README.md").write_text(dataset_card(self.rows, self.rejected, self.model, stats["rows"],
+                                                            stats["high"]), encoding="utf-8")
+
+    def own_files(self) -> list[str]:
+        return [self.LEGACY[name].format(self.tag) for name in self.LEGACY]
 
     def stats(self) -> dict[str, int]:
-        high = sum(1 for r in self.rows if r.get("trust") == "high")
-        return {"rows": len(self.rows), "high": high, "medium": len(self.rows) - high, "rejected": len(self.rejected),
-                "topics": len(self.done)}
+        """All sessions together (the other sessions as they were when this one started)."""
+        high = sum(1 for r in self.rows if r.get("trust") == "high") + self.other_high
+        rows = len(self.rows) + self.other_rows
+        return {"rows": rows, "high": high, "medium": rows - high, "rejected": len(self.rejected),
+                "topics": len(self.finished())}
 
 
 def make_row(topic: str, pair: dict, url: str, licence: str, checks: dict, trust: str, confirmed: str,
@@ -1052,8 +1175,10 @@ def size_category(count: int) -> str:
                                            (float("inf"), "100K<n<1M")) if count < limit)
 
 
-def dataset_card(rows: list[dict], rejected: list[dict], model: str) -> str:
-    high = sum(1 for r in rows if r.get("trust") == "high")
+def dataset_card(rows: list[dict], rejected: list[dict], model: str, total: int = -1, total_high: int = -1) -> str:
+    """The README. ``total`` / ``total_high``: the rows of all sessions (default: ``rows``)."""
+    high = sum(1 for r in rows if r.get("trust") == "high") if total_high < 0 else total_high
+    count = len(rows) if total < 0 else total
     sites: dict[str, int] = {}
     for row in rows:
         for source in row.get("sources") or []:
@@ -1072,16 +1197,16 @@ tags:
 - minecraft
 - pymc-bot
 size_categories:
-- {size_category(len(rows))}
+- {size_category(count)}
 configs:
 - config_name: default
   data_files:
   - split: train
-    path: data/train.jsonl
+    path: data/train-*.jsonl
 - config_name: high
   data_files:
   - split: train
-    path: data/high/train.jsonl
+    path: data/high/train-*.jsonl
 ---
 
 # Minecraftism dataset
@@ -1091,9 +1216,10 @@ Checked Minecraft questions and answers for the **Minecraftism** models of
 `pynb/Minecraftism_Dataset_Kaggle.ipynb` (Kaggle): web search + an LLM ({model}, on llama.cpp) that may only
 write what a page says, and then checks on every answer.
 
-**{len(rows)} rows** - {high} `high` trust (confirmed by the game's own data or an independent page), {len(rows) - high}
-`medium` (one source, passed every check). {len(rejected)} rejected pairs (with the reason) are in
-`meta/rejected.jsonl` for review - they are not training data.
+**{count} rows** - {high} `high` trust (confirmed by the game's own data or an independent page), {count - high}
+`medium` (one source, passed every check). Rejected pairs (with the reason) are in `meta/rejected-*.jsonl` for
+review - they are not training data. Each Kaggle session writes its own `data/train-NN.jsonl`; `load_dataset` reads
+them all.
 
 ## How an answer gets in
 
@@ -1214,16 +1340,21 @@ def hub_resume(api: Any, repo_id: str, folder: Path, token: str) -> bool:
             return False
         snapshot_download(repo_id, repo_type="dataset", local_dir=str(folder), token=token or None,
                           allow_patterns=["data/*", "meta/*"])
-        return (Path(folder) / "data" / "train.jsonl").is_file()
+        return any((Path(folder) / "data").glob("train*.jsonl"))
     except Exception as exc:  # noqa: BLE001 - start fresh rather than fail
         log(f"could not resume from {repo_id} ({type(exc).__name__}) - starting fresh")
         return False
 
 
-def hub_upload(api: Any, repo_id: str, folder: Path, private: bool, message: str) -> str:
+def hub_upload(api: Any, repo_id: str, folder: Path, private: bool, message: str,
+               own: list[str] | None = None) -> str:
+    """Upload this session's files (``own``) and the card - never the other sessions' copies (they may be newer on
+    the Hub). Session 01 also removes the files from before the sessions (they became its own)."""
     hub_make_private(api, repo_id, private)  # every time: it stays private even if someone flipped it meanwhile
+    own = own or ["data/train-01.jsonl", "data/high/train-01.jsonl", "meta/rejected-01.jsonl", "meta/progress-01.json"]
+    extra = {"delete_patterns": list(Collector.LEGACY)} if "data/train-01.jsonl" in own else {}
     api.upload_folder(repo_id=repo_id, repo_type="dataset", folder_path=str(folder), commit_message=message,
-                      allow_patterns=["README.md", "data/*", "meta/*"])
+                      allow_patterns=["README.md", *own], **extra)
     return f"https://huggingface.co/datasets/{repo_id}"
 
 
@@ -1239,17 +1370,35 @@ def session_start() -> float:
 
 def gather(topic: str, cfg: dict, search: Callable[[str], list[dict]],
            fetch: Callable[[str], str]) -> list[tuple[str, tuple[str, str], str, str]]:
-    """``[(url, policy, page, passage)]`` for one topic: the web part, run ahead in the background."""
-    found = []
-    for hit in search(f"{topic} site:minecraft.fandom.com")[: int(cfg.get("pages_per_topic", 1))]:
-        url = hit["url"]
+    """``[(url, policy, page, part)]`` for one topic: its wiki page opened directly (no search needed; a search
+    when there is no page of that name, and for ``pages_per_topic`` > 1), read WHOLE in parts of ~2,800 characters.
+    The web part, run ahead in the background."""
+    found: list[tuple[str, tuple[str, str], str, str]] = []
+    urls: list[str] = []
+    try:
+        direct = wiki_url(topic)
+        found_page = fetch(direct)
+        urls.append(direct)
+    except Exception:  # noqa: BLE001 - no page of that name: search for it
+        found_page = ""
+    wanted = int(cfg.get("pages_per_topic", 1))
+    if len(urls) < wanted:
+        for hit in search(f"{topic} site:minecraft.fandom.com"):
+            if len(urls) >= wanted:
+                break
+            policy = source_policy(hit["url"])
+            if policy and policy[0] == "text" and hit["url"] not in urls:
+                urls.append(hit["url"])
+    for url in urls:
         policy = source_policy(url)
         if not policy or policy[0] != "text":
             continue
-        page = fetch(url)
-        passage = passages(page, topic, size=int(cfg.get("passage_chars", 1400)), top=2)
-        if len(passage) >= 200:
-            found.append((url, policy, page, passage))
+        try:
+            page = found_page if url == urls[0] and found_page else fetch(url)
+        except Exception:  # noqa: BLE001 - one page failing is fine
+            continue
+        for part in page_sections(page, int(cfg.get("part_chars", 2800)), int(cfg.get("parts_per_page", 0))):
+            found.append((url, policy, page, part))
     return found
 
 
@@ -1261,10 +1410,15 @@ def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collecto
     rows: list[dict] = []
     rejected: list[dict] = []
     asked: set[str] = set()
+    read: set[str] = set()
     try:
         for url, policy, page, passage in found:
             if time.time() > deadline:
                 break
+            page_id = hashlib.sha1(page[:4000].encode("utf-8")).hexdigest()[:16]
+            if page_id in collector.pages and page_id not in read:
+                continue  # another topic already read this page (a redirect, or another session)
+            read.add(page_id)
             for pair in propose(llm, topic, url, passage, int(cfg.get("pairs_per_page", 3))):
                 key = question_key(pair["question"])
                 if collector.seen(pair["question"]) or key in asked or time.time() > deadline:
@@ -1274,7 +1428,8 @@ def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collecto
                 trust, confirmed = "medium", ""
                 # the game data already confirms it: no need to search again (that is most of the CPU time)
                 if passed and cfg.get("corroborate", True) and checks.get("game_data") != "ok":
-                    verdict, confirmed = corroborate(llm, pair, search, fetch, {url})
+                    verdict, confirmed = corroborate(llm, pair, search, fetch, {url},
+                                                     int(cfg.get("corroborate_pages", 3)))
                     checks["independent_page"] = verdict
                     if verdict == "CONTRADICTED":
                         passed, why = False, f"an independent page contradicts it ({confirmed})"
@@ -1289,6 +1444,8 @@ def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collecto
                 rows.append(make_row(topic, pair, url, policy[1], checks, trust, confirmed, cfg.get("model", "")))
     except Exception as exc:  # noqa: BLE001 - one bad topic never stops the run
         log(f"{topic}: skipped ({type(exc).__name__}: {str(exc)[:160]})")
+    else:
+        collector.pages.update(read)
     return rows, rejected
 
 
@@ -1305,7 +1462,8 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
 
     discord = discord or Discord("")
     last_upload, last_report = time.time(), time.time()
-    todo = [t for t in topic_list if t not in set(collector.done)]
+    finished = collector.finished()
+    todo = [t for t in topic_list if t not in finished]
     if cfg.get("max_topics"):
         todo = todo[:int(cfg["max_topics"])]
     workers = max(1, int(cfg.get("parallel", 1)))
@@ -1404,8 +1562,8 @@ def main(cfg: dict) -> dict:
     def tuned(on_gpu: bool) -> dict[str, int]:
         """The settings left at 0 (auto) for the device that really runs the LLM."""
         return {"parallel": max(1, int(cfg.get("parallel", 0) or (8 if on_gpu else 4))),
-                "pages_per_topic": int(cfg.get("pages_per_topic", 0) or (2 if on_gpu else 1)),
-                "pairs_per_page": min(6, int(cfg.get("pairs_per_page", 0) or (5 if on_gpu else 3)))}
+                "pages_per_topic": int(cfg.get("pages_per_topic", 0) or 1),  # the whole page is read
+                "pairs_per_page": min(6, int(cfg.get("pairs_per_page", 0) or 5))}  # per part of ~2,800 characters
 
     parallel = tuned(bool(gpus))["parallel"]
     api = repo_id = None
@@ -1429,7 +1587,7 @@ def main(cfg: dict) -> dict:
     def upload(message: str) -> None:
         if api is not None and repo_id and collector is not None:
             try:
-                link = hub_upload(api, repo_id, folder, bool(cfg.get("private", True)), message)
+                link = hub_upload(api, repo_id, folder, bool(cfg.get("private", True)), message, collector.own_files())
                 discord.send(f"{message}: {link}", "Uploaded", "good", important=True)
             except Exception as exc:  # noqa: BLE001 - try again at the next upload
                 log(f"upload failed ({type(exc).__name__}: {str(exc)[:200]})")
@@ -1488,18 +1646,23 @@ def main(cfg: dict) -> dict:
         settings = tuned(device != "CPU")
         parallel = settings["parallel"]
         cfg = {**cfg, **settings, "model": spec["name"]}
-        log(f"{parallel} topics at once, {cfg['pages_per_topic']} page(s) per topic, {cfg['pairs_per_page']} pairs "
-            "per page")
+        log(f"{parallel} topics at once, {cfg['pages_per_topic']} page(s) per topic read whole, "
+            f"{cfg['pairs_per_page']} pairs per part of the page")
         log(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s"
             + (" with n-gram speculation" if speculating else ""))
         discord.send(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s ({parallel} requests at once).",
                      "LLM ready")
         data = load_minecraft_data(cfg.get("minecraft_version", MINECRAFT_DATA_VERSION))
         book = recipe_book(data)
-        topic_list = topics(data, random.Random(int(cfg.get("seed", 0))))
-        collector = Collector(folder, spec["name"])
-        log(f"{len(topic_list)} topics ({len(collector.done)} done before), {len(book)} recipes for the game-data "
-            f"check, {len(collector.rows)} rows so far")
+        topic_list = all_topics(data, tmp, cfg)
+        sessions, session = max(1, int(cfg.get("sessions", 1))), int(cfg.get("session", 1))
+        if not 1 <= session <= sessions:
+            raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions})")
+        topic_list = topic_list[session - 1::sessions]  # this session's share: no two sessions read the same topic
+        collector = Collector(folder, spec["name"], session)
+        stats = collector.stats()
+        log(f"session {session} of {sessions}: {len(topic_list)} topics, {len(collector.finished() & set(topic_list))} "
+            f"done before; {len(book)} recipes for the game-data check; {stats['rows']} rows so far (all sessions)")
         collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
                 PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()

@@ -37,7 +37,12 @@ Save & Run All* to let it run up to ~12 h in the background).
 6. Answers the game data did not confirm are searched again: an independent page that contradicts the answer
    rejects it, one that confirms it marks the row `trust: high` (otherwise `medium`).
 
-Rejected pairs and the reason go to `meta/rejected.jsonl` for review. The dataset uploads every 30 minutes, and
+**As many rows as possible:** after the ~1,700 game-data topics it reads every other article of the wiki
+(`WIKI_PAGES`), each page whole (in parts of ~2,800 characters, 5 pairs per part), opened directly (no search).
+Run several copies at once to go faster (`SESSIONS` / `SESSION`): each takes its own share of the topics and writes
+its own files, so they never overwrite each other.
+
+Rejected pairs and the reason go to `meta/rejected-NN.jsonl` for review. The dataset uploads every 30 minutes, and
 the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
 Quality first: on Kaggle it always runs the biggest model (Qwen3-30B-A3B). It still uses the whole machine:
 llama-server works on 4 topics at once on all 4 CPU threads (it batches them), while web search, downloads and page
@@ -74,8 +79,11 @@ PROCESSES = True         # web search, downloads and page parsing in PARALLEL wo
 SPECULATE = "auto"       # n-gram speculation (guesses the quotes it copies, checks many tokens at once):
                          # "auto" = measure with and without, keep the faster; "on" / "off"
 DEVICE = "auto"          # "auto" = the GPU when one is attached (Accelerator GPU T4 x2), else the CPU; "cpu" / "gpu"
-PAGES_PER_TOPIC = 0      # wiki pages read per topic; 0 = auto: 2 on a GPU, 1 on the CPU
-PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per page (max 6); 0 = auto: 5 on a GPU, 3 on the CPU
+WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other article of the Fandom wiki (thousands more)
+PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2,800 characters); 0 = auto: 1
+PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
+SESSIONS = 1             # Kaggle sessions you run AT THE SAME TIME on this dataset (each takes its share of topics)
+SESSION = 1              # which one this is: 1 ... SESSIONS (e.g. 3 copies of the notebook with SESSION = 1, 2, 3)
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
 MAX_ROWS = 0             # 0 = no limit
 MAX_HOURS = 11.75        # Kaggle stops a session after 12 h; the last upload happens before this
@@ -121,6 +129,7 @@ result = main({
     "keep": KEEP, "corroborate": CORROBORATE, "parallel": PARALLEL, "device": DEVICE,
     "min_tokens_per_s": MIN_TOKENS_PER_S, "speculate": SPECULATE,
     "processes": PROCESSES, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
+    "wiki_pages": WIKI_PAGES, "sessions": SESSIONS, "session": SESSION,
     "max_topics": MAX_TOPICS, "max_rows": MAX_ROWS, "max_hours": MAX_HOURS, "upload_every_min": UPLOAD_EVERY_MIN,
     "hf_secret": HF_SECRET, "discord": DISCORD, "discord_secret": DISCORD_SECRET,
     "ping_role_secret": PING_ROLE_SECRET, "work": WORK, "tmp": TMP,

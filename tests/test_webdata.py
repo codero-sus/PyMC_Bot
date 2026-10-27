@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import types
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -178,7 +179,7 @@ def test_collect_keeps_checked_rows_rejects_the_rest_and_resumes(tmp_path):
     uploads = []
     w.collect({"pairs_per_page": 3, "model": "Qwen3-4B-Instruct-2507", "max_topics": 1}, FakeLLM(), collector,
               w.recipe_book(_data()), ["Lead"], search, fetch, deadline=1e18, on_upload=uploads.append)
-    assert searched[0] == "Lead site:minecraft.fandom.com"
+    assert searched == []  # the wiki page is opened directly, and the game data confirmed it: no search at all
     assert [r["question"] for r in collector.rows] == ["How do you craft a lead in Minecraft?"]
     row = collector.rows[0]
     assert row["trust"] == "high" and row["checks"]["game_data"] == "ok" and row["checks"]["second_look"] == "SUPPORTED"
@@ -190,7 +191,7 @@ def test_collect_keeps_checked_rows_rejects_the_rest_and_resumes(tmp_path):
     assert len(whys) == 2 and whys[0].startswith("evidence not on the page") and "numbers not in the evidence" in whys[1]
     assert collector.done == ["Lead"]
 
-    saved = [json.loads(line) for line in (folder / "data" / "train.jsonl").read_text().splitlines()]
+    saved = [json.loads(line) for line in (folder / "data" / "train-01.jsonl").read_text().splitlines()]
     assert saved == collector.rows
     card = (folder / "README.md").read_text()
     assert "license: cc-by-sa-4.0" in card and "**1 rows** - 1 `high`" in card and "minecraft.wiki (CC BY-NC-SA) is never used" in card
@@ -266,6 +267,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
     assert seen["device"] == "auto" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
+    assert seen["wiki_pages"] is True and seen["sessions"] == 1 and seen["session"] == 1
     assert seen["processes"] is True
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
@@ -348,7 +350,8 @@ class FakeHub:
         self.public = not kwargs["private"]
 
     def upload_folder(self, **kwargs):
-        self.calls.append(("upload", kwargs["repo_id"], tuple(kwargs["allow_patterns"])))
+        self.calls.append(("upload", kwargs["repo_id"], tuple(kwargs["allow_patterns"]),
+                           tuple(kwargs.get("delete_patterns") or ())))
 
 
 def test_private_on_switches_a_public_repo_to_private_before_every_upload(tmp_path):
@@ -360,7 +363,10 @@ def test_private_on_switches_a_public_repo_to_private_before_every_upload(tmp_pa
     hub.public = True  # someone made it public meanwhile: the next upload makes it private again
     link = w.hub_upload(hub, "me/Minecraftism-dataset", tmp_path, True, "30 rows")
     assert link == "https://huggingface.co/datasets/me/Minecraftism-dataset" and not hub.public
-    assert hub.calls[-1][0] == "upload" and "data/*" in hub.calls[-1][2]
+    assert hub.calls[-1][0] == "upload" and "data/train-01.jsonl" in hub.calls[-1][2] and "data/*" not in hub.calls[-1][2]
+    assert "data/train.jsonl" in hub.calls[-1][3]  # session 01 removes the file from before the sessions
+    w.hub_upload(hub, "me/Minecraftism-dataset", tmp_path, True, "x", ["data/train-02.jsonl", "meta/progress-02.json"])
+    assert hub.calls[-1][2] == ("README.md", "data/train-02.jsonl", "meta/progress-02.json") and hub.calls[-1][3] == ()
     unsure = FakeHub(public=False, info_fails=True)  # visibility unknown: made private to be sure
     assert w.hub_make_private(unsure, "me/x", True) and unsure.calls[-1][0] == "settings"
     public = FakeHub(public=True)  # PRIVATE = False leaves it public
@@ -383,8 +389,11 @@ def test_pages_are_fetched_one_topic_ahead_and_a_stop_keeps_the_rows(tmp_path):
     threads = []
 
     def search(query):
-        threads.append((query.split(" site:")[0], threading.current_thread().name))
         return [{"url": FANDOM, "title": "Lead"}]
+
+    def fetch(url):
+        threads.append((url.rsplit("/", 1)[-1], threading.current_thread().name))
+        return page_text() + f"\nSee {url}."  # one page per topic
 
     class Stopping(FakeLLM):
         def chat(self, system, user, schema, max_tokens=700):
@@ -394,14 +403,14 @@ def test_pages_are_fetched_one_topic_ahead_and_a_stop_keeps_the_rows(tmp_path):
 
     with pytest.raises(KeyboardInterrupt):
         w.collect({"corroborate": False}, Stopping(), collector, w.recipe_book(_data()), ["Lead", "Lead use", "Lead knot"],
-                  search, lambda u: page_text(), deadline=1e18)
-    assert threads[0] == ("Lead", threads[0][1]) and all(name.startswith("prefetch") for _q, name in threads)
-    assert [q for q, _n in threads][:2] == ["Lead", "Lead use"]  # fetched in the background, one topic ahead
+                  search, fetch, deadline=1e18)
+    assert all(name.startswith("prefetch") for _q, name in threads)
+    assert [q for q, _n in threads][:2] == ["Lead", "Lead_use"]  # fetched in the background, one topic ahead
     assert len(collector.rows) == 1  # saved on the way out
-    saved = (tmp_path / "d" / "data" / "train.jsonl").read_text().splitlines()
-    assert len(saved) == 1 and (tmp_path / "d" / "data" / "high" / "train.jsonl").read_text().count("\n") == 1
+    saved = (tmp_path / "d" / "data" / "train-01.jsonl").read_text().splitlines()
+    assert len(saved) == 1 and (tmp_path / "d" / "data" / "high" / "train-01.jsonl").read_text().count("\n") == 1
     card = (tmp_path / "d" / "README.md").read_text()
-    assert "config_name: high" in card and "path: data/high/train.jsonl" in card and 'load_dataset(' in card
+    assert "config_name: high" in card and "path: data/high/train-*.jsonl" in card and 'load_dataset(' in card
 
 
 def test_parallel_topics_share_the_llm_keep_the_order_and_never_duplicate_a_question(tmp_path):
@@ -519,8 +528,16 @@ class PidSearch:
 
 
 class PageText:
+    """Picklable page fetcher for the worker processes: notes which process ran it; one page per topic."""
+
+    def __init__(self, log=None):
+        self.log = log
+
     def __call__(self, url):
-        return page_text()
+        if self.log:
+            with open(self.log, "a") as handle:
+                handle.write(f"{os.getpid()}\n")
+        return page_text() + f"\nSee {url}."
 
 
 def test_the_web_part_runs_in_worker_processes_and_the_rows_stay_right(tmp_path):
@@ -531,9 +548,9 @@ def test_the_web_part_runs_in_worker_processes_and_the_rows_stay_right(tmp_path)
         log = tmp_path / "pids"
         topics = ["Lead", "Lead use", "Lead knot"]
         w.collect({"parallel": 2, "corroborate": False}, FakeLLM(), collector, w.recipe_book(_data()), topics,
-                  PidSearch(log), PageText(), deadline=1e18, processes=pool)
+                  PidSearch(tmp_path / "searches"), PageText(log), deadline=1e18, processes=pool)
         pids = set(log.read_text().split())
-        assert pids and str(os.getpid()) not in pids  # every search ran in a worker process
+        assert len(pids) >= 1 and str(os.getpid()) not in pids  # every page was read in a worker process
         assert collector.done == topics and [r["question"] for r in collector.rows] == [
             "How do you craft a lead in Minecraft?"]
         assert pool.submit(w._ready).result() != os.getpid()  # the shared pool is still usable afterwards
@@ -637,19 +654,89 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     monkeypatch.setattr(w, "collect", lambda cfg, llm, *a, **k: calls.append(("collect", cfg["pairs_per_page"],
                                                                                cfg["pages_per_topic"], llm.binary)))
     monkeypatch.setattr(w, "load_minecraft_data", lambda version=None: _data())
+    monkeypatch.setattr(w, "wiki_titles", lambda cache=None: ["Tutorials/Farming", "Lead"])
     cfg = {"upload": False, "work": str(tmp_path), "tmp": str(tmp_path / "t"), "processes": False, "speculate": "off"}
 
     broken = {"cuda-pre"}  # the prebuilt CUDA build fails on this driver: compiled for the T4, still the 30B
     w.main(cfg)
     assert calls[:2] == [("75", True), ("75", False)]
-    assert calls[-1] == ("collect", 5, 2, Path("/bin/cuda-built/llama-server"))  # GPU: more pairs and pages
+    assert calls[-1] == ("collect", 5, 1, Path("/bin/cuda-built/llama-server"))  # 5 pairs per part, whole page
     assert started == [("cuda-pre", "Q5_K_M", 8), ("cuda-built", "Q5_K_M", 8)]  # 30B Q5_K_M, 8 at once, no smaller
 
     calls.clear(), started.clear()
     broken = {"cuda-pre", "cuda-built"}  # no GPU build works: the CPU, with the CPU settings
     w.main(cfg)
-    assert calls[-1] == ("collect", 3, 1, Path("/bin/cpu/llama-server"))
+    assert calls[-1] == ("collect", 5, 1, Path("/bin/cpu/llama-server"))
     assert started[-1] == ("cpu", "Q4_K_M", 4)
+
+
+# ------------------------------------------------------------------ as many rows as possible
+def test_a_page_is_read_whole_in_parts_without_the_changelog():
+    lines = ["Intro about the villager."]
+    for heading in ("Trading", "Breeding", "History", "Gallery", "Trivia"):
+        lines.append(f"## {heading}")
+        lines += [f"{heading} fact number {i}: villagers do things with emeralds and beds." for i in range(40)]
+    parts = w.page_sections("\n".join(lines), size=1200)
+    text = "\n".join(parts)
+    assert len(parts) >= 6 and all(len(p) <= 1300 for p in parts)
+    assert "Trading fact number 39" in text and "Breeding fact number 0" in text and "Trivia fact number 39" in text
+    assert "History fact" not in text and "Gallery fact" not in text and "[Trading]" in text
+    assert w.page_sections("short", 2800) == [] and len(w.page_sections("\n".join(lines), 1200, limit=2)) == 2
+    html = "<p>Intro text here.</p><h2>Obtaining<span class='mw-editsection'>[edit]</span></h2><p>Craft it.</p>"
+    assert w.html_to_text(html) == "Intro text here.\n## Obtaining\nCraft it."
+
+
+def test_the_wiki_page_list_has_every_article_about_the_game(tmp_path):
+    pages = {None: (["Lead", "Java Edition 1.21", "Pig", "Villager/DV"], "M"),
+             "M": (["Tutorials/Farming", "24w14a", "Minecraft Dungeons:Arch-Illager", "Zombie (disambiguation)",
+                    "Redstone circuits", "Pocket Edition Alpha 0.1.0", "Pink Wool"], None)}
+    asked = []
+
+    def get(url, timeout=30, accept="*/*"):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        assert query["list"] == ["allpages"] and query["apfilterredir"] == ["nonredirects"]
+        key = (query.get("apcontinue") or [None])[0]
+        asked.append(key)
+        titles, more = pages[key]
+        body = {"query": {"allpages": [{"title": t} for t in titles]}}
+        if more:
+            body["continue"] = {"apcontinue": more}
+        return json.dumps(body).encode()
+
+    titles = w.wiki_titles(get, tmp_path / "wiki_titles.json")
+    assert asked == [None, "M"]
+    assert titles == ["Lead", "Pig", "Tutorials/Farming", "Redstone circuits", "Pink Wool"]
+    assert w.wiki_titles(lambda *a, **k: pytest.fail("cached"), tmp_path / "wiki_titles.json") == titles
+    data = {"entities": [{"name": "pig", "displayName": "Pig", "type": "passive"}], "items": [], "blocks": []}
+    topics = w.all_topics(data, tmp_path, {"wiki_pages": True})
+    assert topics[0] == w.MECHANICS[0] and topics.count("Pig") == 1 and topics[-1] == "Pink Wool"
+    assert "Redstone circuits" in topics and len(topics) == len(set(t.lower() for t in topics))
+
+
+def test_sessions_at_the_same_time_write_their_own_files_and_share_what_is_done(tmp_path):
+    folder = tmp_path / "Minecraftism-dataset"
+    (folder / "data").mkdir(parents=True)
+    (folder / "meta").mkdir()
+    row = w.make_row("Lead", {"question": "How do you craft a lead?", "answer": "From 5 string.",
+                              "evidence": ["5 string"], "edition": "both"}, FANDOM, "CC BY-SA 3.0", {}, "high", "", "m")
+    (folder / "data" / "train.jsonl").write_text(json.dumps(row) + "\n")  # a dataset from before the sessions
+    (folder / "meta" / "progress.json").write_text(json.dumps({"done_topics": ["Lead"], "done_pages": ["abc"]}))
+    one = w.Collector(folder, "m", 1)
+    assert len(one.rows) == 1 and one.done == ["Lead"] and not (folder / "data" / "train.jsonl").exists()
+    one.save()
+    assert (folder / "data" / "train-01.jsonl").is_file() and (folder / "meta" / "progress-01.json").is_file()
+
+    two = w.Collector(folder, "m", 2)  # session 2 starts: sees session 1's rows, topics and pages, owns none of them
+    assert two.rows == [] and two.seen("how do you craft a LEAD") and two.finished() == {"Lead"} and "abc" in two.pages
+    assert two.stats()["rows"] == 1 and two.stats()["high"] == 1
+    two.add({**row, "question": "What do leads attach to?"})
+    two.save()
+    assert len((folder / "data" / "train-01.jsonl").read_text().splitlines()) == 1  # untouched
+    assert len((folder / "data" / "train-02.jsonl").read_text().splitlines()) == 1
+    assert two.own_files() == ["data/train-02.jsonl", "data/high/train-02.jsonl", "meta/rejected-02.jsonl",
+                               "meta/progress-02.json"]
+    card = (folder / "README.md").read_text()
+    assert "**2 rows**" in card and "path: data/train-*.jsonl" in card
 
 
 def test_llama_server_speculation_flags():
