@@ -240,7 +240,7 @@ def test_notebook_is_built_from_the_module_and_runs_on_cpu():
     settings = sources[1]
     assert 'DATASET_REPO = "Minecraftism-dataset"' in settings and 'HF_SECRET = "HF_TOKEN"' in settings
     assert 'DISCORD_SECRET = "discord_webhook_inform_me1"' in settings and 'PING_ROLE_SECRET = "ping_role"' in settings
-    assert "MAX_HOURS = 11.75" in settings and "cuda" not in "".join(sources[3:]).lower()
+    assert "MAX_HOURS = 11.75" in settings and 'DEVICE = "auto"' in settings  # free CPU by default, the GPU if attached
     assert '"/kaggle/working", "/kaggle/tmp"' in sources[2]
     assert "Made with ❤️ by codero-sus" in sources[0] and "minecraft.wiki is CC BY-NC-SA" in sources[0]
     for code in sources[1:]:
@@ -264,7 +264,8 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
-    assert seen["parallel"] == 4 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"
+    assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
+    assert seen["device"] == "auto" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
     assert seen["processes"] is True
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
@@ -545,6 +546,110 @@ def pickle_roundtrip(thing):
     import pickle
 
     return pickle.loads(pickle.dumps(thing))
+
+
+# ------------------------------------------------------------------ GPU (Accelerator GPU T4 x2)
+def test_gpu_info_reads_nvidia_smi_and_picks_the_better_quant_when_it_fits():
+    def smi(command, **kwargs):
+        assert command[0] == "nvidia-smi"
+        return types.SimpleNamespace(returncode=0, stdout="Tesla T4, 15360, 7.5\nTesla T4, 15360, 7.5\n")
+
+    gpus = w.gpu_info(smi)
+    assert gpus == [{"name": "Tesla T4", "vram_gb": 15.0, "arch": "75"}] * 2
+
+    def missing(command, **kwargs):
+        raise FileNotFoundError("nvidia-smi")
+
+    assert w.gpu_info(missing) == []
+    assert w.gpu_quant("qwen3-30b-a3b", 30) == "Q5_K_M"  # 2 x T4: the whole 30B in a better quant
+    assert w.gpu_quant("qwen3-30b-a3b", 16) == "Q4_K_M"  # one 16 GB GPU: llama.cpp keeps the rest in RAM
+    assert w.gpu_quant("qwen3-4b", 16) == "Q8_0"
+
+
+FAKE_CUDA_SERVER = r'''#!/bin/sh
+if [ "$1" = "--version" ]; then echo "version: 1 (fake)"; exit 0; fi
+if [ "$1" = "--list-devices" ]; then
+  if [ -f "$(dirname "$0")/libcudart.so.12" ]; then printf "Available devices:\n  CUDA0: Tesla T4 (15095 MiB, 14982 MiB free)\n  CUDA1: Tesla T4 (15095 MiB, 14982 MiB free)\n"; fi
+  exit 0
+fi
+exit 1
+'''
+
+
+def test_the_cuda_build_comes_with_its_runtime_and_must_see_the_gpu(tmp_path):
+    import tarfile
+
+    def pack(name, files):
+        path = tmp_path / "src" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(path, "w:gz") as tar:
+            for member, text in files.items():
+                file = tmp_path / "src" / "x"
+                file.write_text(text)
+                file.chmod(0o755)
+                tar.add(file, member)
+        return path
+
+    built = {"llama-b9-bin-ubuntu-cuda-12.8-x64.tar.gz": pack("a.tgz", {"llama-b9/llama-server": FAKE_CUDA_SERVER}),
+             "cudart-llama-b9-bin-ubuntu-cuda-12.8-x64.tar.gz": pack("b.tgz", {
+                 "cudart-llama-b9-bin-ubuntu-cuda-12.8-x64/libcudart.so.12": "lib"}),
+             "llama-b9-bin-ubuntu-x64.tar.gz": pack("c.tgz", {"llama-b9/llama-server": "#!/bin/sh\nexit 0\n"})}
+    release = [{"tag_name": "b9", "assets": [{"name": n, "browser_download_url": n} for n in built]}]
+    fetched = []
+
+    def download(url, target):
+        fetched.append(url)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(built[url].read_bytes())
+        return target
+
+    binary = w.llama_server_binary(tmp_path / "tools", lambda url: release, download, cuda_arch="75")
+    assert binary.parent.name == "llama-b9" and (binary.parent / "libcudart.so.12").is_file()
+    assert w._cuda_devices(binary) == 2 and "cuda" in binary.parts  # kept apart from the CPU build
+    assert sorted(fetched) == sorted(n for n in built if "cuda" in n)
+    again = w.llama_server_binary(tmp_path / "tools", lambda url: pytest.fail("found locally"), download, cuda_arch="75")
+    assert again == binary
+
+
+def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_path, monkeypatch):
+    calls, started = [], []
+
+    def binary(tools, fetch_json=None, download=None, cuda_arch="", prebuilt=True):
+        calls.append((cuda_arch, prebuilt))
+        return Path(f"/bin/{'cuda-' + ('pre' if prebuilt else 'built') if cuda_arch else 'cpu'}/llama-server")
+
+    class Server(Timed):
+        def __init__(self, binary, model, ctx, hybrid, parallel, speculate):
+            super().__init__(model.name, speculate, 50, [])
+            self.binary, self.parallel, self.seconds = binary, parallel, 0.0
+
+        def start(self):
+            started.append((self.binary.parent.name, self.key, self.parallel))
+            if self.binary.parent.name in broken:
+                raise RuntimeError("llama-server stopped: the provided PTX was compiled with an unsupported toolchain")
+            return self
+
+    monkeypatch.setattr(w, "gpu_info", lambda: [{"name": "Tesla T4", "vram_gb": 15.0, "arch": "75"}] * 2)
+    monkeypatch.setattr(w, "llama_server_binary", binary)
+    monkeypatch.setattr(w, "LlamaServer", Server)
+    monkeypatch.setattr(w, "model_file", lambda spec, folder, token="", quant="": Path(quant or spec["quant"]))
+    monkeypatch.setattr(w, "available_ram_gb", lambda: 29.0)
+    monkeypatch.setattr(w, "collect", lambda cfg, llm, *a, **k: calls.append(("collect", cfg["pairs_per_page"],
+                                                                               cfg["pages_per_topic"], llm.binary)))
+    monkeypatch.setattr(w, "load_minecraft_data", lambda version=None: _data())
+    cfg = {"upload": False, "work": str(tmp_path), "tmp": str(tmp_path / "t"), "processes": False, "speculate": "off"}
+
+    broken = {"cuda-pre"}  # the prebuilt CUDA build fails on this driver: compiled for the T4, still the 30B
+    w.main(cfg)
+    assert calls[:2] == [("75", True), ("75", False)]
+    assert calls[-1] == ("collect", 5, 2, Path("/bin/cuda-built/llama-server"))  # GPU: more pairs and pages
+    assert started == [("cuda-pre", "Q5_K_M", 8), ("cuda-built", "Q5_K_M", 8)]  # 30B Q5_K_M, 8 at once, no smaller
+
+    calls.clear(), started.clear()
+    broken = {"cuda-pre", "cuda-built"}  # no GPU build works: the CPU, with the CPU settings
+    w.main(cfg)
+    assert calls[-1] == ("collect", 3, 1, Path("/bin/cpu/llama-server"))
+    assert started[-1] == ("cpu", "Q4_K_M", 4)
 
 
 def test_llama_server_speculation_flags():

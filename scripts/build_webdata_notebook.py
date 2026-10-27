@@ -14,14 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "pymc_bot" / "llm_webdata.py"
 NOTEBOOK = ROOT / "pynb" / "Minecraftism_Dataset_Kaggle.ipynb"
 
-INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle **without a GPU**
+INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle (CPU or GPU T4 x2)
 
-Web search + an LLM running on the CPU in Kaggle's 30 GB of RAM (llama.cpp; Qwen3-30B-A3B, a mixture of experts that
-runs about as fast as a 4B model, or Qwen3-4B on smaller machines) collect Minecraft questions and answers,
+Web search + an LLM on llama.cpp (Qwen3-30B-A3B, a mixture of experts) collect Minecraft questions and answers,
 check every one, and upload them to your Hugging Face dataset **`<you>/Minecraftism-dataset`** - **private**: only
 you can see it (`PRIVATE = True`; a repo that already exists as public is switched to private too).
 
-**Kaggle setup:** Settings → *Accelerator* **None** (no GPU needed) · *Internet* **On** · Add-ons → Secrets:
+**Kaggle setup:** Settings → *Accelerator*: **None** (free, no GPU quota; the 30B in the 30 GB of RAM, ~150-400
+rows per session) or **GPU T4 x2** (uses your weekly GPU hours; the 30B in Q5_K_M across both GPUs, roughly 10x
+faster and more pairs per topic) · *Internet* **On** · Add-ons → Secrets:
 `HF_TOKEN` (a Hugging Face **write** token). Optional: `discord_webhook_inform_me1` (status messages) and
 `ping_role` (the Discord role pinged on start, uploads, errors and the end). Then **Run all** (or *Save Version →
 Save & Run All* to let it run up to ~12 h in the background).
@@ -33,8 +34,8 @@ Save & Run All* to let it run up to ~12 h in the background).
 3. Every quoted sentence must really be on the page, and every number in the answer must be in the quotes.
 4. A second LLM pass sees only question, answer and quotes and must say SUPPORTED.
 5. Crafting answers must match the game's own recipes (minecraft-data, MIT) - outdated recipes are caught.
-6. The question is searched again: an independent page that contradicts the answer rejects it, one that confirms
-   it marks the row `trust: high` (otherwise `medium`).
+6. Answers the game data did not confirm are searched again: an independent page that contradicts the answer
+   rejects it, one that confirms it marks the row `trust: high` (otherwise `medium`).
 
 Rejected pairs and the reason go to `meta/rejected.jsonl` for review. The dataset uploads every 30 minutes, and
 the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
@@ -66,14 +67,15 @@ KEEP = "medium"          # "medium" = every row that passed all checks (each has
                          # "high" = only rows confirmed by the game data or an independent page
 CORROBORATE = True       # search each answer again and ask an independent page (slower, catches outdated pages;
                          # skipped when the game data already confirms the answer)
-PARALLEL = 4             # topics worked on at once - keeps all 4 CPU cores busy (1 = one at a time, the slowest)
+PARALLEL = 0             # topics worked on at once; 0 = auto: 8 on a GPU, 4 on the CPU (1 = one at a time, slowest)
 MIN_TOKENS_PER_S = 0     # 0 = quality first: always the biggest model that fits (the 30B on Kaggle). A number (e.g. 20)
                          # = speed first: measures each model here and keeps the biggest that writes that many tokens/s
 PROCESSES = True         # web search, downloads and page parsing in PARALLEL worker processes (outside the main one)
 SPECULATE = "auto"       # n-gram speculation (guesses the quotes it copies, checks many tokens at once):
                          # "auto" = measure with and without, keep the faster; "on" / "off"
-PAGES_PER_TOPIC = 1      # wiki pages read per topic
-PAIRS_PER_PAGE = 3       # question/answer pairs the LLM writes per page
+DEVICE = "auto"          # "auto" = the GPU when one is attached (Accelerator GPU T4 x2), else the CPU; "cpu" / "gpu"
+PAGES_PER_TOPIC = 0      # wiki pages read per topic; 0 = auto: 2 on a GPU, 1 on the CPU
+PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per page (max 6); 0 = auto: 5 on a GPU, 3 on the CPU
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
 MAX_ROWS = 0             # 0 = no limit
 MAX_HOURS = 11.75        # Kaggle stops a session after 12 h; the last upload happens before this
@@ -97,13 +99,12 @@ WORK, TMP = "/kaggle/working", "/kaggle/tmp"  # the dataset in /kaggle/working; 
 for folder in (WORK, TMP):
     os.makedirs(folder, exist_ok=True)
 try:
-    import torch  # noqa: F401 - only to say whether a GPU is attached (it is not needed)
-    gpu = torch.cuda.is_available()
+    gpus = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30).stdout.strip().splitlines()
 except Exception:
-    gpu = False
+    gpus = []
 ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
-print(f"{os.cpu_count()} CPU threads, {ram:.0f} GB RAM" + (" - a GPU is attached but not used (Accelerator None is "
-      "enough)" if gpu else " - no GPU, as intended"))
+print(f"{os.cpu_count()} CPU threads, {ram:.0f} GB RAM" + (f" - {len(gpus)} GPU(s), llama.cpp will use them: {gpus[0]}"
+      if gpus else " - no GPU: the CPU does the work (free; Accelerator GPU T4 x2 is ~10x faster)"))
 for name, url in (("Hugging Face", "https://huggingface.co/api/whoami-v2"), ("GitHub", "https://api.github.com")):
     try:
         urllib.request.urlopen(url, timeout=20).close()
@@ -117,7 +118,7 @@ print("internet: OK")
 RUN = """# ============================== run ==============================
 result = main({
     "model": MODEL, "dataset_repo": DATASET_REPO, "upload": UPLOAD, "private": PRIVATE, "resume": RESUME,
-    "keep": KEEP, "corroborate": CORROBORATE, "parallel": PARALLEL,
+    "keep": KEEP, "corroborate": CORROBORATE, "parallel": PARALLEL, "device": DEVICE,
     "min_tokens_per_s": MIN_TOKENS_PER_S, "speculate": SPECULATE,
     "processes": PROCESSES, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
     "max_topics": MAX_TOPICS, "max_rows": MAX_ROWS, "max_hours": MAX_HOURS, "upload_every_min": UPLOAD_EVERY_MIN,

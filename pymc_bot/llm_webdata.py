@@ -58,11 +58,12 @@ LLAMA_CPP_REPO = "ggml-org/llama.cpp"
 #: runs about as fast as the 4B and judges far better - it fits Kaggle's 30 GB.
 MODELS = {
     "qwen3-30b-a3b": {"repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF", "quant": "Q4_K_M",
-                      "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 23},
+                      "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 23,
+                      "gpu_quant": "Q5_K_M", "gpu_vram_gb": 27},
     "qwen3-4b": {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "quant": "Q4_K_M", "name": "Qwen3-4B-Instruct-2507",
-                 "hybrid": False, "license": "Apache-2.0", "ram_gb": 4},
+                 "hybrid": False, "license": "Apache-2.0", "ram_gb": 4, "gpu_quant": "Q8_0", "gpu_vram_gb": 7},
     "qwen3-1.7b": {"repo": "unsloth/Qwen3-1.7B-GGUF", "quant": "Q4_K_M", "name": "Qwen3-1.7B", "hybrid": True,
-                   "license": "Apache-2.0", "ram_gb": 2.5},
+                   "license": "Apache-2.0", "ram_gb": 2.5, "gpu_quant": "Q8_0", "gpu_vram_gb": 4},
 }
 
 
@@ -78,6 +79,28 @@ def available_ram_gb() -> float:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
     except (ValueError, OSError, AttributeError):
         return 0.0
+
+
+def gpu_info(run: Callable[..., Any] = subprocess.run) -> list[dict[str, Any]]:
+    """The NVIDIA GPUs (``[{"name", "vram_gb", "arch"}]``, e.g. 2 x Tesla T4 = arch "75"), ``[]`` without one."""
+    try:
+        done = run(["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
+                   capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    gpus = []
+    for line in (done.stdout or "").splitlines() if done.returncode == 0 else []:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 3 and parts[1].replace(".", "").isdigit():
+            gpus.append({"name": parts[0], "vram_gb": float(parts[1]) / 1024, "arch": parts[2].replace(".", "")})
+    return gpus
+
+
+def gpu_quant(key: str, vram_gb: float) -> str:
+    """The GGUF quant for ``key`` on GPUs with ``vram_gb`` in total: the better one when it fits (2 x T4: the 30B in
+    Q5_K_M), else the CPU one (llama.cpp then keeps what does not fit in RAM)."""
+    spec = MODELS[key]
+    return spec.get("gpu_quant", spec["quant"]) if vram_gb >= spec.get("gpu_vram_gb", 1e9) else spec["quant"]
 
 
 def pick_model(choice: str = "auto", ram_gb: float | None = None) -> tuple[str, str]:
@@ -714,10 +737,11 @@ def benchmark(llm: Any) -> float:
 
 
 def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
-             speculate: str = "auto") -> tuple[Any, str, float, bool]:
+             speculate: str = "auto", step_down: bool = True) -> tuple[Any, str, float, bool]:
     """``(server, model key, tokens/s, speculating)``: the biggest of ``keys`` (biggest first) that writes at least
     ``target`` tokens/s here, measured; with ``speculate="auto"`` with and without the n-gram speculation (the
-    faster wins). When none is fast enough: the last (smallest) one. ``start(key, speculate)`` = a started server."""
+    faster wins). When none is fast enough: the last (smallest) one. ``start(key, speculate)`` = a started server.
+    ``step_down=False``: when the first model does not work at all, raise (the build is broken, not the model)."""
     modes = {"auto": [True, False], "on": [True], "off": [False]}.get(speculate, [True, False])
     for number, key in enumerate(keys, 1):
         best: tuple[float, Any, bool] | None = None
@@ -735,6 +759,9 @@ def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
                 speed = 0.0
             log(f"speed test: {MODELS[key]['name']}{' + n-gram speculation' if spec else ''} writes {speed:.1f} "
                 f"tok/s ({getattr(server, 'parallel', 1)} requests at once; target {target:g})")
+            if speed <= 0:  # no usable replies: broken, not slow
+                server.stop()
+                continue
             if best is not None and best[0] >= speed:
                 server.stop()
                 continue
@@ -744,6 +771,8 @@ def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
             if target > 0 and speed >= target:
                 break
         if best is None:
+            if not step_down:
+                break
             continue
         if target <= 0 or best[0] >= target or number == len(keys):
             return best[1], key, best[0], best[2]
@@ -792,49 +821,87 @@ def _download(url: str, target: Path) -> Path:
     return target
 
 
+def _cuda_devices(binary: Path) -> int:
+    """How many CUDA GPUs this llama-server sees (0 = the CUDA part cannot load here)."""
+    env = {**os.environ, "LD_LIBRARY_PATH": f"{binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    try:
+        done = subprocess.run([str(binary), "--list-devices"], capture_output=True, text=True, env=env, timeout=180)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    return len(re.findall(r"(?m)^\s*CUDA\d+\s*:", done.stdout + done.stderr))
+
+
 def llama_server_binary(tools: Path, fetch_json: Callable[[str], Any] = http_json,
-                        download: Callable[[str, Path], Path] = _download) -> Path:
-    """``llama-server`` for CPU: one already in ``tools``, else the newest llama.cpp Linux x64 CPU build, else
-    compiled from that release's source (~10 min on 4 cores) when the prebuilt one cannot start here."""
-    tools = Path(tools)
+                        download: Callable[[str, Path], Path] = _download, cuda_arch: str = "",
+                        prebuilt: bool = True) -> Path:
+    """``llama-server``: one already in ``tools``, else the newest llama.cpp Linux x64 build, else compiled from
+    that release's source when the prebuilt one cannot start here (~10 min on 4 cores for the CPU).
+    ``cuda_arch`` (``"75"`` = Tesla T4): the CUDA build, which must see the GPU; compiled for exactly that GPU with
+    Kaggle's nvcc (~20-30 min) when the prebuilt one cannot. ``prebuilt=False``: compile (the prebuilt one started
+    but failed on the GPU)."""
+    tools = Path(tools) / "cuda" if cuda_arch else Path(tools)
+    kind = "CUDA" if cuda_arch else "CPU"
+
+    def usable(path: Path) -> bool:
+        return path.is_file() and _runs(path) and (not cuda_arch or _cuda_devices(path) > 0)
+
     for found in sorted(tools.rglob("llama-server")) if tools.is_dir() else []:
-        if found.is_file() and _runs(found):
+        if (prebuilt or "build" in found.parts) and usable(found):
             return found
+    pattern = r"ubuntu-cuda-12\.\d+-x64\.tar\.gz" if cuda_arch else r"ubuntu-x64\.(tar\.gz|zip)"
     releases = fetch_json(f"https://api.github.com/repos/{LLAMA_CPP_REPO}/releases?per_page=15")
     for release in releases:
         tag = str(release.get("tag_name") or "")
-        asset = next((a for a in release.get("assets") or []
-                      if re.fullmatch(rf"llama-{re.escape(tag)}-bin-ubuntu-x64\.(tar\.gz|zip)", str(a.get("name")))), None)
+        assets = release.get("assets") or []
+        asset = next((a for a in assets if re.fullmatch(rf"llama-{re.escape(tag)}-bin-{pattern}", str(a.get("name")))),
+                     None)
         if not asset:
             continue
-        log(f"llama.cpp {tag}: downloading the CPU build")
         folder = tools / f"llama.cpp-{tag}"
-        _extract(download(asset["browser_download_url"], folder / asset["name"]), folder / "bin")
-        binary = next((p for p in sorted((folder / "bin").rglob("llama-server")) if p.is_file()), None)
-        if binary:
-            binary.chmod(0o755)
-            if _runs(binary):
-                return binary
-        log("the prebuilt llama-server does not start here - compiling it from source (~10 min)")
+        if prebuilt:
+            log(f"llama.cpp {tag}: downloading the {kind} build")
+            _extract(download(asset["browser_download_url"], folder / asset["name"]), folder / "bin")
+            binary = next((p for p in sorted((folder / "bin").rglob("llama-server")) if p.is_file()), None)
+            runtime = next((a for a in assets if a.get("name") == "cudart-" + str(asset["name"])), None)
+            if binary and cuda_arch and runtime:  # the CUDA runtime libraries, next to the binary
+                _extract(download(runtime["browser_download_url"], folder / runtime["name"]), folder / "cudart")
+                for lib in (folder / "cudart").rglob("*.so*"):
+                    shutil.copy2(lib, binary.parent / lib.name)
+            if binary:
+                binary.chmod(0o755)
+                if usable(binary):
+                    return binary
+            log(f"the prebuilt {kind} llama-server does not work here - compiling it from source "
+                f"({'~20-30 min, for this GPU' if cuda_arch else '~10 min'})")
         src = folder / "src"
-        _extract(download(f"https://codeload.github.com/{LLAMA_CPP_REPO}/tar.gz/refs/tags/{tag}", folder / "src.tar.gz"),
-                 src)
+        if not src.is_dir():
+            _extract(download(f"https://codeload.github.com/{LLAMA_CPP_REPO}/tar.gz/refs/tags/{tag}",
+                              folder / "src.tar.gz"), src)
         top = next(p.parent for p in src.rglob("CMakeLists.txt") if (p.parent / "tools").is_dir() or
                    (p.parent / "examples").is_dir())
-        subprocess.run(["cmake", "-S", str(top), "-B", str(top / "build"), "-DGGML_NATIVE=ON", "-DLLAMA_CURL=OFF",
-                        "-DCMAKE_BUILD_TYPE=Release"], check=True)
+        flags = ["-DGGML_NATIVE=ON", "-DLLAMA_CURL=OFF", "-DCMAKE_BUILD_TYPE=Release"]
+        if cuda_arch:
+            flags += ["-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}"]
+            if Path("/usr/local/cuda/bin/nvcc").is_file():
+                flags.append("-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc")
+        subprocess.run(["cmake", "-S", str(top), "-B", str(top / "build"), *flags], check=True)
         subprocess.run(["cmake", "--build", str(top / "build"), "--target", "llama-server", "-j",
                         str(os.cpu_count() or 4)], check=True)
-        return next(p for p in sorted((top / "build").rglob("llama-server")) if p.is_file())
-    raise RuntimeError("no llama.cpp Linux x64 CPU release found")
+        binary = next(p for p in sorted((top / "build").rglob("llama-server")) if p.is_file())
+        if cuda_arch and not usable(binary):
+            raise RuntimeError("the llama-server compiled with CUDA does not see the GPU")
+        return binary
+    raise RuntimeError(f"no llama.cpp Linux x64 {kind} release found")
 
 
-def model_file(spec: dict, folder: Path, token: str = "") -> Path:
-    """The GGUF of ``spec`` (downloaded once into ``folder``)."""
+def model_file(spec: dict, folder: Path, token: str = "", quant: str = "") -> Path:
+    """The GGUF of ``spec`` (downloaded once into ``folder``); ``quant`` = another quant than the CPU one, used
+    when the repo has it."""
     from huggingface_hub import HfApi, hf_hub_download  # type: ignore[import-not-found]
 
     files = HfApi(token=token or None).list_repo_files(spec["repo"])
-    wanted = [f for f in files if f.endswith(f"{spec['quant']}.gguf") and "/" not in f]
+    wanted = [f for f in files if f.endswith(f"{quant}.gguf") and "/" not in f] if quant else []
+    wanted = wanted or [f for f in files if f.endswith(f"{spec['quant']}.gguf") and "/" not in f]
     if not wanted:
         raise RuntimeError(f"{spec['repo']} has no {spec['quant']} GGUF")
     return Path(hf_hub_download(spec["repo"], wanted[0], local_dir=str(folder), token=token or None))
@@ -1021,8 +1088,8 @@ configs:
 
 Checked Minecraft questions and answers for the **Minecraftism** models of
 [PyMC Bot](https://github.com/codero-sus/PyMC_Bot), collected by the notebook
-`pynb/Minecraftism_Dataset_Kaggle.ipynb` (Kaggle, CPU only): web search + an LLM on the CPU ({model}) that may
-only write what a page says, and then checks on every answer.
+`pynb/Minecraftism_Dataset_Kaggle.ipynb` (Kaggle): web search + an LLM ({model}, on llama.cpp) that may only
+write what a page says, and then checks on every answer.
 
 **{len(rows)} rows** - {high} `high` trust (confirmed by the game's own data or an independent page), {len(rows) - high}
 `medium` (one source, passed every check). {len(rejected)} rejected pairs (with the reason) are in
@@ -1327,7 +1394,20 @@ def main(cfg: dict) -> dict:
     log(f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
                                          if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 0)) > 0 else ""))
     deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
-    parallel = max(1, int(cfg.get("parallel", 4)))
+    gpus = gpu_info() if cfg.get("device", "auto") in ("auto", "gpu") else []
+    if cfg.get("device") == "gpu" and not gpus:
+        log("DEVICE = \"gpu\" but no NVIDIA GPU is attached (Settings > Accelerator > GPU T4 x2) - using the CPU")
+    vram = sum(g["vram_gb"] for g in gpus)
+    if gpus:
+        log(f"GPU: {len(gpus)} x {gpus[0]['name']} ({vram:.0f} GB VRAM) - llama.cpp runs on it")
+
+    def tuned(on_gpu: bool) -> dict[str, int]:
+        """The settings left at 0 (auto) for the device that really runs the LLM."""
+        return {"parallel": max(1, int(cfg.get("parallel", 0) or (8 if on_gpu else 4))),
+                "pages_per_topic": int(cfg.get("pages_per_topic", 0) or (2 if on_gpu else 1)),
+                "pairs_per_page": min(6, int(cfg.get("pairs_per_page", 0) or (5 if on_gpu else 3)))}
+
+    parallel = tuned(bool(gpus))["parallel"]
     api = repo_id = None
     if cfg.get("upload", True):
         if not token:
@@ -1360,22 +1440,60 @@ def main(cfg: dict) -> dict:
         return {**stats, "link": link, "samples": samples}
 
     try:
-        discord.send(f"Collecting a trusted Minecraft dataset on CPU (testing {spec['name']} first)"
+        discord.send(f"Collecting a trusted Minecraft dataset on the {'GPU' if gpus else 'CPU'} "
+                     f"(testing {spec['name']} first)"
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
-        binary = llama_server_binary(tmp / "tools")
-        def start(name: str, speculate: bool) -> LlamaServer:
-            model = model_file(MODELS[name], tmp / "models", token)
-            log(f"starting llama-server with {model.name} on {os.cpu_count()} CPU threads, {parallel} requests at "
-                f"once" + (", n-gram speculation" if speculate else ""))
-            return LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=MODELS[name]["hybrid"],
-                               parallel=parallel, speculate=speculate).start()
+        def starter(binary: Path, on_gpu: bool) -> Callable[[str, bool], LlamaServer]:
+            def start(name: str, speculate: bool) -> LlamaServer:
+                model = model_file(MODELS[name], tmp / "models", token, gpu_quant(name, vram) if on_gpu else "")
+                slots = tuned(on_gpu)["parallel"]
+                log(f"starting llama-server with {model.name} on "
+                    + (f"{len(gpus)} GPU(s)" if on_gpu else f"{os.cpu_count()} CPU threads")
+                    + f", {slots} requests at once" + (", n-gram speculation" if speculate else ""))
+                return LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=MODELS[name]["hybrid"],
+                                   parallel=slots, speculate=speculate).start()
+            return start
 
-        llm, key, speed, speculating = fast_llm(keys, start, float(cfg.get("min_tokens_per_s", 0)),
-                                                str(cfg.get("speculate", "auto")))
+        target, speculate = float(cfg.get("min_tokens_per_s", 0)), str(cfg.get("speculate", "auto"))
+        plans: list[tuple[str, Callable[[], Path]]] = []
+        if gpus:
+            arch = gpus[0]["arch"]
+            plans += [("GPU", lambda: llama_server_binary(tmp / "tools", cuda_arch=arch)),
+                      ("GPU (compiled here)", lambda: llama_server_binary(tmp / "tools", cuda_arch=arch, prebuilt=False))]
+        plans.append(("CPU", lambda: llama_server_binary(tmp / "tools")))
+        chosen = None
+        used: list[Path] = []
+        no_cuda_build = False
+        for label, get_binary in plans:
+            if no_cuda_build and label != "CPU":
+                continue
+            try:
+                try:
+                    binary = get_binary()
+                except Exception:
+                    no_cuda_build = label != "CPU"  # downloading / compiling failed: compiling again will not help
+                    raise
+                if binary in used:  # the prebuilt one failed and was already the compiled one
+                    continue
+                used.append(binary)
+                chosen = (label, *fast_llm(keys, starter(binary, label != "CPU"), target, speculate,
+                                           step_down=label == "CPU"))
+                break
+            except Exception as exc:  # noqa: BLE001 - the next way (compiled for the GPU, then the CPU)
+                log(f"{label}: llama.cpp did not work ({type(exc).__name__}: {str(exc)[:300]})")
+        if chosen is None:
+            raise RuntimeError("llama.cpp did not start on the GPU or the CPU (see llama-server.log)")
+        device, llm, key, speed, speculating = chosen
         spec = MODELS[key]
-        cfg = {**cfg, "model": spec["name"], "parallel": parallel}
-        log(f"LLM: {spec['name']}, writing {speed:.1f} tok/s" + (" with n-gram speculation" if speculating else ""))
-        discord.send(f"LLM: {spec['name']} on CPU, writing {speed:.1f} tok/s ({parallel} requests at once).", "LLM ready")
+        settings = tuned(device != "CPU")
+        parallel = settings["parallel"]
+        cfg = {**cfg, **settings, "model": spec["name"]}
+        log(f"{parallel} topics at once, {cfg['pages_per_topic']} page(s) per topic, {cfg['pairs_per_page']} pairs "
+            "per page")
+        log(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s"
+            + (" with n-gram speculation" if speculating else ""))
+        discord.send(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s ({parallel} requests at once).",
+                     "LLM ready")
         data = load_minecraft_data(cfg.get("minecraft_version", MINECRAFT_DATA_VERSION))
         book = recipe_book(data)
         topic_list = topics(data, random.Random(int(cfg.get("seed", 0))))
