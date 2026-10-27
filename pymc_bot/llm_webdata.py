@@ -555,11 +555,12 @@ class LlamaServer:
     """llama.cpp's ``llama-server`` with one GGUF, on CPU; ``chat()`` returns parsed JSON (schema-constrained)."""
 
     def __init__(self, binary: Path, model: Path, threads: int = 0, ctx: int = 8192, port: int = 8089,
-                 hybrid: bool = False, parallel: int = 1) -> None:
+                 hybrid: bool = False, parallel: int = 1, speculate: bool = False) -> None:
         self.binary, self.model, self.port, self.hybrid = Path(binary), Path(model), port, hybrid
         self.threads = threads or max(1, os.cpu_count() or 4)
         self.ctx = ctx  # per slot
         self.parallel = max(1, int(parallel))  # slots: requests the server works on together (continuous batching)
+        self.speculate = speculate  # n-gram speculation: guesses tokens it has seen (the quotes) and checks many at once
         self.process: subprocess.Popen | None = None
         self.calls = 0
         self.seconds = 0.0
@@ -568,9 +569,7 @@ class LlamaServer:
 
     def start(self, wait: float = 900) -> "LlamaServer":
         env = {**os.environ, "LD_LIBRARY_PATH": f"{self.binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
-        command = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx * self.parallel), "-t",
-                   str(self.threads), "--host", "127.0.0.1", "--port", str(self.port), "--jinja", "-np",
-                   str(self.parallel), "--no-webui"]
+        command = self.command()
         logfile = open(self.model.parent / "llama-server.log", "w")  # noqa: SIM115 - lives as long as the server
         self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env)
         end = time.time() + wait
@@ -585,6 +584,15 @@ class LlamaServer:
                 pass
             time.sleep(2)
         raise RuntimeError("llama-server did not become ready")
+
+    def command(self) -> list[str]:
+        command = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx * self.parallel), "-t",
+                   str(self.threads), "--host", "127.0.0.1", "--port", str(self.port), "--jinja", "-np",
+                   str(self.parallel), "--no-webui"]
+        if self.speculate:  # no draft model: the guesses come from the prompt and what it wrote (the quotes, JSON keys)
+            command += ["--spec-type", "ngram-simple", "--spec-ngram-simple-size-n", "8",
+                        "--spec-ngram-simple-size-m", "32", "--spec-draft-n-max", "32"]
+        return command
 
     def stop(self) -> None:
         if self.process and self.process.poll() is None:
@@ -625,8 +633,77 @@ def llm_speed(llm: Any) -> str:
         return ""
     read = tokens["prompt"] / max(tokens["prompt_ms"] / 1000, 1e-6)
     cached = tokens["cached"] / max(tokens["cached"] + tokens["prompt"], 1)
-    return (f"LLM reads {read:.0f} tok/s ({cached:.0%} from cache), writes "
-            f"{tokens['out'] / (tokens['out_ms'] / 1000):.1f} tok/s per request x {getattr(llm, 'parallel', 1)} at once")
+    reads = f"LLM reads {read:.0f} tok/s ({cached:.0%} from cache), " if tokens.get("prompt_ms") else "LLM "
+    return (f"{reads}writes {tokens['out'] / (tokens['out_ms'] / 1000):.1f} tok/s per request x "
+            f"{getattr(llm, 'parallel', 1)} at once")
+
+
+#: The speed test: the real job (write question-answer pairs with quotes) on a short text, all slots at once.
+BENCH_TOPIC = "Lead"
+BENCH_URL = "https://minecraft.fandom.com/wiki/Lead"
+BENCH_PASSAGE = (
+    "A lead is an item that ties a passive mob to the player or to a fence. Leads are crafted from 5 string, and "
+    "one craft gives 2 leads. A mob on a lead follows the player; if the player moves more than 10 blocks away, the "
+    "lead breaks and drops as an item. A lead can be tied to a fence post by using it on the fence, which leaves a "
+    "lead knot. Wandering traders arrive with their llamas on leads. Hostile mobs such as zombies and creepers "
+    "cannot be put on a lead, but zoglins and hoglins can. Boats can be pulled with a lead in recent versions."
+)
+
+
+def benchmark(llm: Any) -> float:
+    """Tokens/s the LLM writes with all its slots busy (the real job, so the n-gram speculation counts too).
+    0 when the replies are broken."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    parallel = int(getattr(llm, "parallel", 1))
+    llm.chat(JUDGE_SYSTEM, "QUESTION: q?\nANSWER: a\n\nEVIDENCE:\n<<<\na\n>>>", VERDICT_SCHEMA, max_tokens=8)  # warm-up
+    before = dict(llm.tokens)
+    with ThreadPoolExecutor(parallel) as pool:
+        results = list(pool.map(lambda _i: propose(llm, BENCH_TOPIC, BENCH_URL, BENCH_PASSAGE, 2), range(parallel)))
+    if not any(results):
+        return 0.0
+    written = llm.tokens["out"] - before["out"]
+    seconds = (llm.tokens["out_ms"] - before["out_ms"]) / 1000 / parallel  # the requests ran side by side
+    return written / max(seconds, 1e-6)
+
+
+def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
+             speculate: str = "auto") -> tuple[Any, str, float, bool]:
+    """``(server, model key, tokens/s, speculating)``: the biggest of ``keys`` (biggest first) that writes at least
+    ``target`` tokens/s here, measured; with ``speculate="auto"`` with and without the n-gram speculation (the
+    faster wins). When none is fast enough: the last (smallest) one. ``start(key, speculate)`` = a started server."""
+    modes = {"auto": [True, False], "on": [True], "off": [False]}.get(speculate, [True, False])
+    for number, key in enumerate(keys, 1):
+        best: tuple[float, Any, bool] | None = None
+        for spec in modes:
+            try:
+                server = start(key, spec)
+            except Exception as exc:  # noqa: BLE001 - e.g. an older llama.cpp without the flag: try the next way
+                log(f"{MODELS[key]['name']}{' + speculation' if spec else ''} did not start "
+                    f"({type(exc).__name__}: {str(exc)[:200]})")
+                continue
+            try:
+                speed = benchmark(server)
+            except Exception as exc:  # noqa: BLE001
+                log(f"speed test failed ({type(exc).__name__}: {str(exc)[:200]})")
+                speed = 0.0
+            log(f"speed test: {MODELS[key]['name']}{' + n-gram speculation' if spec else ''} writes {speed:.1f} "
+                f"tok/s ({getattr(server, 'parallel', 1)} requests at once; target {target:g})")
+            if best is not None and best[0] >= speed:
+                server.stop()
+                continue
+            if best is not None:
+                best[1].stop()
+            best = (speed, server, spec)
+            if target > 0 and speed >= target:
+                break
+        if best is None:
+            continue
+        if target <= 0 or best[0] >= target or number == len(keys):
+            return best[1], key, best[0], best[2]
+        log(f"{MODELS[key]['name']} is below {target:g} tok/s - trying a smaller model")
+        best[1].stop()
+    raise RuntimeError("no LLM could start (see llama-server.log in the models folder)")
 
 
 def _runs(binary: Path) -> bool:
@@ -1195,9 +1272,10 @@ def main(cfg: dict) -> dict:
     if cfg.get("keep", "medium") not in ("medium", "high"):
         raise SystemExit(f"KEEP = {cfg.get('keep')!r} - use \"medium\" or \"high\"")
     key, why = pick_model(cfg.get("model", "auto"))
+    keys = list(MODELS)[list(MODELS).index(key):] if cfg.get("model", "auto") == "auto" else [key]
     spec = MODELS[key]
-    log(f"LLM: {spec['name']} ({why})")
-    cfg = {**cfg, "model": spec["name"]}
+    log(f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 20)} tok/s"
+                                         if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 20)) > 0 else ""))
     deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
     api = repo_id = None
     if cfg.get("upload", True):
@@ -1229,15 +1307,24 @@ def main(cfg: dict) -> dict:
         return {**stats, "link": link, "samples": samples}
 
     try:
-        discord.send(f"Collecting a trusted Minecraft dataset with {spec['name']} on CPU"
+        discord.send(f"Collecting a trusted Minecraft dataset on CPU (testing {spec['name']} first)"
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
         binary = llama_server_binary(tmp / "tools")
-        model = model_file(spec, tmp / "models", token)
         parallel = max(1, int(cfg.get("parallel", 4)))
-        cfg = {**cfg, "parallel": parallel}
-        log(f"starting llama-server with {model.name} on {os.cpu_count()} CPU threads, {parallel} requests at once")
-        llm = LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=spec["hybrid"],
-                          parallel=parallel).start()
+
+        def start(name: str, speculate: bool) -> LlamaServer:
+            model = model_file(MODELS[name], tmp / "models", token)
+            log(f"starting llama-server with {model.name} on {os.cpu_count()} CPU threads, {parallel} requests at "
+                f"once" + (", n-gram speculation" if speculate else ""))
+            return LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=MODELS[name]["hybrid"],
+                               parallel=parallel, speculate=speculate).start()
+
+        llm, key, speed, speculating = fast_llm(keys, start, float(cfg.get("min_tokens_per_s", 20)),
+                                                str(cfg.get("speculate", "auto")))
+        spec = MODELS[key]
+        cfg = {**cfg, "model": spec["name"], "parallel": parallel}
+        log(f"LLM: {spec['name']}, writing {speed:.1f} tok/s" + (" with n-gram speculation" if speculating else ""))
+        discord.send(f"LLM: {spec['name']} on CPU, writing {speed:.1f} tok/s ({parallel} requests at once).", "LLM ready")
         data = load_minecraft_data(cfg.get("minecraft_version", MINECRAFT_DATA_VERSION))
         book = recipe_book(data)
         topic_list = topics(data, random.Random(int(cfg.get("seed", 0))))

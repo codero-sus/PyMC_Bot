@@ -263,7 +263,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
-    assert seen["parallel"] == 4
+    assert seen["parallel"] == 4 and seen["min_tokens_per_s"] == 20 and seen["speculate"] == "auto"
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
 
@@ -446,6 +446,68 @@ def test_llama_server_runs_parallel_slots_and_reports_its_speed():
     server.tokens.update(prompt=900, prompt_ms=20000, cached=100, out=300, out_ms=40000)
     assert w.llm_speed(server) == "LLM reads 45 tok/s (10% from cache), writes 7.5 tok/s per request x 4 at once"
     assert w.VERDICT_SCHEMA["properties"]["reason"]["maxLength"] <= 200  # short judge replies
+
+
+class Timed:
+    """A started server for fast_llm: writes ``speed`` tok/s in the speed test."""
+
+    def __init__(self, key, spec, speed, stopped):
+        self.key, self.spec, self.speed, self.stopped = key, spec, speed, stopped
+        self.parallel, self.calls = 4, 0
+        self.tokens = {"prompt": 0, "prompt_ms": 0.0, "cached": 0, "out": 0, "out_ms": 0.0}
+
+    def chat(self, system, user, schema, max_tokens=700):
+        if system == w.JUDGE_SYSTEM:
+            return {"verdict": "SUPPORTED", "reason": "r"}
+        assert "5 string" in user and "SOURCE TEXT" in user
+        self.tokens["out"] += 100
+        self.tokens["out_ms"] += 100 / self.speed * 1000 * self.parallel  # 4 side by side: `speed` in total
+        return {"pairs": [{"question": "How do you craft a lead?", "answer": "From 5 string.",
+                           "evidence": ["Leads are crafted from 5 string"], "edition": "both"}]}
+
+    def stop(self):
+        self.stopped.append((self.key, self.spec))
+
+
+def test_the_speed_test_keeps_the_biggest_model_that_writes_20_tokens_per_second():
+    speeds = {("qwen3-30b-a3b", True): 11, ("qwen3-30b-a3b", False): 8, ("qwen3-4b", True): 14,
+              ("qwen3-4b", False): 9, ("qwen3-1.7b", True): 16, ("qwen3-1.7b", False): 23}
+    stopped = []
+
+    def start(key, spec):
+        return Timed(key, spec, speeds[(key, spec)], stopped)
+
+    server, key, speed, spec = w.fast_llm(list(w.MODELS), start, 20)
+    assert (key, spec) == ("qwen3-1.7b", False) and round(speed) == 23 and server.speed == 23
+    assert ("qwen3-1.7b", False) not in stopped and len(stopped) == 5  # every slower one was stopped
+
+    stopped.clear()  # fast enough at once: no other test, no smaller model
+    server, key, speed, spec = w.fast_llm(list(w.MODELS), start, 10)
+    assert (key, spec) == ("qwen3-30b-a3b", True) and stopped == []
+    server, key, speed, spec = w.fast_llm(["qwen3-30b-a3b"], start, 20)  # MODEL set by you: kept, the faster way
+    assert (key, spec) == ("qwen3-30b-a3b", True) and round(speed) == 11
+    server, key, speed, spec = w.fast_llm(list(w.MODELS), start, 0, "off")  # 0 = always the biggest
+    assert (key, spec) == ("qwen3-30b-a3b", False)
+
+    def no_speculation(key, spec):  # an older llama.cpp without the flag, or broken replies with it
+        if spec:
+            raise RuntimeError("llama-server stopped: unknown argument --spec-type")
+        return start(key, spec)
+
+    assert w.fast_llm(list(w.MODELS), no_speculation, 20)[1:] == ("qwen3-1.7b", 23, False)
+
+    class Broken(Timed):
+        def chat(self, system, user, schema, max_tokens=700):
+            return {} if system == w.PROPOSE_SYSTEM else super().chat(system, user, schema, max_tokens)
+
+    assert w.benchmark(Broken("x", True, 50, [])) == 0.0  # fast but useless replies count as 0
+
+
+def test_llama_server_speculation_flags():
+    plain = w.LlamaServer(Path("llama-server"), Path("m.gguf"), threads=4, parallel=4).command()
+    assert "--spec-type" not in plain and plain[plain.index("-np") + 1] == "4"
+    fast = w.LlamaServer(Path("llama-server"), Path("m.gguf"), threads=4, parallel=4, speculate=True).command()
+    assert fast[fast.index("--spec-type") + 1] == "ngram-simple" and "--spec-draft-n-max" in fast
 
 
 def test_auto_picks_the_biggest_model_that_fits_in_the_ram(monkeypatch):
