@@ -60,6 +60,11 @@ MODELS = {
     "qwen3-30b-a3b": {"repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF", "quant": "Q4_K_M",
                       "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 23,
                       "gpu_quant": "Q5_K_M", "gpu_vram_gb": 27},
+    "qwen3.5-9b": {"repo": "unsloth/Qwen3.5-9B-GGUF", "quant": "Q4_K_M", "name": "Qwen3.5-9B", "hybrid": True,
+                   "license": "Apache-2.0", "ram_gb": 7, "gpu_quant": "UD-Q4_K_XL", "gpu_vram_gb": 8},
+    # the fast one for the GPU: as strong as the 30B-A3B on benchmarks, ~4x smaller, fits ONE T4 (so 2 x T4 = 2 copies)
+    "qwen3.5-4b": {"repo": "unsloth/Qwen3.5-4B-GGUF", "quant": "Q4_K_M", "name": "Qwen3.5-4B", "hybrid": True,
+                   "license": "Apache-2.0", "ram_gb": 4.5, "gpu_quant": "UD-Q4_K_XL", "gpu_vram_gb": 4},
     "qwen3-4b": {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "quant": "Q4_K_M", "name": "Qwen3-4B-Instruct-2507",
                  "hybrid": False, "license": "Apache-2.0", "ram_gb": 4, "gpu_quant": "Q8_0", "gpu_vram_gb": 7},
     "qwen3-1.7b": {"repo": "unsloth/Qwen3-1.7B-GGUF", "quant": "Q4_K_M", "name": "Qwen3-1.7B", "hybrid": True,
@@ -79,6 +84,10 @@ def available_ram_gb() -> float:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
     except (ValueError, OSError, AttributeError):
         return 0.0
+
+
+#: ``MODEL = "auto"`` on a GPU: small and strong, ~60-90 tok/s per request on a T4, one copy per GPU.
+GPU_MODEL = "qwen3.5-4b"
 
 
 def gpu_info(run: Callable[..., Any] = subprocess.run) -> list[dict[str, Any]]:
@@ -707,11 +716,12 @@ class LlamaServer:
     """llama.cpp's ``llama-server`` with one GGUF, on CPU; ``chat()`` returns parsed JSON (schema-constrained)."""
 
     def __init__(self, binary: Path, model: Path, threads: int = 0, ctx: int = 8192, port: int = 8089,
-                 hybrid: bool = False, parallel: int = 1, speculate: bool = False) -> None:
+                 hybrid: bool = False, parallel: int = 1, speculate: bool = False, gpu: int | None = None) -> None:
         self.binary, self.model, self.port, self.hybrid = Path(binary), Path(model), port, hybrid
         self.threads = threads or max(1, os.cpu_count() or 4)
         self.ctx = ctx  # per slot
         self.parallel = max(1, int(parallel))  # slots: requests the server works on together (continuous batching)
+        self.gpu = gpu  # only this GPU (one copy of a small model per GPU), None = all / the CPU
         self.speculate = speculate  # n-gram speculation: guesses tokens it has seen (the quotes) and checks many at once
         self.process: subprocess.Popen | None = None
         self.calls = 0
@@ -721,13 +731,15 @@ class LlamaServer:
 
     def start(self, wait: float = 900) -> "LlamaServer":
         env = {**os.environ, "LD_LIBRARY_PATH": f"{self.binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+        if self.gpu is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
         command = self.command()
-        logfile = open(self.model.parent / "llama-server.log", "w")  # noqa: SIM115 - lives as long as the server
+        logfile = open(self.log_path(), "w")  # noqa: SIM115 - lives as long as the server
         self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env)
         end = time.time() + wait
         while time.time() < end:
             if self.process.poll() is not None:
-                tail = (self.model.parent / "llama-server.log").read_text(errors="replace")[-1500:]
+                tail = self.log_path().read_text(errors="replace")[-1500:]
                 raise RuntimeError(f"llama-server stopped (exit {self.process.returncode}):\n{tail}")
             try:
                 if json.loads(http_get(f"http://127.0.0.1:{self.port}/health", 5)).get("status") == "ok":
@@ -736,6 +748,9 @@ class LlamaServer:
                 pass
             time.sleep(2)
         raise RuntimeError("llama-server did not become ready")
+
+    def log_path(self) -> Path:
+        return self.model.parent / ("llama-server.log" if self.port == 8089 else f"llama-server-{self.port}.log")
 
     def command(self) -> list[str]:
         command = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx * self.parallel), "-t",
@@ -776,6 +791,47 @@ class LlamaServer:
                                ("out", "predicted_n"), ("out_ms", "predicted_ms")):
                 self.tokens[key] += float(timings.get(field) or 0)
         return parse_json(((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+
+
+class LLMPool:
+    """Several llama-servers used as one (a copy of a small model on each GPU): every request goes to the least busy
+    one, so both T4s work at the same time instead of taking turns."""
+
+    def __init__(self, servers: list[Any]) -> None:
+        self.servers = servers
+        self.parallel = sum(int(getattr(s, "parallel", 1)) for s in servers)
+        self._busy = [0] * len(servers)
+        self._lock = threading.Lock()
+
+    @property
+    def tokens(self) -> dict[str, float]:
+        total: dict[str, float] = {}
+        for server in self.servers:
+            for key, value in server.tokens.items():
+                total[key] = total.get(key, 0) + value
+        return total
+
+    @property
+    def calls(self) -> int:
+        return sum(s.calls for s in self.servers)
+
+    @property
+    def seconds(self) -> float:
+        return sum(s.seconds for s in self.servers)
+
+    def chat(self, system: str, user: str, schema: dict, max_tokens: int = 700) -> Any:
+        with self._lock:
+            index = min(range(len(self.servers)), key=lambda i: self._busy[i])
+            self._busy[index] += 1
+        try:
+            return self.servers[index].chat(system, user, schema, max_tokens)
+        finally:
+            with self._lock:
+                self._busy[index] -= 1
+
+    def stop(self) -> None:
+        for server in self.servers:
+            server.stop()
 
 
 def llm_speed(llm: Any) -> str:
@@ -1549,8 +1605,7 @@ def main(cfg: dict) -> dict:
     key, why = pick_model(cfg.get("model", "auto"))
     keys = list(MODELS)[list(MODELS).index(key):] if cfg.get("model", "auto") == "auto" else [key]
     spec = MODELS[key]
-    log(f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
-                                         if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 0)) > 0 else ""))
+    auto = cfg.get("model", "auto") == "auto"
     deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
     gpus = gpu_info() if cfg.get("device", "auto") in ("auto", "gpu") else []
     if cfg.get("device") == "gpu" and not gpus:
@@ -1558,6 +1613,10 @@ def main(cfg: dict) -> dict:
     vram = sum(g["vram_gb"] for g in gpus)
     if gpus:
         log(f"GPU: {len(gpus)} x {gpus[0]['name']} ({vram:.0f} GB VRAM) - llama.cpp runs on it")
+    gpu_keys = [GPU_MODEL] if auto else [key]  # the GPU: the small fast one, one copy per GPU
+    log(f"LLM: {MODELS[gpu_keys[0]]['name']} on the GPU (else {spec['name']} on the CPU)" if gpus else
+        f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
+                                          if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 0)) > 0 else ""))
 
     def tuned(on_gpu: bool) -> dict[str, int]:
         """The settings left at 0 (auto) for the device that really runs the LLM."""
@@ -1601,15 +1660,30 @@ def main(cfg: dict) -> dict:
         discord.send(f"Collecting a trusted Minecraft dataset on the {'GPU' if gpus else 'CPU'} "
                      f"(testing {spec['name']} first)"
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
-        def starter(binary: Path, on_gpu: bool) -> Callable[[str, bool], LlamaServer]:
-            def start(name: str, speculate: bool) -> LlamaServer:
-                model = model_file(MODELS[name], tmp / "models", token, gpu_quant(name, vram) if on_gpu else "")
+        def starter(binary: Path, on_gpu: bool) -> Callable[[str, bool], Any]:
+            def start(name: str, speculate: bool) -> Any:
+                one_gpu = min((g["vram_gb"] for g in gpus), default=0.0)
+                # a copy on EACH GPU when the model fits one (2 x T4: twice the work), else one model across them
+                copies = len(gpus) if on_gpu and len(gpus) > 1 and one_gpu >= MODELS[name].get("gpu_vram_gb", 1e9) + 2 \
+                    else 1
+                quant = gpu_quant(name, one_gpu if copies > 1 else vram) if on_gpu else ""
+                model = model_file(MODELS[name], tmp / "models", token, quant)
                 slots = tuned(on_gpu)["parallel"]
-                log(f"starting llama-server with {model.name} on "
-                    + (f"{len(gpus)} GPU(s)" if on_gpu else f"{os.cpu_count()} CPU threads")
-                    + f", {slots} requests at once" + (", n-gram speculation" if speculate else ""))
-                return LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=MODELS[name]["hybrid"],
-                                   parallel=slots, speculate=speculate).start()
+                where = (f"{copies} GPUs, one copy on each" if copies > 1 else f"{len(gpus)} GPU(s)") if on_gpu \
+                    else f"{os.cpu_count()} CPU threads"
+                log(f"starting llama-server with {model.name} on {where}, {slots} requests at once"
+                    + (" each" if copies > 1 else "") + (", n-gram speculation" if speculate else ""))
+                servers: list[LlamaServer] = []
+                try:
+                    for index in range(copies):
+                        servers.append(LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)),
+                                                   hybrid=MODELS[name]["hybrid"], parallel=slots, speculate=speculate,
+                                                   port=8089 + index, gpu=index if copies > 1 else None).start())
+                except BaseException:
+                    for server in servers:
+                        server.stop()
+                    raise
+                return LLMPool(servers) if copies > 1 else servers[0]
             return start
 
         target, speculate = float(cfg.get("min_tokens_per_s", 0)), str(cfg.get("speculate", "auto"))
@@ -1634,8 +1708,8 @@ def main(cfg: dict) -> dict:
                 if binary in used:  # the prebuilt one failed and was already the compiled one
                     continue
                 used.append(binary)
-                chosen = (label, *fast_llm(keys, starter(binary, label != "CPU"), target, speculate,
-                                           step_down=label == "CPU"))
+                chosen = (label, *fast_llm(keys if label == "CPU" else gpu_keys, starter(binary, label != "CPU"),
+                                           target, speculate, step_down=label == "CPU"))
                 break
             except Exception as exc:  # noqa: BLE001 - the next way (compiled for the GPU, then the CPU)
                 log(f"{label}: llama.cpp did not work ({type(exc).__name__}: {str(exc)[:300]})")
@@ -1643,7 +1717,7 @@ def main(cfg: dict) -> dict:
             raise RuntimeError("llama.cpp did not start on the GPU or the CPU (see llama-server.log)")
         device, llm, key, speed, speculating = chosen
         spec = MODELS[key]
-        settings = tuned(device != "CPU")
+        settings = {**tuned(device != "CPU"), "parallel": int(getattr(llm, "parallel", 1))}  # all copies together
         parallel = settings["parallel"]
         cfg = {**cfg, **settings, "model": spec["name"]}
         log(f"{parallel} topics at once, {cfg['pages_per_topic']} page(s) per topic read whole, "

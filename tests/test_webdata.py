@@ -636,12 +636,15 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
         return Path(f"/bin/{'cuda-' + ('pre' if prebuilt else 'built') if cuda_arch else 'cpu'}/llama-server")
 
     class Server(Timed):
-        def __init__(self, binary, model, ctx, hybrid, parallel, speculate):
+        def __init__(self, binary, model, ctx, hybrid, parallel, speculate, port=8089, gpu=None):
             super().__init__(model.name, speculate, 50, [])
-            self.binary, self.parallel, self.seconds = binary, parallel, 0.0
+            self.binary, self.parallel, self.seconds, self.gpu, self.port = binary, parallel, 0.0, gpu, port
+
+        def stop(self):
+            pass
 
         def start(self):
-            started.append((self.binary.parent.name, self.key, self.parallel))
+            started.append((self.binary.parent.name, self.key, self.parallel, self.gpu))
             if self.binary.parent.name in broken:
                 raise RuntimeError("llama-server stopped: the provided PTX was compiled with an unsupported toolchain")
             return self
@@ -651,8 +654,8 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     monkeypatch.setattr(w, "LlamaServer", Server)
     monkeypatch.setattr(w, "model_file", lambda spec, folder, token="", quant="": Path(quant or spec["quant"]))
     monkeypatch.setattr(w, "available_ram_gb", lambda: 29.0)
-    monkeypatch.setattr(w, "collect", lambda cfg, llm, *a, **k: calls.append(("collect", cfg["pairs_per_page"],
-                                                                               cfg["pages_per_topic"], llm.binary)))
+    monkeypatch.setattr(w, "collect", lambda cfg, llm, *a, **k: calls.append((
+        "collect", cfg["pairs_per_page"], cfg["parallel"], getattr(llm, "servers", [llm])[0].binary)))
     monkeypatch.setattr(w, "load_minecraft_data", lambda version=None: _data())
     monkeypatch.setattr(w, "wiki_titles", lambda cache=None: ["Tutorials/Farming", "Lead"])
     cfg = {"upload": False, "work": str(tmp_path), "tmp": str(tmp_path / "t"), "processes": False, "speculate": "off"}
@@ -660,14 +663,16 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     broken = {"cuda-pre"}  # the prebuilt CUDA build fails on this driver: compiled for the T4, still the 30B
     w.main(cfg)
     assert calls[:2] == [("75", True), ("75", False)]
-    assert calls[-1] == ("collect", 5, 1, Path("/bin/cuda-built/llama-server"))  # 5 pairs per part, whole page
-    assert started == [("cuda-pre", "Q5_K_M", 8), ("cuda-built", "Q5_K_M", 8)]  # 30B Q5_K_M, 8 at once, no smaller
+    assert calls[-1] == ("collect", 5, 16, Path("/bin/cuda-built/llama-server"))  # 2 copies x 8 = 16 at once
+    # the small fast Qwen3.5-4B, one copy on EACH T4 (GPU 0 and 1), never the 30B on the GPU
+    assert started == [("cuda-pre", "UD-Q4_K_XL", 8, 0), ("cuda-built", "UD-Q4_K_XL", 8, 0),
+                       ("cuda-built", "UD-Q4_K_XL", 8, 1)]
 
     calls.clear(), started.clear()
     broken = {"cuda-pre", "cuda-built"}  # no GPU build works: the CPU, with the CPU settings
     w.main(cfg)
-    assert calls[-1] == ("collect", 5, 1, Path("/bin/cpu/llama-server"))
-    assert started[-1] == ("cpu", "Q4_K_M", 4)
+    assert calls[-1] == ("collect", 5, 4, Path("/bin/cpu/llama-server"))
+    assert started[-1] == ("cpu", "Q4_K_M", 4, None)  # the CPU: the 30B-A3B (fits the RAM, as fast as a 4B there)
 
 
 # ------------------------------------------------------------------ as many rows as possible
@@ -739,6 +744,31 @@ def test_sessions_at_the_same_time_write_their_own_files_and_share_what_is_done(
     assert "**2 rows**" in card and "path: data/train-*.jsonl" in card
 
 
+def test_a_pool_of_servers_sends_each_request_to_the_least_busy_one():
+    import threading
+
+    class Slow(Timed):
+        def chat(self, system, user, schema, max_tokens=700):
+            self.calls += 1
+            time.sleep(0.05)
+            return super().chat(system, user, schema, max_tokens)
+
+    one, two = Slow("a", False, 50, []), Slow("b", False, 50, [])
+    pool = w.LLMPool([one, two])
+    assert pool.parallel == 8
+    threads = [threading.Thread(target=pool.chat, args=(w.JUDGE_SYSTEM, "q", w.VERDICT_SCHEMA)) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert one.calls == 3 and two.calls == 3 and pool.calls == 6  # both GPUs busy, not one after the other
+    assert w.benchmark(pool) > 0 and pool.tokens["out"] == one.tokens["out"] + two.tokens["out"]
+    pool.stop()
+    assert one.stopped == [("a", False)] and two.stopped == [("b", False)]
+    server = w.LlamaServer(Path("llama-server"), Path("/m/x.gguf"), port=8090, gpu=1)
+    assert server.gpu == 1 and server.log_path().name == "llama-server-8090.log"
+
+
 def test_llama_server_speculation_flags():
     plain = w.LlamaServer(Path("llama-server"), Path("m.gguf"), threads=4, parallel=4).command()
     assert "--spec-type" not in plain and plain[plain.index("-np") + 1] == "4"
@@ -748,7 +778,7 @@ def test_llama_server_speculation_flags():
 
 def test_auto_picks_the_biggest_model_that_fits_in_the_ram(monkeypatch):
     assert w.pick_model("auto", 29.5)[0] == "qwen3-30b-a3b"  # Kaggle's 30 GB: the 30B mixture of experts
-    assert w.pick_model("auto", 13)[0] == "qwen3-4b" and w.pick_model("auto", 3)[0] == "qwen3-1.7b"
+    assert w.pick_model("auto", 13)[0] == "qwen3.5-9b" and w.pick_model("auto", 3)[0] == "qwen3-1.7b"
     assert w.pick_model("auto", 1)[0] == "qwen3-1.7b"
     key, why = w.pick_model("qwen3-30b-a3b", 8)
     assert key == "qwen3-30b-a3b" and "WARNING" in why and "23 GB" in why  # your choice, with a warning

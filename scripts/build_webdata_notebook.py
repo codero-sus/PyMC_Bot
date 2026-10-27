@@ -20,9 +20,9 @@ Web search + an LLM on llama.cpp (Qwen3-30B-A3B, a mixture of experts) collect M
 check every one, and upload them to your Hugging Face dataset **`<you>/Minecraftism-dataset`** - **private**: only
 you can see it (`PRIVATE = True`; a repo that already exists as public is switched to private too).
 
-**Kaggle setup:** Settings → *Accelerator*: **None** (free, no GPU quota; the 30B in the 30 GB of RAM, ~150-400
-rows per session) or **GPU T4 x2** (uses your weekly GPU hours; the 30B in Q5_K_M across both GPUs, roughly 10x
-faster and more pairs per topic) · *Internet* **On** · Add-ons → Secrets:
+**Kaggle setup:** Settings → *Accelerator*: **None** (free, no GPU quota; the 30B in the 30 GB of RAM, slow: roughly
+500-800 rows per session) or **GPU T4 x2** (uses your weekly GPU hours; **much faster**: the small, strong Qwen3.5-4B with a copy on
+each T4, 16 requests at once) · *Internet* **On** · Add-ons → Secrets:
 `HF_TOKEN` (a Hugging Face **write** token). Optional: `discord_webhook_inform_me1` (status messages) and
 `ping_role` (the Discord role pinged on start, uploads, errors and the end). Then **Run all** (or *Save Version →
 Save & Run All* to let it run up to ~12 h in the background).
@@ -58,11 +58,12 @@ Made with ❤️ by codero-sus · [the-codero.web.app](https://the-codero.web.ap
 """
 
 SETTINGS = """# ============================== settings ==============================
-MODEL = "auto"           # the LLM, on CPU. "auto" = the biggest that fits in the free RAM - on Kaggle (30 GB):
-                         # "qwen3-30b-a3b" = Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~23 GB RAM, only
-                         #                   ~3B work per token, so about as fast as the 4B and far more careful)
-                         # "qwen3-4b" = Qwen3-4B-Instruct-2507 (~4 GB RAM)
-                         # "qwen3-1.7b" = Qwen3-1.7B (~2.5 GB RAM, 2-3x faster, least careful)
+MODEL = "auto"           # "auto": GPU T4 x2 -> "qwen3.5-4b" (fast: one copy on EACH T4, ~60-90 tok/s per request);
+                         #         no GPU -> "qwen3-30b-a3b" (the CPU runs it as fast as a 4B, and it is stronger)
+                         # "qwen3.5-4b" = Qwen3.5-4B   (on benchmarks about as strong as the 30B-A3B, ~4x smaller)
+                         # "qwen3.5-9b" = Qwen3.5-9B   (stronger, about half the speed of the 4B)
+                         # "qwen3-30b-a3b" = Qwen3-30B-A3B-Instruct-2507 (mixture of experts, ~23 GB RAM)
+                         # "qwen3-4b" = Qwen3-4B-Instruct-2507 / "qwen3-1.7b" = Qwen3-1.7B (smallest, least careful)
 DATASET_REPO = "Minecraftism-dataset"  # -> <your HF name>/Minecraftism-dataset (or "name/repo")
 UPLOAD = True            # upload to Hugging Face (every UPLOAD_EVERY_MIN minutes, at the end and when stopped)
 PRIVATE = True           # True = only you can see it (an existing public repo is switched to private);
