@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import subprocess
 import sys
@@ -263,7 +264,8 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
-    assert seen["parallel"] == 4 and seen["min_tokens_per_s"] == 20 and seen["speculate"] == "auto"
+    assert seen["parallel"] == 4 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"
+    assert seen["processes"] is True
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
 
@@ -501,6 +503,48 @@ def test_the_speed_test_keeps_the_biggest_model_that_writes_20_tokens_per_second
             return {} if system == w.PROPOSE_SYSTEM else super().chat(system, user, schema, max_tokens)
 
     assert w.benchmark(Broken("x", True, 50, [])) == 0.0  # fast but useless replies count as 0
+
+
+class PidSearch:
+    """Picklable search for the worker processes: notes which process ran it."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def __call__(self, query):
+        with open(self.log, "a") as handle:
+            handle.write(f"{os.getpid()}\n")
+        return [{"url": FANDOM, "title": "Lead"}] if "site:" in query else []
+
+
+class PageText:
+    def __call__(self, url):
+        return page_text()
+
+
+def test_the_web_part_runs_in_worker_processes_and_the_rows_stay_right(tmp_path):
+    pool = w.process_pool(2)
+    assert pool is not None
+    try:
+        collector = w.Collector(tmp_path / "d", "m")
+        log = tmp_path / "pids"
+        topics = ["Lead", "Lead use", "Lead knot"]
+        w.collect({"parallel": 2, "corroborate": False}, FakeLLM(), collector, w.recipe_book(_data()), topics,
+                  PidSearch(log), PageText(), deadline=1e18, processes=pool)
+        pids = set(log.read_text().split())
+        assert pids and str(os.getpid()) not in pids  # every search ran in a worker process
+        assert collector.done == topics and [r["question"] for r in collector.rows] == [
+            "How do you craft a lead in Minecraft?"]
+        assert pool.submit(w._ready).result() != os.getpid()  # the shared pool is still usable afterwards
+    finally:
+        pool.shutdown()
+    assert pickle_roundtrip(w.WebSearch(5)).results == 5 and pickle_roundtrip(w.PageFetcher(tmp_path)).cache == tmp_path
+
+
+def pickle_roundtrip(thing):
+    import pickle
+
+    return pickle.loads(pickle.dumps(thing))
 
 
 def test_llama_server_speculation_flags():

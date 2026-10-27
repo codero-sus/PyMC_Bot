@@ -38,11 +38,12 @@ Save & Run All* to let it run up to ~12 h in the background).
 
 Rejected pairs and the reason go to `meta/rejected.jsonl` for review. The dataset uploads every 30 minutes, and
 the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
-It is tuned for the CPU: 4 topics are worked on at once (llama.cpp batches them, and while one waits for a web
-search the others keep the CPU busy), the next pages are fetched in the background, the judge answers in one short
-sentence, and answers the game data already confirms are not searched again. Before it starts, it measures how many tokens/s
-each model writes here (with and without n-gram speculation, which guesses the quotes it copies) and keeps the
-biggest that reaches `MIN_TOKENS_PER_S` (20). The log shows the rows/h and the LLM's tokens/s. Load it with
+Quality first: on Kaggle it always runs the biggest model (Qwen3-30B-A3B). It still uses the whole machine:
+llama-server works on 4 topics at once on all 4 CPU threads (it batches them), while web search, downloads and page
+parsing run in separate worker processes, the judge answers in one short
+sentence, and answers the game data already confirms are not searched again. Before it starts, it measures the model with and without
+n-gram speculation (it guesses the quotes it copies; the text stays exactly the same) and keeps the faster way. Set
+`MIN_TOKENS_PER_S` (e.g. 20) if you ever want speed over quality. The log shows the rows/h and the LLM's tokens/s. Load it with
 `load_dataset("<you>/Minecraftism-dataset")` (or `"high"` for the confirmed rows only), or train with it:
 `train_minecraft_llm.py --minecraft-qa-dataset <you>/Minecraftism-dataset`.
 
@@ -66,8 +67,9 @@ KEEP = "medium"          # "medium" = every row that passed all checks (each has
 CORROBORATE = True       # search each answer again and ask an independent page (slower, catches outdated pages;
                          # skipped when the game data already confirms the answer)
 PARALLEL = 4             # topics worked on at once - keeps all 4 CPU cores busy (1 = one at a time, the slowest)
-MIN_TOKENS_PER_S = 20    # speed target: with MODEL = "auto" it measures each model here (the real job, all requests
-                         # at once) and keeps the biggest that writes at least this many tokens/s; 0 = always the biggest
+MIN_TOKENS_PER_S = 0     # 0 = quality first: always the biggest model that fits (the 30B on Kaggle). A number (e.g. 20)
+                         # = speed first: measures each model here and keeps the biggest that writes that many tokens/s
+PROCESSES = True         # web search, downloads and page parsing in PARALLEL worker processes (outside the main one)
 SPECULATE = "auto"       # n-gram speculation (guesses the quotes it copies, checks many tokens at once):
                          # "auto" = measure with and without, keep the faster; "on" / "off"
 PAGES_PER_TOPIC = 1      # wiki pages read per topic
@@ -116,7 +118,8 @@ RUN = """# ============================== run ==============================
 result = main({
     "model": MODEL, "dataset_repo": DATASET_REPO, "upload": UPLOAD, "private": PRIVATE, "resume": RESUME,
     "keep": KEEP, "corroborate": CORROBORATE, "parallel": PARALLEL,
-    "min_tokens_per_s": MIN_TOKENS_PER_S, "speculate": SPECULATE, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
+    "min_tokens_per_s": MIN_TOKENS_PER_S, "speculate": SPECULATE,
+    "processes": PROCESSES, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
     "max_topics": MAX_TOPICS, "max_rows": MAX_ROWS, "max_hours": MAX_HOURS, "upload_every_min": UPLOAD_EVERY_MIN,
     "hf_secret": HF_SECRET, "discord": DISCORD, "discord_secret": DISCORD_SECRET,
     "ping_role_secret": PING_ROLE_SECRET, "work": WORK, "tmp": TMP,

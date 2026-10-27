@@ -370,6 +370,52 @@ def web_search(query: str, max_results: int = 8, ddgs: Any = None, get: Callable
 
 
 # ---------------------------------------------------------------------------- game data (topics + recipe check)
+class WebSearch:
+    """``web_search`` as an object that can be sent to a worker process."""
+
+    def __init__(self, results: int = 8) -> None:
+        self.results = results
+
+    def __call__(self, query: str) -> list[dict]:
+        return web_search(query, self.results)
+
+
+class PageFetcher:
+    """``fetch_page`` (with the page cache) as an object that can be sent to a worker process."""
+
+    def __init__(self, cache: Path | None = None) -> None:
+        self.cache = cache
+
+    def __call__(self, url: str) -> str:
+        return fetch_page(url, self.cache)
+
+
+def _worker_start() -> None:
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # the Kaggle stop button is for the main process (it saves)
+
+
+def _ready(_index: int = 0) -> int:
+    return os.getpid()
+
+
+def process_pool(workers: int) -> Any:
+    """``workers`` processes for the web part (search, download, HTML parsing, picking passages): real parallel
+    work outside the main process. Started right away, before any thread exists. ``None`` where fork is missing."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    try:
+        context = multiprocessing.get_context("fork")  # the notebook's functions live in __main__: fork, not spawn
+    except ValueError:
+        return None
+    pool = ProcessPoolExecutor(max_workers=max(1, workers), mp_context=context, initializer=_worker_start)
+    pids = set(pool.map(_ready, range(max(1, workers) * 2)))
+    log(f"{len(pids)} worker processes for web search and page parsing")
+    return pool
+
+
 def load_minecraft_data(version: str = MINECRAFT_DATA_VERSION, fetch: Callable[[str], Any] | None = None) -> dict:
     fetch = fetch or (lambda rel: http_json(MINECRAFT_DATA_URL + rel))
     paths = (fetch("dataPaths.json").get("pc") or {}).get(version) or {}
@@ -1181,11 +1227,12 @@ def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collecto
 
 def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: list[str],
             search: Callable[[str], list[dict]], fetch: Callable[[str], str], deadline: float,
-            on_upload: Callable[[str], None] = lambda _m: None, discord: Discord | None = None) -> None:
+            on_upload: Callable[[str], None] = lambda _m: None, discord: Discord | None = None,
+            processes: Any = None) -> None:
     """The main loop until the time, row or topic limit, uploading every few minutes. ``cfg["parallel"]`` topics
     are worked on at once (llama-server batches their requests, and while one waits for a web search the others
-    keep the CPU busy); the next topic's search and pages are always fetched in the background. Rows are added in
-    topic order. Saves what it has even when stopped (the Kaggle stop button)."""
+    keep the CPU busy); the next topic's search and pages are always fetched in the background - in the worker
+    ``processes`` when given (see ``process_pool``), else in threads. Rows are added in topic order. Saves what it has even when stopped (the Kaggle stop button)."""
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1195,7 +1242,8 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
     if cfg.get("max_topics"):
         todo = todo[:int(cfg["max_topics"])]
     workers = max(1, int(cfg.get("parallel", 1)))
-    fetcher = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prefetch")
+    own_fetcher = processes is None
+    fetcher = processes or ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prefetch")
     llm_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="topic") if workers > 1 else None
     fetched: dict[int, Any] = {}
     running: deque = deque()  # (number, topic, future) in topic order
@@ -1251,9 +1299,11 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
             number, name, future = running.popleft()
             finish(number, name, future.result())
     finally:
-        for pool in (fetcher, llm_pool):
+        for pool in (fetcher if own_fetcher else None, llm_pool):
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
+        for future in fetched.values():  # a shared process pool: drop the pages fetched ahead
+            future.cancel()
         collector.save()
 
 
@@ -1274,9 +1324,10 @@ def main(cfg: dict) -> dict:
     key, why = pick_model(cfg.get("model", "auto"))
     keys = list(MODELS)[list(MODELS).index(key):] if cfg.get("model", "auto") == "auto" else [key]
     spec = MODELS[key]
-    log(f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 20)} tok/s"
-                                         if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 20)) > 0 else ""))
+    log(f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
+                                         if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 0)) > 0 else ""))
     deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
+    parallel = max(1, int(cfg.get("parallel", 4)))
     api = repo_id = None
     if cfg.get("upload", True):
         if not token:
@@ -1292,6 +1343,8 @@ def main(cfg: dict) -> dict:
         log(f"uploading to https://huggingface.co/datasets/{repo_id} - "
             + ("PRIVATE: only you can see it" if private else "PUBLIC: anyone can see it (PRIVATE = False)"))
     llm = collector = None
+    # the web part in worker processes, started before llama-server and the topic threads
+    workers = process_pool(parallel) if cfg.get("processes", True) else None
 
     def upload(message: str) -> None:
         if api is not None and repo_id and collector is not None:
@@ -1310,8 +1363,6 @@ def main(cfg: dict) -> dict:
         discord.send(f"Collecting a trusted Minecraft dataset on CPU (testing {spec['name']} first)"
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
         binary = llama_server_binary(tmp / "tools")
-        parallel = max(1, int(cfg.get("parallel", 4)))
-
         def start(name: str, speculate: bool) -> LlamaServer:
             model = model_file(MODELS[name], tmp / "models", token)
             log(f"starting llama-server with {model.name} on {os.cpu_count()} CPU threads, {parallel} requests at "
@@ -1319,7 +1370,7 @@ def main(cfg: dict) -> dict:
             return LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=MODELS[name]["hybrid"],
                                parallel=parallel, speculate=speculate).start()
 
-        llm, key, speed, speculating = fast_llm(keys, start, float(cfg.get("min_tokens_per_s", 20)),
+        llm, key, speed, speculating = fast_llm(keys, start, float(cfg.get("min_tokens_per_s", 0)),
                                                 str(cfg.get("speculate", "auto")))
         spec = MODELS[key]
         cfg = {**cfg, "model": spec["name"], "parallel": parallel}
@@ -1331,11 +1382,8 @@ def main(cfg: dict) -> dict:
         collector = Collector(folder, spec["name"])
         log(f"{len(topic_list)} topics ({len(collector.done)} done before), {len(book)} recipes for the game-data "
             f"check, {len(collector.rows)} rows so far")
-        cache = tmp / "pages"
-
-        collect(cfg, llm, collector, book, topic_list,
-                lambda q: web_search(q, int(cfg.get("search_results", 8))),
-                lambda url: fetch_page(url, cache), deadline, upload, discord)
+        collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
+                PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()
         upload(f"final: {stats['rows']} rows ({stats['high']} high trust) from {stats['topics']} topics")
         result = summary(stats)
@@ -1359,6 +1407,8 @@ def main(cfg: dict) -> dict:
     finally:
         if llm is not None:
             llm.stop()
+        if workers is not None:
+            workers.shutdown(wait=False, cancel_futures=True)
 
 
 if __name__ == "__main__" and "ipykernel" not in sys.modules:  # pragma: no cover - the notebook calls main()
