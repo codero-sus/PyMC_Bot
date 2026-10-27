@@ -241,7 +241,7 @@ def test_notebook_is_built_from_the_module_and_runs_on_cpu():
     settings = sources[1]
     assert 'DATASET_REPO = "Minecraftism-dataset"' in settings and 'HF_SECRET = "HF_TOKEN"' in settings
     assert 'DISCORD_SECRET = "discord_webhook_inform_me1"' in settings and 'PING_ROLE_SECRET = "ping_role"' in settings
-    assert "MAX_HOURS = 11.75" in settings and 'DEVICE = "auto"' in settings  # free CPU by default, the GPU if attached
+    assert "MAX_HOURS = 11.75" in settings and 'DEVICE = "cpu"' in settings  # CPU edition: never uses GPU hours
     assert '"/kaggle/working", "/kaggle/tmp"' in sources[2]
     assert "Made with ❤️ by codero-sus" in sources[0] and "minecraft.wiki is CC BY-NC-SA" in sources[0]
     for code in sources[1:]:
@@ -266,8 +266,9 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
-    assert seen["device"] == "auto" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
-    assert seen["wiki_pages"] is True and seen["sessions"] == 1 and seen["session"] == 1
+    assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
+    assert seen["wiki_pages"] is True and seen["sessions"] == 5 and seen["session"] == 1  # Kaggle: 5 CPU sessions at once
+    assert seen["corroborate"] is False and seen["game_data"] is True  # the slow web re-check is opt-in on a CPU
     assert seen["processes"] is True
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
@@ -673,6 +674,62 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     w.main(cfg)
     assert calls[-1] == ("collect", 5, 4, Path("/bin/cpu/llama-server"))
     assert started[-1] == ("cpu", "Q4_K_M", 4, None)  # the CPU: the 30B-A3B (fits the RAM, as fast as a 4B there)
+    # session 1 also wrote the exact game-data rows (no LLM), once - running again adds none twice
+    rows = [json.loads(line) for line in (tmp_path / w.DATASET_NAME / "data" / "train-01.jsonl").read_text().splitlines()]
+    assert rows and all(r["source"] == "game-data" and r["trust"] == "high" for r in rows)
+    assert any(r["question"].startswith(("How do you craft Piston", "What is the crafting recipe for Piston",
+                                         "What do I need to craft Piston")) for r in rows)
+    w.main({**cfg, "device": "cpu"})
+    again = (tmp_path / w.DATASET_NAME / "data" / "train-01.jsonl").read_text().splitlines()
+    assert len(again) == len(rows)
+    w.main({**cfg, "device": "cpu", "sessions": 2, "session": 2})  # only session 1 writes them
+    assert not (tmp_path / w.DATASET_NAME / "data" / "train-02.jsonl").exists()
+
+
+def test_game_data_rows_are_exact_and_need_no_llm():
+    data = {**_data(), "version": "1.21.8"}
+    data["items"] = data["items"] + [
+        {"id": 20, "name": "diamond_pickaxe", "displayName": "Diamond Pickaxe", "stackSize": 1, "maxDurability": 1561,
+         "repairWith": ["diamond"]}, {"id": 21, "name": "diamond", "displayName": "Diamond", "stackSize": 64},
+        {"id": 22, "name": "iron_pickaxe", "displayName": "Iron Pickaxe", "stackSize": 1},
+        {"id": 23, "name": "obsidian", "displayName": "Obsidian", "stackSize": 64},
+        {"id": 24, "name": "bedrock", "displayName": "Bedrock", "stackSize": 64},
+        {"id": 25, "name": "dirt", "displayName": "Dirt", "stackSize": 64},
+        {"id": 26, "name": "ender_pearl", "displayName": "Ender Pearl", "stackSize": 16}]
+    data["blocks"] = [
+        {"name": "obsidian", "displayName": "Obsidian", "hardness": 50.0, "resistance": 1200.0, "diggable": True,
+         "material": "incorrect_for_wooden_tool", "harvestTools": {"20": True}},
+        {"name": "bedrock", "displayName": "Bedrock", "hardness": -1.0, "resistance": 3600000.0, "diggable": False},
+        {"name": "dirt", "displayName": "Dirt", "hardness": 0.5, "resistance": 0.5, "material": "mineable/shovel"},
+        {"name": "moving_piston", "displayName": "Moving Piston", "hardness": -1.0, "resistance": 0}]  # not an item
+    data["foods"] = [{"name": "cooked_beef", "displayName": "Cooked Beef", "foodPoints": 8.0, "saturation": 99.0}]
+    data["enchantments"] = [
+        {"name": "sharpness", "displayName": "Sharpness", "maxLevel": 5, "exclude": ["smite"]},
+        {"name": "smite", "displayName": "Smite", "maxLevel": 5, "exclude": ["sharpness"]},
+        {"name": "mending", "displayName": "Mending", "maxLevel": 1, "treasureOnly": True, "exclude": []}]
+    data["entities"] = [{"name": "creeper", "displayName": "Creeper", "type": "hostile", "width": 0.6, "height": 1.7}]
+    data["biomes"] = [{"name": "desert", "displayName": "Desert", "dimension": "overworld", "has_precipitation": False},
+                      {"name": "the_void", "displayName": "The Void", "dimension": "overworld"}]
+    rows = w.game_data_rows(data)
+    text = {r["question"]: r["answer"] for r in rows}
+    joined = "\n".join(text.values())
+    assert all(r["trust"] == "high" and r["source"] == "game-data" and r["model"] == "" and r["edition"] == "java"
+               and r["sources"][0]["license"].startswith("MIT") and "1.21.8" in r["sources"][0]["url"] for r in rows)
+    assert "the crafting recipe for Piston uses 4 Cobblestone, 1 Iron Ingot, 1 Redstone Dust and 3 Planks (any kind); " \
+           "one craft makes 1." in joined
+    assert "5 String; one craft makes 2." in joined  # the 1.21.6+ Lead recipe
+    assert "Ender Pearl stacks up to 16" in joined and "Diamond Pickaxe does not stack" in joined
+    assert "a Diamond Pickaxe has 1561 durability." in joined and "repaired in an anvil with Diamond" in joined
+    assert "Obsidian has a hardness of 50 and a blast resistance of 1200." in joined
+    assert "broken with a Diamond Pickaxe;" in joined and "Bedrock is unbreakable" in joined
+    assert "Dirt is mined fastest with a shovel." in joined and "Moving Piston" not in joined
+    assert "restores 8 hunger points (4 of the 10" in joined and "99" not in joined  # never the wrong saturation
+    assert "Sharpness goes up to level V." in joined and "Sharpness is incompatible with Smite" in joined
+    assert "Mending has only one level" in joined and "the enchanting table never gives it" in joined
+    assert "0.6 blocks wide and 1.7 blocks tall" in joined and "never rains or snows in the Desert" in joined
+    assert "The Void" not in joined and len(text) == len(rows)  # no question twice
+    assert all(a.startswith("In Minecraft Java Edition, ") for a in text.values())
+    assert [(r["question"], r["answer"]) for r in w.game_data_rows(data)] == list(text.items())  # same every run
 
 
 # ------------------------------------------------------------------ as many rows as possible

@@ -518,7 +518,7 @@ def load_minecraft_data(version: str = MINECRAFT_DATA_VERSION, fetch: Callable[[
     fetch = fetch or (lambda rel: http_json(MINECRAFT_DATA_URL + rel))
     paths = (fetch("dataPaths.json").get("pc") or {}).get(version) or {}
     data: dict[str, Any] = {"version": version}
-    for name in ("items", "blocks", "entities", "enchantments", "effects", "biomes", "recipes"):
+    for name in ("items", "blocks", "entities", "enchantments", "effects", "biomes", "recipes", "foods"):
         if paths.get(name):
             try:
                 data[name] = fetch(f"{paths[name]}/{name}.json")
@@ -1125,6 +1125,170 @@ def question_key(question: str) -> str:
     return " ".join(sorted(set(query_terms(question))))
 
 
+# ---------------------------------------------------------------------------- game-data rows (no LLM)
+GAME_DATA_SOURCE = "https://github.com/PrismarineJS/minecraft-data/blob/master/data/pc/{version}/{file}.json"
+ROMAN = ("", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
+TOOLS = ("pickaxe", "axe", "shovel", "hoe", "sword", "shears")
+
+
+def _pick(rng: random.Random, *options: str) -> str:
+    return options[rng.randrange(len(options))]
+
+
+def _a(word: str) -> str:
+    return ("an " if word[:1].upper() in "AEIOU" else "a ") + word
+
+
+def _list(names: list[str], word: str = "or") -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" {word} " + names[-1]
+
+
+def game_data_rows(data: dict, book: dict[str, dict[str, Any]] | None = None, seed: int = 0) -> list[dict]:
+    """Exact question/answer rows written straight from the game's data (minecraft-data, MIT) by templates - NO
+    LLM, so thousands of rows in a second on any CPU, and nothing left to verify: crafting recipes, stack sizes,
+    durability and repairs, block hardness / blast resistance / the tool that mines it, hunger restored by food,
+    enchantment levels and conflicts, mob hitbox sizes, biome dimensions. ``trust`` = high, ``source`` =
+    game-data. Only facts minecraft-data gets right are used (not its food saturation, not rain vs snow)."""
+    rng = random.Random(seed)
+    version = str(data.get("version") or MINECRAFT_DATA_VERSION)
+    items = {i.get("id"): i for i in data.get("items") or [] if isinstance(i, dict)}
+    by_name = {i.get("name"): i for i in items.values()}
+    rows: list[dict] = []
+    seen: set[str] = set()
+    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def add(file: str, topic: str, question: str, answer: str, fact: dict) -> None:
+        key = question_key(question)
+        if key in seen:
+            return
+        seen.add(key)
+        answer = "In Minecraft Java Edition, " + answer
+        rows.append({
+            "question": question, "answer": answer,
+            "messages": [{"role": "user", "content": question}, {"role": "assistant", "content": answer}],
+            "topic": topic, "edition": "java", "trust": "high",
+            "sources": [{"url": GAME_DATA_SOURCE.format(version=version, file=file), "license": "MIT (minecraft-data)"}],
+            "evidence": [json.dumps(fact, ensure_ascii=False, sort_keys=True)],
+            "checks": {"game_data": "source", "minecraft_data": version}, "source": "game-data", "kind": "mcqa",
+            "model": "", "created": created,
+        })
+
+    # crafting recipes (the same "recipe most variants share" as the recipe check)
+    variants: dict[str, int] = {}
+    for result, recipes in (data.get("recipes") or {}).items():
+        item = items.get(int(result)) if str(result).isdigit() else None
+        if item is not None and isinstance(recipes, list):
+            variants[_label(item).lower()] = len({_recipe_signature(r) for r in recipes if isinstance(r, dict)})
+    for key, recipe in sorted((recipe_book(data) if book is None else book).items()):
+        name, count = recipe["name"], int(recipe.get("count") or 1)
+        parts = [f"{n} {ing[4:]} (any kind)" if ing.startswith("any ") else f"{n} {ing}"
+                 for ing, n in sorted(recipe["ingredients"].items())]
+        add("recipes", name, _pick(rng, f"How do you craft {name} in Minecraft?", f"What is the crafting recipe for {name}?",
+                                   f"What do I need to craft {name}?"),
+            f"{'one recipe for' if variants.get(key, 1) > 1 else 'the crafting recipe for'} {name} uses "
+            f"{_list(parts, 'and')}; one craft makes {count}.",
+            {"result": name, "count": count, "ingredients": recipe["ingredients"]})
+
+    # items: stack size, durability, repair material
+    for item in items.values():
+        name, label = str(item.get("name") or ""), _label(item)
+        if not name or name == "air" or name.endswith("spawn_egg"):
+            continue
+        size = int(item.get("stackSize") or 0)
+        if size:
+            add("items", label, _pick(rng, f"What is the maximum stack size of {label}?",
+                                      f"How many {label} fit in one stack?", f"Does {label} stack in Minecraft?"),
+                f"{label} does not stack: each one takes a whole inventory slot (stack size 1)." if size == 1 else
+                f"{label} stacks up to {size} in one inventory slot.", {"item": name, "stackSize": size})
+        if item.get("maxDurability"):
+            uses = int(item["maxDurability"])
+            add("items", label, _pick(rng, f"How much durability does {_a(label)} have?", f"How many uses does {_a(label)} have?"),
+                f"{_a(label)} has {uses} durability.", {"item": name, "maxDurability": uses})
+        repair = [_label(by_name[r]) for r in item.get("repairWith") or [] if r in by_name]
+        if repair:
+            add("items", label, f"What can you repair {_a(label)} with in an anvil?",
+                f"{_a(label)} is repaired in an anvil with {_list(repair)} (or by combining it with another {label}).",
+                {"item": name, "repairWith": item.get("repairWith")})
+
+    # blocks: hardness and blast resistance, and the tool that mines them
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict) or block.get("name") not in by_name or block.get("name") == "air":
+            continue  # technical blocks (Moving Piston, Wall Torch, Potted ...) are not items: no questions
+        name, label = str(block.get("name") or ""), _label(block)
+        hardness, resistance = block.get("hardness"), block.get("resistance")
+        if isinstance(hardness, (int, float)) and isinstance(resistance, (int, float)) and block.get("diggable", True):
+            add("blocks", label, _pick(rng, f"What are the hardness and blast resistance of {label}?",
+                                       f"How strong is {label} against mining and explosions?"),
+                f"{label} has a hardness of {hardness:g} and a blast resistance of {resistance:g}"
+                + (" - it breaks instantly." if hardness == 0 else "."),
+                {"block": name, "hardness": hardness, "resistance": resistance})
+        elif hardness is not None and isinstance(hardness, (int, float)) and hardness < 0:
+            add("blocks", label, f"Can you break {label} in Survival mode?",
+                f"no - {label} is unbreakable in Survival mode.", {"block": name, "hardness": hardness})
+        harvest = [items[int(i)] for i in (block.get("harvestTools") or {}) if str(i).isdigit() and int(i) in items]
+        mineable = re.findall(r"mineable/(\w+)", str(block.get("material") or ""))
+        if harvest:
+            tools = [_label(t) for t in sorted(harvest, key=lambda t: t.get("id", 0))]
+            pickaxes = [t for t in harvest if str(t.get("name", "")).endswith("_pickaxe")]
+            needs = "any pickaxe" if len(pickaxes) == len(harvest) == 6 else f"a {_list(tools)}"
+            add("blocks", label, _pick(rng, f"What tool do you need to mine {label}?",
+                                       f"What do I need to mine {label} and get its drop?"),
+                f"{label} only drops something when it is broken with {needs}; broken by hand or with another tool it "
+                f"drops nothing.", {"block": name, "harvestTools": [t.get("name") for t in harvest]})
+        elif len(mineable) == 1 and mineable[0] in TOOLS and isinstance(hardness, (int, float)) and hardness > 0:
+            add("blocks", label, f"What is the best tool to break {label}?",
+                f"{label} is mined fastest with {'an' if mineable[0] == 'axe' else 'a'} {mineable[0]}.",
+                {"block": name, "material": block.get("material")})
+
+    for food in data.get("foods") or []:
+        if isinstance(food, dict) and food.get("foodPoints"):
+            label, points = _label(food), float(food["foodPoints"])
+            add("foods", label, _pick(rng, f"How much hunger does {label} restore?",
+                                      f"How many hunger points does eating {label} give?"),
+                f"eating {label} restores {points:g} hunger points ({points / 2:g} of the 10 drumsticks on the hunger "
+                f"bar).", {"food": food.get("name"), "foodPoints": points})
+
+    names = {e.get("name"): _label(e) for e in data.get("enchantments") or [] if isinstance(e, dict)}
+    for ench in data.get("enchantments") or []:
+        if not isinstance(ench, dict) or not ench.get("maxLevel"):
+            continue
+        label, level = _label(ench), int(ench["maxLevel"])
+        add("enchantments", label + " (enchantment)", f"What is the maximum level of {label}?",
+            f"{label} has only one level (no II or higher)." if level == 1 else
+            f"{label} goes up to level {ROMAN[level] if level < len(ROMAN) else level}.", {"enchantment": ench.get("name"), "maxLevel": level})
+        conflicts = [names[x] for x in ench.get("exclude") or [] if x in names]
+        if conflicts:
+            add("enchantments", label + " (enchantment)", f"Which enchantments can't be combined with {label}?",
+                f"{label} is incompatible with {_list(conflicts)}: they cannot be on the same item.",
+                {"enchantment": ench.get("name"), "exclude": ench.get("exclude")})
+        if ench.get("treasureOnly"):
+            add("enchantments", label + " (enchantment)", f"Can you get {label} from an enchanting table?",
+                f"no - {label} is a treasure enchantment{' (a curse)' if ench.get('curse') else ''}: the enchanting "
+                f"table never gives it.", {"enchantment": ench.get("name"), "treasureOnly": True})
+
+    for mob in data.get("entities") or []:
+        if isinstance(mob, dict) and mob.get("type") in ("hostile", "animal", "passive", "water_creature", "ambient",
+                                                         "mob") and mob.get("width") and mob.get("height"):
+            label = _label(mob)
+            add("entities", label, _pick(rng, f"How big is {_a(label)} in Minecraft?", f"How tall is {_a(label)}?"),
+                f"{_a(label)}'s hitbox is {float(mob['width']):g} blocks wide and {float(mob['height']):g} blocks tall.",
+                {"entity": mob.get("name"), "width": mob["width"], "height": mob["height"]})
+
+    places = {"overworld": "the Overworld", "nether": "the Nether", "end": "the End"}
+    for biome in data.get("biomes") or []:
+        if not isinstance(biome, dict) or biome.get("name") == "the_void" or biome.get("dimension") not in places:
+            continue
+        label = _label(biome)
+        add("biomes", label + " (biome)", f"Which dimension is the {label} biome in?",
+            f"the {label} biome is in {places[biome['dimension']]}.",
+            {"biome": biome.get("name"), "dimension": biome["dimension"]})
+        if biome.get("has_precipitation") is False:
+            add("biomes", label + " (biome)", f"Does it rain in the {label} biome?",
+                f"no - it never rains or snows in the {label} biome.",
+                {"biome": biome.get("name"), "has_precipitation": False})
+    return rows
+
+
 class Collector:
     """The dataset on disk (``/kaggle/working/Minecraftism-dataset``): rows, rejects, progress, card. Each Kaggle
     session writes only its own files (``data/train-01.jsonl``, ...; ``session`` = the ``SESSION`` setting), so
@@ -1236,11 +1400,14 @@ def dataset_card(rows: list[dict], rejected: list[dict], model: str, total: int 
     high = sum(1 for r in rows if r.get("trust") == "high") if total_high < 0 else total_high
     count = len(rows) if total < 0 else total
     sites: dict[str, int] = {}
+    licences: dict[str, str] = {}
     for row in rows:
         for source in row.get("sources") or []:
             sites[domain(source["url"])] = sites.get(domain(source["url"]), 0) + 1
-    table = "\n".join(f"| {site} | {SOURCES.get(site, ('', '?'))[1]} | {count} |" for site, count in
+            licences.setdefault(domain(source["url"]), SOURCES.get(domain(source["url"]), ("", source.get("license", "?")))[1])
+    table = "\n".join(f"| {site} | {licences[site]} | {count} |" for site, count in
                       sorted(sites.items(), key=lambda kv: -kv[1])) or "| - | - | 0 |"
+    exact = sum(1 for r in rows if r.get("source") == "game-data")
     return f"""---
 license: cc-by-sa-4.0
 language:
@@ -1279,6 +1446,13 @@ them all.
 
 ## How an answer gets in
 
+**Game-data rows** (`source: game-data`{f", {exact} in this session's file" if exact else ""}) are written straight from the
+game's own data (minecraft-data {MINECRAFT_DATA_VERSION}, MIT) by fixed templates - no LLM, so they are exact:
+crafting recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it,
+hunger restored by food, enchantment levels and conflicts, mob hitbox sizes, biome dimensions. All are `high`.
+
+**Web rows** (`source: web-verified`):
+
 1. Only pages whose licence allows commercial use are read (Minecraft Fandom wiki CC BY-SA 3.0, Wikipedia
    CC BY-SA 4.0). minecraft.wiki (CC BY-NC-SA) is never used. Official Mojang pages only confirm answers;
    only their links are kept.
@@ -1286,7 +1460,7 @@ them all.
 3. Every evidence quote must really be on the page; every number in the answer must be in the evidence.
 4. A second LLM pass sees only question, answer and evidence and must answer SUPPORTED.
 5. Crafting answers must match the game's recipes (minecraft-data {MINECRAFT_DATA_VERSION}, MIT).
-6. Answers the game data did not already confirm are searched again: an independent page that contradicts the
+6. With `CORROBORATE = True`, answers the game data did not already confirm are searched again: an independent page that contradicts the
    answer rejects it, one that confirms it makes it `high`.
 
 ## Fields
@@ -1737,6 +1911,17 @@ def main(cfg: dict) -> dict:
         stats = collector.stats()
         log(f"session {session} of {sessions}: {len(topic_list)} topics, {len(collector.finished() & set(topic_list))} "
             f"done before; {len(book)} recipes for the game-data check; {stats['rows']} rows so far (all sessions)")
+        if session == 1 and cfg.get("game_data", True):  # exact rows from the game data, in a second, no LLM
+            new = [r for r in game_data_rows(data, book, int(cfg.get("seed", 0))) if not collector.seen(r["question"])]
+            if int(cfg.get("max_rows", 0)) > 0:
+                new = new[:max(0, int(cfg["max_rows"]) - len(collector.rows))]
+            for row in new:
+                collector.add(row)
+            if new:
+                collector.save()
+                log(f"{len(new)} exact rows from the game data (recipes, stack sizes, durability, hardness, tools, "
+                    f"food, enchantments, mobs, biomes) - no LLM needed")
+                upload(f"game data: {len(new)} exact rows")
         collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
                 PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()
