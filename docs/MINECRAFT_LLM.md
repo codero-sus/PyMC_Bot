@@ -521,7 +521,15 @@ the faster way. Set `MIN_TOKENS_PER_S = 20` for speed over quality: it then keep
 least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. **GPU T4 x2** (Settings → Accelerator; uses your weekly GPU
 hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
 (~20-30 min, once per session), else back to the CPU - with the 30B in Q5_K_M (fits the 2 x 15 GB), 8 topics at
-once, 2 pages per topic and 5 pairs per page (`PARALLEL`, `PAGES_PER_TOPIC`, `PAIRS_PER_PAGE` = 0 mean auto). The LLM writes question/answer pairs
+once (`PARALLEL` = 0 means auto).
+
+**As many rows as possible.** After the ~1,700 game-data topics it reads every other article of the Fandom wiki
+(`WIKI_PAGES = True`; without version/snapshot pages, other games and sub-pages except tutorials), opens each page
+directly (no search) and reads it **whole**, in parts of ~2,800 characters (changelog, gallery and link sections
+skipped), with 5 pairs per part. To go faster, run several copies of the notebook at the same time with
+`SESSIONS = N` and `SESSION = 1 ... N`: each takes every N-th topic and writes its own `data/train-NN.jsonl`,
+`meta/progress-NN.json` (it uploads only those), and reads the others' rows and topics so nothing is done twice.
+`load_dataset` reads all the files. The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
 | check | rejects |
@@ -534,13 +542,13 @@ only from the page text, and each pair has to pass every check:
 | independent page | an answer another page contradicts (the question is searched again) |
 
 Rows confirmed by the game data or an independent page are `trust: high`, the rest `medium` (`KEEP = "high"`
-keeps only the confirmed ones). Rejected pairs and the reason go to `meta/rejected.jsonl`. It uploads every 30
+keeps only the confirmed ones). Rejected pairs and the reason go to `meta/rejected-NN.jsonl`. It uploads every 30
 minutes and `RESUME = True` continues the topic list in the next session; **Stop** keeps and uploads what it has.
 The dataset is **private** by default (`PRIVATE = True`; an existing public repo is switched to private before every
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/fbe47994ed6b3a80534d68b1ba3a035a85d941c3/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/882759afab35a8f74acc1eb78157d5bed125ba05/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python

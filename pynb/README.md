@@ -57,8 +57,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (CPU only)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/fbe47994ed6b3a80534d68b1ba3a035a85d941c3/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fbe47994ed6b3a80534d68b1ba3a035a85d941c3/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/882759afab35a8f74acc1eb78157d5bed125ba05/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/882759afab35a8f74acc1eb78157d5bed125ba05/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **None** (it needs no GPU and uses none of your GPU quota), Internet **on**.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
@@ -69,7 +69,7 @@ countdown stay silent. No secret = no role ping.
 
 Each row has `question` / `answer` (plus `messages`), `trust` (`high` = confirmed by the game data or an
 independent page, `medium` = one source, every check passed; `load_dataset(..., "high")` loads only those), its sources with their licences and the quotes that
-back it. Rejected pairs and why are in `meta/rejected.jsonl`. Only Minecraft Fandom wiki (CC BY-SA 3.0) and
+back it. Rejected pairs and why are in `meta/rejected-NN.jsonl`. Only Minecraft Fandom wiki (CC BY-SA 3.0) and
 Wikipedia (CC BY-SA 4.0) text is used, so the dataset is CC BY-SA 4.0 and allows commercial use. minecraft.wiki is
 non-commercial and never read. Train on it with `train_minecraft_llm.py --minecraft-qa-dataset
 <you>/Minecraftism-dataset`. The code is `pymc_bot/llm_webdata.py`. After editing it, run `python scripts/build_webdata_notebook.py`.
