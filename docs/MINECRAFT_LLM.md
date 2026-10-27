@@ -506,9 +506,13 @@ trainer prints a warning and trains on the rest.
 `pynb/Minecraftism_Dataset_Kaggle.ipynb` builds **`<you>/Minecraftism-dataset`** on Hugging Face without a GPU:
 DuckDuckGo search (`ddgs`) finds pages, and an LLM runs in Kaggle's 30 GB of RAM on llama.cpp's CPU server.
 `MODEL = "auto"` (the default) takes the biggest that fits the free RAM: on Kaggle **Qwen3-30B-A3B-Instruct-2507**
-(Q4_K_M, ~22 GB RAM). It is a mixture of experts: all 30B weights sit in RAM but only ~3B work on each token, so on
+(Q4_K_M, ~23 GB RAM). It is a mixture of experts: all 30B weights sit in RAM but only ~3B work on each token, so on
 a CPU it runs about as fast as a 4B model and judges far better. `"qwen3-4b"` (~4 GB) and `"qwen3-1.7b"` (~2.5 GB,
-2-3× faster, least careful) are the smaller choices and the fallback on smaller machines. The LLM writes question/answer pairs
+2-3× faster, least careful) are the smaller choices and the fallback on smaller machines.
+For speed on the CPU it works on `PARALLEL = 4` topics at once (llama-server's parallel slots batch them, and
+while one topic waits for a web search the others keep the cores busy), skips the second web search when the game
+data already confirms an answer, and keeps the judge's reason to one sentence. The log shows rows/h and the LLM's
+tokens/s, so a short `MAX_TOPICS = 5` run tells you the real speed. The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
 | check | rejects |
@@ -527,7 +531,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/15441c8816a1d9ecd8eb5ae30fcceb48af975dca/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/28ffdca1e0ef4e54413e3b12b190221cea08fe0c/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
