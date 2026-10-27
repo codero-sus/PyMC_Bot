@@ -518,8 +518,15 @@ and picking passages run in `PARALLEL` separate worker **processes** (`PROCESSES
 main Python process. A short speed test on the real job measures llama.cpp's n-gram speculation (`SPECULATE =
 "auto"`: it guesses the quotes the LLM copies and checks many tokens in one step; the text stays the same) and keeps
 the faster way. Set `MIN_TOKENS_PER_S = 20` for speed over quality: it then keeps the biggest model that writes at
-least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. **GPU T4 x2** (Settings → Accelerator; uses your weekly GPU
-hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
+least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. **CPU edition** (the default, `DEVICE = "cpu"`: never uses a GPU or
+your GPU hours). Three things make it fast without a GPU: (1) session 1 first writes **~4,200 exact rows straight
+from the game data** (minecraft-data 1.21.8, MIT, by templates - no LLM, done in a second, all `high`: crafting
+recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it, hunger from
+food, enchantment levels / conflicts / treasure-only, mob hitbox sizes, biome dimensions; `GAME_DATA = True`); (2) the
+second web search per answer is off (`CORROBORATE = False`) - it was the slowest part on a CPU, about half the rows
+per hour; every other check stays; (3) **5 sessions at once** (`SESSIONS = 5`): Kaggle runs up to 5 CPU sessions at
+the same time, so save 5 versions with `SESSION = 1 ... 5` (each version keeps its own settings). Optional **GPU T4 x2**
+(Settings → Accelerator; uses your weekly GPU hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
 (~20-30 min, once per session), else back to the CPU. On the GPU `MODEL = "auto"` runs **Qwen3.5-4B** (on
 benchmarks about as strong as the 30B-A3B, ~4x smaller): it fits one T4, so each T4 gets its own copy (two
 llama-servers, 8 requests each, every request to the least busy one) - roughly 60-90 tok/s per request on a T4.
@@ -550,7 +557,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/f0a2601e517b9901a23073543d64dd6d1fa82e2c/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/c65fc977b6ccd6331b2851d36af0fa1946f4ce59/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
