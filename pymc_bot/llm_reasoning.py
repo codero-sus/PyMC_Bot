@@ -27,6 +27,7 @@ from typing import Any
 
 from pymc_bot.inventory import Inventory
 from pymc_bot.knowledge import shorten
+from pymc_bot.llm_train import answer_plan
 from pymc_bot.mobs import MobDatabase, load_mobs
 
 #: Sentences longer than this are cut (a trace is a few lines, not an essay).
@@ -296,25 +297,31 @@ def decision_reasoning(decision: dict[str, Any] | str, prompt: str = "") -> str:
 
 def qa_reasoning(question: str, answer: str, source: str = "", db: MobDatabase | None = None,
                  rng: random.Random | None = None) -> str:
-    """A short trace for a knowledge question: topic, the facts that matter, how to answer."""
-    rng = rng or random.Random(0)
+    """A trace for a knowledge question: a plan for the answer it needs (``llm_train.answer_plan``), plus the
+    mob-database notes when the question really is about a mob.
+
+    Earlier traces were one fixed form ("The question: ... What I know: ... Key point: <the answer's first
+    sentence>. Answer directly and briefly."). A model trained on thousands of them writes that form for every
+    question and fills the slots with invented facts (a stat card for a piston, a "key point" that is wrong),
+    always "briefly", even for "explain how" questions. So: no copied key point, no fixed closing line, and the
+    mob notes only for mobs."""
+    del rng  # kept for callers; the plan is chosen from the question itself
     db = db or load_mobs()
     question = clean(question)
+    parts = [clean(answer_plan(question, answer))]
     found = db.find_in_text(question)
-    parts = [f"The question: {question}"]
     if found:
         mob = db.mobs[found[0][0]]
-        parts.append(f"It's about the {mob['name'].lower()}. What I know: {clean(shorten(db.prompt_line(mob), 220))}.")
+        name = mob["name"].lower()
+        line = clean(shorten(db.prompt_line(mob), 220))
+        line = line[len(name):].strip() if line.lower().startswith(name) else line
+        card = re.match(r"\((.*?)\):?\s*(.*)", line)  # "(hostile, 30 HP): text" -> "hostile, 30 HP; text"
+        line = f"{card.group(1)}; {card.group(2)}" if card else line
+        parts.append(f"My notes on the {name}: {line}.")
     elif source == "wiki":
-        parts.append("This is a Minecraft Wiki topic; I'll summarise what the wiki says in plain words.")
-    else:
-        parts.append("Basic Minecraft knowledge.")
-    first = clean(re.split(r"(?<=[.!?])\s", str(answer or "").strip(), maxsplit=1)[0])[:200]
-    if first:
-        parts.append(f"Key point: {first}")
+        parts.append("The Minecraft Wiki covers this; I'll put it in plain words.")
     if re.search(r"\b(damage|hit|hp|health|hearts?)\b", question, re.I):
         parts.append("Damage is in health points, 2 HP is one heart.")
-    parts.append(rng.choice(["Answer directly and briefly.", "Keep it short and correct.", "Give the answer, no fluff."]))
     return _limit(" ".join(parts))
 
 

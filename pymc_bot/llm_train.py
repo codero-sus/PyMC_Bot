@@ -45,6 +45,7 @@ import re
 import shutil
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -248,12 +249,16 @@ def strip_thinking(text: str) -> str:
     return text.strip()
 
 
-def think_text(reasoning: str, answer: str) -> str:
-    """What a Thinking edition is trained to write: the trace, then the answer."""
+def think_text(reasoning: str, answer: str, question: str = "") -> str:
+    """What a Thinking edition is trained to write: the trace, then the answer.
+
+    A row without a trace gets a plan for *its* question (``answer_plan``), never one fixed sentence: a
+    single "simple one, answer directly" on hundreds of rows taught the model to skip thinking on
+    code, maths and mechanics questions too."""
     reasoning = str(reasoning or "").strip()
     if "\n" not in reasoning:
         reasoning = " ".join(reasoning.split())
-    reasoning = reasoning or "Simple one, answer directly."
+    reasoning = reasoning or answer_plan(question, answer)
     return f"<think>\n{reasoning}\n</think>\n\n{answer}"
 
 
@@ -261,7 +266,8 @@ def prepare_messages(row: dict[str, Any], preset: dict[str, Any]) -> list[dict[s
     """The chat a row is trained on for this edition (thinking editions get the trace)."""
     messages = [dict(m) for m in row["messages"]]
     if preset.get("reasoning"):
-        messages[-1]["content"] = think_text(row.get("reasoning", ""), messages[-1]["content"])
+        question = next((str(m.get("content") or "") for m in reversed(messages[:-1]) if m.get("role") == "user"), "")
+        messages[-1]["content"] = think_text(row.get("reasoning", ""), messages[-1]["content"], question)
     return messages
 
 
@@ -615,6 +621,94 @@ def _plain(text: str) -> str:
     return re.sub(r"[{}]|</?think>", "", text).strip()
 
 
+# --------------------------------------------------------------------------- thinking traces for Q&A rows
+#: What kind of answer a question wants (first match wins). The trace plans *that* answer.
+_ASKS = (
+    ("code", re.compile(r"```|\b(write|implement|create|make|fix|debug)\b.{0,60}\b(function|script|program|class|"
+                        r"code|regex|query|snippet|command)\b|\b(python|bash|javascript|typescript|java|c\+\+|"
+                        r"rust|sql|shell)\b.{0,40}\b(function|script|program|code)\b", re.I | re.S)),
+    ("recipe", re.compile(r"\b(craft(ing|ed)?|recipe)\b", re.I)),
+    ("brewing", re.compile(r"\b(brew(ing|ed)?|potion)\b", re.I)),
+    ("compare", re.compile(r"\b(vs\.?|versus|difference between|differ|compared?( to| with)?)\b", re.I)),
+    ("explain", re.compile(r"^(explain|describe)\b|\bhow (does|do|did|is|are)\b.{0,80}\b(work|works|detect|detects|"
+                           r"prioriti[sz]e|behave|decide|spawn|function)\b|\b(why|what happens|mechanism)\b", re.I)),
+    ("yesno", re.compile(r"^(can|does|do|is|are|will|should|did|could|would|has|have)\b", re.I)),
+    ("number", re.compile(r"\bhow (many|much|far|long|fast|high|big|often|hard)\b|\b(chance|percent|coordinates?|"
+                          r"complexity|durability|hardness|blast resistance|light level|ticks?|stack size|"
+                          r"max level)\b", re.I)),
+    ("steps", re.compile(r"\bhow (do|can|should|would) (i|you|we)\b|\bhow to\b|\bsteps?\b", re.I)),
+)
+_PLANS = {
+    "code": ("They want working code: {q} First the inputs and the output, then what can go wrong (bad input, a "
+             "failed request, nothing found), then the code and a line on how to run it.",
+             "A coding task: {q} The simplest correct approach, errors handled instead of ignored, and a short "
+             "explanation of the key lines after the code."),
+    "recipe": ("A crafting question: {q} I need every ingredient with its count, the grid row by row from the top, "
+               "whether it needs a crafting table, and how many it makes. Recipes changed between versions, so the "
+               "current Java one.",
+               "{q} For a recipe the layout is the answer: which item goes in which slot, top row first, then the "
+               "output count. Wood recipes take any kind of planks."),
+    "brewing": ("A brewing question: {q} Water bottle, Nether Wart for an Awkward Potion, then the key ingredient, "
+                "then a modifier if needed: Redstone makes it last longer, Glowstone makes it stronger, a Fermented "
+                "Spider Eye corrupts it, Gunpowder makes it a splash potion.",
+                "{q} Brewing goes in steps: the base potion, the ingredient that gives the effect, and the modifier "
+                "for the duration or level they asked about."),
+    "compare": ("They want two things compared: {q} Each one on its own first, then the difference that matters in "
+                "practice, with a small example.",
+                "{q} This is a comparison: what each option does, then side by side where they differ."),
+    "explain": ("They want to know how it works: {q} The mechanism first, then the exact numbers that matter (ticks, "
+                "blocks, chances, times), then a practical tip.",
+                "{q} This needs an explanation, not a one-liner: what triggers it, what happens step by step, and the "
+                "numbers involved."),
+    "yesno": ("A yes-or-no question: {q} Yes or no first, then why, and the exception if there is one.",
+              "{q} Start with a clear yes or no, then the reason and any condition that changes it."),
+    "number": ("They want a specific value: {q} The number with its unit and what it depends on (version, "
+               "difficulty, enchantments).",
+               "{q} An exact figure is wanted: the value, its unit, and the condition it holds under."),
+    "steps": ("{q} They want to know what to do: the steps in order, one action each, and the mistake to avoid.",
+              "A how-to: {q} Practical steps in order, with the detail that makes it work."),
+    "general": ("{q} Work out what is actually asked and answer that, at the length it needs.",
+                "They ask: {q} The direct answer first, then only the detail that helps."),
+}
+_POINT = re.compile(r"^\s*(?:#{1,6}\s+|[-*\u2022]\s+|\d+[.)]\s+|\*\*)(.+?)(?:\*\*|:|$)", re.M)
+
+
+def answer_kind(question: str, answer: str = "") -> str:
+    """``code`` / ``recipe`` / ``brewing`` / ``compare`` / ``explain`` / ``yesno`` / ``number`` / ``steps`` /
+    ``general``: what the question asks for (a fenced code block in the answer makes it ``code``)."""
+    text = " ".join(str(question or "").split())
+    if "```" in str(answer or ""):
+        return "code"
+    if re.match(r"(Shaped|Shapeless)\b", str(answer or "")):  # a minecraft-data recipe, however it was asked
+        return "recipe"
+    return next((kind for kind, pattern in _ASKS if pattern.search(text)), "general")
+
+
+def answer_plan(question: str, answer: str = "") -> str:
+    """A thinking trace that plans the answer this question needs.
+
+    It names the kind of answer and what it must contain, and for long answers the points they cover. It does
+    not state facts it was not given and never calls a question "simple": fixed sentences like that (or "I know
+    the exact data, so the number straight away") on thousands of rows taught a Thinking model to write the same
+    line and skip the real thinking, or to state a made-up "key point" with confidence."""
+    question = _plain(" ".join(str(question or "").split()))
+    gist = question if len(question) <= 220 else question[:217].rsplit(" ", 1)[0] + "..."
+    gist = gist if not gist or gist[-1] in ".?!" else gist + "."
+    kind = answer_kind(question, answer)
+    options = _PLANS[kind]
+    plan = options[zlib.crc32(question.encode("utf-8")) % len(options)].format(q=gist or "Their message.")
+    answer = str(answer or "")
+    if len(answer) > 400:
+        points = []
+        for match in _POINT.finditer(answer):
+            point = _plain(match.group(1).strip(" *:#"))
+            if 2 < len(point) <= 70 and point.lower() not in (p.lower() for p in points):
+                points.append(point)
+        if len(points) >= 2:
+            plan += " Points to cover: " + "; ".join(points[:5]) + "."
+    return " ".join(plan.split())
+
+
 def _parts_text(content: Any) -> str:
     if isinstance(content, list):
         return "".join(str(part.get("text") or "") for part in content
@@ -640,8 +734,7 @@ def minecraft_qa_rows(records: Any, limit: int, system: str, rng: Any) -> list[d
         seen.add(key)
         rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
                                   {"role": "assistant", "content": answer}],
-                     "reasoning": _plain(f"A Minecraft question: {question[:240]} I recall what the wiki says about "
-                                         "it and answer directly, with the numbers that matter."),
+                     "reasoning": answer_plan(question, answer),
                      "source": "minecraft-qa", "kind": "mcqa", "check": {}})
     rng.shuffle(rows)
     return rows
@@ -1014,15 +1107,22 @@ def minecraft_data_facts(data: dict[str, Any]) -> list[tuple[tuple[str, ...], st
                           f"{name} restores {_num(points)} hunger points ({_num(points / 2)} drumsticks).", "food"))
     for result, variants in (data.get("recipes") or {}).items():
         item = by_id.get(int(result)) if str(result).isdigit() else None
-        recipe = variants[0] if isinstance(variants, list) and variants else None
+        recipe = _main_variant(variants)
         if item is None or not isinstance(recipe, dict):
             continue
-        text = _recipe_text(recipe, by_id, label)
+        options, others = _recipe_options(variants, recipe, by_id, label)
+        text = _recipe_text(recipe, by_id, label, options)
         if not text:
             continue
         name, count = label(item), (recipe.get("result") or {}).get("count", 1)
-        more = f" This is one of {len(variants)} recipe variants." if len(variants) > 1 else ""
-        facts.append(((f"How do I craft {name}?", f"{name.lower()} recipe", f"what do i need to make {name.lower()}"),
+        if options:
+            more = " Any of the listed kinds works in those slots, they don't have to match."
+            more += f" It also has {others} other recipe{'s' if others > 1 else ''}." if others else ""
+        else:
+            more = f" This is one of {len(variants)} recipe variants." if len(variants) > 1 else ""
+        facts.append(((f"How do I craft {name}?", f"{name.lower()} recipe", f"what do i need to make {name.lower()}",
+                       f"What's the crafting grid layout for {name} in vanilla Minecraft?",
+                       f"What do I put in the crafting table to make {name}?"),
                       f"{text} You get {count} {name}.{more}", "crafting"))
     loot = {str(e.get("entity")): e.get("drops") or [] for e in data.get("entityLoot") or [] if isinstance(e, dict)}
     for mob in data.get("entities") or []:
@@ -1105,9 +1205,82 @@ def _tool_text(tools: list[dict[str, Any]]) -> str:
     return f"You need {'one of: ' if len(tools) > 1 else ''}{_names([_label(t) for t in tools])}."
 
 
-def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label: Any) -> str:
-    """'Shapeless: 1 Bone' / 'Crafting table, 3 rows: ...' - empty when an ingredient is not a plain item."""
-    def name(value: Any) -> str | None:
+def _group_name(names: list[str]) -> str | None:
+    """'any Planks' for Oak/Spruce/... Planks, 'Charcoal or Coal' for two or three unrelated items, ``None`` when
+    the items are too different to be one slot (then they are separate recipes, not one with a choice)."""
+    names = sorted(dict.fromkeys(names))
+    words = [n.split() for n in names]
+    common: list[str] = []
+    while all(len(w) > len(common) for w in words) and len({tuple(w[len(w) - len(common) - 1:]) for w in words}) == 1:
+        common = words[0][len(words[0]) - len(common) - 1:]
+    if common:
+        return "any " + " ".join(common)
+    return " or ".join(names) if len(names) <= 3 else None
+
+
+def _main_variant(variants: Any) -> dict[str, Any] | None:
+    """The recipe most variants share (same shape and output count, like the 12 wood types of a piston), so an odd
+    one out (2 Bamboo -> 1 Stick) is never the recipe the answer is built on. Ties keep the first one."""
+    recipes = [v for v in variants if isinstance(v, dict)] if isinstance(variants, list) else []
+    if not recipes:
+        return None
+
+    def signature(r: dict[str, Any]) -> str:
+        shape = r.get("inShape") if isinstance(r.get("inShape"), list) else []
+        holes = [[c is None for c in row] if isinstance(row, list) else [] for row in shape]
+        return json.dumps([holes, len(r.get("ingredients") or []), (r.get("result") or {}).get("count", 1)])
+
+    counts: dict[str, int] = {}
+    for r in recipes:
+        counts[signature(r)] = counts.get(signature(r), 0) + 1
+    return max(recipes, key=lambda r: counts[signature(r)])
+
+
+def _recipe_options(variants: Any, recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]],
+                    label: Any) -> tuple[dict[tuple[int, int], str], int]:
+    """Slots where same-shape recipe variants only differ in the item (wood types): ``({slot: 'any Planks'},
+    number of other recipes)``. Variants with another shape, empty slots or output count are other recipes
+    (2 Bamboo make 1 Stick, 2 planks make 4), so they are never merged into a slot."""
+    def grid(r: Any) -> list[list[Any]] | None:  # shaped only: shapeless slots have no position to line up
+        if isinstance(r, dict) and isinstance(r.get("inShape"), list) and not r.get("ingredients"):
+            return [list(row) if isinstance(row, list) else [] for row in r["inShape"]]
+        return None
+
+    def count(r: Any) -> Any:
+        return (r.get("result") or {}).get("count", 1) if isinstance(r, dict) else None
+
+    first = grid(recipe)
+    if first is None or not isinstance(variants, list) or len(variants) < 2:
+        return {}, 0
+    holes = [[v is None for v in row] for row in first]
+    same = [g for v in variants if (g := grid(v)) is not None and count(v) == count(recipe)
+            and [[c is None for c in row] for row in g] == holes]
+    others = len(variants) - len(same)
+    options: dict[tuple[int, int], str] = {}
+    for y, row in enumerate(first):
+        for x, value in enumerate(row):
+            if value is None:
+                continue
+            names = [label(by_id[g[y][x]]) for g in same if isinstance(g[y][x], int) and g[y][x] in by_id]
+            if len(names) != len(same):
+                return {}, 0
+            if len(set(names)) > 1:
+                group = _group_name(names)
+                if group is None:
+                    return {}, 0
+                options[(y, x)] = group
+    return options, others
+
+
+def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label: Any,
+                 options: dict[tuple[int, int], str] | None = None) -> str:
+    """'Shapeless: 1 Bone' / 'Crafting table, 3 rows: ...' - empty when an ingredient is not a plain item.
+    ``options`` (from ``_recipe_options``) names the slots that take any of several items ('any Planks')."""
+    options = options or {}
+
+    def name(value: Any, slot: tuple[int, int] | None = None) -> str | None:
+        if slot in options:
+            return options[slot]
         return label(by_id[value]) if isinstance(value, int) and value in by_id else None
 
     if recipe.get("ingredients"):
@@ -1121,13 +1294,13 @@ def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label
     if not isinstance(shape, list) or not shape:
         return ""
     rows, totals = [], {}
-    for row in shape:
+    for y, row in enumerate(shape):
         cells = []
-        for value in row if isinstance(row, list) else []:
+        for x, value in enumerate(row if isinstance(row, list) else []):
             if value is None:
                 cells.append("empty")
                 continue
-            cell = name(value)
+            cell = name(value, (y, x))
             if cell is None:
                 return ""
             cells.append(cell)
@@ -1154,16 +1327,16 @@ def minecraft_data_rows(data: dict[str, Any], limit: int, system: str, rng: Any)
     facts = minecraft_data_facts(data)
     rng.shuffle(facts)
     rows: list[dict[str, Any]] = []
+    offsets = [rng.randrange(len(questions)) if questions else 0 for questions, _answer, _topic in facts]
     for variant in range(3):
-        for questions, answer, topic in facts:
+        for (questions, answer, _topic), offset in zip(facts, offsets, strict=True):
             if len(rows) >= limit:
                 break
             if variant < len(questions):
-                question = questions[variant]
+                question = questions[(variant + offset) % len(questions)]
                 rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
                                           {"role": "assistant", "content": answer}],
-                             "reasoning": _plain(f"A Minecraft {topic} question: {question[:200]} I know the exact "
-                                                 "game data for this, so I give the number straight away."),
+                             "reasoning": answer_plan(question, answer),
                              "source": "minecraft-data", "kind": "mcqa", "check": {}})
     rng.shuffle(rows)
     return rows
