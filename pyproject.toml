@@ -73,3 +73,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# The collector cell starts with the module docstring (pymc_bot/llm_webdata.py verbatim), then its imports.
+"pynb/Minecraftism_Dataset_Kaggle.ipynb" = ["E402"]
