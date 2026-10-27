@@ -765,6 +765,7 @@ class Collector:
         if progress.is_file():
             self.done = list(json.loads(progress.read_text(encoding="utf-8")).get("done_topics") or [])
         self.keys = {question_key(r["question"]) for r in self.rows}
+        self.start_rows = len(self.rows)
 
     def seen(self, question: str) -> bool:
         return question_key(question) in self.keys
@@ -774,7 +775,9 @@ class Collector:
         self.keys.add(question_key(row["question"]))
 
     def save(self) -> None:
-        for name, items in (("data/train.jsonl", self.rows), ("meta/rejected.jsonl", self.rejected)):
+        high = [r for r in self.rows if r.get("trust") == "high"]
+        for name, items in (("data/train.jsonl", self.rows), ("data/high/train.jsonl", high),
+                            ("meta/rejected.jsonl", self.rejected)):
             path = self.folder / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in items), encoding="utf-8")
@@ -833,6 +836,10 @@ configs:
   data_files:
   - split: train
     path: data/train.jsonl
+- config_name: high
+  data_files:
+  - split: train
+    path: data/high/train.jsonl
 ---
 
 # Minecraftism dataset
@@ -863,8 +870,17 @@ write what a page says, and then checks on every answer.
 `question`, `answer`, `messages` (chat format), `topic`, `edition` (java / bedrock / both / unknown), `trust`,
 `sources` (URL + licence of each page), `evidence` (the quotes), `checks`, `model`, `created`.
 
-Train with it: `train_minecraft_llm.py --minecraft-qa-dataset <you>/{DATASET_NAME}` (it reads `question` /
-`answer`). Filter on `trust == "high"` for the strictest set.
+## Use it
+
+```python
+from datasets import load_dataset
+
+rows = load_dataset("<you>/{DATASET_NAME}", split="train")          # every checked row
+strict = load_dataset("<you>/{DATASET_NAME}", "high", split="train")  # only the confirmed ones
+```
+
+Train Minecraftism on it: `train_minecraft_llm.py --minecraft-qa-dataset <you>/{DATASET_NAME}` (it reads
+`question` / `answer`). A private dataset needs your token (`HF_TOKEN`) to load.
 
 ## Sources and licence
 
@@ -922,7 +938,29 @@ class Discord:
 
 
 def hub_repo_id(api: Any, name: str) -> str:
-    return name if "/" in name else f"{api.whoami()['name']}/{name}"
+    """``<your HF name>/<name>``; stops right away with a clear message when the token cannot write (instead of
+    failing at the first upload, half an hour in)."""
+    info = api.whoami()
+    role = ((info.get("auth") or {}).get("accessToken") or {}).get("role")
+    if role == "read":
+        raise SystemExit("Your Hugging Face token can only read. Make a *write* token (huggingface.co/settings/tokens) "
+                         "and put it in the Kaggle secret, or set UPLOAD = False.")
+    return name if "/" in name else f"{info['name']}/{name}"
+
+
+def hub_make_private(api: Any, repo_id: str, private: bool = True) -> bool:
+    """Create the dataset repo (private when asked) and switch an existing public one to private: with
+    ``PRIVATE = True`` the dataset is never visible to anyone else. Returns whether it is private."""
+    api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
+    try:
+        is_private = bool(api.repo_info(repo_id, repo_type="dataset").private)
+    except Exception:  # noqa: BLE001 - unknown: make sure below
+        is_private = False
+    if private and not is_private:
+        api.update_repo_settings(repo_id, repo_type="dataset", private=True)
+        log(f"{repo_id} was public - switched it to private")
+        is_private = True
+    return is_private
 
 
 def hub_resume(api: Any, repo_id: str, folder: Path, token: str) -> bool:
@@ -934,14 +972,14 @@ def hub_resume(api: Any, repo_id: str, folder: Path, token: str) -> bool:
             return False
         snapshot_download(repo_id, repo_type="dataset", local_dir=str(folder), token=token or None,
                           allow_patterns=["data/*", "meta/*"])
-        return True
+        return (Path(folder) / "data" / "train.jsonl").is_file()
     except Exception as exc:  # noqa: BLE001 - start fresh rather than fail
         log(f"could not resume from {repo_id} ({type(exc).__name__}) - starting fresh")
         return False
 
 
 def hub_upload(api: Any, repo_id: str, folder: Path, private: bool, message: str) -> str:
-    api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
+    hub_make_private(api, repo_id, private)  # every time: it stays private even if someone flipped it meanwhile
     api.upload_folder(repo_id=repo_id, repo_type="dataset", folder_path=str(folder), commit_message=message,
                       allow_patterns=["README.md", "data/*", "meta/*"])
     return f"https://huggingface.co/datasets/{repo_id}"
@@ -957,65 +995,88 @@ def session_start() -> float:
         return time.time()
 
 
+def gather(topic: str, cfg: dict, search: Callable[[str], list[dict]],
+           fetch: Callable[[str], str]) -> list[tuple[str, tuple[str, str], str, str]]:
+    """``[(url, policy, page, passage)]`` for one topic: the web part, run ahead in the background."""
+    found = []
+    for hit in search(f"{topic} site:minecraft.fandom.com")[: int(cfg.get("pages_per_topic", 1))]:
+        url = hit["url"]
+        policy = source_policy(url)
+        if not policy or policy[0] != "text":
+            continue
+        page = fetch(url)
+        passage = passages(page, topic, size=int(cfg.get("passage_chars", 1400)), top=2)
+        if len(passage) >= 200:
+            found.append((url, policy, page, passage))
+    return found
+
+
 def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: list[str],
             search: Callable[[str], list[dict]], fetch: Callable[[str], str], deadline: float,
             on_upload: Callable[[str], None] = lambda _m: None, discord: Discord | None = None) -> None:
-    """The main loop: one topic at a time until the time, row or topic limit, uploading every few minutes."""
+    """The main loop: one topic at a time until the time, row or topic limit, uploading every few minutes. The
+    next topic's search and pages are fetched in the background while the LLM works on this one, so the CPU never
+    waits for the network. Saves what it has even when stopped (the Kaggle stop button)."""
+    from concurrent.futures import ThreadPoolExecutor
+
     discord = discord or Discord("")
     last_upload, last_report = time.time(), time.time()
     todo = [t for t in topic_list if t not in set(collector.done)]
     if cfg.get("max_topics"):
         todo = todo[:int(cfg["max_topics"])]
-    for number, topic in enumerate(todo, 1):
-        if time.time() > deadline or (cfg.get("max_rows") and len(collector.rows) >= int(cfg["max_rows"])):
-            break
-        before = len(collector.rows)
-        try:
-            hits = search(f"{topic} site:minecraft.fandom.com")[: int(cfg.get("pages_per_topic", 1))]
-            for hit in hits:
-                url = hit["url"]
-                policy = source_policy(url)
-                if not policy or policy[0] != "text":
-                    continue
-                page = fetch(url)
-                passage = passages(page, topic, size=int(cfg.get("passage_chars", 1400)), top=2)
-                if len(passage) < 200:
-                    continue
-                for pair in propose(llm, topic, url, passage, int(cfg.get("pairs_per_page", 3))):
-                    if collector.seen(pair["question"]):
-                        continue
-                    passed, checks, why = check_pair(pair, page, llm, book)
-                    trust, confirmed = "medium", ""
-                    if passed and cfg.get("corroborate", True):
-                        verdict, confirmed = corroborate(llm, pair, search, fetch, {url})
-                        checks["independent_page"] = verdict
-                        if verdict == "CONTRADICTED":
-                            passed, why = False, f"an independent page contradicts it ({confirmed})"
-                    if not passed:
-                        collector.rejected.append({"topic": topic, "url": url, "why": why, **pair, "checks": checks})
-                        continue
-                    if checks.get("game_data") == "ok" or checks.get("independent_page") == "SUPPORTED":
-                        trust = "high"
-                    if trust == "medium" and cfg.get("keep", "medium") == "high":
-                        collector.rejected.append({"topic": topic, "url": url, "why": "only medium trust", **pair,
-                                                   "checks": checks})
-                        continue
-                    collector.add(make_row(topic, pair, url, policy[1], checks, trust, confirmed, cfg.get("model", "")))
-        except Exception as exc:  # noqa: BLE001 - one bad topic never stops the run
-            log(f"{topic}: skipped ({type(exc).__name__}: {str(exc)[:160]})")
-        collector.done.append(topic)
-        stats = collector.stats()
-        log(f"[{number}/{len(todo)}] {topic}: +{stats['rows'] - before} rows "
-            f"(total {stats['rows']}: {stats['high']} high, {stats['medium']} medium; {stats['rejected']} rejected)")
-        if time.time() - last_report > 3600:
-            last_report = time.time()
-            discord.send(f"{stats['rows']} rows ({stats['high']} high trust), {stats['rejected']} rejected, "
-                         f"{stats['topics']} topics done.", "Progress")
-        if time.time() - last_upload > float(cfg.get("upload_every_min", 30)) * 60:
-            last_upload = time.time()
-            collector.save()
-            on_upload(f"{stats['rows']} rows after {stats['topics']} topics")
-    collector.save()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
+    ahead = None
+    try:
+        for number, topic in enumerate(todo, 1):
+            if time.time() > deadline or (cfg.get("max_rows") and len(collector.rows) >= int(cfg["max_rows"])):
+                break
+            current = ahead or pool.submit(gather, topic, cfg, search, fetch)
+            ahead = pool.submit(gather, todo[number], cfg, search, fetch) if number < len(todo) else None
+            before = len(collector.rows)
+            try:
+                for url, policy, page, passage in current.result():
+                    for pair in propose(llm, topic, url, passage, int(cfg.get("pairs_per_page", 3))):
+                        if collector.seen(pair["question"]):
+                            continue
+                        passed, checks, why = check_pair(pair, page, llm, book)
+                        trust, confirmed = "medium", ""
+                        if passed and cfg.get("corroborate", True):
+                            verdict, confirmed = corroborate(llm, pair, search, fetch, {url})
+                            checks["independent_page"] = verdict
+                            if verdict == "CONTRADICTED":
+                                passed, why = False, f"an independent page contradicts it ({confirmed})"
+                        if not passed:
+                            collector.rejected.append({"topic": topic, "url": url, "why": why, **pair,
+                                                       "checks": checks})
+                            continue
+                        if checks.get("game_data") == "ok" or checks.get("independent_page") == "SUPPORTED":
+                            trust = "high"
+                        if trust == "medium" and cfg.get("keep", "medium") == "high":
+                            collector.rejected.append({"topic": topic, "url": url, "why": "only medium trust", **pair,
+                                                       "checks": checks})
+                            continue
+                        collector.add(make_row(topic, pair, url, policy[1], checks, trust, confirmed,
+                                               cfg.get("model", "")))
+            except Exception as exc:  # noqa: BLE001 - one bad topic never stops the run
+                log(f"{topic}: skipped ({type(exc).__name__}: {str(exc)[:160]})")
+            collector.done.append(topic)
+            stats = collector.stats()
+            hours = max((time.time() - collector.started) / 3600, 1e-6)
+            rate = (stats["rows"] - collector.start_rows) / hours
+            log(f"[{number}/{len(todo)}] {topic}: +{stats['rows'] - before} rows (total {stats['rows']}: "
+                f"{stats['high']} high, {stats['medium']} medium; {stats['rejected']} rejected) - {rate:.0f} rows/h, "
+                f"{max(deadline - time.time(), 0) / 3600:.1f} h left")
+            if time.time() - last_report > 3600:
+                last_report = time.time()
+                discord.send(f"{stats['rows']} rows ({stats['high']} high trust), {stats['rejected']} rejected, "
+                             f"{stats['topics']} topics done, {rate:.0f} rows/h.", "Progress")
+            if time.time() - last_upload > float(cfg.get("upload_every_min", 30)) * 60:
+                last_upload = time.time()
+                collector.save()
+                on_upload(f"{stats['rows']} rows after {stats['topics']} topics")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+        collector.save()
 
 
 def main(cfg: dict) -> dict:
@@ -1028,6 +1089,10 @@ def main(cfg: dict) -> dict:
     token = kaggle_secret(cfg.get("hf_secret", "HF_TOKEN"))
     discord = Discord(kaggle_secret(cfg.get("discord_secret", "")) if cfg.get("discord", True) else "",
                       kaggle_secret(cfg.get("ping_role_secret", "ping_role")))
+    if cfg.get("model", "qwen3-4b") not in MODELS:
+        raise SystemExit(f"MODEL = {cfg.get('model')!r} is not known - use one of: {', '.join(MODELS)}")
+    if cfg.get("keep", "medium") not in ("medium", "high"):
+        raise SystemExit(f"KEEP = {cfg.get('keep')!r} - use \"medium\" or \"high\"")
     spec = MODELS[cfg.get("model", "qwen3-4b")]
     cfg = {**cfg, "model": spec["name"]}
     deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
@@ -1042,7 +1107,24 @@ def main(cfg: dict) -> dict:
         repo_id = hub_repo_id(api, cfg.get("dataset_repo", DATASET_NAME))
         if cfg.get("resume", True) and hub_resume(api, repo_id, folder, token):
             log(f"resuming from https://huggingface.co/datasets/{repo_id}")
-    llm = None
+        private = hub_make_private(api, repo_id, bool(cfg.get("private", True)))
+        log(f"uploading to https://huggingface.co/datasets/{repo_id} - "
+            + ("PRIVATE: only you can see it" if private else "PUBLIC: anyone can see it (PRIVATE = False)"))
+    llm = collector = None
+
+    def upload(message: str) -> None:
+        if api is not None and repo_id and collector is not None:
+            try:
+                link = hub_upload(api, repo_id, folder, bool(cfg.get("private", True)), message)
+                discord.send(f"{message}: {link}", "Uploaded", "good", important=True)
+            except Exception as exc:  # noqa: BLE001 - try again at the next upload
+                log(f"upload failed ({type(exc).__name__}: {str(exc)[:200]})")
+
+    def summary(stats: dict) -> dict:
+        link = f"https://huggingface.co/datasets/{repo_id}" if repo_id else str(folder)
+        samples = [{k: r[k] for k in ("question", "answer", "trust")} for r in (collector.rows if collector else [])[-3:]]
+        return {**stats, "link": link, "samples": samples}
+
     try:
         discord.send(f"Collecting a trusted Minecraft dataset with {spec['name']} on CPU"
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
@@ -1058,25 +1140,26 @@ def main(cfg: dict) -> dict:
             f"check, {len(collector.rows)} rows so far")
         cache = tmp / "pages"
 
-        def upload(message: str) -> None:
-            if api is not None and repo_id:
-                try:
-                    link = hub_upload(api, repo_id, folder, bool(cfg.get("private", True)), message)
-                    discord.send(f"{message}: {link}", "Uploaded", "good", important=True)
-                except Exception as exc:  # noqa: BLE001 - try again at the next upload
-                    log(f"upload failed ({type(exc).__name__}: {str(exc)[:200]})")
-
         collect(cfg, llm, collector, book, topic_list,
                 lambda q: web_search(q, int(cfg.get("search_results", 8))),
                 lambda url: fetch_page(url, cache), deadline, upload, discord)
         stats = collector.stats()
         upload(f"final: {stats['rows']} rows ({stats['high']} high trust) from {stats['topics']} topics")
-        link = f"https://huggingface.co/datasets/{repo_id}" if repo_id else str(folder)
-        log(f"done: {stats} -> {link} (LLM: {llm.calls} calls, {llm.seconds / 60:.0f} min)")
+        result = summary(stats)
+        log(f"done: {stats} -> {result['link']} (LLM: {llm.calls} calls, {llm.seconds / 60:.0f} min)")
         discord.send(f"{stats['rows']} rows ({stats['high']} high trust, {stats['medium']} medium), "
-                     f"{stats['rejected']} rejected, {stats['topics']} topics.\n{link}", "Notebook finished", "good",
-                     important=True)
-        return {**stats, "link": link}
+                     f"{stats['rejected']} rejected, {stats['topics']} topics.\n{result['link']}", "Notebook finished",
+                     "good", important=True)
+        return result
+    except KeyboardInterrupt:  # the Kaggle stop button: keep and upload what was collected
+        if collector is None:
+            raise
+        stats = collector.stats()
+        log(f"stopped - uploading the {stats['rows']} rows collected so far")
+        upload(f"stopped early: {stats['rows']} rows ({stats['high']} high trust) from {stats['topics']} topics")
+        discord.send(f"Stopped by you after {stats['topics']} topics: {stats['rows']} rows kept.", "Notebook stopped",
+                     "warn", important=True)
+        return {**summary(stats), "stopped": True}
     except BaseException as exc:
         discord.send(f"`{type(exc).__name__}: {str(exc)[:1500]}`", "Notebook error", "bad", important=True)
         raise

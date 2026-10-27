@@ -17,7 +17,8 @@ NOTEBOOK = ROOT / "pynb" / "Minecraftism_Dataset_Kaggle.ipynb"
 INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle **without a GPU**
 
 Web search + a small LLM running on the CPU (llama.cpp, Qwen3 GGUF in RAM) collect Minecraft questions and answers,
-check every one, and upload them to your Hugging Face dataset **`<you>/Minecraftism-dataset`**.
+check every one, and upload them to your Hugging Face dataset **`<you>/Minecraftism-dataset`** - **private**: only
+you can see it (`PRIVATE = True`; a repo that already exists as public is switched to private too).
 
 **Kaggle setup:** Settings → *Accelerator* **None** (no GPU needed) · *Internet* **On** · Add-ons → Secrets:
 `HF_TOKEN` (a Hugging Face **write** token). Optional: `discord_webhook_inform_me1` (status messages) and
@@ -35,7 +36,9 @@ Save & Run All* to let it run up to ~12 h in the background).
    it marks the row `trust: high` (otherwise `medium`).
 
 Rejected pairs and the reason go to `meta/rejected.jsonl` for review. The dataset uploads every 30 minutes, and
-the next session goes on where this one stopped (`RESUME`). Train with it:
+the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
+While the LLM works on one topic, the next topic's pages are already being fetched. Load it with
+`load_dataset("<you>/Minecraftism-dataset")` (or `"high"` for the confirmed rows only), or train with it:
 `train_minecraft_llm.py --minecraft-qa-dataset <you>/Minecraftism-dataset`.
 
 Made with ❤️ by codero-sus · [the-codero.web.app](https://the-codero.web.app/) ·
@@ -46,8 +49,9 @@ SETTINGS = """# ============================== settings ========================
 MODEL = "qwen3-4b"       # the LLM, on CPU: "qwen3-4b" = Qwen3-4B-Instruct-2507 (best checks, ~3 GB RAM)
                          #               "qwen3-1.7b" = Qwen3-1.7B (2-3x faster, less careful)
 DATASET_REPO = "Minecraftism-dataset"  # -> <your HF name>/Minecraftism-dataset (or "name/repo")
-UPLOAD = True            # upload to Hugging Face (every UPLOAD_EVERY_MIN minutes and at the end)
-PRIVATE = True           # keep the dataset private until you have looked at it
+UPLOAD = True            # upload to Hugging Face (every UPLOAD_EVERY_MIN minutes, at the end and when stopped)
+PRIVATE = True           # True = only you can see it (an existing public repo is switched to private);
+                         # False = public - only once you have looked through it
 RESUME = True            # go on from what earlier sessions uploaded (skips the topics already done)
 KEEP = "medium"          # "medium" = every row that passed all checks (each has trust: high/medium);
                          # "high" = only rows confirmed by the game data or an independent page
@@ -69,6 +73,8 @@ SETUP = """# ============================== setup ==============================
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "ddgs", "huggingface_hub>=0.30"], check=True)
 WORK, TMP = "/kaggle/working", "/kaggle/tmp"  # the dataset in /kaggle/working; model, llama.cpp, page cache in /kaggle/tmp
@@ -82,6 +88,14 @@ except Exception:
 ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
 print(f"{os.cpu_count()} CPU threads, {ram:.0f} GB RAM" + (" - a GPU is attached but not used (Accelerator None is "
       "enough)" if gpu else " - no GPU, as intended"))
+for name, url in (("Hugging Face", "https://huggingface.co/api/whoami-v2"), ("GitHub", "https://api.github.com")):
+    try:
+        urllib.request.urlopen(url, timeout=20).close()
+    except urllib.error.HTTPError:
+        pass  # it answered: the internet works (401 without a token is fine)
+    except Exception as exc:
+        raise SystemExit(f"{name} is not reachable ({type(exc).__name__}) - turn Internet on in the notebook settings") from None
+print("internet: OK")
 """
 
 RUN = """# ============================== run ==============================
@@ -92,7 +106,10 @@ result = main({
     "hf_secret": HF_SECRET, "discord": DISCORD, "discord_secret": DISCORD_SECRET,
     "ping_role_secret": PING_ROLE_SECRET, "work": WORK, "tmp": TMP,
 })
-result
+print(f"\\n{'stopped early' if result.get('stopped') else 'finished'}: {result['rows']} rows ({result['high']} high trust, "
+      f"{result['medium']} medium), {result['rejected']} rejected, {result['topics']} topics\\n-> {result['link']}")
+for row in result["samples"]:
+    print(f"\\n[{row['trust']}] Q: {row['question']}\\n         A: {row['answer']}")
 """
 
 

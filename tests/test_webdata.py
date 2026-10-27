@@ -6,6 +6,7 @@ import json
 import random
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -255,7 +256,9 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     exec(compile(sources[1], "settings", "exec"), namespace)
     exec(compile(sources[3], "collector", "exec"), namespace)
     seen = {}
-    namespace["main"] = lambda cfg: seen.update(cfg) or {"rows": 0}
+    result = {"rows": 2, "high": 1, "medium": 1, "rejected": 3, "topics": 1, "link": "https://hf.co/datasets/me/x",
+              "samples": [{"question": "Lead?", "answer": "5 string.", "trust": "high"}]}
+    namespace["main"] = lambda cfg: seen.update(cfg) or result
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "qwen3-4b"
@@ -317,3 +320,80 @@ def test_model_cards_carry_the_polyform_required_notice():
     source = inspect.getsource(llm_train.model_card)
     assert "\nRequired Notice: Copyright codero-sus" in source
     assert "polyformproject.org/licenses/noncommercial/1.0.0" in source
+
+
+class FakeHub:
+    def __init__(self, public: bool = True, role: str = "write", info_fails: bool = False):
+        self.public, self.role, self.info_fails = public, role, info_fails
+        self.calls: list = []
+
+    def whoami(self):
+        return {"name": "me", "auth": {"accessToken": {"role": self.role}}}
+
+    def create_repo(self, repo_id, **kwargs):
+        self.calls.append(("create", repo_id, kwargs["private"]))
+
+    def repo_info(self, repo_id, **kwargs):
+        if self.info_fails:
+            raise OSError("hub down")
+        return types.SimpleNamespace(private=not self.public)
+
+    def update_repo_settings(self, repo_id, **kwargs):
+        self.calls.append(("settings", repo_id, kwargs))
+        self.public = not kwargs["private"]
+
+    def upload_folder(self, **kwargs):
+        self.calls.append(("upload", kwargs["repo_id"], tuple(kwargs["allow_patterns"])))
+
+
+def test_private_on_switches_a_public_repo_to_private_before_every_upload(tmp_path):
+    hub = FakeHub(public=True)
+    assert w.hub_repo_id(hub, "Minecraftism-dataset") == "me/Minecraftism-dataset"
+    assert w.hub_make_private(hub, "me/Minecraftism-dataset", True) is True
+    assert hub.calls == [("create", "me/Minecraftism-dataset", True),
+                         ("settings", "me/Minecraftism-dataset", {"repo_type": "dataset", "private": True})]
+    hub.public = True  # someone made it public meanwhile: the next upload makes it private again
+    link = w.hub_upload(hub, "me/Minecraftism-dataset", tmp_path, True, "30 rows")
+    assert link == "https://huggingface.co/datasets/me/Minecraftism-dataset" and not hub.public
+    assert hub.calls[-1][0] == "upload" and "data/*" in hub.calls[-1][2]
+    unsure = FakeHub(public=False, info_fails=True)  # visibility unknown: made private to be sure
+    assert w.hub_make_private(unsure, "me/x", True) and unsure.calls[-1][0] == "settings"
+    public = FakeHub(public=True)  # PRIVATE = False leaves it public
+    assert w.hub_make_private(public, "me/x", False) is False and [c[0] for c in public.calls] == ["create"]
+
+
+def test_a_read_only_token_or_a_bad_setting_stops_right_away(tmp_path):
+    with pytest.raises(SystemExit, match="write"):
+        w.hub_repo_id(FakeHub(role="read"), "Minecraftism-dataset")
+    with pytest.raises(SystemExit, match="qwen3-4b"):
+        w.main({"model": "llama-70b", "upload": False, "work": str(tmp_path), "tmp": str(tmp_path / "t")})
+    with pytest.raises(SystemExit, match="medium"):
+        w.main({"keep": "all", "upload": False, "work": str(tmp_path), "tmp": str(tmp_path / "t")})
+
+
+def test_pages_are_fetched_one_topic_ahead_and_a_stop_keeps_the_rows(tmp_path):
+    import threading
+
+    collector = w.Collector(tmp_path / "d", "m")
+    threads = []
+
+    def search(query):
+        threads.append((query.split(" site:")[0], threading.current_thread().name))
+        return [{"url": FANDOM, "title": "Lead"}]
+
+    class Stopping(FakeLLM):
+        def chat(self, system, user, schema, max_tokens=700):
+            if self.calls >= 2:  # the second topic's first LLM call: the Kaggle stop button
+                raise KeyboardInterrupt
+            return super().chat(system, user, schema, max_tokens)
+
+    with pytest.raises(KeyboardInterrupt):
+        w.collect({"corroborate": False}, Stopping(), collector, w.recipe_book(_data()), ["Lead", "Lead use", "Lead knot"],
+                  search, lambda u: page_text(), deadline=1e18)
+    assert threads[0] == ("Lead", threads[0][1]) and all(name.startswith("prefetch") for _q, name in threads)
+    assert [q for q, _n in threads][:2] == ["Lead", "Lead use"]  # fetched in the background, one topic ahead
+    assert len(collector.rows) == 1  # saved on the way out
+    saved = (tmp_path / "d" / "data" / "train.jsonl").read_text().splitlines()
+    assert len(saved) == 1 and (tmp_path / "d" / "data" / "high" / "train.jsonl").read_text().count("\n") == 1
+    card = (tmp_path / "d" / "README.md").read_text()
+    assert "config_name: high" in card and "path: data/high/train.jsonl" in card and 'load_dataset(' in card
