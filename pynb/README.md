@@ -57,8 +57,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (CPU only)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/62935221446c5cfff76e14dc2135cc0c7828cb84/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/62935221446c5cfff76e14dc2135cc0c7828cb84/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/d85e55dfdd0bb814e7371050e6deef6a9f54a250/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/d85e55dfdd0bb814e7371050e6deef6a9f54a250/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **None** (it needs no GPU and uses none of your GPU quota), Internet **on**.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).

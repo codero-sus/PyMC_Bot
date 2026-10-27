@@ -511,12 +511,14 @@ a CPU it runs about as fast as a 4B model and judges far better. `"qwen3-4b"` (~
 2-3× faster, least careful) are the smaller choices and the fallback on smaller machines.
 For speed on the CPU it works on `PARALLEL = 4` topics at once (llama-server's parallel slots batch them, and
 while one topic waits for a web search the others keep the cores busy), skips the second web search when the game
-data already confirms an answer, and keeps the judge's reason to one sentence. Before collecting it runs a **speed test** on the real job (all 4 requests
-at once): with `MODEL = "auto"` it keeps the biggest model that writes at least `MIN_TOKENS_PER_S = 20` tokens/s here,
-each measured with and without llama.cpp's n-gram speculation (`SPECULATE = "auto"`: it guesses the quotes the LLM
-copies from the page and checks many tokens in one step). On Kaggle's 4 CPU threads the 30B-A3B probably writes about
-8-15 tok/s, so expect the 4B or 1.7B to be chosen; `MIN_TOKENS_PER_S = 0` always keeps the biggest. The log shows the
-speed test, rows/h and the LLM's tokens/s. The LLM writes question/answer pairs
+data already confirms an answer, and keeps the judge's reason to one sentence. **Quality first** (`MIN_TOKENS_PER_S = 0`, the default): on Kaggle
+it always runs the biggest model, Qwen3-30B-A3B (probably ~8-15 tok/s on the 4 CPU threads). It still uses the whole
+machine: llama-server is its own process on all 4 threads, batching the 4 topics; web search, downloads, HTML parsing
+and picking passages run in `PARALLEL` separate worker **processes** (`PROCESSES = True`), so they never wait on the
+main Python process. A short speed test on the real job measures llama.cpp's n-gram speculation (`SPECULATE =
+"auto"`: it guesses the quotes the LLM copies and checks many tokens in one step; the text stays the same) and keeps
+the faster way. Set `MIN_TOKENS_PER_S = 20` for speed over quality: it then keeps the biggest model that writes at
+least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
 | check | rejects |
@@ -535,7 +537,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/62935221446c5cfff76e14dc2135cc0c7828cb84/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/d85e55dfdd0bb814e7371050e6deef6a9f54a250/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
