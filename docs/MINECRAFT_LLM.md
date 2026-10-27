@@ -518,7 +518,10 @@ and picking passages run in `PARALLEL` separate worker **processes** (`PROCESSES
 main Python process. A short speed test on the real job measures llama.cpp's n-gram speculation (`SPECULATE =
 "auto"`: it guesses the quotes the LLM copies and checks many tokens in one step; the text stays the same) and keeps
 the faster way. Set `MIN_TOKENS_PER_S = 20` for speed over quality: it then keeps the biggest model that writes at
-least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. The LLM writes question/answer pairs
+least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. **GPU T4 x2** (Settings → Accelerator; uses your weekly GPU
+hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
+(~20-30 min, once per session), else back to the CPU - with the 30B in Q5_K_M (fits the 2 x 15 GB), 8 topics at
+once, 2 pages per topic and 5 pairs per page (`PARALLEL`, `PAGES_PER_TOPIC`, `PAIRS_PER_PAGE` = 0 mean auto). The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
 | check | rejects |
@@ -537,7 +540,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/5418878aad1b1b4f4392e739b5f5c73528f20996/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/fbe47994ed6b3a80534d68b1ba3a035a85d941c3/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
