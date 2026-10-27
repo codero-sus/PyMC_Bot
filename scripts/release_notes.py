@@ -104,8 +104,8 @@ def downloads(version: str) -> list[str]:
         "CPU (uploading meanwhile) while the T4 trains the next edition, and `AUTO_EXIT` ends the session when everything is on Hugging Face. Results, logs and the shared data cache stay in `/kaggle/working`; downloads, GGUF work files and other throwaway files go to `/kaggle/tmp`. Every edition is uploaded to Hugging Face **twice**: "
         "**safetensors** first (`<you>/Minecraftism-4B-Uncensored`, the compact 16-bit merged model for "
         "transformers / vLLM / fine-tuning; `SAFETENSORS = True`), then **GGUF** quants made from it "
-        "(`<you>/Minecraftism-4B-Uncensored-GGUF`: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, each uploaded as soon as it "
-        "is ready; `GGUF_QUANTS`), both with `tokenizer.json` and the configs. Afterwards `python -m pymc_bot llm import --hf <you>/Minecraftism-4B-Uncensored-GGUF` "
+        "(`<you>/Minecraftism-4B-Uncensored-GGUF`: every quant from F16 and BF16 down to IQ1_S, made with an "
+        "importance matrix, each uploaded as soon as it is ready; `GGUF_QUANTS`), both with `tokenizer.json` and the configs. Afterwards `python -m pymc_bot llm import --hf <you>/Minecraftism-4B-Uncensored-GGUF` "
         "(guide: `docs/MINECRAFT_LLM.md` in the source zip) |",
         "| `pymc-bot-node-modules.zip` | **mineflayer, prebuilt** for players who can't (or don't want to) use npm: "
         "`python -m pymc_bot setup` fetches it by itself when needed, or offline: "

@@ -58,4 +58,5 @@ def test_notes_say_the_notebook_uploads_safetensors_then_gguf_quants():
     assert "editions_to_be_trained = {txt, txt_think, vl, vl_think}" in text
     assert "**safetensors**" in text and "**GGUF**" in text and "SAFETENSORS = True" in text
     assert text.index("**safetensors**") < text.index("**GGUF**")
-    assert "Q8_0" in text and "Q4_K_M" in text and "`GGUF_QUANTS`" in text and "`tokenizer.json`" in text
+    assert "every quant from F16 and BF16 down to IQ1_S" in text and "importance matrix" in text
+    assert "`GGUF_QUANTS`" in text and "`tokenizer.json`" in text

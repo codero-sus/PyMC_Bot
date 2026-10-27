@@ -119,7 +119,12 @@ def _parse(argv):
 
 def test_quant_list_puts_the_main_quant_first():
     assert llm_train.gguf_quants(_parse([])) == ["q4_k_m"]
-    assert llm_train.gguf_quants(_parse(["--hub-repo", "auto"])) == ["q4_k_m", "q8_0", "q6_k", "q5_k_m", "q3_k_m"]
+    every = llm_train.gguf_quants(_parse(["--hub-repo", "auto"]))  # uploading: every quant by default
+    assert every[0] == "q4_k_m" and sorted(every) == sorted(llm_train.ALL_QUANTS) and len(every) == 29
+    assert every[1:4] == ["q8_0", "q6_k", "q5_k_m"] and every[-2:] == ["bf16", "f16"]  # most useful first
+    assert llm_train.gguf_quants(_parse(["--hub-repo", "auto", "--gguf-quants", "standard"])) == \
+        ["q4_k_m", "q8_0", "q6_k", "q5_k_m", "q3_k_m"]
+    assert llm_train.gguf_quants(_parse(["--gguf-quants", "iq4_xs,all"]))[:3] == ["q4_k_m", "iq4_xs", "q8_0"]
     assert llm_train.gguf_quants(_parse(["--gguf-quants", "Q8_0, q4_k_m,q8_0"])) == ["q4_k_m", "q8_0"]
     assert llm_train.gguf_quants(_parse(["--hub-repo", "auto", "--gguf-quants", "none"])) == ["q4_k_m"]
     assert llm_train.gguf_quants(_parse(["--gguf", "none", "--hub-repo", "auto"])) == []
@@ -129,12 +134,13 @@ def test_quant_list_puts_the_main_quant_first():
 class FakeRun:
     """Stands in for subprocess.run: the converter and llama-quantize write files of a believable size."""
 
-    SIZES = {"F16": 8000, "Q8_0": 4300, "Q6_K": 3300, "Q5_K_M": 2900, "Q4_K_M": 2500, "Q3_K_M": 2000}
+    SIZES = {"F16": 8000, "BF16": 8000, "Q8_0": 4300, "Q6_K": 3300, "Q5_K_M": 2900, "Q4_K_M": 2500, "Q3_K_M": 2000}
 
-    def __init__(self, fail: str = "", mmproj_name: str | None = None):
+    def __init__(self, fail: str = "", mmproj_name: str | None = None, imatrix_timeout: bool = False):
         self.calls: list[list[str]] = []
         self.fail = fail
         self.mmproj_name = mmproj_name
+        self.imatrix_timeout = imatrix_timeout
 
     def __call__(self, command, **kwargs):
         command = [str(c) for c in command]
@@ -151,7 +157,12 @@ class FakeRun:
             else:
                 target.write_bytes(b"f" * self.SIZES["F16"])
         elif Path(command[0]).name == "llama-quantize":
-            Path(command[2]).write_bytes(b"q" * self.SIZES[command[3]])
+            args = command[3:] if command[1] == "--imatrix" else command[1:]
+            Path(args[1]).write_bytes(b"q" * self.SIZES.get(args[2], 1500))
+        elif Path(command[0]).name == "llama-imatrix":
+            Path(command[command.index("-o") + 1]).write_bytes(b"i" * 30)
+            if self.imatrix_timeout:  # it saved part of the matrix, then ran out of time
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -341,7 +352,7 @@ def _finish(tmp_path, monkeypatch, argv, model=None):
 
 
 def test_finish_uploads_safetensors_then_each_gguf_then_the_gguf_repo(tmp_path, monkeypatch, hub):
-    code, model, report = _finish(tmp_path, monkeypatch, ["--hub-repo", "auto"])
+    code, model, report = _finish(tmp_path, monkeypatch, ["--hub-repo", "auto", "--gguf-quants", "standard"])
     out = tmp_path / "out"
     assert code == 0 and model.calls == [("merged", "merged_16bit")]  # Unsloth's GGUF exporter is not needed
     kinds = [(e[0], e[1]) for e in hub]
@@ -446,7 +457,8 @@ def _deferred(tmp_path, monkeypatch, argv, model=None):
 
 
 def test_defer_gguf_frees_the_gpu_and_export_only_finishes_the_edition(tmp_path, monkeypatch, hub, capsys):
-    code, model = _deferred(tmp_path, monkeypatch, ["--hub-repo", "auto", "--defer-gguf", "--clean-after-upload"])
+    code, model = _deferred(tmp_path, monkeypatch, ["--hub-repo", "auto", "--defer-gguf", "--clean-after-upload",
+                                                    "--gguf-quants", "standard"])
     out = tmp_path / "out"
     assert code == 0 and model.calls == [("merged", "merged_16bit")]
     assert (out / llm_train.EXPORT_JOB).is_file() and not (out / "pymc_model.json").exists()
@@ -527,3 +539,95 @@ def test_uploader_keeps_order_and_survives_a_failing_job(capsys):
     inline = llm_train.Uploader(background=False)
     inline.submit(done.append, "now")
     assert done[-1] == "now" and inline.thread is None
+
+
+# --------------------------------------------------------------------------- every quant + the importance matrix
+def _calibration(tmp_path: Path) -> Path:
+    text = tmp_path / "calibration.txt"
+    text.write_text("Creepers explode. " * 2000)
+    return text
+
+
+def _tools_with_imatrix(tmp_path: Path) -> tuple[Path, Path]:
+    convert, quantize = _tools(tmp_path)
+    quantize.with_name("llama-imatrix").write_text("# binary")
+    return convert, quantize
+
+
+def test_every_quant_gets_the_imatrix_made_on_q8_0_and_the_f16_goes_last(tmp_path):
+    run, seen, freed = FakeRun(), [], []
+    quants = llm_train.gguf_quants(_parse(["--hub-repo", "auto"]))
+    result = llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", quants, vision=False,
+                                  tools=_tools_with_imatrix(tmp_path), run=run, calibration=_calibration(tmp_path),
+                                  on_file=lambda path, quant: seen.append(quant), on_base=lambda: freed.append(len(run.calls)))
+    names = ["convert" if c[0] == sys.executable else Path(c[0]).name for c in run.calls]
+    assert names[:2] == ["convert", "convert"] and run.calls[1][-1] == "bf16"  # BF16 straight from the safetensors
+    assert freed == [2]  # the safetensors are freed only after both conversions
+    assert names[2] == "llama-quantize" and run.calls[2][-1] == "Q8_0" and "--imatrix" not in run.calls[2]
+    imatrix_call = run.calls[3]
+    assert names[3] == "llama-imatrix" and imatrix_call[imatrix_call.index("-m") + 1].endswith("m.Q8_0.gguf")
+    assert imatrix_call[imatrix_call.index("--chunks") + 1] == str(llm_train.IMATRIX_CHUNKS)
+    quantized = {c[-1]: c for c in run.calls[4:]}
+    assert all("--imatrix" in quantized[q] for q in ("Q4_K_M", "IQ1_S", "IQ2_XXS", "Q2_K_S", "Q4_0"))
+    assert "BF16" not in quantized and "F16" not in quantized  # never re-quantised
+    assert seen[:2] == ["Q8_0", "IMATRIX"] and seen[-1] == "F16" and seen.count("F16") == 1
+    files = result["files"]
+    assert files[0]["quant"] == "Q4_K_M" and len(files) == 29 and result["skipped"] == []
+    assert {f["quant"] for f in files} == {q.upper() for q in llm_train.ALL_QUANTS}
+    by = {f["quant"]: f for f in files}
+    assert by["IQ1_S"]["imatrix"] and not by["Q8_0"]["imatrix"] and not by["BF16"]["imatrix"]
+    assert result["imatrix"]["computed_on"] == "Q8_0" and result["imatrix"]["partial"] is False
+    assert (tmp_path / "work" / "m.F16.gguf").exists()  # asked for: kept for its upload
+
+
+def test_without_an_imatrix_the_quants_that_need_one_are_skipped(tmp_path):
+    result = llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m", "iq2_xxs", "q2_k_s", "iq4_xs"],
+                                  vision=False, tools=_tools(tmp_path), run=FakeRun(), on_file=lambda *_: None,
+                                  calibration=_calibration(tmp_path))  # no llama-imatrix binary
+    assert [f["quant"] for f in result["files"]] == ["Q4_K_M", "IQ4_XS"]
+    assert [s["quant"] for s in result["skipped"]] == ["IQ2_XXS", "Q2_K_S"] and "importance matrix" in result["skipped"][0]["why"]
+    assert not any(f["imatrix"] for f in result["files"]) and result["imatrix"] is None
+
+
+def test_a_slow_imatrix_still_counts_and_the_deadline_skips_the_rest(tmp_path):
+    clock = iter([0, 0, 0, 10_000, 10_000]).__next__  # Q8_0, Q4_K_M, the imatrix's budget; then time is up
+    result = llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m", "q8_0", "iq3_m", "q2_k"],
+                                  vision=False, tools=_tools_with_imatrix(tmp_path), run=FakeRun(imatrix_timeout=True),
+                                  on_file=lambda *_: None, calibration=_calibration(tmp_path), stop_at=5_000,
+                                  clock=clock)
+    assert result["imatrix"]["partial"] is True
+    assert [f["quant"] for f in result["files"]] == ["Q4_K_M", "Q8_0"] and result["files"][0]["imatrix"]
+    assert [s["quant"] for s in result["skipped"]] == ["IQ3_M", "Q2_K"]
+    assert result["skipped"][0]["why"] == "not enough time left in this session"
+
+
+def test_calibration_text_comes_from_the_training_rows(tmp_path):
+    assert llm_train.calibration_text(tmp_path, tmp_path / "c.txt") is None
+    rows = [{"messages": [{"role": "user", "content": f"How do I tame wolf {i}?"},
+                          {"role": "assistant", "content": [{"type": "image"}, {"type": "text", "text": "Bones. " * 40}]}]}
+            for i in range(300)]
+    (tmp_path / "train.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+    text = llm_train.calibration_text(tmp_path, tmp_path / "c.txt").read_text()
+    assert "How do I tame wolf 0?" in text and "Bones." in text and "image" not in text
+
+
+def test_uploading_makes_every_quant_and_the_card_lists_them(tmp_path, monkeypatch, hub):
+    rows = [{"messages": [{"role": "user", "content": "Creepers? " * 30}, {"role": "assistant", "content": "Run. " * 40}]}
+            for _ in range(200)]
+    (tmp_path / "train.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    code, _model, report = _finish(tmp_path, monkeypatch, ["--hub-repo", "auto"])
+    assert code == 0 and len(report["ggufs"]) == 22  # no llama-imatrix in _tools: the 7 that need one are skipped
+    assert len(report["gguf_skipped"]) == 7 and report["imatrix"] is None
+    uploaded = [e[2] for e in hub if e[0] == "file"]
+    assert len(uploaded) == 21 and uploaded[-1].endswith(".F16.gguf")
+    card = (tmp_path / "out" / "README.md").read_text()
+    assert "## All quants (22 files)" in card and "## Which file should I download?" in card
+    assert "**Not made this time:** `IQ3_XXS`" in card and "TQ1_0 / TQ2_0" in card
+    assert "base_model: me/Minecraftism-4B\nbase_model_relation: quantized" in card
+    assert "llama-server -hf me/Minecraftism-4B-GGUF:Q4_K_M" in card and "## Prompt format" in card
+
+
+def test_unsloth_fallback_makes_only_the_standard_quants(tmp_path, monkeypatch, hub):
+    code, model, report = _finish(tmp_path, monkeypatch, ["--safetensors", "none", "--gguf-quants", "all"])
+    assert code == 0 and model.calls == [("gguf", ["q4_k_m", "q8_0", "q6_k", "q5_k_m", "q3_k_m"])]
+    assert len(report["gguf_skipped"]) == 24 and "llama.cpp was not available" in report["gguf_skipped"][0]["why"]

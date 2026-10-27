@@ -1960,28 +1960,114 @@ def copy_essentials(src: Path, dst: Path) -> list[str]:
 
 
 # --------------------------------------------------------------------------- GGUF quants from the safetensors
-#: The GGUFs made (and uploaded) next to ``--gguf`` when publishing. Q8_0 is near-lossless, Q4_K_M the default.
+#: The standard GGUFs (``--gguf-quants standard``, and all that Unsloth's slow fallback exporter makes).
 GGUF_QUANTS = ("q8_0", "q6_k", "q5_k_m", "q4_k_m", "q3_k_m")
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
+#: Every llama.cpp quant type that works on a normal (dense, 16-bit trained) model, in the order they are made
+#: when there is not time for all of them: the useful ones first, the tiny and legacy ones last. ``--gguf-quants all``
+#: (the default when uploading). Q8_0 comes first because the importance matrix is computed with it.
+ALL_QUANTS = ("q8_0", "q4_k_m", "q6_k", "q5_k_m", "iq4_xs", "q3_k_m", "q4_k_s", "q5_k_s", "iq4_nl", "q3_k_l", "iq3_m",
+              "iq3_xs", "q3_k_s", "iq3_s", "iq3_xxs", "q2_k", "iq2_m", "iq2_s", "iq2_xs", "iq2_xxs", "q2_k_s", "iq1_m",
+              "iq1_s", "q4_0", "q4_1", "q5_0", "q5_1", "bf16", "f16")
+#: llama-quantize refuses these without an importance matrix ("the result will be garbage").
+IMATRIX_REQUIRED = frozenset({"IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "Q2_K_S"})
+#: Quants that do not use the importance matrix (full precision, or Q8_0, which has no use for it).
+NO_IMATRIX = frozenset({"F16", "BF16", "F32", "Q8_0"})
+#: llama.cpp types that are not made, and why (listed on the model card so nobody wonders).
+NOT_MADE = {"F32": "32-bit floats: twice the size of F16/BF16 and no better, the model was trained in 16-bit",
+            "TQ1_0 / TQ2_0": "ternary formats for models trained ternary (BitNet); a normal model turns into gibberish",
+            "Q1_0 / Q2_0": "formats for models trained at 1-2 bits; a normal model turns into gibberish",
+            "MXFP4_MOE": "only for mixture-of-experts models; Minecraftism is dense"}
 #: The "use it when" column of the model card's quant table.
-QUANT_USE = {"F16": "full GGUF precision (as big as the safetensors)", "Q8_0": "best quality, near the 16-bit model",
-             "Q6_K": "very close to Q8_0, smaller", "Q5_K_M": "a good middle", "Q4_K_M": "the default: small and good",
-             "Q4_K_S": "a bit smaller than Q4_K_M", "Q3_K_M": "low RAM / old PCs, some quality loss",
-             "Q2_K": "smallest, noticeably weaker"}
+QUANT_USE = {"F16": "full precision (16-bit floats), as big as the safetensors",
+             "BF16": "full precision in bfloat16, the format it was trained in",
+             "Q8_0": "near-lossless: best quality",
+             "Q6_K": "very close to Q8_0, smaller - recommended if it fits",
+             "Q5_K_M": "high quality - recommended",
+             "Q5_K_S": "high quality, a bit smaller than Q5_K_M",
+             "Q4_K_M": "the default: the best balance of size and quality",
+             "Q4_K_S": "a bit smaller than Q4_K_M, slightly lower quality",
+             "IQ4_XS": "about Q4_K_S quality, smaller - the smallest good one",
+             "IQ4_NL": "like IQ4_XS; fast on ARM CPUs (llama.cpp repacks it)",
+             "Q3_K_L": "low RAM, still usable",
+             "Q3_K_M": "low RAM / old PCs, some quality loss",
+             "Q3_K_S": "low RAM, noticeable quality loss",
+             "IQ3_M": "low RAM: better than Q3_K_M at a smaller size",
+             "IQ3_S": "very low RAM, better than Q3_K_S",
+             "IQ3_XS": "very low RAM",
+             "IQ3_XXS": "very low RAM, clearly weaker",
+             "Q2_K": "tiny, much weaker",
+             "Q2_K_S": "tiny, much weaker",
+             "IQ2_M": "tiny: the best of the 2-bit ones",
+             "IQ2_S": "tiny, weak - for experiments",
+             "IQ2_XS": "tiny, weak - for experiments",
+             "IQ2_XXS": "tiny, very weak - for experiments",
+             "IQ1_M": "extremely small: mostly broken at 4B, for curiosity",
+             "IQ1_S": "extremely small: mostly broken at 4B, for curiosity",
+             "Q4_0": "legacy format for old apps; fast on ARM CPUs (llama.cpp repacks it)",
+             "Q4_1": "legacy format for old apps",
+             "Q5_0": "legacy format for old apps",
+             "Q5_1": "legacy format for old apps"}
+#: Marked as recommended on the model card.
+RECOMMENDED_QUANTS = ("Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "IQ4_XS", "IQ3_M")
+#: Text the importance matrix is computed on: chunks of 512 tokens from the training data (CPU: ~10 min for 4B).
+IMATRIX_CHUNKS = 64
 
 
 def gguf_quants(args: argparse.Namespace) -> list[str]:
     """``--gguf`` first (the one kept for the Modelfile, the test and ``llm import``), then ``--gguf-quants``.
 
-    ``--gguf-quants`` defaults to :data:`GGUF_QUANTS` when uploading and to nothing more otherwise."""
+    ``--gguf-quants`` defaults to ``all`` (:data:`ALL_QUANTS`) when uploading and to nothing more otherwise;
+    ``standard`` = :data:`GGUF_QUANTS`."""
     primary = str(args.gguf or "none").lower()
     if primary == "none":
         return []
     extra = getattr(args, "gguf_quants", None)
     if extra is None:
-        extra = ",".join(GGUF_QUANTS) if args.hub_repo else ""
-    wanted = [q.strip().lower() for q in str(extra).split(",") if q.strip() and q.strip().lower() != "none"]
+        extra = "all" if args.hub_repo else ""
+    wanted: list[str] = []
+    for item in str(extra).split(","):
+        item = item.strip().lower()
+        if item == "all":
+            wanted += ALL_QUANTS
+        elif item == "standard":
+            wanted += GGUF_QUANTS
+        elif item and item != "none":
+            wanted.append(item)
     return [primary] + [q for q in dict.fromkeys(wanted) if q != primary]
+
+
+def calibration_text(data_dir: str | Path | None, target: Path, max_chars: int = 400_000) -> Path | None:
+    """Plain text from the training rows (every ``messages`` turn; picture parts skipped) for llama-imatrix, mixed
+    evenly over the file so chat, Minecraft facts and game turns are all in it. ``None`` without data."""
+    folder = Path(data_dir) if data_dir else None
+    source = next((f for f in ((folder / "train.jsonl"), folder / "llm_data" / "train.jsonl") if f.is_file()), None) \
+        if folder else None
+    if source is None:
+        return None
+    lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    step = max(1, len(lines) // 4000)
+    parts, size = [], 0
+    for line in lines[::step]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        for message in row.get("messages") or []:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                content = "\n".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+            text = str(content or "").strip()
+            if text:
+                parts.append(text)
+                size += len(text) + 2
+        if size >= max_chars:
+            break
+    if size < 20_000:  # too little for even a few 512-token chunks
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n\n".join(parts)[:max_chars], encoding="utf-8")
+    return target
 
 
 def _find_binary(folder: Path, name: str) -> Path | None:
@@ -2080,7 +2166,8 @@ def llama_cpp_tools(scratch: Path, run: Any = None, fetch_json: Any = None, down
         source, build = convert.parent, convert.parent / "build"
         for command in (["cmake", "-S", str(source), "-B", str(build), "-DLLAMA_CURL=OFF", "-DGGML_NATIVE=OFF",
                          "-DBUILD_SHARED_LIBS=OFF", "-DLLAMA_BUILD_TESTS=OFF", "-DCMAKE_BUILD_TYPE=Release"],
-                        ["cmake", "--build", str(build), "--target", "llama-quantize", "-j", str(os.cpu_count() or 2)]):
+                        ["cmake", "--build", str(build), "--target", "llama-quantize", "llama-imatrix", "-j",
+                         str(os.cpu_count() or 2)]):
             done = run(command, capture_output=True, text=True)
             if done.returncode != 0:
                 raise RuntimeError(f"building llama-quantize failed: {(done.stderr or done.stdout)[-800:]}")
@@ -2097,12 +2184,24 @@ def _run_tool(run: Any, command: list[str], what: str, env: dict[str, str] | Non
         raise RuntimeError(f"{what} failed: {(done.stderr or done.stdout or '')[-1200:]}")
 
 
-def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
-               tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None) -> dict[str, Any]:
-    """safetensors -> one F16 GGUF (+ the F16 vision projector) -> every quant with ``llama-quantize``.
+def imatrix_binary(quantize: Path) -> Path | None:
+    """``llama-imatrix`` next to ``llama-quantize`` (both ship in the llama.cpp release and the source build)."""
+    found = Path(quantize).with_name("llama-imatrix")
+    return found if found.is_file() else None
 
-    ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk); the F16
-    intermediate is deleted at the end unless ``f16`` was asked for."""
+
+def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
+               tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None,
+               calibration: Path | None = None, imatrix_chunks: int = IMATRIX_CHUNKS, stop_at: float = 0,
+               clock: Any = time.time) -> dict[str, Any]:
+    """safetensors -> one F16 GGUF (+ BF16, + the F16 vision projector) -> an importance matrix -> every quant.
+
+    ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk). With a
+    ``calibration`` text and ``llama-imatrix``, the importance matrix is computed (on Q8_0, faster on a CPU) and
+    used for every quant below Q8_0 - the IQ1/IQ2/IQ3_XXS/Q2_K_S ones need it and are skipped without it. Past
+    ``stop_at`` (unix time) the remaining quants are skipped, so the uploads still finish before the session ends.
+    The first quant in ``quants`` stays first in ``files``; the F16 intermediate is deleted unless ``f16`` was asked
+    for."""
     import subprocess
 
     run = run or subprocess.run
@@ -2110,12 +2209,18 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "LD_LIBRARY_PATH": f"{Path(quantize).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    wanted = [q.upper() for q in dict.fromkeys(q.upper() for q in quants)]
+    primary = wanted[0] if wanted else ""
     base = scratch / f"{stem}.F16.gguf"
     _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(base), "--outtype", "f16"],
               "safetensors -> F16 GGUF")
     if not base.is_file():
         raise RuntimeError("the converter wrote no GGUF")
-    result: dict[str, Any] = {"files": [], "mmproj": None}
+    result: dict[str, Any] = {"files": [], "mmproj": None, "skipped": [], "imatrix": None}
+    bf16 = scratch / f"{stem}.BF16.gguf"
+    if "BF16" in wanted:  # straight from the 16-bit safetensors, while they are still here (exact, not via F16)
+        _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(bf16), "--outtype", "bf16"],
+                  "safetensors -> BF16 GGUF")
     if vision:
         mmproj = scratch / f"mmproj-{stem}.F16.gguf"
         before = set(scratch.glob("*.gguf"))
@@ -2130,16 +2235,70 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
         on_file(mmproj, "MMPROJ")
     if on_base is not None:  # the safetensors are not read any more: everything below works from the F16 GGUF
         on_base()
-    wanted = [q.upper() for q in quants]
-    for quant in wanted:
-        target = base if quant in ("F16", "BF16") else scratch / f"{stem}.{quant}.gguf"
-        if target != base:
-            _run_tool(run, [str(quantize), str(base), str(target), quant], f"F16 -> {quant}", env=env)
+    imatrix_tool = imatrix_binary(Path(quantize)) if calibration else None
+    wants_imatrix = imatrix_tool is not None and any(q not in NO_IMATRIX for q in wanted)
+    order = list(wanted)
+    if wants_imatrix and "Q8_0" in order:  # Q8_0 first: the importance matrix is computed with it
+        order.remove("Q8_0")
+        order.insert(0, "Q8_0")
+    imatrix: Path | None = None
+    made: dict[str, dict[str, Any]] = {}
+
+    def compute_imatrix() -> None:
+        nonlocal imatrix
+        model = scratch / f"{stem}.Q8_0.gguf" if "Q8_0" in made and (scratch / f"{stem}.Q8_0.gguf").is_file() else base
+        target = scratch / f"{stem}.imatrix.gguf"
+        seconds = 45 * 60.0
+        if stop_at:
+            seconds = min(seconds, (stop_at - clock()) / 3)
+        if seconds < 120:
+            print("  no time left for the importance matrix", flush=True)
+            return
+        command = [str(imatrix_tool), "-m", str(model), "-f", str(calibration), "-o", str(target), "-c", "512",
+                   "--chunks", str(int(imatrix_chunks)), "--no-ppl", "-ofreq", "8", "-t", str(os.cpu_count() or 4)]
+        print(f"  importance matrix ({imatrix_chunks} x 512 tokens of the training data, on {model.name.split('.')[-2]})"
+              "...", flush=True)
+        partial = False
+        try:
+            done = run(command, capture_output=True, text=True, env=env, timeout=seconds)
+            if done.returncode != 0:
+                print(f"  llama-imatrix failed: {(done.stderr or done.stdout or '')[-600:]}", flush=True)
+        except subprocess.TimeoutExpired:  # it saves every 8 chunks: a partial matrix still helps a lot
+            partial = True
+            print(f"  llama-imatrix stopped after {seconds / 60:.0f} min - using what it saved", flush=True)
+        if target.is_file() and target.stat().st_size > 0:
+            imatrix = target
+            result["imatrix"] = {"file": target.name, "chunks": int(imatrix_chunks), "partial": partial,
+                                 "computed_on": model.name.split(".")[-2], "text": "the training data"}
+            on_file(target, "IMATRIX")  # published too: others can make more quants with it
+
+    for quant in order:
+        if stop_at and clock() > stop_at:
+            result["skipped"].append({"quant": quant, "why": "not enough time left in this session"})
+            continue
+        if wants_imatrix and imatrix is None and result["imatrix"] is None and quant not in NO_IMATRIX:
+            compute_imatrix()
+            wants_imatrix = imatrix is not None
+        if quant in IMATRIX_REQUIRED and imatrix is None:
+            result["skipped"].append({"quant": quant, "why": "needs an importance matrix (llama-imatrix was not "
+                                                              "available or had no time)"})
+            continue
+        target = {"F16": base, "BF16": bf16}.get(quant, scratch / f"{stem}.{quant}.gguf")
+        use_imatrix = imatrix is not None and quant not in NO_IMATRIX
+        if quant not in ("F16", "BF16"):
+            command = [str(quantize)] + (["--imatrix", str(imatrix)] if use_imatrix else []) + \
+                      [str(base), str(target), quant]
+            _run_tool(run, command, f"F16 -> {quant}" + (" (imatrix)" if use_imatrix else ""), env=env)
         if not target.is_file():
             raise RuntimeError(f"llama-quantize wrote no {quant} file")
-        result["files"].append({"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2)})
-        on_file(target, quant)
-    if base.exists() and "F16" not in wanted and "BF16" not in wanted:
+        made[quant] = {"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2),
+                       "imatrix": use_imatrix}
+        if quant != "F16":  # the F16 is the source of every quant: handed over last
+            on_file(target, quant)
+    if "F16" in made:
+        on_file(base, "F16")
+    result["files"] = [made[q] for q in [primary] + [q for q in order if q != primary] if q in made]
+    if base.exists() and "F16" not in made:
         base.unlink()
     return result
 
@@ -2305,7 +2464,8 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
 
     def upload_quant(path: Path, quant: str) -> None:
         try:
-            upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {quant} GGUF")
+            what = "importance matrix" if quant == "IMATRIX" else f"{quant} GGUF"
+            upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {what}")
             print(f"  uploaded {path.name} ({path.stat().st_size / 1e9:.2f} GB) -> {hub['gguf']}", flush=True)
             uploaded[quant] = True
             path.unlink()
@@ -2325,11 +2485,20 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
     result = None
     if st_dir is not None and Path(st_dir).is_dir():
         try:
-            print(f"making GGUFs {', '.join(q.upper() for q in quants)} from the safetensors (llama.cpp)")
+            print(f"making {len(quants)} GGUFs ({', '.join(q.upper() for q in quants)}) from the safetensors (llama.cpp)")
+            tools = tools or llama_cpp_tools(tools_dir(args, out))
+            calibration = calibration_text(getattr(args, "data_dir", None), scratch / "imatrix-text.txt")
+            deadline = float(getattr(args, "deadline", 0) or 0)
             result = make_ggufs(Path(st_dir), scratch, stem, quants, vision=bool(preset.get("vision")),
-                                tools=tools or llama_cpp_tools(tools_dir(args, out)), on_file=on_file, run=run,
-                                on_base=on_base)
+                                tools=tools, on_file=on_file, run=run, on_base=on_base, calibration=calibration,
+                                imatrix_chunks=int(getattr(args, "imatrix_chunks", IMATRIX_CHUNKS) or 0) or IMATRIX_CHUNKS,
+                                stop_at=deadline - 15 * 60 if deadline else 0)
             result["route"] = "llama.cpp"
+            tag = re.search(r"llama\.cpp-(b\d+)", str(tools[1]))
+            if tag:
+                result["llama_cpp"] = tag.group(1)
+            for item in result["skipped"]:
+                print(f"  skipped {item['quant']}: {item['why']}", flush=True)
         except Exception as exc:
             print(f"llama.cpp GGUF route failed ({type(exc).__name__}: {exc}) - using Unsloth's exporter")
             result = None
@@ -2339,12 +2508,17 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
             uploader.wait()
         return None
     if result is None:
-        print(f"exporting GGUF ({', '.join(quants)}) with Unsloth - 10-20 minutes per quant")
+        slow = [q for q in quants[1:] if q.lower() not in GGUF_QUANTS]
+        quants = [quants[0]] + [q for q in quants[1:] if q.lower() in GGUF_QUANTS]
+        print(f"exporting GGUF ({', '.join(quants)}) with Unsloth - 10-20 minutes per quant"
+              + (f"; {len(slow)} more quants need llama.cpp and are skipped" if slow else ""))
         model.save_pretrained_gguf(str(out / "gguf"), tokenizer, quantization_method=list(quants))
         found = sorted(set(glob.glob(str(out / "gguf*" / "*.gguf")) + glob.glob(str(out / "*.gguf"))
                            + glob.glob("*.gguf")))
         projectors = [f for f in found if "mmproj" in Path(f).name.lower()]
-        result = {"files": [], "mmproj": None, "route": "unsloth"}
+        result = {"files": [], "mmproj": None, "route": "unsloth", "imatrix": None,
+                  "skipped": [{"quant": q.upper(), "why": "llama.cpp was not available (Unsloth's exporter makes "
+                                                         "only the standard quants)"} for q in slow]}
         if projectors and preset.get("vision"):
             mmproj = out / f"mmproj-{stem}.F16.gguf"
             shutil.move(projectors[0], mmproj)
@@ -2375,6 +2549,99 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
     return result
 
 
+def _ram_gb(gb: Any, extra: float) -> str:
+    try:
+        return f"~{float(gb) + extra:.1f} GB"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def gguf_quant_guide(report: dict[str, Any], repo: str, quant: str) -> str:
+    """The GGUF card's "which file" advice and the table of every quant (biggest first), with what was skipped."""
+    ggufs = [g for g in report.get("ggufs") or [] if g.get("file")]
+    if not ggufs:
+        return ""
+    mmproj_gb = 0.0
+    if report.get("mmproj"):
+        mmproj_gb = 0.7
+    have = {g["quant"] for g in ggufs}
+    pick = [q for q in ("Q8_0", "Q6_K", "Q5_K_M", quant, "IQ4_XS", "IQ3_M", "Q3_K_M", "IQ2_M") if q in have]
+    advice = {"Q8_0": "you have plenty of RAM / VRAM and want the best answers",
+              "Q6_K": "almost Q8_0 quality, a quarter smaller",
+              "Q5_K_M": "high quality with room to spare",
+              "IQ4_XS": "you want a 4-bit file a bit smaller than the default",
+              "IQ3_M": "low RAM (old laptops, phones)",
+              "Q3_K_M": "low RAM and an app that has no IQ quants",
+              "IQ2_M": "it has to fit somewhere tiny - expect clearly weaker answers"}
+    advice[quant] = "**start here** - the default, small and good (what `llm import` and Ollama use)"
+    lines = ["\n## Which file should I download?\n",
+             "Pick the biggest file that fits in your free RAM (CPU) or VRAM (GPU) with about 1 GB to spare for the "
+             "context" + (" and the vision projector" if mmproj_gb else "") + ". Bigger = closer to the original, "
+             "smaller = faster and lighter.\n"]
+    lines += [f"- `{q}` - {advice[q]}" for q in dict.fromkeys(pick)]
+    lines.append("\nK-quants (`Q5_K_M`, `Q4_K_M`...) run fast everywhere. I-quants (`IQ4_XS`, `IQ3_M`...) are better for "
+                 "their size and fast on NVIDIA / AMD GPUs, but slower than K-quants on CPUs and Apple Metal. `F16` / "
+                 "`BF16` are the unquantised weights, for making your own quants.")
+    imatrix = report.get("imatrix") or {}
+    rows = sorted(ggufs, key=lambda g: -(g.get("gb") or 0))
+    table = [f"\n## All quants ({len(rows)} files)\n",
+             "| | quant | size | RAM to run | imatrix | use it when | download |",
+             "|---|---|---|---|---|---|---|"]
+    for g in rows:
+        mark = "⭐" if g["quant"] == quant else ("👍" if g["quant"] in RECOMMENDED_QUANTS else "")
+        table.append(f"| {mark} | `{g['quant']}` | {g.get('gb', '?')} GB | {_ram_gb(g.get('gb'), 1.0 + mmproj_gb)} | "
+                     f"{'yes' if g.get('imatrix') else '-'} | {QUANT_USE.get(g['quant'], '')} | "
+                     f"[{g['file']}](https://huggingface.co/{repo}/resolve/main/{g['file']}) |")
+    notes = ["", "⭐ default · 👍 recommended. RAM to run = file + ~1 GB for a 4096-token context"
+             + (" + the vision projector" if mmproj_gb else "") + "; a longer context needs more."]
+    if imatrix:
+        notes.append(f"\n**imatrix:** the quants marked *yes* were made with an importance matrix computed on "
+                     f"{imatrix.get('chunks', '?')} x 512 tokens of this model's own training data"
+                     + (" (stopped early to save time)" if imatrix.get("partial") else "")
+                     + f", so they keep what Minecraftism needs most. The matrix is in this repo "
+                     f"(`{imatrix.get('file', 'imatrix.gguf')}`) if you want to make more quants.")
+    skipped = report.get("gguf_skipped") or []
+    if skipped:
+        notes.append("\n**Not made this time:** " + "; ".join(f"`{x['quant']}` ({x['why']})" for x in skipped) + ".")
+    notes.append("\n**Not made on purpose:** " + "; ".join(f"`{k}` - {v}" for k, v in NOT_MADE.items()) + ".")
+    if report.get("llama_cpp"):
+        notes.append(f"\nMade with llama.cpp {report['llama_cpp']} from the merged 16-bit weights.")
+    return "\n".join(lines + table + notes) + "\n"
+
+
+def _prompt_and_settings(preset: dict[str, Any], reasoning: bool, vision: bool, gguf: bool) -> str:
+    params = dict(preset.get("run_parameters") or RUN_PARAMETERS)
+    names = {"temperature": "temperature", "top_p": "top_p", "top_k": "top_k", "min_p": "min_p",
+             "repeat_penalty": "repeat penalty", "num_ctx": "context (tokens)", "num_predict": "max new tokens"}
+    rows = "".join(f"| {names[k]} | {params[k]} |\n" for k in names if k in params)
+    think = ("\nIt writes its thinking first, inside `<think>...</think>`, then the answer: hide or strip that "
+             "part before showing the reply.\n") if reasoning else ""
+    picture = ("\nPictures go in the user turn (Ollama, LM Studio and llama.cpp do this for you with the `mmproj` "
+               "file).\n") if vision else ""
+    where = ("Ollama, LM Studio and llama.cpp read the chat template from the GGUF, so you only need this for raw "
+             "completion APIs." if gguf else "`tokenizer.apply_chat_template` builds it for you.")
+    return f"""
+## Prompt format
+
+Qwen3's ChatML. {where}
+
+```text
+<|im_start|>system
+{{system prompt}}<|im_end|>
+<|im_start|>user
+{{your message}}<|im_end|>
+<|im_start|>assistant
+```
+{think}{picture}
+## Recommended settings
+
+| setting | value |
+|---|---|
+{rows}
+{"The `Modelfile` in this repo sets these for Ollama; set them yourself in other apps." if gguf else "Use them for `generate` / vLLM sampling."}
+"""
+
+
 def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str, kind: str = "gguf") -> str:
     """README.md for a Hugging Face repo: the GGUF edition (``kind="gguf"``, also written next to the GGUF) or the
     merged full-precision safetensors edition (``kind="safetensors"``, written into ``safetensors/``)."""
@@ -2388,13 +2655,11 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     tags += ["reasoning", "thinking"] if reasoning else []
     tags += ["uncensored", "abliterated"] if preset.get("uncensored") else []
     files = [f"- `{report.get('gguf', output_name(preset_name, preset, quant))}` - the model ({quant})"]
-    quant_rows = ""
     if report.get("ggufs"):
-        files = [f"- `{g['file']}` - {g['quant']}, {g.get('gb', '?')} GB" + (" (default)" if g["quant"] == quant else "")
-                 for g in report["ggufs"]]
-        quant_rows = ("\n| quant | file | size | use it when |\n|---|---|---|---|\n" + "".join(
-            f"| `{g['quant']}` | `{g['file']}` | {g.get('gb', '?')} GB | {QUANT_USE.get(g['quant'], '')} |\n"
-            for g in report["ggufs"]))
+        files = [f"- `{report.get('gguf', output_name(preset_name, preset, quant))}` - the default ({quant})",
+                 f"- {len(report['ggufs']) - 1} more `*.gguf` quants - every one is in the table above"]
+        if (report.get("imatrix") or {}).get("file"):
+            files.append(f"- `{report['imatrix']['file']}` - the importance matrix the quants were made with")
     if report.get("mmproj"):
         files.append(f"- `{report['mmproj']}` - the vision projector (needed for pictures)")
     files += ["- `Modelfile` - for `ollama create`", "- `pymc_model.json` - training report PyMC Bot reads on import"]
@@ -2493,8 +2758,9 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
                    f"further fine-tuning): [{st_repo}](https://huggingface.co/{st_repo})\n")
     library = "gguf"
     others = [g["quant"] for g in report.get("ggufs") or [] if g["quant"] != quant]
-    other_quants = (f"\nOther sizes: put the quant after the colon, e.g. `ollama run hf.co/{repo}:{others[0]}` "
-                    f"({', '.join(others)}).\n" if others else "")
+    other_quants = (f"\nOther sizes: put any quant from [the table](#which-file-should-i-download) after the colon, e.g. "
+                    f"`ollama run hf.co/{repo}:{others[0]}`" + (f" or `:{others[1]}`" if len(others) > 1 else "")
+                    + ".\n" if others else "")
     use = f"""With PyMC Bot (switches the bot to this model with the short Minecraft prompt):
 
 ```bash
@@ -2507,10 +2773,19 @@ With Ollama:
 ollama run hf.co/{repo}:{quant}
 ```
 {other_quants}
-With llama.cpp:
+With llama.cpp (`-hf` downloads the quant{" and the vision projector" if vision else ""} by itself):
 
 ```bash
+llama-server -hf {repo}:{quant}
+# or with a file you downloaded:
 {llama}
+```
+
+One file only (LM Studio and Jan find this repo by its name too):
+
+```bash
+pip install -U huggingface_hub
+hf download {repo} {report.get('gguf', output_name(preset_name, preset, quant))} --local-dir .
 ```"""
     if safetensors:
         library = "transformers"
@@ -2558,11 +2833,24 @@ With PyMC Bot / Ollama, use the GGUF edition:
 ```bash
 python -m pymc_bot llm import --hf {gguf_repo}
 ```"""
+    card_base, relation = base, ""
+    if st_repo and not safetensors:  # the model tree: base -> fine-tune (safetensors) -> quantized (this repo)
+        card_base, relation = st_repo, "\nbase_model_relation: quantized"
+    elif safetensors:
+        relation = "\nbase_model_relation: finetune"
+    if not safetensors:
+        tags += ["llama.cpp", "ollama"] + (["imatrix"] if report.get("imatrix") else [])
+    guide = "" if safetensors else gguf_quant_guide(report, repo, quant)
+    links = [f"[GGUF: every quant from F16 to IQ1_S](https://huggingface.co/{gguf_repo})"] if safetensors else \
+        (["[which file?](#which-file-should-i-download)"] if guide else [])
+    if st_repo and not safetensors:
+        links.append(f"[safetensors](https://huggingface.co/{st_repo})")
+    links += [f"[base model](https://huggingface.co/{base})", f"[PyMC Bot]({PROJECT_URL})"]
     return f"""---
 license: other
 license_name: polyform-noncommercial-1.0.0
 license_link: https://polyformproject.org/licenses/noncommercial/1.0.0/
-base_model: {base}
+base_model: {card_base}{relation}{"" if safetensors else chr(10) + "quantized_by: codero-sus"}
 tags:
 {chr(10).join('- ' + t for t in tags)}
 language:
@@ -2579,6 +2867,14 @@ action as JSON (flee the creeper, eat, answer the player in chat, mine wood...),
 answers questions about mobs, items, crafting and mechanics without a web search.
 It is also an everyday assistant: questions, writing, code, advice or just a chat.
 {think_text_}{vision_text}{uncensored_text}{formats}
+{' · '.join(links)}
+
+## Quick start
+
+{use}
+{guide}{_prompt_and_settings(preset, reasoning, vision, not safetensors)}
+## About this edition
+
 | | |
 |---|---|
 | Edition | {name} (`{preset_name}`) |
@@ -2590,17 +2886,22 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 ## Files
 
 {chr(10).join(files)}
-{quant_rows}
-## Use it
 
-{use}
+## Limitations
 
+- It is a small (4B) model: it can be confidently wrong. Check important facts, and let PyMC Bot's rule checks
+  guard the game actions.
+- Its Minecraft knowledge comes mostly from Java Edition data; Bedrock differences and the newest updates may be
+  missing.
+- It was trained on examples of up to {report.get('max_seq') or 3072} tokens; very long chats lose the thread.
+{"- It is uncensored: it does not refuse. You are responsible for how you use it." + chr(10) if preset.get("uncensored") else ""}
 ## License and credits
 
 Required Notice: Copyright codero-sus ({AUTHOR_URL}). Minecraftism is part of PyMC Bot ({PROJECT_URL}) and is
 licensed under PolyForm Noncommercial 1.0.0 (https://polyformproject.org/licenses/noncommercial/1.0.0/). Anyone who
 shares these weights, or quants or fine-tunes made from them, must pass on this notice and a link to the original.
 
+- Quants, merges and fine-tunes by others are welcome for non-commercial use: keep the notice above and link here.
 - Made with ❤️ by [codero-sus]({AUTHOR_URL}) - {' - '.join(WEBSITES)}
 - **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and
   {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.
@@ -4177,6 +4478,7 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
     report: dict[str, Any] = {"preset": args.preset, "model_name": display_name(args.preset, preset), "base_model": model_name,
                               "edition": preset.get("edition"), "vision": bool(preset.get("vision")),
                               "reasoning": bool(preset.get("reasoning")), "train_rows": len(rows), "rank": args.rank,
+                              "max_seq": args.max_seq,
                               "images": sum(len(row.get("images") or []) for row in rows), "loss": round(loss, 4),
                               "uncensored": bool(preset.get("uncensored")), "system_prompt": args.system_prompt,
                               "general_rows": sum(1 for row in rows if row.get("kind") == "general"),
@@ -4333,7 +4635,9 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
                                                       mmproj.name if mmproj else None,
                                                       preset.get("run_parameters"), args.system_prompt), encoding="utf-8")
         report.update({"gguf": gguf.name, "quant": made["files"][0]["quant"], "gguf_route": made.get("route"),
-                       "gguf_gb": round(gguf.stat().st_size / 1e9, 2), "ggufs": made["files"]})
+                       "gguf_gb": round(gguf.stat().st_size / 1e9, 2), "ggufs": made["files"],
+                       "gguf_skipped": made.get("skipped") or [], "imatrix": made.get("imatrix"),
+                       "llama_cpp": made.get("llama_cpp")})
         if mmproj:
             report["mmproj"] = mmproj.name
         if args.test_gguf:
@@ -4391,8 +4695,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-limit", type=int, default=150, help="eval rows to try after training (0 = skip)")
     parser.add_argument("--gguf", default="q4_k_m", help="GGUF quantisation (q4_k_m, q5_k_m, q8_0) or 'none'")
     parser.add_argument("--gguf-quants", default=None,
-                        help="more GGUFs made from the safetensors and uploaded one by one, e.g. q8_0,q6_k,q5_k_m,"
-                             "q4_k_m,q3_k_m (default: those when uploading, else none; 'none' = only --gguf)")
+                        help="more GGUFs made from the safetensors and uploaded one by one: 'all' (every llama.cpp "
+                             "quant, F16 and BF16 to IQ1_S; the default when uploading), 'standard' (q8_0,q6_k,"
+                             "q5_k_m,q4_k_m,q3_k_m) or a list like q8_0,iq4_xs ('none' = only --gguf)")
+    parser.add_argument("--imatrix-chunks", type=int, default=IMATRIX_CHUNKS,
+                        help=f"512-token chunks of the training data the importance matrix is computed on "
+                             f"(default {IMATRIX_CHUNKS}; ~10 min on a CPU for 4B)")
     parser.add_argument("--gguf-scratch", default=None,
                         help="work folder for the F16 GGUF and the quants (default: /tmp/pymc-gguf, off Kaggle's "
                              "20 GB output disk)")

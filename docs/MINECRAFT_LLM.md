@@ -27,7 +27,7 @@ Every edition is published in **two formats**, each in its own Hugging Face repo
 | Repo | Format | Use it with |
 | --- | --- | --- |
 | `you/Minecraftism-4B` | **safetensors**: the LoRA merged into the base, 16-bit (~8 GB, VL ~9 GB), `tokenizer.json` + configs | transformers, vLLM, further fine-tuning, your own quantisations (AWQ, EXL2) |
-| `you/Minecraftism-4B-GGUF` | GGUF `Q8_0`, `Q6_K`, `Q5_K_M`, `Q4_K_M` (default), `Q3_K_M` (+ `mmproj` projector for VL), `Modelfile`, `params`, `tokenizer.json` + configs | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
+| `you/Minecraftism-4B-GGUF` | GGUF: **every quant**, `F16` / `BF16` down to `IQ1_S` (29 files, `Q4_K_M` the default; + `mmproj` projector for VL), the importance matrix, `Modelfile`, `params`, `tokenizer.json` + configs | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
 
 The safetensors repo is the GGUF repo's name without `-GGUF` (uncensored: `Minecraftism-4B-Uncensored`). Both
 model cards link to each other; the safetensors card has transformers and vLLM code. `llm import --hf` on a
@@ -41,15 +41,38 @@ quant. The GGUF card lists every file with its size (`ollama run hf.co/you/Minec
 build + source at the same tag; `llama-quantize` is compiled when the prebuilt one cannot run), or from
 `$LLAMA_CPP_DIR`. If that route fails, Unsloth's own GGUF exporter makes the same quants.
 
-| Quant | 4B file | VL 4B file | Use it when |
+`GGUF_QUANTS = "all"` (the default) makes **every llama.cpp quant** that works on a normal model, 29 files:
+
+| Group | Quants | 4B files | Use them when |
 | --- | --- | --- | --- |
-| `Q8_0` | ~4.3 GB | ~4.5 GB | best quality, near the 16-bit model |
-| `Q6_K` | ~3.3 GB | ~3.5 GB | very close to Q8_0 |
-| `Q5_K_M` | ~2.9 GB | ~3.1 GB | a good middle |
-| `Q4_K_M` | ~2.5 GB | ~2.7 GB | the default: small and good |
-| `Q3_K_M` | ~2.1 GB | ~2.2 GB | low RAM / old PCs, some quality loss |
+| full precision | `BF16`, `F16` | ~8 GB | making your own quants; `BF16` is converted straight from the safetensors |
+| near-lossless | `Q8_0`, `Q6_K` | 4.3 / 3.3 GB | plenty of RAM, best answers |
+| recommended | `Q5_K_M`, `Q5_K_S`, **`Q4_K_M`** (default), `Q4_K_S`, `IQ4_XS`, `IQ4_NL` | 2.3-2.9 GB | most PCs |
+| low RAM | `Q3_K_L`, `Q3_K_M`, `Q3_K_S`, `IQ3_M`, `IQ3_S`, `IQ3_XS`, `IQ3_XXS` | 1.7-2.2 GB | old laptops, phones |
+| tiny | `Q2_K`, `Q2_K_S`, `IQ2_M`, `IQ2_S`, `IQ2_XS`, `IQ2_XXS`, `IQ1_M`, `IQ1_S` | 1.1-1.7 GB | experiments: clearly weaker |
+| legacy | `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1` | 2.4-3.1 GB | old apps; `Q4_0` is fast on ARM CPUs |
 
 (VL editions add the `mmproj` vision projector, ~0.8 GB.)
+
+**Importance matrix (imatrix).** Before the quants below Q8_0, `llama-imatrix` runs the fresh Q8_0 over
+`--imatrix-chunks` (64) x 512 tokens of the edition's own training data (~10 min on the CPU) and every quant below
+Q8_0 is made with it: better quality at the same size, and the `IQ1`/`IQ2`/`IQ3_XXS`/`Q2_K_S` quants can't be made
+without one (llama.cpp refuses: "the result will be garbage"). The matrix is uploaded too
+(`*.imatrix.gguf`), so anyone can make more quants. Not made on purpose: `F32` (twice the size, no better),
+`TQ1_0`/`TQ2_0` and `Q1_0`/`Q2_0` (only for models *trained* ternary or at 1-2 bits) and `MXFP4_MOE`
+(mixture-of-experts only).
+
+**Time.** All 29 take roughly an hour of CPU per edition plus ~80 GB of uploads. They are made most useful first
+(`Q8_0`, `Q4_K_M`, `Q6_K`, `Q5_K_M`, `IQ4_XS`, `Q3_K_M`, ...; the legacy ones, `BF16` and `F16` last) and whatever does
+not fit before `--deadline` is skipped and listed on the model card, so the session never runs out mid-upload.
+With more editions than T4s this happens on the CPU while the next edition trains; only the last edition can run
+short. `GGUF_QUANTS = "standard"` makes just `Q8_0`, `Q6_K`, `Q5_K_M`, `Q4_K_M`, `Q3_K_M`.
+
+**The model card** (written by the trainer) has a quick start for PyMC Bot, Ollama, llama.cpp (`-hf`) and
+`hf download`, a "which file should I download?" guide, the full quant table (size, RAM to run, imatrix, direct
+download links), the prompt format, the recommended settings, limitations, the training data and its licences, and
+the PolyForm `Required Notice:`. The GGUF repo is linked to the safetensors repo on Hugging Face's model tree
+(`base_model_relation: quantized`).
 
 **Why the safetensors are ~8 GB, and why that is the smallest a 4B model gets in 16-bit:** each of the ~4.0 billion
 weights takes 2 bytes. A LoRA merge can make the files *bigger* than the base - float32 leftovers (4 bytes a weight)
@@ -150,7 +173,7 @@ The settings cell:
 | `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
 | `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
 | `SAFETENSORS` | `True` | also export the merged 16-bit safetensors edition and upload it to `<repo without -GGUF>` (`--safetensors none` = GGUF only, made by Unsloth) |
-| `GGUF_QUANTS` | `"q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m"` | GGUFs made from the safetensors and uploaded one by one (only when uploading; `""` = only `q4_k_m`) |
+| `GGUF_QUANTS` | `"all"` | GGUFs made from the safetensors and uploaded one by one (only when uploading): `"all"` = every llama.cpp quant (29, F16 to IQ1_S, with an imatrix; what does not fit in the time is skipped), `"standard"` = `q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m`, or a list; `""` = only `q4_k_m` |
 | `QUICK_TEST` | `False` | short test run of the whole pipeline |
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
@@ -343,7 +366,7 @@ disappear when the session ends. The notebook dry-runs every edition first and s
 The script trains a LoRA adapter (4-bit QLoRA, r=32, loss on the replies only; VL editions train the
 language layers and keep the vision encoder frozen unless you pass `--vision-layers 1`). It evaluates on
 held-out rows, saves the compact safetensors and makes the GGUFs from them (`q4_k_m` stays in the folder; when uploading
-also `Q8_0`, `Q6_K`, `Q5_K_M`, `Q3_K_M`) and, for VL editions, the **vision projector** (`mmproj`). Each edition
+every other quant too, each uploaded and deleted as soon as it is ready) and, for VL editions, the **vision projector** (`mmproj`). Each edition
 gets its own folder, e.g. `/kaggle/working/minecraftism-vl`:
 
 ```

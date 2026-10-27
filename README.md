@@ -628,7 +628,7 @@ python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_dat
 #   data streamed once for all editions, GGUFs made on the CPU while the T4 trains the next edition
 python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
 #   the notebook first publishes <you>/Minecraftism-4B (compact 16-bit safetensors, for transformers / vLLM), then
-#   GGUF quants made from it to <you>/Minecraftism-4B-GGUF: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M (--quant Q8_0)
+#   every GGUF quant made from it (F16 ... Q4_K_M ... IQ1_S) to <you>/Minecraftism-4B-GGUF (--quant Q8_0)
 python -m pymc_bot llm eval --model minecraftism
 ```
 
