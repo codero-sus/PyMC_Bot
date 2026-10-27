@@ -261,7 +261,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     namespace["main"] = lambda cfg: seen.update(cfg) or result
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
-    assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "qwen3-4b"
+    assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
 
@@ -397,3 +397,16 @@ def test_pages_are_fetched_one_topic_ahead_and_a_stop_keeps_the_rows(tmp_path):
     assert len(saved) == 1 and (tmp_path / "d" / "data" / "high" / "train.jsonl").read_text().count("\n") == 1
     card = (tmp_path / "d" / "README.md").read_text()
     assert "config_name: high" in card and "path: data/high/train.jsonl" in card and 'load_dataset(' in card
+
+
+def test_auto_picks_the_biggest_model_that_fits_in_the_ram(monkeypatch):
+    assert w.pick_model("auto", 29.5)[0] == "qwen3-30b-a3b"  # Kaggle's 30 GB: the 30B mixture of experts
+    assert w.pick_model("auto", 13)[0] == "qwen3-4b" and w.pick_model("auto", 3)[0] == "qwen3-1.7b"
+    assert w.pick_model("auto", 1)[0] == "qwen3-1.7b"
+    key, why = w.pick_model("qwen3-30b-a3b", 8)
+    assert key == "qwen3-30b-a3b" and "WARNING" in why and "22 GB" in why  # your choice, with a warning
+    assert "WARNING" not in w.pick_model("qwen3-4b", 30)[1]
+    assert list(w.MODELS) == sorted(w.MODELS, key=lambda k: -w.MODELS[k]["ram_gb"])  # biggest first
+    assert all(spec["license"] == "Apache-2.0" for spec in w.MODELS.values())
+    assert w.MODELS["qwen3-30b-a3b"]["repo"] == "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
+    assert w.available_ram_gb() > 0

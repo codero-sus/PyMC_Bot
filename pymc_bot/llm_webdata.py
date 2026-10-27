@@ -53,12 +53,44 @@ MINECRAFT_DATA_URL = "https://raw.githubusercontent.com/PrismarineJS/minecraft-d
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
 
 #: Small Qwen3 GGUFs that run on Kaggle's 4 CPU cores (Apache-2.0: the dataset may be used commercially).
+#: The LLMs it can run on the CPU, biggest first. ``ram_gb`` = what it needs in RAM (the GGUF + an 8K context +
+#: llama.cpp). Qwen3-30B-A3B is a mixture of experts: 30B weights in RAM, but only ~3B work per token, so on a CPU it
+#: runs about as fast as the 4B and judges far better - it fits Kaggle's 30 GB.
 MODELS = {
+    "qwen3-30b-a3b": {"repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF", "quant": "Q4_K_M",
+                      "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 22},
     "qwen3-4b": {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "quant": "Q4_K_M", "name": "Qwen3-4B-Instruct-2507",
-                 "hybrid": False, "license": "Apache-2.0"},
+                 "hybrid": False, "license": "Apache-2.0", "ram_gb": 4},
     "qwen3-1.7b": {"repo": "unsloth/Qwen3-1.7B-GGUF", "quant": "Q4_K_M", "name": "Qwen3-1.7B", "hybrid": True,
-                   "license": "Apache-2.0"},
+                   "license": "Apache-2.0", "ram_gb": 2.5},
 }
+
+
+def available_ram_gb() -> float:
+    """RAM free for the model (``MemAvailable``; Kaggle gives 30 GB)."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 2**20
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError, AttributeError):
+        return 0.0
+
+
+def pick_model(choice: str = "auto", ram_gb: float | None = None) -> tuple[str, str]:
+    """``(model key, why)``: ``"auto"`` = the biggest model that fits in the free RAM."""
+    ram = available_ram_gb() if ram_gb is None else ram_gb
+    if choice != "auto":
+        need = MODELS[choice]["ram_gb"]
+        return choice, (f"MODEL = {choice!r}" + (f" - WARNING: it needs ~{need} GB RAM and {ram:.0f} GB is free"
+                                                 if ram and need > ram else ""))
+    for key, spec in MODELS.items():
+        if spec["ram_gb"] <= ram:
+            return key, f"the biggest that fits in {ram:.0f} GB of free RAM (needs ~{spec['ram_gb']} GB)"
+    return "qwen3-1.7b", f"only {ram:.0f} GB of RAM free"
 
 #: Which sites may be used and how. ``text``: answers are written from the page and short quotes are kept (open
 #: licence, commercial use allowed). ``check``: only confirms an answer; just the link is kept.
@@ -1089,11 +1121,13 @@ def main(cfg: dict) -> dict:
     token = kaggle_secret(cfg.get("hf_secret", "HF_TOKEN"))
     discord = Discord(kaggle_secret(cfg.get("discord_secret", "")) if cfg.get("discord", True) else "",
                       kaggle_secret(cfg.get("ping_role_secret", "ping_role")))
-    if cfg.get("model", "qwen3-4b") not in MODELS:
-        raise SystemExit(f"MODEL = {cfg.get('model')!r} is not known - use one of: {', '.join(MODELS)}")
+    if cfg.get("model", "auto") != "auto" and cfg.get("model") not in MODELS:
+        raise SystemExit(f"MODEL = {cfg.get('model')!r} is not known - use \"auto\" or one of: {', '.join(MODELS)}")
     if cfg.get("keep", "medium") not in ("medium", "high"):
         raise SystemExit(f"KEEP = {cfg.get('keep')!r} - use \"medium\" or \"high\"")
-    spec = MODELS[cfg.get("model", "qwen3-4b")]
+    key, why = pick_model(cfg.get("model", "auto"))
+    spec = MODELS[key]
+    log(f"LLM: {spec['name']} ({why})")
     cfg = {**cfg, "model": spec["name"]}
     deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
     api = repo_id = None

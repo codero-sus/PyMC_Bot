@@ -16,7 +16,8 @@ NOTEBOOK = ROOT / "pynb" / "Minecraftism_Dataset_Kaggle.ipynb"
 
 INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle **without a GPU**
 
-Web search + a small LLM running on the CPU (llama.cpp, Qwen3 GGUF in RAM) collect Minecraft questions and answers,
+Web search + an LLM running on the CPU in Kaggle's 30 GB of RAM (llama.cpp; Qwen3-30B-A3B, a mixture of experts that
+runs about as fast as a 4B model, or Qwen3-4B on smaller machines) collect Minecraft questions and answers,
 check every one, and upload them to your Hugging Face dataset **`<you>/Minecraftism-dataset`** - **private**: only
 you can see it (`PRIVATE = True`; a repo that already exists as public is switched to private too).
 
@@ -46,8 +47,11 @@ Made with ❤️ by codero-sus · [the-codero.web.app](https://the-codero.web.ap
 """
 
 SETTINGS = """# ============================== settings ==============================
-MODEL = "qwen3-4b"       # the LLM, on CPU: "qwen3-4b" = Qwen3-4B-Instruct-2507 (best checks, ~3 GB RAM)
-                         #               "qwen3-1.7b" = Qwen3-1.7B (2-3x faster, less careful)
+MODEL = "auto"           # the LLM, on CPU. "auto" = the biggest that fits in the free RAM - on Kaggle (30 GB):
+                         # "qwen3-30b-a3b" = Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~22 GB RAM, only
+                         #                   ~3B work per token, so about as fast as the 4B and far more careful)
+                         # "qwen3-4b" = Qwen3-4B-Instruct-2507 (~4 GB RAM)
+                         # "qwen3-1.7b" = Qwen3-1.7B (~2.5 GB RAM, 2-3x faster, least careful)
 DATASET_REPO = "Minecraftism-dataset"  # -> <your HF name>/Minecraftism-dataset (or "name/repo")
 UPLOAD = True            # upload to Hugging Face (every UPLOAD_EVERY_MIN minutes, at the end and when stopped)
 PRIVATE = True           # True = only you can see it (an existing public repo is switched to private);
