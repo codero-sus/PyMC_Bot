@@ -38,7 +38,10 @@ Save & Run All* to let it run up to ~12 h in the background).
 
 Rejected pairs and the reason go to `meta/rejected.jsonl` for review. The dataset uploads every 30 minutes, and
 the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
-While the LLM works on one topic, the next topic's pages are already being fetched. Load it with
+It is tuned for the CPU: 4 topics are worked on at once (llama.cpp batches them, and while one waits for a web
+search the others keep the CPU busy), the next pages are fetched in the background, the judge answers in one short
+sentence, and answers the game data already confirms are not searched again. The log shows the rows/h and the
+LLM's tokens/s. Load it with
 `load_dataset("<you>/Minecraftism-dataset")` (or `"high"` for the confirmed rows only), or train with it:
 `train_minecraft_llm.py --minecraft-qa-dataset <you>/Minecraftism-dataset`.
 
@@ -48,7 +51,7 @@ Made with ❤️ by codero-sus · [the-codero.web.app](https://the-codero.web.ap
 
 SETTINGS = """# ============================== settings ==============================
 MODEL = "auto"           # the LLM, on CPU. "auto" = the biggest that fits in the free RAM - on Kaggle (30 GB):
-                         # "qwen3-30b-a3b" = Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~22 GB RAM, only
+                         # "qwen3-30b-a3b" = Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~23 GB RAM, only
                          #                   ~3B work per token, so about as fast as the 4B and far more careful)
                          # "qwen3-4b" = Qwen3-4B-Instruct-2507 (~4 GB RAM)
                          # "qwen3-1.7b" = Qwen3-1.7B (~2.5 GB RAM, 2-3x faster, least careful)
@@ -59,7 +62,9 @@ PRIVATE = True           # True = only you can see it (an existing public repo i
 RESUME = True            # go on from what earlier sessions uploaded (skips the topics already done)
 KEEP = "medium"          # "medium" = every row that passed all checks (each has trust: high/medium);
                          # "high" = only rows confirmed by the game data or an independent page
-CORROBORATE = True       # search each answer again and ask an independent page (slower, catches outdated pages)
+CORROBORATE = True       # search each answer again and ask an independent page (slower, catches outdated pages;
+                         # skipped when the game data already confirms the answer)
+PARALLEL = 4             # topics worked on at once - keeps all 4 CPU cores busy (1 = one at a time, the slowest)
 PAGES_PER_TOPIC = 1      # wiki pages read per topic
 PAIRS_PER_PAGE = 3       # question/answer pairs the LLM writes per page
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
@@ -105,7 +110,7 @@ print("internet: OK")
 RUN = """# ============================== run ==============================
 result = main({
     "model": MODEL, "dataset_repo": DATASET_REPO, "upload": UPLOAD, "private": PRIVATE, "resume": RESUME,
-    "keep": KEEP, "corroborate": CORROBORATE, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
+    "keep": KEEP, "corroborate": CORROBORATE, "parallel": PARALLEL, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
     "max_topics": MAX_TOPICS, "max_rows": MAX_ROWS, "max_hours": MAX_HOURS, "upload_every_min": UPLOAD_EVERY_MIN,
     "hf_secret": HF_SECRET, "discord": DISCORD, "discord_secret": DISCORD_SECRET,
     "ping_role_secret": PING_ROLE_SECRET, "work": WORK, "tmp": TMP,

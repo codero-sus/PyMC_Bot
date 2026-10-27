@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -52,13 +53,12 @@ MINECRAFT_DATA_VERSION = "1.21.8"
 MINECRAFT_DATA_URL = "https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/"
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
 
-#: Small Qwen3 GGUFs that run on Kaggle's 4 CPU cores (Apache-2.0: the dataset may be used commercially).
-#: The LLMs it can run on the CPU, biggest first. ``ram_gb`` = what it needs in RAM (the GGUF + an 8K context +
-#: llama.cpp). Qwen3-30B-A3B is a mixture of experts: 30B weights in RAM, but only ~3B work per token, so on a CPU it
+#: The Qwen3 GGUFs it can run on Kaggle's CPU, biggest first (Apache-2.0: the dataset may be used commercially).
+#: ``ram_gb`` = what it needs in RAM (the GGUF + 4 parallel 4K contexts + llama.cpp). Qwen3-30B-A3B is a mixture of experts: 30B weights in RAM, but only ~3B work per token, so on a CPU it
 #: runs about as fast as the 4B and judges far better - it fits Kaggle's 30 GB.
 MODELS = {
     "qwen3-30b-a3b": {"repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF", "quant": "Q4_K_M",
-                      "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 22},
+                      "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 23},
     "qwen3-4b": {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "quant": "Q4_K_M", "name": "Qwen3-4B-Instruct-2507",
                  "hybrid": False, "license": "Apache-2.0", "ram_gb": 4},
     "qwen3-1.7b": {"repo": "unsloth/Qwen3-1.7B-GGUF", "quant": "Q4_K_M", "name": "Qwen3-1.7B", "hybrid": True,
@@ -531,7 +531,7 @@ PAIR_SCHEMA = {
 VERDICT_SCHEMA = {
     "type": "object",
     "properties": {"verdict": {"type": "string", "enum": ["SUPPORTED", "CONTRADICTED", "NOT_FOUND"]},
-                   "reason": {"type": "string"}},
+                   "reason": {"type": "string", "maxLength": 160}},  # short: every word costs CPU time
     "required": ["verdict", "reason"],
 }
 PROPOSE_SYSTEM = (
@@ -547,7 +547,7 @@ JUDGE_SYSTEM = (
     "You check a Minecraft answer against evidence text. SUPPORTED: every fact and number in the answer is stated "
     "in the evidence. CONTRADICTED: the evidence says something different. NOT_FOUND: the evidence does not say "
     "it (or only part of it). Be strict: anything extra in the answer that the evidence does not state means "
-    "NOT_FOUND. Return JSON only."
+    "NOT_FOUND. Keep the reason to one short sentence. Return JSON only."
 )
 
 
@@ -555,18 +555,22 @@ class LlamaServer:
     """llama.cpp's ``llama-server`` with one GGUF, on CPU; ``chat()`` returns parsed JSON (schema-constrained)."""
 
     def __init__(self, binary: Path, model: Path, threads: int = 0, ctx: int = 8192, port: int = 8089,
-                 hybrid: bool = False) -> None:
+                 hybrid: bool = False, parallel: int = 1) -> None:
         self.binary, self.model, self.port, self.hybrid = Path(binary), Path(model), port, hybrid
         self.threads = threads or max(1, os.cpu_count() or 4)
-        self.ctx = ctx
+        self.ctx = ctx  # per slot
+        self.parallel = max(1, int(parallel))  # slots: requests the server works on together (continuous batching)
         self.process: subprocess.Popen | None = None
         self.calls = 0
         self.seconds = 0.0
+        self.tokens = {"prompt": 0, "prompt_ms": 0.0, "cached": 0, "out": 0, "out_ms": 0.0}
+        self._lock = threading.Lock()
 
     def start(self, wait: float = 900) -> "LlamaServer":
         env = {**os.environ, "LD_LIBRARY_PATH": f"{self.binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
-        command = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx), "-t", str(self.threads),
-                   "--host", "127.0.0.1", "--port", str(self.port), "--jinja", "-np", "1", "--no-webui"]
+        command = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx * self.parallel), "-t",
+                   str(self.threads), "--host", "127.0.0.1", "--port", str(self.port), "--jinja", "-np",
+                   str(self.parallel), "--no-webui"]
         logfile = open(self.model.parent / "llama-server.log", "w")  # noqa: SIM115 - lives as long as the server
         self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env)
         end = time.time() + wait
@@ -604,9 +608,25 @@ class LlamaServer:
         started = time.time()
         with urllib.request.urlopen(request, timeout=900) as response:
             reply = json.loads(response.read().decode("utf-8"))
-        self.calls += 1
-        self.seconds += time.time() - started
+        timings = reply.get("timings") or {}
+        with self._lock:
+            self.calls += 1
+            self.seconds += time.time() - started
+            for key, field in (("prompt", "prompt_n"), ("prompt_ms", "prompt_ms"), ("cached", "cache_n"),
+                               ("out", "predicted_n"), ("out_ms", "predicted_ms")):
+                self.tokens[key] += float(timings.get(field) or 0)
         return parse_json(((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+
+
+def llm_speed(llm: Any) -> str:
+    """``"reads 45 tok/s, writes 8.1 tok/s"`` from llama-server's timings (per request), or ``""``."""
+    tokens = getattr(llm, "tokens", None)
+    if not tokens or not tokens.get("out_ms"):
+        return ""
+    read = tokens["prompt"] / max(tokens["prompt_ms"] / 1000, 1e-6)
+    cached = tokens["cached"] / max(tokens["cached"] + tokens["prompt"], 1)
+    return (f"LLM reads {read:.0f} tok/s ({cached:.0%} from cache), writes "
+            f"{tokens['out'] / (tokens['out_ms'] / 1000):.1f} tok/s per request x {getattr(llm, 'parallel', 1)} at once")
 
 
 def _runs(binary: Path) -> bool:
@@ -718,7 +738,7 @@ def propose(llm: Any, topic: str, url: str, passage: str, k: int = 3) -> list[di
 
 def judge(llm: Any, question: str, answer: str, evidence: str) -> tuple[str, str]:
     user = f"QUESTION: {question}\nANSWER: {answer}\n\nEVIDENCE:\n<<<\n{evidence}\n>>>"
-    reply = llm.chat(JUDGE_SYSTEM, user, VERDICT_SCHEMA, max_tokens=160) or {}
+    reply = llm.chat(JUDGE_SYSTEM, user, VERDICT_SCHEMA, max_tokens=90) or {}
     verdict = str(reply.get("verdict") or "NOT_FOUND").upper() if isinstance(reply, dict) else "NOT_FOUND"
     return (verdict if verdict in ("SUPPORTED", "CONTRADICTED", "NOT_FOUND") else "NOT_FOUND",
             str(reply.get("reason") or "")[:300] if isinstance(reply, dict) else "")
@@ -1043,12 +1063,53 @@ def gather(topic: str, cfg: dict, search: Callable[[str], list[dict]],
     return found
 
 
+def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collector, book: dict,
+               search: Callable[[str], list[dict]], fetch: Callable[[str], str],
+               deadline: float) -> tuple[list[dict], list[dict]]:
+    """The LLM part of one topic: ``(rows, rejected)``. Only reads ``collector``, so several topics can run at
+    once (the main loop adds the rows)."""
+    rows: list[dict] = []
+    rejected: list[dict] = []
+    asked: set[str] = set()
+    try:
+        for url, policy, page, passage in found:
+            if time.time() > deadline:
+                break
+            for pair in propose(llm, topic, url, passage, int(cfg.get("pairs_per_page", 3))):
+                key = question_key(pair["question"])
+                if collector.seen(pair["question"]) or key in asked or time.time() > deadline:
+                    continue
+                asked.add(key)
+                passed, checks, why = check_pair(pair, page, llm, book)
+                trust, confirmed = "medium", ""
+                # the game data already confirms it: no need to search again (that is most of the CPU time)
+                if passed and cfg.get("corroborate", True) and checks.get("game_data") != "ok":
+                    verdict, confirmed = corroborate(llm, pair, search, fetch, {url})
+                    checks["independent_page"] = verdict
+                    if verdict == "CONTRADICTED":
+                        passed, why = False, f"an independent page contradicts it ({confirmed})"
+                if not passed:
+                    rejected.append({"topic": topic, "url": url, "why": why, **pair, "checks": checks})
+                    continue
+                if checks.get("game_data") == "ok" or checks.get("independent_page") == "SUPPORTED":
+                    trust = "high"
+                if trust == "medium" and cfg.get("keep", "medium") == "high":
+                    rejected.append({"topic": topic, "url": url, "why": "only medium trust", **pair, "checks": checks})
+                    continue
+                rows.append(make_row(topic, pair, url, policy[1], checks, trust, confirmed, cfg.get("model", "")))
+    except Exception as exc:  # noqa: BLE001 - one bad topic never stops the run
+        log(f"{topic}: skipped ({type(exc).__name__}: {str(exc)[:160]})")
+    return rows, rejected
+
+
 def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: list[str],
             search: Callable[[str], list[dict]], fetch: Callable[[str], str], deadline: float,
             on_upload: Callable[[str], None] = lambda _m: None, discord: Discord | None = None) -> None:
-    """The main loop: one topic at a time until the time, row or topic limit, uploading every few minutes. The
-    next topic's search and pages are fetched in the background while the LLM works on this one, so the CPU never
-    waits for the network. Saves what it has even when stopped (the Kaggle stop button)."""
+    """The main loop until the time, row or topic limit, uploading every few minutes. ``cfg["parallel"]`` topics
+    are worked on at once (llama-server batches their requests, and while one waits for a web search the others
+    keep the CPU busy); the next topic's search and pages are always fetched in the background. Rows are added in
+    topic order. Saves what it has even when stopped (the Kaggle stop button)."""
+    from collections import deque
     from concurrent.futures import ThreadPoolExecutor
 
     discord = discord or Discord("")
@@ -1056,58 +1117,66 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
     todo = [t for t in topic_list if t not in set(collector.done)]
     if cfg.get("max_topics"):
         todo = todo[:int(cfg["max_topics"])]
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
-    ahead = None
+    workers = max(1, int(cfg.get("parallel", 1)))
+    fetcher = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prefetch")
+    llm_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="topic") if workers > 1 else None
+    fetched: dict[int, Any] = {}
+    running: deque = deque()  # (number, topic, future) in topic order
+
+    def fetch_ahead(index: int) -> None:
+        if index < len(todo) and index not in fetched:
+            fetched[index] = fetcher.submit(gather, todo[index], cfg, search, fetch)
+
+    def run(index: int) -> tuple[list[dict], list[dict]]:
+        found = fetched.pop(index).result()
+        return work_topic(todo[index], found, cfg, llm, collector, book, search, fetch, deadline)
+
+    def finish(number: int, topic: str, result: tuple[list[dict], list[dict]]) -> None:
+        nonlocal last_upload, last_report
+        before = len(collector.rows)
+        rows, rejected = result
+        for row in rows:
+            if not collector.seen(row["question"]):  # two topics at once can write the same question
+                collector.add(row)
+        collector.rejected.extend(rejected)
+        collector.done.append(topic)
+        stats = collector.stats()
+        hours = max((time.time() - collector.started) / 3600, 1e-6)
+        rate = (stats["rows"] - collector.start_rows) / hours
+        log(f"[{number}/{len(todo)}] {topic}: +{stats['rows'] - before} rows (total {stats['rows']}: "
+            f"{stats['high']} high, {stats['medium']} medium; {stats['rejected']} rejected) - {rate:.0f} rows/h, "
+            f"{max(deadline - time.time(), 0) / 3600:.1f} h left")
+        if time.time() - last_report > 3600:
+            last_report = time.time()
+            speed = llm_speed(llm)
+            log(speed) if speed else None
+            discord.send(f"{stats['rows']} rows ({stats['high']} high trust), {stats['rejected']} rejected, "
+                         f"{stats['topics']} topics done, {rate:.0f} rows/h.", "Progress")
+        if time.time() - last_upload > float(cfg.get("upload_every_min", 30)) * 60:
+            last_upload = time.time()
+            collector.save()
+            on_upload(f"{stats['rows']} rows after {stats['topics']} topics")
+
     try:
-        for number, topic in enumerate(todo, 1):
+        for index, topic in enumerate(todo):
             if time.time() > deadline or (cfg.get("max_rows") and len(collector.rows) >= int(cfg["max_rows"])):
                 break
-            current = ahead or pool.submit(gather, topic, cfg, search, fetch)
-            ahead = pool.submit(gather, todo[number], cfg, search, fetch) if number < len(todo) else None
-            before = len(collector.rows)
-            try:
-                for url, policy, page, passage in current.result():
-                    for pair in propose(llm, topic, url, passage, int(cfg.get("pairs_per_page", 3))):
-                        if collector.seen(pair["question"]):
-                            continue
-                        passed, checks, why = check_pair(pair, page, llm, book)
-                        trust, confirmed = "medium", ""
-                        if passed and cfg.get("corroborate", True):
-                            verdict, confirmed = corroborate(llm, pair, search, fetch, {url})
-                            checks["independent_page"] = verdict
-                            if verdict == "CONTRADICTED":
-                                passed, why = False, f"an independent page contradicts it ({confirmed})"
-                        if not passed:
-                            collector.rejected.append({"topic": topic, "url": url, "why": why, **pair,
-                                                       "checks": checks})
-                            continue
-                        if checks.get("game_data") == "ok" or checks.get("independent_page") == "SUPPORTED":
-                            trust = "high"
-                        if trust == "medium" and cfg.get("keep", "medium") == "high":
-                            collector.rejected.append({"topic": topic, "url": url, "why": "only medium trust", **pair,
-                                                       "checks": checks})
-                            continue
-                        collector.add(make_row(topic, pair, url, policy[1], checks, trust, confirmed,
-                                               cfg.get("model", "")))
-            except Exception as exc:  # noqa: BLE001 - one bad topic never stops the run
-                log(f"{topic}: skipped ({type(exc).__name__}: {str(exc)[:160]})")
-            collector.done.append(topic)
-            stats = collector.stats()
-            hours = max((time.time() - collector.started) / 3600, 1e-6)
-            rate = (stats["rows"] - collector.start_rows) / hours
-            log(f"[{number}/{len(todo)}] {topic}: +{stats['rows'] - before} rows (total {stats['rows']}: "
-                f"{stats['high']} high, {stats['medium']} medium; {stats['rejected']} rejected) - {rate:.0f} rows/h, "
-                f"{max(deadline - time.time(), 0) / 3600:.1f} h left")
-            if time.time() - last_report > 3600:
-                last_report = time.time()
-                discord.send(f"{stats['rows']} rows ({stats['high']} high trust), {stats['rejected']} rejected, "
-                             f"{stats['topics']} topics done, {rate:.0f} rows/h.", "Progress")
-            if time.time() - last_upload > float(cfg.get("upload_every_min", 30)) * 60:
-                last_upload = time.time()
-                collector.save()
-                on_upload(f"{stats['rows']} rows after {stats['topics']} topics")
+            fetch_ahead(index)
+            fetch_ahead(index + 1)  # the next topic's pages, while the LLM works
+            if llm_pool is None:
+                finish(index + 1, topic, run(index))
+                continue
+            running.append((index + 1, topic, llm_pool.submit(run, index)))
+            if len(running) >= workers:
+                number, name, future = running.popleft()
+                finish(number, name, future.result())
+        while running:  # the topics still being worked on (they stop early after the deadline)
+            number, name, future = running.popleft()
+            finish(number, name, future.result())
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        for pool in (fetcher, llm_pool):
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
         collector.save()
 
 
@@ -1164,8 +1233,11 @@ def main(cfg: dict) -> dict:
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
         binary = llama_server_binary(tmp / "tools")
         model = model_file(spec, tmp / "models", token)
-        log(f"starting llama-server with {model.name} on {os.cpu_count()} CPU threads")
-        llm = LlamaServer(binary, model, ctx=int(cfg.get("ctx", 8192)), hybrid=spec["hybrid"]).start()
+        parallel = max(1, int(cfg.get("parallel", 4)))
+        cfg = {**cfg, "parallel": parallel}
+        log(f"starting llama-server with {model.name} on {os.cpu_count()} CPU threads, {parallel} requests at once")
+        llm = LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)), hybrid=spec["hybrid"],
+                          parallel=parallel).start()
         data = load_minecraft_data(cfg.get("minecraft_version", MINECRAFT_DATA_VERSION))
         book = recipe_book(data)
         topic_list = topics(data, random.Random(int(cfg.get("seed", 0))))
@@ -1180,7 +1252,7 @@ def main(cfg: dict) -> dict:
         stats = collector.stats()
         upload(f"final: {stats['rows']} rows ({stats['high']} high trust) from {stats['topics']} topics")
         result = summary(stats)
-        log(f"done: {stats} -> {result['link']} (LLM: {llm.calls} calls, {llm.seconds / 60:.0f} min)")
+        log(f"done: {stats} -> {result['link']} (LLM: {llm.calls} calls; {llm_speed(llm)})")
         discord.send(f"{stats['rows']} rows ({stats['high']} high trust, {stats['medium']} medium), "
                      f"{stats['rejected']} rejected, {stats['topics']} topics.\n{result['link']}", "Notebook finished",
                      "good", important=True)

@@ -6,6 +6,7 @@ import json
 import random
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -182,7 +183,7 @@ def test_collect_keeps_checked_rows_rejects_the_rest_and_resumes(tmp_path):
     assert row["trust"] == "high" and row["checks"]["game_data"] == "ok" and row["checks"]["second_look"] == "SUPPORTED"
     assert row["messages"][-1] == {"role": "assistant", "content": row["answer"]}
     assert row["sources"][0] == {"url": FANDOM, "license": "CC BY-SA 3.0"}
-    assert row["sources"][1]["role"] == "confirms" and "minecraft.net" in row["sources"][1]["url"]
+    assert len(row["sources"]) == 1 and "independent_page" not in row["checks"]  # the game data confirmed it: no 2nd search
     assert row["kind"] == "mcqa" and row["source"] == "web-verified"
     whys = sorted(r["why"] for r in collector.rejected)
     assert len(whys) == 2 and whys[0].startswith("evidence not on the page") and "numbers not in the evidence" in whys[1]
@@ -262,6 +263,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
+    assert seen["parallel"] == 4
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
 
 
@@ -399,12 +401,59 @@ def test_pages_are_fetched_one_topic_ahead_and_a_stop_keeps_the_rows(tmp_path):
     assert "config_name: high" in card and "path: data/high/train.jsonl" in card and 'load_dataset(' in card
 
 
+def test_parallel_topics_share_the_llm_keep_the_order_and_never_duplicate_a_question(tmp_path):
+    import threading
+
+    collector = w.Collector(tmp_path / "d", "m")
+    names, busy, most = set(), [0], [0]
+    lock = threading.Lock()
+
+    class Slow(FakeLLM):
+        def chat(self, system, user, schema, max_tokens=700):
+            with lock:
+                busy[0] += 1
+                most[0] = max(most[0], busy[0])
+                names.add(threading.current_thread().name.split("_")[0])
+            time.sleep(0.05)
+            try:
+                return super().chat(system, user, schema, max_tokens)
+            finally:
+                with lock:
+                    busy[0] -= 1
+
+    def search(query):
+        if "site:minecraft.fandom.com" in query:
+            return [{"url": FANDOM, "title": "Lead"}]
+        return [{"url": "https://www.minecraft.net/en-us/article/java-1-21-6", "title": "x"}]
+
+    def fetch(url):
+        return page_text() if "fandom" in url else "The Slime Ball in the Lead recipe has been replaced: 5 string now."
+
+    topics = ["Lead", "Lead use", "Lead knot", "Lead fence"]
+    w.collect({"parallel": 3}, Slow(), collector, {}, topics, search, fetch, deadline=1e18)
+    assert most[0] >= 2 and names == {"topic"}  # several topics talk to the LLM at once
+    assert collector.done == topics  # finished in topic order
+    assert [r["question"] for r in collector.rows] == ["How do you craft a lead in Minecraft?"]  # once, not 4 times
+    row = collector.rows[0]  # no game data here, so an independent page was asked
+    assert row["checks"]["independent_page"] == "SUPPORTED" and row["trust"] == "high"
+    assert row["sources"][1]["role"] == "confirms" and "minecraft.net" in row["sources"][1]["url"]
+
+
+def test_llama_server_runs_parallel_slots_and_reports_its_speed():
+    server = w.LlamaServer(Path("llama-server"), Path("m.gguf"), threads=4, ctx=4096, parallel=4)
+    assert server.parallel == 4 and server.ctx * server.parallel == 16384
+    assert w.llm_speed(server) == ""
+    server.tokens.update(prompt=900, prompt_ms=20000, cached=100, out=300, out_ms=40000)
+    assert w.llm_speed(server) == "LLM reads 45 tok/s (10% from cache), writes 7.5 tok/s per request x 4 at once"
+    assert w.VERDICT_SCHEMA["properties"]["reason"]["maxLength"] <= 200  # short judge replies
+
+
 def test_auto_picks_the_biggest_model_that_fits_in_the_ram(monkeypatch):
     assert w.pick_model("auto", 29.5)[0] == "qwen3-30b-a3b"  # Kaggle's 30 GB: the 30B mixture of experts
     assert w.pick_model("auto", 13)[0] == "qwen3-4b" and w.pick_model("auto", 3)[0] == "qwen3-1.7b"
     assert w.pick_model("auto", 1)[0] == "qwen3-1.7b"
     key, why = w.pick_model("qwen3-30b-a3b", 8)
-    assert key == "qwen3-30b-a3b" and "WARNING" in why and "22 GB" in why  # your choice, with a warning
+    assert key == "qwen3-30b-a3b" and "WARNING" in why and "23 GB" in why  # your choice, with a warning
     assert "WARNING" not in w.pick_model("qwen3-4b", 30)[1]
     assert list(w.MODELS) == sorted(w.MODELS, key=lambda k: -w.MODELS[k]["ram_gb"])  # biggest first
     assert all(spec["license"] == "Apache-2.0" for spec in w.MODELS.values())
