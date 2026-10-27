@@ -1021,8 +1021,8 @@ configs:
 
 Checked Minecraft questions and answers for the **Minecraftism** models of
 [PyMC Bot](https://github.com/codero-sus/PyMC_Bot), collected by the notebook
-`pynb/Minecraftism_Dataset_Kaggle.ipynb` (Kaggle, CPU only): web search + a small LLM ({model}) that may only
-write what a page says, and then checks on every answer.
+`pynb/Minecraftism_Dataset_Kaggle.ipynb` (Kaggle, CPU only): web search + an LLM on the CPU ({model}) that may
+only write what a page says, and then checks on every answer.
 
 **{len(rows)} rows** - {high} `high` trust (confirmed by the game's own data or an independent page), {len(rows) - high}
 `medium` (one source, passed every check). {len(rejected)} rejected pairs (with the reason) are in
@@ -1037,8 +1037,8 @@ write what a page says, and then checks on every answer.
 3. Every evidence quote must really be on the page; every number in the answer must be in the evidence.
 4. A second LLM pass sees only question, answer and evidence and must answer SUPPORTED.
 5. Crafting answers must match the game's recipes (minecraft-data {MINECRAFT_DATA_VERSION}, MIT).
-6. The question is searched again: an independent page that contradicts the answer rejects it, one that
-   confirms it makes it `high`.
+6. Answers the game data did not already confirm are searched again: an independent page that contradicts the
+   answer rejects it, one that confirms it makes it `high`.
 
 ## Fields
 
