@@ -2597,6 +2597,10 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 
 ## License and credits
 
+Required Notice: Copyright codero-sus ({AUTHOR_URL}). Minecraftism is part of PyMC Bot ({PROJECT_URL}) and is
+licensed under PolyForm Noncommercial 1.0.0 (https://polyformproject.org/licenses/noncommercial/1.0.0/). Anyone who
+shares these weights, or quants or fine-tunes made from them, must pass on this notice and a link to the original.
+
 - Made with ❤️ by [codero-sus]({AUTHOR_URL}) - {' - '.join(WEBSITES)}
 - **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and
   {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.

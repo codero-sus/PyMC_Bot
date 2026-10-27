@@ -308,3 +308,12 @@ def test_llama_server_starts_answers_with_the_schema_and_stops(tmp_path):
     finally:
         server.stop()
     assert server.process.poll() is not None
+
+
+def test_model_cards_carry_the_polyform_required_notice():
+    import inspect
+
+    from pymc_bot import llm_train
+    source = inspect.getsource(llm_train.model_card)
+    assert "\nRequired Notice: Copyright codero-sus" in source
+    assert "polyformproject.org/licenses/noncommercial/1.0.0" in source
