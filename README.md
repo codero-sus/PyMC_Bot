@@ -232,7 +232,7 @@ python updater.py         # anywhere
 | `updater --help` | all options (`--mods-dir`, `--pre`, `--reinstall`, `--deps`, `--no-deps`, `--branch`) |
 
 * **PyMC_Bot itself – always a `.zip`, never git:** the updater asks GitHub for the newest commit
-  of this build's *update channel*, downloads exactly that commit as a source `.zip`, checks it
+  of the `main` branch (`--branch NAME` for another one), downloads exactly that commit as a source `.zip`, checks it
   (complete archive, commit id inside the zip matches) and extracts it over the folder.
   `pymc_bot_config.json`, `.venv`, `models/`, recordings, `.git` and every other file of yours are
   left alone; project files you changed are backed up to `.pymc_backup/<time>/` first, and files the

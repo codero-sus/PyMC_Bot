@@ -11,7 +11,7 @@ or use the wrappers next to this file: ``updater.cmd`` (Windows) / ``./updater.s
 
 How it updates PyMC_Bot - always by downloading and extracting a ``.zip``, never with git:
 
-1. asks GitHub which commit is newest on this build's update channel (one small API call);
+1. asks GitHub which commit is newest on the ``main`` branch (one small API call);
 2. downloads that exact commit as a source ``.zip`` and checks it (complete archive, and the commit
    id stored inside the zip must match);
 3. extracts it over this folder. Your files are kept: ``pymc_bot_config.json``, ``pymc_bot_auth.json``, ``.venv``,
@@ -75,14 +75,16 @@ PROTECTED = (".git", ".venv", "venv", "node_modules", "models", ".pymc_profiles"
              "pymc_bot_config.json", "pymc_bot_auth.json", STATE_FILE, "pymc-playtime")
 
 
-# ---------------------------------------------------------------------------- update channel
+# ---------------------------------------------------------------------------- update branch
 #
-# The branch this build updates from is stored sealed (XOR with a fixed key, base85, reversed) so
-# it does not show up as plain text in this file, in the console output or in error messages.
-# This only hides the name from casual reading - it is not encryption. Maintainers re-seal a new
-# branch with:  python updater.py --seal <branch>   and paste the result into _CHANNEL.
+# Updates come from the public ``main`` branch. ``--branch NAME`` picks another one.
+DEFAULT_BRANCH = "main"
+
+# Builds used to follow a hidden update channel. Its name stays sealed (XOR with a fixed key, base85,
+# reversed) and is only used to keep it out of the console, error messages and project files (see
+# redact() and the leak-guard test) - it is no longer updated from. Not encryption, just not plain text.
 _SEAL_KEY = hashlib.sha256(b"PyMC_Bot:update-channel:v1").digest()
-_CHANNEL = (
+_RETIRED_CHANNEL = (
     "?43GhL@Uq!fF+s"
     "ERTSYozS}+{qdR1"
 )
@@ -93,7 +95,7 @@ def _xor(data: bytes) -> bytes:
 
 
 def seal(text: str) -> str:
-    """Seal a branch name for ``_CHANNEL``."""
+    """Seal a branch name (how ``_RETIRED_CHANNEL`` was made)."""
     return base64.b85encode(_xor(text.encode("utf-8"))).decode("ascii")[::-1]
 
 
@@ -102,8 +104,13 @@ def unseal(blob: str) -> str:
 
 
 def update_channel() -> str:
-    """The branch this build follows (never printed)."""
-    return unseal(_CHANNEL)
+    """The branch this build updates from: ``main``."""
+    return DEFAULT_BRANCH
+
+
+def retired_channel() -> str:
+    """The old hidden update channel (never printed, never updated from)."""
+    return unseal(_RETIRED_CHANNEL)
 
 
 def _secret_forms(ref: str) -> set[str]:
@@ -113,12 +120,12 @@ def _secret_forms(ref: str) -> set[str]:
 
 
 def redact(text: str, refs: tuple[str, ...] = ()) -> str:
-    """``text`` with the update channel (and any other hidden ``refs``) replaced by a placeholder."""
+    """``text`` with the retired hidden channel (and any other hidden ``refs``) replaced by a placeholder."""
     out = str(text)
     hidden = set(refs)
     try:
-        hidden.add(update_channel())
-    except (ValueError, UnicodeDecodeError):  # pragma: no cover - only if _CHANNEL was mangled
+        hidden.add(retired_channel())
+    except (ValueError, UnicodeDecodeError):  # pragma: no cover - only if _RETIRED_CHANNEL was mangled
         pass
     for ref in hidden:
         for form in sorted(_secret_forms(ref), key=len, reverse=True):
@@ -135,7 +142,7 @@ class RateLimited(UpdateError):
 
 
 def say(message: str = "") -> None:
-    # Every line goes through redact(), so the update channel can never reach the console.
+    # Every line goes through redact(), so the retired hidden channel can never reach the console.
     try:
         print(f"[update] {redact(message)}" if message else "", flush=True)
     except BrokenPipeError:
@@ -353,9 +360,9 @@ def remove_deleted(root: Path, old_files: dict, new_files: dict) -> dict[str, li
 
 
 def update_zip(root: Path, repo: str, ref: str | None, check: bool) -> bool:
-    """Updates PyMC_Bot from a downloaded source zip. ``ref`` None = this build's update channel."""
+    """Updates PyMC_Bot from a downloaded source zip. ``ref`` None = the ``main`` branch."""
     channel = ref or update_channel()
-    where = "the update channel" if ref is None else "the chosen branch"
+    where = f"the {DEFAULT_BRANCH} branch" if ref is None else "the chosen branch"
     if git_checkout_present(root):
         say("a .git folder is here - it is not used: the update comes as a zip and .git is left alone")
     say(f"checking {where} on GitHub ...")
@@ -655,9 +662,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pre", action="store_true", help="allow mod pre-releases even when a stable release exists")
     parser.add_argument("--reinstall", action="store_true", help="download the mod again even if it is up to date")
     parser.add_argument("--branch", default=None, metavar="NAME",
-                        help="update from another branch instead of this build's update channel")
+                        help=f"update from another branch instead of {DEFAULT_BRANCH}")
     parser.add_argument("--repo", default=REPO, help=argparse.SUPPRESS)
-    parser.add_argument("--seal", metavar="BRANCH", help=argparse.SUPPRESS)  # maintainers: value for _CHANNEL
+    parser.add_argument("--seal", metavar="BRANCH", help=argparse.SUPPRESS)  # maintainers: seal a branch name
     deps = parser.add_mutually_exclusive_group()
     deps.add_argument("--deps", action="store_true", help="reinstall dependencies even if unchanged")
     deps.add_argument("--no-deps", action="store_true", help="never touch dependencies")
@@ -686,7 +693,7 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     except UpdateError as exc:
         say(f"ERROR: {exc}")
         return 1
-    except Exception as exc:  # never show a traceback (it could contain the update channel)
+    except Exception as exc:  # never show a traceback (it could contain a hidden branch name)
         say(f"ERROR: unexpected {type(exc).__name__}: {exc}")
         return 1
     except KeyboardInterrupt:

@@ -293,20 +293,36 @@ def test_main_reinstalls_deps_only_when_requirements_change(monkeypatch, tmp_pat
     assert seen == [["requirements.txt"]]
 
 
-# ---------------------------------------------------------------------------- hidden update channel
+# ---------------------------------------------------------------------------- update branch: main
 
 
-def test_channel_is_sealed_and_round_trips():
-    channel = updater.update_channel()
-    assert channel and "/" not in updater._CHANNEL
+def test_updates_come_from_main(monkeypatch, tmp_path, capsys):
+    assert updater.update_channel() == updater.DEFAULT_BRANCH == "main"
+    assert updater.retired_channel() != "main"
+    hub = FakeGitHub(monkeypatch, "main")
+    hub.publish({"a.py": "1"})
+    assert updater.update_zip(tmp_path, "r/r", None, check=False)
+    out = capsys.readouterr().out
+    assert "checking the main branch on GitHub" in out and "<update channel>" not in out
+    assert updater.read_state(tmp_path)["channel"] == "default"
+    updater.say("python -m pymc_bot.__main__ on main")  # "main" is public: nothing is redacted
+    assert "python -m pymc_bot.__main__ on main" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------- retired hidden channel
+
+
+def test_retired_channel_is_sealed_and_round_trips():
+    channel = updater.retired_channel()
+    assert channel and "/" not in updater._RETIRED_CHANNEL
     assert updater.unseal(updater.seal(channel)) == channel
     assert updater.unseal(updater.seal("some/other-branch")) == "some/other-branch"
-    assert updater.seal(channel) == updater._CHANNEL
+    assert updater.seal(channel) == updater._RETIRED_CHANNEL
 
 
 def test_channel_never_appears_in_plain_text_in_the_project():
-    """Leak guard: no project file (code, docs, workflows, tests) contains the update channel."""
-    forms = updater._secret_forms(updater.update_channel())
+    """Leak guard: no project file (code, docs, workflows, tests) contains the retired hidden channel."""
+    forms = updater._secret_forms(updater.retired_channel())
     skip = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"}
     leaks = []
     for path in ROOT.rglob("*"):
@@ -321,7 +337,7 @@ def test_channel_never_appears_in_plain_text_in_the_project():
 
 
 def test_output_and_errors_never_show_the_channel(monkeypatch, capsys):
-    channel = updater.update_channel()
+    channel = updater.retired_channel()
     updater.say(f"url https://api.github.com/repos/x/y/commits/{updater.urllib.parse.quote(channel, safe='')}")
     updater.say(f"folder PyMC_Bot-{channel.replace('/', '-')}/README.md and {channel}")
     out = capsys.readouterr().out
@@ -341,8 +357,8 @@ def test_help_does_not_reveal_the_channel(capsys):
     with pytest.raises(SystemExit):
         updater.main(["--help"])
     out = capsys.readouterr().out
-    assert "update channel" in out and "--autostash" not in out and "--seal" not in out
-    assert all(form not in out for form in updater._secret_forms(updater.update_channel()))
+    assert "instead of main" in out and "--autostash" not in out and "--seal" not in out
+    assert all(form not in out for form in updater._secret_forms(updater.retired_channel()))
 
 
 def test_update_dependencies_uses_venv(tmp_path, monkeypatch):
