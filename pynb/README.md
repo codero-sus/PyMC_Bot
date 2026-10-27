@@ -3,7 +3,7 @@
 | Notebook | Runs on | What it does |
 | --- | --- | --- |
 | [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, uploads the compact 16-bit **safetensors** first, then **every GGUF quant** made from them (29 files: F16 and BF16 down to IQ1_S, with an importance matrix from the training data, each uploaded as soon as it is ready; the model card has a "which file?" guide and the full table), both with `tokenizer.json` and the configs |
-| [`Minecraftism_Dataset_Kaggle.ipynb`](Minecraftism_Dataset_Kaggle.ipynb) | Kaggle, **CPU only** (no GPU) | collects a **trusted Minecraft Q&A dataset**: web search + a small LLM in RAM (Qwen3-4B or 1.7B on llama.cpp) write answers only from pages that allow commercial use, every answer is checked (quotes on the page, numbers in the quotes, a second LLM look, the game's recipes, an independent page), then it is uploaded to your Hugging Face dataset `<you>/Minecraftism-dataset` |
+| [`Minecraftism_Dataset_Kaggle.ipynb`](Minecraftism_Dataset_Kaggle.ipynb) | Kaggle, **CPU only** (no GPU) | collects a **trusted Minecraft Q&A dataset**: web search + an LLM in Kaggle's 30 GB of RAM on llama.cpp (`MODEL = "auto"`: Qwen3-30B-A3B, a mixture of experts that runs about as fast as a 4B model; Qwen3-4B or 1.7B on smaller machines) write answers only from pages that allow commercial use, every answer is checked (quotes on the page, numbers in the quotes, a second LLM look, the game's recipes, an independent page), then it is uploaded to your Hugging Face dataset `<you>/Minecraftism-dataset` |
 
 **Quick start**
 
@@ -57,8 +57,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (CPU only)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/96dbd6dd5abed4af3360f55a358409189bd19090/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/96dbd6dd5abed4af3360f55a358409189bd19090/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/15441c8816a1d9ecd8eb5ae30fcceb48af975dca/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/15441c8816a1d9ecd8eb5ae30fcceb48af975dca/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **None** (it needs no GPU and uses none of your GPU quota), Internet **on**.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
