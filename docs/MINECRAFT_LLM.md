@@ -478,6 +478,32 @@ The 106 GB `CraftJarvis/minecraft-vla-sft` set is **not** used: its answers are 
 for the JARVIS model, not text a chat model can learn from. Without internet, or if a stream fails, the
 trainer prints a warning and trains on the rest.
 
+## A trusted dataset of your own (Kaggle, CPU only)
+
+`pynb/Minecraftism_Dataset_Kaggle.ipynb` builds **`<you>/Minecraftism-dataset`** on Hugging Face without a GPU:
+DuckDuckGo search (`ddgs`) finds pages, and a small LLM runs in Kaggle's RAM on llama.cpp's CPU server (`MODEL =
+"qwen3-4b"`, Qwen3-4B-Instruct-2507 Q4_K_M; `"qwen3-1.7b"` is 2-3× faster). The LLM writes question/answer pairs
+only from the page text, and each pair has to pass every check:
+
+| check | rejects |
+|---|---|
+| licence | any page that is not Minecraft Fandom wiki (CC BY-SA 3.0) or Wikipedia (CC BY-SA 4.0); minecraft.wiki (CC BY-NC-SA) is never read, official Mojang pages only confirm |
+| evidence | a quoted sentence that is not really on the page |
+| numbers | a number in the answer that is not in the quotes |
+| second look | a separate LLM pass that does not answer SUPPORTED from question + answer + quotes alone |
+| game data | a crafting answer with a missing ingredient or a wrong count (minecraft-data recipes; catches outdated pages such as the old lead recipe) |
+| independent page | an answer another page contradicts (the question is searched again) |
+
+Rows confirmed by the game data or an independent page are `trust: high`, the rest `medium` (`KEEP = "high"`
+keeps only the confirmed ones). Rejected pairs and the reason go to `meta/rejected.jsonl`. It uploads every 30
+minutes and `RESUME = True` continues the topic list in the next session. Kaggle setup: Accelerator **None**,
+Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/5310fece18312cfbd3198643a9cfbb4394e2e442/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+
+Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
+`answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
+scripts/build_webdata_notebook.py` rebuilds it).
+
 ## Testing
 
 `RUN_TESTS = True` (`--test`) asks the freshly trained model, before export:

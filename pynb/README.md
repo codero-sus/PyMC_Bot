@@ -3,6 +3,7 @@
 | Notebook | Runs on | What it does |
 | --- | --- | --- |
 | [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, uploads the compact 16-bit **safetensors** first, then **GGUF** quants made from them (Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, each uploaded as soon as it is ready), both with `tokenizer.json` and the configs |
+| [`Minecraftism_Dataset_Kaggle.ipynb`](Minecraftism_Dataset_Kaggle.ipynb) | Kaggle, **CPU only** (no GPU) | collects a **trusted Minecraft Q&A dataset**: web search + a small LLM in RAM (Qwen3-4B or 1.7B on llama.cpp) write answers only from pages that allow commercial use, every answer is checked (quotes on the page, numbers in the quotes, a second LLM look, the game's recipes, an independent page), then it is uploaded to your Hugging Face dataset `<you>/Minecraftism-dataset` |
 
 **Quick start**
 
@@ -52,6 +53,24 @@ countdown stay silent. No secret = no role ping.
 **Where files go:** things needed again stay in `/kaggle/working`: models until uploaded, reports, logs, the data kit,
 `cache/` (streamed data and teacher answers, shared by every edition) and `tools/` (llama.cpp). Throwaway files go to
 `/kaggle/tmp` (~60 GB, not saved): model downloads, vLLM, GGUF work files, checkpoints, locks and temp files.
+
+## Trusted dataset notebook (CPU only)
+
+1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
+   `https://github.com/codero-sus/PyMC_Bot/raw/5310fece18312cfbd3198643a9cfbb4394e2e442/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/5310fece18312cfbd3198643a9cfbb4394e2e442/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+2. **Settings** → Accelerator **None** (it needs no GPU and uses none of your GPU quota), Internet **on**.
+3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token). Optional: `discord_webhook_inform_me1` and
+   `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
+4. **Save Version → Save & Run All**. It works through 84 game mechanics, then mobs, items, blocks, enchantments,
+   effects and biomes until `MAX_HOURS`, uploads every 30 minutes, and the next run goes on where it stopped.
+
+Each row has `question` / `answer` (plus `messages`), `trust` (`high` = confirmed by the game data or an
+independent page, `medium` = one source, every check passed), its sources with their licences and the quotes that
+back it. Rejected pairs and why are in `meta/rejected.jsonl`. Only Minecraft Fandom wiki (CC BY-SA 3.0) and
+Wikipedia (CC BY-SA 4.0) text is used, so the dataset is CC BY-SA 4.0 and allows commercial use. minecraft.wiki is
+non-commercial and never read. Train on it with `train_minecraft_llm.py --minecraft-qa-dataset
+<you>/Minecraftism-dataset`. The code is `pymc_bot/llm_webdata.py`. After editing it, run `python scripts/build_webdata_notebook.py`.
 
 Full guide: [docs/MINECRAFT_LLM.md](../docs/MINECRAFT_LLM.md). Releases do not attach the notebook: their notes link it pinned to the release's commit.
 
