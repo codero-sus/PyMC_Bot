@@ -737,14 +737,15 @@ def test_game_data_rows_are_exact_and_need_no_llm():
 # ------------------------------------------------------------------ as many rows as possible
 def test_a_page_is_read_whole_in_parts_without_the_changelog():
     lines = ["Intro about the villager."]
-    for heading in ("Trading", "Breeding", "History", "Gallery", "Trivia"):
+    for heading in ("Trading", "Breeding", "History", "Gallery", "Trivia", "Data values", "Behavior"):
         lines.append(f"## {heading}")
         lines += [f"{heading} fact number {i}: villagers do things with emeralds and beds." for i in range(40)]
     parts = w.page_sections("\n".join(lines), size=1200)
     text = "\n".join(parts)
     assert len(parts) >= 6 and all(len(p) <= 1300 for p in parts)
-    assert "Trading fact number 39" in text and "Breeding fact number 0" in text and "Trivia fact number 39" in text
+    assert "Trading fact number 39" in text and "Breeding fact number 0" in text and "Behavior fact number 39" in text
     assert "History fact" not in text and "Gallery fact" not in text and "[Trading]" in text
+    assert "Trivia fact" not in text and "Data values fact" not in text  # read by the CPU for (mostly) rejected pairs
     assert w.page_sections("short", 2800) == [] and len(w.page_sections("\n".join(lines), 1200, limit=2)) == 2
     html = "<p>Intro text here.</p><h2>Obtaining<span class='mw-editsection'>[edit]</span></h2><p>Craft it.</p>"
     assert w.html_to_text(html) == "Intro text here.\n## Obtaining\nCraft it."

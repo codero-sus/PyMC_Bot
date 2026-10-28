@@ -229,7 +229,7 @@ def test_notebook_uses_both_t4s_and_the_deadline():
     assert 'SLOTS = {"parallel": [[0], [1]], "ddp": [[0, 1]]}' in code
     assert "training it again on one T4" in code  # DDP problem -> same edition on one T4
     assert '--deadline {DEADLINE:.0f} --export-lock {TMP}/locks/export.lock --tools-dir {TOOLS}' in code
-    assert 'FLAGS += f" --token-budget 12288 --loader-workers {LOADER_WORKERS} --eval-limit 60" if FAST' in code
+    assert 'FLAGS += f" --token-budget 12288 --loader-workers {LOADER_WORKERS} --eval-limit 60 --merge-qa 6" if FAST' in code
     assert "LOADER_WORKERS = max(2, min(4, CPUS // max(1, len(gpus))))" in code
     assert '"--vllm-python", "--tools-dir"))' in code  # an older trainer is replaced by the newest
     assert "!python" not in "".join(nb["cells"][6]["source"])

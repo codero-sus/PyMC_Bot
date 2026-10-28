@@ -421,7 +421,11 @@ def passages(text: str, query: str, size: int = 1400, top: int = 2) -> str:
 #: Sections that are not worth questions (version changelogs, pictures, links, sound files).
 SKIP_SECTIONS = {"history", "gallery", "references", "see also", "external links", "navigation", "issues", "video",
                  "videos", "screenshots", "renders", "concept artwork", "sounds", "in other media", "data history",
-                 "development images", "textures", "external link", "notes and references"}
+                 "development images", "textures", "external link", "notes and references",
+                 # IDs / block states / technical tables and trivia: the LLM reads them (CPU time) and its pairs from
+                 # them are mostly rejected or worthless ("What is the numeric ID of ...?")
+                 "data values", "block states", "block data", "entity data", "item data", "id", "ids", "technical",
+                 "trivia", "mentions", "translations", "references and notes", "fuel duration", "data"}
 
 
 def page_sections(text: str, size: int = 2800, limit: int = 0) -> list[str]:
@@ -442,8 +446,12 @@ def page_sections(text: str, size: int = 2800, limit: int = 0) -> list[str]:
             parts.append(current.strip())
             current = ""
         current += line[:size] + "\n"
-    if len(current.strip()) >= 80:  # the rest (not a lone heading)
-        parts.append(current.strip())
+    tail = current.strip()
+    if tail and not re.fullmatch(r"\[[^\]]*\]", tail):  # the rest (never a lone heading)
+        if len(tail) >= 80:
+            parts.append(tail)
+        elif parts:  # a short last sentence joins the part before it (it used to be dropped)
+            parts[-1] += "\n" + tail
     return parts[:limit] if limit > 0 else parts
 
 
@@ -1213,14 +1221,14 @@ def check_pair(pair: dict, page: str, llm: Any, book: dict) -> tuple[bool, dict[
     checks["numbers_backed"] = not extra
     if extra:
         return False, checks, f"numbers not in the evidence: {', '.join(sorted(extra))}"
+    status, note = data_check(question, answer, book)  # free: before the LLM call, not after it
+    checks["game_data"] = status
+    if status == "contradicts":
+        return False, checks, note
     verdict, reason = judge(llm, question, answer, "\n".join(pair["evidence"]))
     checks["second_look"] = verdict
     if verdict != "SUPPORTED":
         return False, checks, f"second look: {verdict}" + (f" ({reason[:120]})" if reason else "")
-    status, note = data_check(question, answer, book)
-    checks["game_data"] = status
-    if status == "contradicts":
-        return False, checks, note
     return True, checks, ""
 
 

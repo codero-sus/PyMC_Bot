@@ -210,3 +210,34 @@ def test_thinking_edition_fills_up_with_everyday_chat_when_few_traces_fit(tmp_pa
     llm_train.resolve_datasets(args)
     assert llm_train.used_datasets(args, llm_train.PRESETS["minecraftism-thinking"]) == [
         llm_train.COMMERCIAL_REASONING_DATASET, llm_train.COMMERCIAL_GENERAL_DATASET]
+
+
+def test_qa_rows_with_one_system_prompt_train_as_chats_and_every_answer_stays():
+    import random as _random
+
+    from pymc_bot import llm_train as lt
+
+    system = lt.MINECRAFTISM_SYSTEM
+    qa = [{"messages": [{"role": "system", "content": system}, {"role": "user", "content": f"Q{i}?"},
+                        {"role": "assistant", "content": f"Answer {i % 40}."}], "kind": "mcqa", "source": "minecraft-data"}
+          for i in range(80)]  # 40 facts, 2 phrasings each
+    other = [{"messages": [{"role": "system", "content": "bot"}, {"role": "user", "content": "state"},
+                           {"role": "assistant", "content": "{}"}], "kind": "turn"},
+             {"messages": [{"role": "system", "content": "other prompt"}, {"role": "user", "content": "Q?"},
+                           {"role": "assistant", "content": "A."}], "kind": "qa"}]
+    merged = lt.merge_qa(qa + other, 6, _random.Random(1))
+    chats = [r for r in merged if r.get("kind") == "qa-chat"]
+    assert other[0] in merged and len(merged) < len(qa) // 4  # game turns are never merged
+    answers = [m["content"] for r in merged if r.get("merged") for m in r["messages"] if m["role"] == "assistant"]
+    assert sorted(answers) == sorted(r["messages"][2]["content"] for r in qa + other[1:])  # every answer kept
+    for chat in chats:
+        roles = [m["role"] for m in chat["messages"]]
+        assert roles == ["system"] + ["user", "assistant"] * chat["merged"] and chat["merged"] <= 6
+        said = [m["content"] for m in chat["messages"] if m["role"] == "assistant"]
+        assert len(said) == len(set(said))  # two phrasings of one fact never share a chat
+    assert lt.merge_qa(qa, 1) == qa
+    before = sum(len(m["content"]) for r in qa for m in r["messages"])
+    after = sum(len(m["content"]) for r in chats for m in r["messages"])
+    assert after < before / 3  # the system prompt was ~80% of every Q&A row
+    args = lt.build_parser().parse_args(["--merge-qa", "6"])
+    assert args.merge_qa == 6

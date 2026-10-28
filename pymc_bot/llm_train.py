@@ -3340,6 +3340,50 @@ def plan_batches(lengths: list[int], preset: dict[str, Any], world: int, max_seq
             "mean": round(sum(capped) / len(capped))}
 
 
+MERGE_KINDS = ("qa", "mcqa")
+
+
+def merge_qa(rows: list[dict[str, Any]], per_chat: int, rng: Any = None) -> list[dict[str, Any]]:
+    """Single-turn Q&A rows that share a system prompt become multi-turn chats of up to ``per_chat`` questions:
+    the system prompt (~300 tokens, ~80% of a Q&A row, trained on by nobody) is then read once per chat instead of
+    once per question. Every answer is still trained on (all assistant turns are). Two phrasings of one fact never
+    share a chat (the second would just be copied from the first). Only for editions that don't think: Qwen's
+    thinking template drops the traces of earlier turns, which would teach answering without thinking."""
+    if per_chat < 2:
+        return list(rows)
+    import random as _random
+
+    rng = rng or _random.Random(0)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        messages = row.get("messages") or []
+        if (row.get("kind") in MERGE_KINDS and not row.get("images") and len(messages) == 3
+                and [m.get("role") for m in messages] == ["system", "user", "assistant"]):
+            groups.setdefault(str(messages[0].get("content") or ""), []).append(row)
+        else:
+            out.append(row)
+    for system, members in groups.items():
+        rng.shuffle(members)
+        pending = members
+        while pending:
+            chat, answers, left = [], set(), []
+            for row in pending:
+                answer = " ".join(str(row["messages"][2]["content"]).split()).lower()
+                if len(chat) < per_chat and answer not in answers:
+                    chat.append(row)
+                    answers.add(answer)
+                else:
+                    left.append(row)
+            turns = [{"role": "system", "content": system}]
+            for row in chat:
+                turns += [dict(row["messages"][1]), dict(row["messages"][2])]
+            out.append({"messages": turns, "kind": "qa-chat" if len(chat) > 1 else chat[0].get("kind"),
+                        "source": chat[0].get("source"), "check": {}, "merged": len(chat)})
+            pending = left
+    return out
+
+
 def is_oom(exc: BaseException) -> bool:
     return "OutOfMemory" in type(exc).__name__ or "out of memory" in str(exc).lower()
 
@@ -4500,7 +4544,14 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     if preset["chat_template"]:
         tokenizer = get_chat_template(tokenizer, chat_template=preset["chat_template"])
 
-    texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in rows]
+    trained = rows
+    if getattr(args, "merge_qa", 0) > 1 and not preset.get("reasoning"):
+        trained = merge_qa(rows, args.merge_qa)
+        chats = [r for r in trained if r.get("merged", 0) > 1]
+        if chats:
+            print(f"Q&A: {sum(r['merged'] for r in chats)} rows in {len(chats)} chats of up to {args.merge_qa} questions "
+                  f"(the system prompt read once per chat, not per question) - {len(rows)} -> {len(trained)} rows")
+    texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in trained]
     dataset = Dataset.from_dict({"text": texts})
     user, assistant = TURN_MARKERS[preset["family"]]
     callbacks = training_callbacks(args)
@@ -4989,6 +5040,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--group-by-length", action="store_true",
                         help="text editions: batches of similar length (less padding, faster)")
     parser.add_argument("--loader-workers", type=int, default=0, help="data-loader worker processes per GPU")
+    parser.add_argument("--merge-qa", type=int, default=0,
+                        help="text editions that don't think: Q&A rows with the same system prompt trained as chats of "
+                             "this many questions (the ~300-token system prompt read once per chat, every answer still "
+                             "trained; ~2.5x fewer Q&A tokens); 0/1 = off")
     parser.add_argument("--token-budget", type=int, default=0,
                         help="text editions: rows per GPU batch sized so a batch holds about this many tokens (padding-"
                              "free, same effective batch, fewer accumulation steps; 0 = the preset's batch)")
