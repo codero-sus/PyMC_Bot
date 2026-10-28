@@ -27,11 +27,17 @@ as public is switched to private too).
 `discord_webhook_inform_me1` (status messages) and `ping_role` (the Discord role pinged on start, uploads, errors
 and the end).
 
-**Fast on a CPU - run 5 at once:** Kaggle runs up to **5 CPU sessions at the same time**. Leave `SESSIONS = 5`, set
-`SESSION = 1` → *Save Version → Save & Run All*; change to `SESSION = 2` → *Save Version* again; ... up to 5. Each
-saved version keeps its own settings, takes its own fifth of the topics and writes its own files (they never
-overwrite each other). 5 sessions = 5x the rows in the same 12 hours. Run them again later and each goes on where it
-stopped (`RESUME`).
+**Fast on a CPU - run many at once, no editing:** Kaggle runs up to **5 CPU sessions at the same time** per account.
+Leave `SESSIONS = 11` and `SESSION = 0` (auto) and click *Save Version → Save & Run All* 5 times (and 5 more on a
+second account with the same `HF_TOKEN`). Each session takes the lowest free number by itself (a claim file on the
+Hub, `meta/claim-NN.json`), its own share of the topics, and writes its own files - they never overwrite each other.
+Every 30 minutes each one also reads what the others finished and skips it. More sessions = more rows in the same 12
+hours. Run them again later and each goes on where it stopped (`RESUME`).
+
+**Your own PC as one more session** (Windows, an NVIDIA GPU - e.g. an RTX 3050 8 GB - or just the CPU): download the
+repo, double-click `scripts\\collect_dataset_pc.bat` (Python 3.10+ needed; it logs in to Hugging Face once). It takes
+a free session number like the notebooks, runs the small Qwen3.5-4B on the GPU, and keeps going after its own share
+with the topics of the slower sessions until everything is done; Ctrl+C stops it and uploads what it has.
 
 **Much faster, still no GPU hours: Accelerator *TPU*.** A Kaggle TPU session comes with ~96+ CPU cores and 330+ GB
 of RAM (it uses your weekly **TPU** quota, ~20 h, not GPU hours). The TPU chips are not used - only those CPUs:
@@ -102,8 +108,9 @@ DEVICE = "cpu"           # "cpu" = never uses a GPU (no GPU hours). "auto" / "gp
 WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other article of the Fandom wiki (thousands more)
 PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2,800 characters); 0 = auto: 1
 PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
-SESSIONS = 5             # Kaggle sessions you run AT THE SAME TIME (Kaggle allows 5 CPU ones); each its own share
-SESSION = 1              # which one this is: 1 ... SESSIONS - Save Version with 1, then 2, ... (see the top)
+SESSIONS = 11            # sessions AT THE SAME TIME, everywhere the same (5 CPU ones per Kaggle account, x2 accounts,
+                         # + your PC); more than really run is fine: the others take over the missing shares
+SESSION = 0              # 0 = auto: the lowest number nobody runs (just Save & Run All again and again); or 1 ... SESSIONS
 HELP_OTHERS = True       # done with its own share early (a TPU session is ~15x faster)? go on with the others' topics
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
 MAX_ROWS = 0             # 0 = no limit

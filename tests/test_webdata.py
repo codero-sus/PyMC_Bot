@@ -267,7 +267,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
     assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
-    assert seen["wiki_pages"] is True and seen["sessions"] == 5 and seen["session"] == 1  # Kaggle: 5 CPU sessions at once
+    assert seen["wiki_pages"] is True and seen["sessions"] == 11 and seen["session"] == 0  # 2 x 5 Kaggle + PC, auto
     assert seen["quant"] == "auto"
     assert seen["corroborate"] is False and seen["game_data"] is True  # the slow web re-check is opt-in on a CPU
     assert seen["processes"] is True
@@ -685,7 +685,7 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     again = (tmp_path / w.DATASET_NAME / "data" / "train-01.jsonl").read_text().splitlines()
     assert len(again) == len(rows)
     w.main({**cfg, "device": "cpu", "sessions": 2, "session": 2})  # only session 1 writes them
-    assert not (tmp_path / w.DATASET_NAME / "data" / "train-02.jsonl").exists()
+    assert not (tmp_path / w.DATASET_NAME / "data" / "train-02.jsonl").read_text().strip()
 
 
 def test_game_data_rows_are_exact_and_need_no_llm():
@@ -964,3 +964,147 @@ def test_a_session_that_is_done_early_helps_the_others_from_the_end_of_their_sha
     assert order[:4] == ["t2", "t5", "t8", "t11"]  # its own share first
     assert order[4:] == ["t9", "t10", "t6", "t7", "t3", "t4", "t0", "t1"]  # then the others, from their end
     assert sorted(order) == sorted(topics)
+
+
+# ------------------------------------------------------------------ your own PC + many sessions at once
+def test_on_windows_the_cuda_zip_and_its_runtime_dlls_are_used(tmp_path, monkeypatch):
+    import zipfile
+
+    def pack(name, files):
+        path = tmp_path / "src" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w") as zf:
+            for member, text in files.items():
+                zf.writestr(member, text)
+        return path
+
+    built = {"llama-b9-bin-win-cuda-12.4-x64.zip": pack("a.zip", {"llama-server.exe": "exe", "ggml-cuda.dll": "d"}),
+             "cudart-llama-bin-win-cuda-12.4-x64.zip": pack("b.zip", {"cudart64_12.dll": "rt", "cublas64_12.dll": "b"}),
+             "llama-b9-bin-win-cpu-x64.zip": pack("c.zip", {"llama-server.exe": "cpu"}),
+             "llama-b9-bin-ubuntu-cuda-12.8-x64.tar.gz": pack("d.zip", {"llama-server": "linux"})}
+    release = [{"tag_name": "v0.8.0", "assets": [{"name": "notes.txt", "browser_download_url": "x"}]},  # no build
+               {"tag_name": "b9", "assets": [{"name": n, "browser_download_url": n} for n in built]}]
+    fetched = []
+
+    def download(url, target):
+        fetched.append(url)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(built[url].read_bytes())
+        return target
+
+    monkeypatch.setattr(w, "IS_WINDOWS", True)
+    monkeypatch.setattr(w, "_runs", lambda binary: True)  # a .exe cannot run here
+    monkeypatch.setattr(w, "_cuda_devices", lambda binary: 1)
+    binary = w.llama_server_binary(tmp_path / "tools", lambda url: release, download, cuda_arch="86")  # RTX 3050
+    assert binary.name == "llama-server.exe" and (binary.parent / "cudart64_12.dll").is_file()
+    assert sorted(fetched) == ["cudart-llama-bin-win-cuda-12.4-x64.zip", "llama-b9-bin-win-cuda-12.4-x64.zip"]
+    assert w.llama_server_binary(tmp_path / "tools", lambda url: pytest.fail("found locally"), download,
+                                 cuda_arch="86") == binary
+    cpu = w.llama_server_binary(tmp_path / "cpu", lambda url: release, download)
+    assert cpu.read_text() == "cpu"
+    with pytest.raises(RuntimeError, match="Windows"):  # no compiling on Windows: the CPU build takes over
+        w.llama_server_binary(tmp_path / "x", lambda url: release, download, cuda_arch="86", prebuilt=False)
+    env = w._lib_env(binary)
+    assert env["PATH"].startswith(str(binary.parent) + ";")
+
+
+def test_session_zero_takes_the_lowest_free_number_and_two_at_once_never_share_one():
+    now = time.time()
+    hub = {1: {"run": "kaggle-a", "time": now, "ended": False},  # running
+           2: {"run": "old", "time": now - 5 * 3600, "ended": False},  # died 5 h ago: free
+           3: {"run": "done", "time": now, "ended": True}}  # finished: free
+    waits = []
+    assert w.claim_session(4, lambda: dict(hub), hub.__setitem__, "pc", sleep=waits.append,
+                           rng=random.Random(0)) == 2
+    assert hub[2]["run"] == "pc" and len(waits) == 2
+
+    # two notebooks write a claim on number 3 at the same moment: the later write wins, the other takes 4
+    def racing_write(number, claim):
+        hub[number] = claim
+        if claim["run"] == "kaggle-b" and number == 3:
+            hub[3] = {"run": "kaggle-c", "time": time.time(), "ended": False}  # kaggle-c wrote right after
+
+    assert w.claim_session(4, lambda: dict(hub), racing_write, "kaggle-b", sleep=lambda s: None) == 4
+    assert hub[3]["run"] == "kaggle-c" and hub[4]["run"] == "kaggle-b"
+    with pytest.raises(SystemExit, match="SESSIONS higher"):
+        w.claim_session(4, lambda: dict(hub), hub.__setitem__, "late", sleep=lambda s: None)
+    assert not w.claim_live(None, now) and w.claim_live(hub[1], now)
+
+
+def test_topics_another_session_finished_meanwhile_are_skipped(tmp_path):
+    collector = w.Collector(tmp_path / "data", "m", 3)
+    collector.save()
+    claim = json.loads((tmp_path / "data" / "meta" / "claim-03.json").read_text())
+    assert claim["run"] == collector.run and claim["ended"] is False and collector.claim_name == "meta/claim-03.json"
+    sync = tmp_path / "sync" / "meta"
+    sync.mkdir(parents=True)
+    (sync / "progress-03.json").write_text(json.dumps({"done_topics": ["Mine"]}))  # its own: ignored
+    (sync / "progress-07.json").write_text(json.dumps({"done_topics": ["Lead knot"], "done_pages": ["p"]}))
+    llm = FakeLLM()
+    synced = []
+
+    def on_upload(message):  # what main() does after every upload: read the others' progress from the Hub
+        synced.append(collector.note_others(tmp_path / "sync"))
+
+    w.collect({"corroborate": False, "upload_every_min": 0}, llm, collector, w.recipe_book(_data()),
+              ["Lead", "Lead knot"], lambda q: [], lambda u: page_text(), deadline=1e18, on_upload=on_upload)
+    assert collector.done == ["Lead"] and synced[0] == 1 and "p" in collector.pages  # "Lead knot": session 7 did it
+    assert "Mine" not in collector.done_elsewhere
+
+
+def test_the_pc_joins_as_one_more_session_with_no_time_limit(tmp_path):
+    cfg = w.pc_config(["--folder", str(tmp_path / "mc")])
+    assert cfg["sessions"] == 11 and cfg["session"] == 0 and cfg["max_hours"] == 0 and cfg["device"] == "auto"
+    assert cfg["tmp"] == str(tmp_path / "mc" / "tmp") and cfg["upload"] is True
+    assert cfg["discord_secret"] == "discord_webhook_inform_me1"
+    assert w.pc_config(["--hours", "12", "--no-upload", "--session", "11"])["upload"] is False
+    bat = (ROOT / "scripts" / "collect_dataset_pc.bat").read_bytes()
+    assert b"\r\n" in bat and b"pymc_bot\\llm_webdata.py %*" in bat and b"hf.exe\" auth login" in bat
+    assert b"token" not in bat.split(b"auth login")[1].lower()  # the token is typed into hf, never into this file
+    assert w.server_name() == ("llama-server.exe" if os.name == "nt" else "llama-server")
+
+
+def test_main_with_session_zero_claims_a_number_on_the_hub_and_frees_it_at_the_end(tmp_path, monkeypatch):
+    class Server(Timed):
+        def __init__(self, binary, model, ctx, hybrid, parallel, speculate, port=8089, gpu=None, threads=0,
+                     threads_batch=0):
+            super().__init__(model.name, speculate, 50, [])
+            self.binary, self.parallel, self.seconds, self.gpu, self.port = binary, parallel, 0.0, gpu, port
+
+        def start(self):
+            return self
+
+        def stop(self):
+            pass
+
+    hub, claims, uploads = FakeHub(public=False), {}, []
+    hub.repo_exists = lambda repo_id, repo_type=None: False
+    hub.upload_folder = lambda **kw: uploads.append(tuple(kw["allow_patterns"]))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=lambda token: hub, snapshot_download=None))
+    monkeypatch.setattr(w, "hub_resume", lambda api, repo_id, folder, token: False)
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr(w, "hub_claims", lambda api, repo_id, token, target: (lambda: dict(claims), claims.__setitem__))
+    monkeypatch.setattr(w, "hub_progress", lambda repo_id, token, target: Path(target))
+    real_claim = w.claim_session
+    monkeypatch.setattr(w, "claim_session", lambda *a, **k: real_claim(*a, sleep=lambda s: None, **k))
+    monkeypatch.setattr(w, "gpu_info", lambda: [])
+    monkeypatch.setattr(w, "llama_server_binary", lambda tools, **k: Path("/bin/llama-server"))
+    monkeypatch.setattr(w, "LlamaServer", Server)
+    monkeypatch.setattr(w, "model_file", lambda spec, folder, token="", quant="": Path(quant or spec["quant"]))
+    monkeypatch.setattr(w, "available_ram_gb", lambda: 29.0)
+    sessions_seen = []
+    monkeypatch.setattr(w, "collect", lambda cfg, llm, collector, *a, **k: sessions_seen.append(collector.tag))
+    monkeypatch.setattr(w, "load_minecraft_data", lambda version=None: _data())
+    monkeypatch.setattr(w, "wiki_titles", lambda cache=None: ["Lead"])
+    cfg = {"work": str(tmp_path), "tmp": str(tmp_path / "t"), "processes": False, "speculate": "off", "device": "cpu",
+           "sessions": 3, "session": 0, "discord": False, "game_data": False}
+    claims[1] = {"run": "kaggle", "time": time.time(), "ended": False}  # a Kaggle notebook holds 1
+    w.main(cfg)
+    assert sessions_seen == ["02"] and uploads[-1][-1] == "meta/claim-02.json"
+    final = json.loads((tmp_path / w.DATASET_NAME / "meta" / "claim-02.json").read_text())
+    assert final["ended"] is True  # finished: number 2 is free for the next round
+    claims[2] = final
+    w.main(cfg)
+    assert sessions_seen[-1] == "02"
+    with pytest.raises(SystemExit, match="already running"):  # a number set by hand that runs elsewhere
+        w.main({**cfg, "session": 1})

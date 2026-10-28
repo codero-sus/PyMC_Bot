@@ -52,6 +52,22 @@ DATASET_NAME = "Minecraftism-dataset"
 MINECRAFT_DATA_VERSION = "1.21.8"
 MINECRAFT_DATA_URL = "https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/"
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
+#: Windows (your own PC, ``scripts/collect_dataset_pc.bat``): llama.cpp's Windows builds, no fork, no /proc.
+IS_WINDOWS = os.name == "nt"
+#: A claim (``meta/claim-NN.json``) older than this is from a session that died: its number is free again.
+CLAIM_STALE_HOURS = 3.0
+
+
+def server_name() -> str:
+    return "llama-server.exe" if IS_WINDOWS else "llama-server"
+
+
+def _lib_env(binary: Path) -> dict[str, str]:
+    """The environment for llama.cpp: its own libraries / DLLs (next to the binary) found first."""
+    folder = str(Path(binary).parent)
+    if IS_WINDOWS:
+        return {**os.environ, "PATH": f"{folder};{os.environ.get('PATH', '')}"}
+    return {**os.environ, "LD_LIBRARY_PATH": f"{folder}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
 
 #: The Qwen3 GGUFs it can run on Kaggle's CPU, biggest first (Apache-2.0: the dataset may be used commercially).
 #: ``ram_gb`` = what it needs in RAM (the GGUF + 4 parallel 4K contexts + llama.cpp). Qwen3-30B-A3B is a mixture of experts: 30B weights in RAM, but only ~3B work per token, so on a CPU it
@@ -82,6 +98,22 @@ def available_ram_gb() -> float:
                 return int(line.split()[1]) / 2**20
     except (OSError, ValueError, IndexError):
         pass
+    if IS_WINDOWS:
+        try:
+            import ctypes
+
+            class Status(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
+                            ("free", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
+                            ("page_free", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
+                            ("virtual_free", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
+
+            status = Status()
+            status.length = ctypes.sizeof(Status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+                return status.free / 2**30
+        except (OSError, AttributeError, ValueError):
+            pass
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
     except (ValueError, OSError, AttributeError):
@@ -139,6 +171,13 @@ def cpu_cores() -> tuple[int, int]:
         physical = len(cores)
     except OSError:
         physical = 0
+    if not physical:  # Windows / macOS: no /proc/cpuinfo
+        try:
+            import psutil  # type: ignore[import-not-found]
+
+            physical = int(psutil.cpu_count(logical=False) or 0)
+        except Exception:  # noqa: BLE001
+            physical = 0
     return (min(physical, logical) if physical else logical), logical
 
 
@@ -553,7 +592,7 @@ def _worker_start() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # the Kaggle stop button is for the main process (it saves)
     try:
         os.nice(10)  # web search / parsing waits a moment; the LLM (the slow part) gets the CPU first
-    except OSError:
+    except (OSError, AttributeError):
         pass
 
 
@@ -813,13 +852,13 @@ class LlamaServer:
         self._lock = threading.Lock()
 
     def start(self, wait: float = 900) -> "LlamaServer":
-        env = {**os.environ, "LD_LIBRARY_PATH": f"{self.binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+        env = _lib_env(self.binary)
         if self.gpu is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
         command = self.command()
         logfile = open(self.log_path(), "w")  # noqa: SIM115 - lives as long as the server
-        self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env,
-                                        preexec_fn=_allow_mlock)
+        extra: dict[str, Any] = {} if IS_WINDOWS else {"preexec_fn": _allow_mlock}  # no preexec_fn on Windows
+        self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env, **extra)
         end = time.time() + wait
         while time.time() < end:
             if self.process.poll() is not None:
@@ -1009,7 +1048,7 @@ def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
 
 
 def _runs(binary: Path) -> bool:
-    env = {**os.environ, "LD_LIBRARY_PATH": f"{binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    env = _lib_env(binary)
     try:
         done = subprocess.run([str(binary), "--version"], capture_output=True, text=True, env=env, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -1050,7 +1089,7 @@ def _download(url: str, target: Path) -> Path:
 
 def _cuda_devices(binary: Path) -> int:
     """How many CUDA GPUs this llama-server sees (0 = the CUDA part cannot load here)."""
-    env = {**os.environ, "LD_LIBRARY_PATH": f"{binary.parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    env = _lib_env(binary)
     try:
         done = subprocess.run([str(binary), "--list-devices"], capture_output=True, text=True, env=env, timeout=180)
     except (OSError, subprocess.TimeoutExpired):
@@ -1072,10 +1111,16 @@ def llama_server_binary(tools: Path, fetch_json: Callable[[str], Any] = http_jso
     def usable(path: Path) -> bool:
         return path.is_file() and _runs(path) and (not cuda_arch or _cuda_devices(path) > 0)
 
-    for found in sorted(tools.rglob("llama-server")) if tools.is_dir() else []:
+    exe = server_name()
+    for found in sorted(tools.rglob(exe)) if tools.is_dir() else []:
         if (prebuilt or "build" in found.parts) and usable(found):
             return found
-    pattern = r"ubuntu-cuda-12\.\d+-x64\.tar\.gz" if cuda_arch else r"ubuntu-x64\.(tar\.gz|zip)"
+    if IS_WINDOWS and not prebuilt:
+        raise RuntimeError("compiling llama.cpp is not done on Windows - update the NVIDIA driver (CUDA 12.4+)")
+    if IS_WINDOWS:  # CUDA 12.4: runs with any NVIDIA driver from 2024 on (RTX 20/30/40/50, GTX 16)
+        pattern = r"win-cuda-12\.\d+-x64\.zip" if cuda_arch else r"win-cpu-x64\.zip"
+    else:
+        pattern = r"ubuntu-cuda-12\.\d+-x64\.tar\.gz" if cuda_arch else r"ubuntu-x64\.(tar\.gz|zip)"
     releases = fetch_json(f"https://api.github.com/repos/{LLAMA_CPP_REPO}/releases?per_page=15")
     for release in releases:
         tag = str(release.get("tag_name") or "")
@@ -1088,11 +1133,13 @@ def llama_server_binary(tools: Path, fetch_json: Callable[[str], Any] = http_jso
         if prebuilt:
             log(f"llama.cpp {tag}: downloading the {kind} build")
             _extract(download(asset["browser_download_url"], folder / asset["name"]), folder / "bin")
-            binary = next((p for p in sorted((folder / "bin").rglob("llama-server")) if p.is_file()), None)
-            runtime = next((a for a in assets if a.get("name") == "cudart-" + str(asset["name"])), None)
+            binary = next((p for p in sorted((folder / "bin").rglob(exe)) if p.is_file()), None)
+            # the CUDA runtime: "cudart-<asset>" (Linux) or the same without the tag (Windows)
+            runtimes = {"cudart-" + str(asset["name"]), "cudart-" + str(asset["name"]).replace(f"-{tag}-", "-")}
+            runtime = next((a for a in assets if a.get("name") in runtimes), None)
             if binary and cuda_arch and runtime:  # the CUDA runtime libraries, next to the binary
                 _extract(download(runtime["browser_download_url"], folder / runtime["name"]), folder / "cudart")
-                for lib in (folder / "cudart").rglob("*.so*"):
+                for lib in [*(folder / "cudart").rglob("*.so*"), *(folder / "cudart").rglob("*.dll")]:
                     shutil.copy2(lib, binary.parent / lib.name)
             if binary:
                 binary.chmod(0o755)
@@ -1118,7 +1165,7 @@ def llama_server_binary(tools: Path, fetch_json: Callable[[str], Any] = http_jso
         if cuda_arch and not usable(binary):
             raise RuntimeError("the llama-server compiled with CUDA does not see the GPU")
         return binary
-    raise RuntimeError(f"no llama.cpp Linux x64 {kind} release found")
+    raise RuntimeError(f"no llama.cpp {'Windows' if IS_WINDOWS else 'Linux'} x64 {kind} release found")
 
 
 def model_file(spec: dict, folder: Path, token: str = "", quant: str = "") -> Path:
@@ -1452,6 +1499,8 @@ class Collector:
         self.keys: set[str] = set()
         self.other_rows = self.other_high = 0
         self.started = time.time()
+        self.run = f"{os.getpid()}-{time.time_ns()}"  # this run's id in its claim (meta/claim-NN.json)
+        self.ended = False  # True for the last save: the claim says the number is free again
         self.load()
 
     def path(self, name: str) -> Path:
@@ -1501,6 +1550,8 @@ class Collector:
             path = self.path(name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in items), encoding="utf-8")
+        (self.folder / self.claim_name).write_text(json.dumps(
+            {"run": self.run, "time": time.time(), "ended": self.ended}), encoding="utf-8")
         self.path("meta/progress.json").write_text(json.dumps(
             {"done_topics": self.done, "done_pages": sorted(self.pages), "rows": len(self.rows),
              "rejected": len(self.rejected), "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
@@ -1511,6 +1562,25 @@ class Collector:
 
     def own_files(self) -> list[str]:
         return [self.LEGACY[name].format(self.tag) for name in self.LEGACY]
+
+    @property
+    def claim_name(self) -> str:
+        return f"meta/claim-{self.tag}.json"
+
+    def note_others(self, folder: Path) -> int:
+        """Topics and pages the OTHER sessions finished since this one started (their ``meta/progress-NN.json`` in
+        ``folder``, fresh from the Hub): skipped from now on. Returns how many topics are new."""
+        before = len(self.done_elsewhere)
+        for path in sorted((Path(folder) / "meta").glob("progress-*.json")):
+            if path.name == Path(self.path("meta/progress.json")).name:
+                continue
+            try:
+                progress = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            self.done_elsewhere.update(progress.get("done_topics") or [])
+            self.pages.update(progress.get("done_pages") or [])
+        return len(self.done_elsewhere) - before
 
     def stats(self) -> dict[str, int]:
         """All sessions together (the other sessions as they were when this one started)."""
@@ -1731,6 +1801,91 @@ def hub_upload(api: Any, repo_id: str, folder: Path, private: bool, message: str
     return f"https://huggingface.co/datasets/{repo_id}"
 
 
+def hub_progress(repo_id: str, token: str, target: Path) -> Path:
+    """The other sessions' progress, fresh from the Hub, into ``target`` (never into the dataset folder: that would
+    overwrite this session's newer files)."""
+    from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
+
+    snapshot_download(repo_id, repo_type="dataset", local_dir=str(target), token=token or None,
+                      allow_patterns=["meta/progress-*.json"])
+    return Path(target)
+
+
+def claim_live(claim: dict | None, now: float) -> bool:
+    return bool(claim) and not claim.get("ended") and now - float(claim.get("time", 0)) < CLAIM_STALE_HOURS * 3600
+
+
+def claim_session(sessions: int, read_claims: Callable[[], dict[int, dict]], write_claim: Callable[[int, dict], None],
+                  run: str, wait: float = 20.0, sleep: Callable[[float], None] = time.sleep,
+                  rng: random.Random | None = None) -> int:
+    """``SESSION = 0`` (auto): the lowest session number no running session holds. It writes its claim, waits and
+    reads it back - when two sessions took the same number at the same moment, the later write wins and the other
+    one takes the next free number. So 10 notebooks can be started with the SAME settings, no editing in between."""
+    rng = rng or random.Random()
+    sleep(rng.uniform(0, wait / 2))  # sessions started together spread out a little
+    lost: set[int] = set()
+    for _ in range(sessions + 3):
+        now = time.time()
+        claims = read_claims()
+        free = [n for n in range(1, sessions + 1) if n not in lost and not claim_live(claims.get(n), now)]
+        if not free:
+            raise SystemExit(f"all {sessions} sessions are running (SESSIONS = {sessions}): set SESSIONS higher - "
+                             "the same number in every notebook and on the PC")
+        number = free[0]
+        write_claim(number, {"run": run, "time": time.time(), "ended": False})
+        sleep(wait + rng.uniform(0, 5))
+        if (read_claims().get(number) or {}).get("run") == run:
+            return number
+        lost.add(number)
+        log(f"session {number} was taken by another notebook at the same moment - taking the next free one")
+    raise SystemExit("could not get a session number - set SESSION by hand (1 ... SESSIONS)")
+
+
+def hub_claims(api: Any, repo_id: str, token: str, target: Path) -> tuple[Callable[[], dict[int, dict]],
+                                                                              Callable[[int, dict], None]]:
+    """``(read_claims, write_claim)`` on the Hub: ``meta/claim-NN.json`` = which run holds session NN, and since when
+    (refreshed with every upload; marked ended at the end)."""
+    from huggingface_hub import hf_hub_download  # type: ignore[import-not-found]
+
+    def read() -> dict[int, dict]:
+        claims: dict[int, dict] = {}
+        try:
+            names = api.list_repo_files(repo_id, repo_type="dataset")
+        except Exception:  # noqa: BLE001 - a new repo: nothing claimed yet
+            return claims
+        for name in names:
+            found = re.fullmatch(r"meta/claim-(\d+)\.json", name)
+            if not found:
+                continue
+            try:
+                path = hf_hub_download(repo_id, name, repo_type="dataset", token=token or None,
+                                       local_dir=str(target), force_download=True)
+                claims[int(found.group(1))] = json.loads(Path(path).read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - unreadable = not claimed
+                continue
+        return claims
+
+    def write(number: int, claim: dict) -> None:
+        api.upload_file(path_or_fileobj=json.dumps(claim).encode("utf-8"), path_in_repo=f"meta/claim-{number:02d}.json",
+                        repo_id=repo_id, repo_type="dataset", commit_message=f"session {number} started")
+
+    return read, write
+
+
+def hf_token(secret: str = "HF_TOKEN") -> str:
+    """The Hugging Face token: the Kaggle secret, else the ``HF_TOKEN`` environment variable, else the one saved by
+    ``hf auth login`` on this computer."""
+    token = kaggle_secret(secret)
+    if token:
+        return token
+    try:
+        from huggingface_hub import get_token  # type: ignore[import-not-found]
+
+        return str(get_token() or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def session_start() -> float:
     """When this Kaggle session (the kernel) started - its 12 hours count from there."""
     try:
@@ -1878,9 +2033,10 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
         stats = collector.stats()
         hours = max((time.time() - collector.started) / 3600, 1e-6)
         rate = (stats["rows"] - collector.start_rows) / hours
+        left = "no time limit" if deadline == float("inf") else f"{max(deadline - time.time(), 0) / 3600:.1f} h left"
         log(f"[{number}/{len(todo)}] {topic}: +{stats['rows'] - before} rows (total {stats['rows']}: "
             f"{stats['high']} high, {stats['medium']} medium; {stats['rejected']} rejected) - {rate:.0f} rows/h, "
-            f"{max(deadline - time.time(), 0) / 3600:.1f} h left")
+            f"{left}")
         if time.time() - last_report > 3600:
             last_report = time.time()
             speed = llm_speed(llm)
@@ -1896,6 +2052,11 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
         for index, topic in enumerate(todo):
             if time.time() > deadline or (cfg.get("max_rows") and len(collector.rows) >= int(cfg["max_rows"])):
                 break
+            if topic in collector.done_elsewhere:  # another session did it meanwhile (synced at every upload)
+                stale = fetched.pop(index, None)
+                if stale is not None:
+                    stale.cancel()
+                continue
             fetch_ahead(index)
             fetch_ahead(index + 1)  # the next topic's pages, while the LLM works
             if llm_pool is None:
@@ -1924,7 +2085,7 @@ def main(cfg: dict) -> dict:
     folder = work / DATASET_NAME
     for path in (folder, tmp / "pages", tmp / "models", tmp / "tools"):
         path.mkdir(parents=True, exist_ok=True)
-    token = kaggle_secret(cfg.get("hf_secret", "HF_TOKEN"))
+    token = hf_token(cfg.get("hf_secret", "HF_TOKEN"))
     discord = Discord(kaggle_secret(cfg.get("discord_secret", "")) if cfg.get("discord", True) else "",
                       kaggle_secret(cfg.get("ping_role_secret", "ping_role")))
     if cfg.get("model", "auto") != "auto" and cfg.get("model") not in MODELS:
@@ -1940,7 +2101,8 @@ def main(cfg: dict) -> dict:
     if tpu_session() and max_hours > 8.75:  # Kaggle stops TPU sessions after 9 h: the last upload comes before that
         log(f"TPU session: only its CPUs are used, and it ends after 9 h - MAX_HOURS {max_hours:g} -> 8.75")
         max_hours = 8.75
-    deadline = started + max_hours * 3600 - float(cfg.get("reserve_min", 15)) * 60
+    # MAX_HOURS 0 = no limit (your own PC: until every topic is done or Ctrl+C, which saves and uploads)
+    deadline = started + max_hours * 3600 - float(cfg.get("reserve_min", 15)) * 60 if max_hours > 0 else float("inf")
     gpus = gpu_info() if cfg.get("device", "auto") in ("auto", "gpu") else []
     if cfg.get("device") == "gpu" and not gpus:
         log("DEVICE = \"gpu\" but no NVIDIA GPU is attached (Settings > Accelerator > GPU T4 x2) - using the CPU")
@@ -1963,7 +2125,7 @@ def main(cfg: dict) -> dict:
     if cfg.get("upload", True):
         if not token:
             raise SystemExit(f"Add your Hugging Face token as the Kaggle secret {cfg.get('hf_secret', 'HF_TOKEN')!r} "
-                             "(Add-ons > Secrets), or set UPLOAD = False.")
+                             "(Add-ons > Secrets; on a PC: run 'hf auth login' or set HF_TOKEN), or set UPLOAD = False.")
         from huggingface_hub import HfApi  # type: ignore[import-not-found]
 
         api = HfApi(token=token)
@@ -1992,10 +2154,17 @@ def main(cfg: dict) -> dict:
     def upload(message: str) -> None:
         if api is not None and repo_id and collector is not None:
             try:
-                link = hub_upload(api, repo_id, folder, bool(cfg.get("private", True)), message, collector.own_files())
+                link = hub_upload(api, repo_id, folder, bool(cfg.get("private", True)), message,
+                                  [*collector.own_files(), collector.claim_name])
                 discord.send(f"{message}: {link}", "Uploaded", "good", important=True)
             except Exception as exc:  # noqa: BLE001 - try again at the next upload
                 log(f"upload failed ({type(exc).__name__}: {str(exc)[:200]})")
+            if int(cfg.get("sessions", 1)) > 1 and not collector.ended:  # what the others did meanwhile: skipped
+                try:
+                    new = collector.note_others(hub_progress(repo_id, token, tmp / "sync"))
+                    log(f"{new} more topics done by the other sessions - skipped here") if new else None
+                except Exception as exc:  # noqa: BLE001 - next time
+                    log(f"could not read the other sessions' progress ({type(exc).__name__})")
 
     def summary(stats: dict) -> dict:
         link = f"https://huggingface.co/datasets/{repo_id}" if repo_id else str(folder)
@@ -2010,11 +2179,25 @@ def main(cfg: dict) -> dict:
         book = recipe_book(data)
         topic_list = all_topics(data, tmp, cfg)
         sessions, session = max(1, int(cfg.get("sessions", 1))), int(cfg.get("session", 1))
+        run = f"{os.getpid()}-{time.time_ns()}"
+        shared = sessions > 1 and api is not None and repo_id  # several sessions on one Hub dataset: claims
+        if session == 0 and not shared:
+            session = 1
+        elif session == 0:  # auto: the lowest number no running notebook / PC holds
+            session = claim_session(sessions, *hub_claims(api, repo_id, token, tmp / "claims"), run)
+            log(f"SESSION = 0 (auto): this is session {session} of {sessions}")
+        elif shared and 1 <= session <= sessions:
+            read_claims, write_claim = hub_claims(api, repo_id, token, tmp / "claims")
+            if claim_live(read_claims().get(session), time.time()):
+                raise SystemExit(f"SESSION = {session} is already running somewhere else (two sessions with one number "
+                                 "overwrite each other's rows) - use SESSION = 0 (auto) or another number")
+            write_claim(session, {"run": run, "time": time.time(), "ended": False})
         if not 1 <= session <= sessions:
-            raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions})")
+            raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions}), or 0 = auto")
         share = len(topic_list[session - 1::sessions])  # this session's share: no two sessions read the same topic
         topic_list = session_topics(topic_list, sessions, session, bool(cfg.get("help_others", True)))
         collector = Collector(folder, spec["name"], session)
+        collector.run = run  # the claim on the Hub is refreshed with every upload
         stats = collector.stats()
         if session == 1 and cfg.get("game_data", True):  # exact rows from the game data, in a second, no LLM
             new = [r for r in game_data_rows(data, book, int(cfg.get("seed", 0))) if not collector.seen(r["question"])]
@@ -2111,6 +2294,8 @@ def main(cfg: dict) -> dict:
         collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
                 PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()
+        collector.ended = True
+        collector.save()
         upload(f"final: {stats['rows']} rows ({stats['high']} high trust) from {stats['topics']} topics")
         result = summary(stats)
         log(f"done: {stats} -> {result['link']} (LLM: {llm.calls} calls; {llm_speed(llm)})")
@@ -2122,12 +2307,21 @@ def main(cfg: dict) -> dict:
         if collector is None:
             raise
         stats = collector.stats()
+        collector.ended = True
+        collector.save()
         log(f"stopped - uploading the {stats['rows']} rows collected so far")
         upload(f"stopped early: {stats['rows']} rows ({stats['high']} high trust) from {stats['topics']} topics")
         discord.send(f"Stopped by you after {stats['topics']} topics: {stats['rows']} rows kept.", "Notebook stopped",
                      "warn", important=True)
         return {**summary(stats), "stopped": True}
     except BaseException as exc:
+        if collector is not None and not collector.ended:  # keep what it has and free the session number
+            try:
+                collector.ended = True
+                collector.save()
+                upload(f"error ({type(exc).__name__}): {collector.stats()['rows']} rows kept")
+            except Exception:  # noqa: BLE001, S110 - the error below matters more
+                pass
         discord.send(f"`{type(exc).__name__}: {str(exc)[:1500]}`", "Notebook error", "bad", important=True)
         raise
     finally:
@@ -2137,5 +2331,31 @@ def main(cfg: dict) -> dict:
             workers.shutdown(wait=False, cancel_futures=True)
 
 
+def pc_config(argv: list[str] | None = None) -> dict:
+    """The settings for your own computer (``python pymc_bot/llm_webdata.py``; on Windows
+    ``scripts/collect_dataset_pc.bat``): it joins the Kaggle sessions as one more session of the same dataset."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="llm_webdata", description=(
+        "Collect the Minecraftism dataset on this computer (NVIDIA GPU, else the CPU), as one more session next to "
+        "the Kaggle notebooks. Ctrl+C stops it and uploads what it has."))
+    parser.add_argument("--sessions", type=int, default=11, help="SESSIONS of the notebooks (the same everywhere)")
+    parser.add_argument("--session", type=int, default=0, help="0 = auto: the lowest number nobody runs")
+    parser.add_argument("--hours", type=float, default=0, help="stop after this many hours; 0 = when all is done")
+    parser.add_argument("--device", default="auto", choices=("auto", "gpu", "cpu"))
+    parser.add_argument("--model", default="auto", help="auto, or one of: " + ", ".join(MODELS))
+    parser.add_argument("--parallel", type=int, default=0, help="requests at once; 0 = auto (8 on a GPU)")
+    parser.add_argument("--folder", default=str(Path.home() / "Minecraftism"), help="where the data is kept")
+    parser.add_argument("--dataset-repo", default=DATASET_NAME)
+    parser.add_argument("--topics", type=int, default=0, help="only this many topics (a test run); 0 = all")
+    parser.add_argument("--no-upload", action="store_true", help="keep everything on this computer")
+    args = parser.parse_args(argv)
+    work = Path(args.folder).expanduser()
+    return {"sessions": args.sessions, "session": args.session, "max_hours": args.hours, "reserve_min": 5,
+            "device": args.device, "model": args.model, "parallel": args.parallel, "work": str(work),
+            "tmp": str(work / "tmp"), "dataset_repo": args.dataset_repo, "max_topics": args.topics,
+            "upload": not args.no_upload, "discord_secret": "discord_webhook_inform_me1", "session_start": time.time()}
+
+
 if __name__ == "__main__" and "ipykernel" not in sys.modules:  # pragma: no cover - the notebook calls main()
-    print(json.dumps(main({"upload": False, "max_topics": int(os.environ.get("TOPICS", "3"))}), indent=1))
+    print(json.dumps(main(pc_config()), indent=1, ensure_ascii=False))
