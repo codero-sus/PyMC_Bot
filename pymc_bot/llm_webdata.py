@@ -155,8 +155,12 @@ def tpu_session() -> bool:
     """A Kaggle TPU session (Accelerator: TPU): only its CPUs are used here, and it ends after 9 h, not 12 h."""
     import glob
 
-    return bool(os.environ.get("TPU_NAME") or os.environ.get("TPU_ACCELERATOR_TYPE") or os.environ.get("COLAB_TPU_ADDR")
-                or glob.glob("/dev/accel*") or glob.glob("/dev/vfio/[0-9]*"))
+    if (os.environ.get("TPU_NAME") or os.environ.get("TPU_ACCELERATOR_TYPE") or os.environ.get("COLAB_TPU_ADDR")
+            or glob.glob("/dev/accel*") or glob.glob("/dev/vfio/[0-9]*")):
+        return True
+    # Kaggle's CPU and GPU machines have 4 cores, its TPU VM has 96: on Kaggle, 64+ threads can only be a TPU session
+    on_kaggle = bool(os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"))
+    return on_kaggle and (os.cpu_count() or 0) >= 64
 
 
 def pick_model(choice: str = "auto", ram_gb: float | None = None) -> tuple[str, str]:

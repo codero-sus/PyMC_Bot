@@ -901,3 +901,15 @@ def test_auto_picks_the_biggest_model_that_fits_in_the_ram(monkeypatch):
     assert all(spec["license"] == "Apache-2.0" for spec in w.MODELS.values())
     assert w.MODELS["qwen3-30b-a3b"]["repo"] == "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
     assert w.available_ram_gb() > 0
+
+
+def test_a_kaggle_tpu_session_is_known_by_its_96_cores_even_without_tpu_variables(monkeypatch):
+    for name in ("TPU_NAME", "TPU_ACCELERATOR_TYPE", "COLAB_TPU_ADDR", "KAGGLE_KERNEL_RUN_TYPE", "KAGGLE_URL_BASE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("glob.glob", lambda pattern: [])
+    monkeypatch.setattr(w.os, "cpu_count", lambda: 96)
+    assert not w.tpu_session()                    # a big machine that is not Kaggle: no 9 h cap
+    monkeypatch.setenv("KAGGLE_KERNEL_RUN_TYPE", "Batch")
+    assert w.tpu_session()                        # Kaggle + 96 threads = the TPU VM (ends after 9 h)
+    monkeypatch.setattr(w.os, "cpu_count", lambda: 4)
+    assert not w.tpu_session()                    # Kaggle CPU / GPU session: 4 cores, 12 h
