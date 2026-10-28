@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/5d83577d32796de3abbc9476034646fbbeff266d/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/5d83577d32796de3abbc9476034646fbbeff266d/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/4e7799da54530fac6e4d558b347172208e419cf1/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/4e7799da54530fac6e4d558b347172208e419cf1/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -188,7 +188,7 @@ The settings cell:
 | `VLLM_PREFLIGHT` | `True` | starts the teacher once on vLLM while the T4s are still idle (during the data check): a broken vLLM shows its cause in ~5 min of idle time instead of costing ~40 min of training time, and the teacher is downloaded by then |
 | `SLOW_TEACHER` | `False` | when vLLM can't run, the teacher writes no new phase-1 answers with transformers (~10x slower); cached answers are still used and phase 2 still runs. `True` = write with transformers for up to `DISTILL_MINUTES` |
 | `TEACHER_CACHE` | `True` | keeps the teacher's answers in a private Hugging Face dataset (`<you>/Minecraftism-teacher-answers`) so later sessions reuse them |
-| `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed |
+| `FAST` | `True` | batches of ~12k tokens per GPU pass (same effective batch), 2 data-loader workers per GPU, 60 eval rows instead of 150, Hugging Face transfers at full speed, Q&A rows trained as chats of 6 questions (`--merge-qa 6`: ~4x fewer Q&A tokens) |
 | `MAX_HOURS` | `11.75` | everything (training, tests, export, upload) is done 15 min before THE 12 HOURs, Kaggle's cut-off: training stops early enough that the export and upload still fit |
 | `AUTO_EXIT` | `True` | last cell: ends an interactive session once every edition is on Hugging Face |
 | `DISCORD` | `True` | Discord webhook messages: server online (with `NOTEBOOK_URL`), status, a THE 12 HOURs countdown before Kaggle's 12 h limit kills the server: 5 h, 3 h, 2 h, 1 h, 30 / 15 / 10 min, then every minute of the last 5 and a final report 30 s before, each with everything: every edition's state, its Hugging Face links, what is still only on the server (lost with it), GPUs, RAM, disk, low disk/RAM, server closing (with the full report once more), edition starts, uploads with their URLs, results, failures, errors |
@@ -321,6 +321,12 @@ leaves a T4 idle:
   data, streams the extra rows and exports. If the DDP run fails before training ends, the notebook trains the same
   edition again on one T4, so a session isn't lost.
 * **`FAST = True`**:
+  * **Q&A rows as chats** (`--merge-qa 6`, editions that don't think). A Minecraft Q&A row is ~80% system prompt
+    (1,140 characters) and ~20% question + answer, and only the answer is trained. Rows with the same system prompt
+    are trained as chats of up to 6 questions: the prompt is read once per chat instead of once per question - ~4x
+    fewer Q&A tokens (measured: 12.6M -> 3.1M characters on 10k rows), every answer still trained, two phrasings of
+    one fact never in the same chat. Thinking editions keep single rows (Qwen's thinking template drops the traces of
+    earlier turns, which would teach answering without thinking). Game turns are never merged.
   * **Batches sized by tokens** (`--token-budget 12288`, text editions). Unsloth trains *padding-free*, so a batch
     costs only its real tokens; the trainer measures the rows (95% of them are shorter than N tokens) and puts as
     many rows into one forward pass as fit ~12k tokens, e.g. all 8 rows of an optimizer step in **one** pass instead
@@ -397,7 +403,7 @@ Useful flags (`EXTRA`): `--epochs 2`, `--max-steps N`, `--gguf q5_k_m|q8_0` (the
 `--hub-lora` (also upload the adapter), `--image-side 448` (smaller pictures, faster VL training),
 `--model <any Unsloth id>`, `--dry-run` (checks the data without a GPU).
 Speed flags (the notebook sets them): `--deadline <unix time>` + `--reserve-minutes 60`, `--export-lock <file>`,
-`--clean-after-upload`, `--token-budget 12288`, `--loader-workers 2`, `--stream-cache <folder>`, `--tools-dir <folder>`, `--defer-gguf` (then
+`--clean-after-upload`, `--token-budget 12288`, `--merge-qa 6`, `--loader-workers 2`, `--stream-cache <folder>`, `--tools-dir <folder>`, `--defer-gguf` (then
 `--export-only <out>` makes the GGUFs on the CPU), `--group-by-length` (without `--token-budget`). Two T4s on one edition:
 `accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16 train_minecraft_llm.py --data ... --preset minecraftism`
 (or `torchrun --standalone --nproc_per_node 2 train_minecraft_llm.py ...`).
@@ -573,8 +579,11 @@ llama-servers, 8 requests each, every request to the least busy one) - roughly 6
 
 **As many rows as possible.** After the ~1,700 game-data topics it reads every other article of the Fandom wiki
 (`WIKI_PAGES = True`; without version/snapshot pages, other games and sub-pages except tutorials), opens each page
-directly (no search) and reads it **whole**, in parts of ~2,800 characters (changelog, gallery and link sections
-skipped), with 5 pairs per part. To go faster, run several copies of the notebook at the same time with
+directly (no search) and reads it **whole**, in parts of ~2,800 characters (changelog, gallery, link, trivia,
+data-value/ID tables, block-state and translation sections skipped - the minecraft-data rows already cover the
+numbers, and those pairs were mostly rejected after costing an LLM call; a short last sentence joins the part before
+it instead of being lost), with 5 pairs per part. Free code checks (numbers, item names, length) run before the LLM
+judge, so a pair that fails them never costs a judge call. To go faster, run several copies of the notebook at the same time with
 `SESSIONS = N` and `SESSION = 1 ... N`: each takes every N-th topic and writes its own `data/train-NN.jsonl`,
 `meta/progress-NN.json` (it uploads only those), and reads the others' rows and topics so nothing is done twice.
 `load_dataset` reads all the files. The LLM writes question/answer pairs
@@ -596,7 +605,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/5d83577d32796de3abbc9476034646fbbeff266d/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/4e7799da54530fac6e4d558b347172208e419cf1/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
