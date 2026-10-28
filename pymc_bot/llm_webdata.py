@@ -739,22 +739,26 @@ PAIR_SCHEMA = {
     "properties": {"pairs": {"type": "array", "maxItems": 6, "items": {
         "type": "object",
         "properties": {"question": {"type": "string"}, "answer": {"type": "string"},
-                       "evidence": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string"}},
+                       # the NUMBERS of the source sentences that prove it (not the sentences: far fewer tokens to
+                       # write on a CPU, and the evidence is always exactly the page's own words)
+                       "evidence": {"type": "array", "minItems": 1, "maxItems": 3,
+                                    "items": {"type": "integer", "minimum": 1}},
                        "edition": {"type": "string", "enum": ["java", "bedrock", "both", "unknown"]}},
         "required": ["question", "answer", "evidence", "edition"]}}},
     "required": ["pairs"],
 }
 VERDICT_SCHEMA = {
     "type": "object",
-    "properties": {"verdict": {"type": "string", "enum": ["SUPPORTED", "CONTRADICTED", "NOT_FOUND"]},
-                   "reason": {"type": "string", "maxLength": 160}},  # short: every word costs CPU time
-    "required": ["verdict", "reason"],
+    # the verdict only: a reason written AFTER it can't change it, and costs ~40 tokens per check on a CPU
+    "properties": {"verdict": {"type": "string", "enum": ["SUPPORTED", "CONTRADICTED", "NOT_FOUND"]}},
+    "required": ["verdict"],
 }
 PROPOSE_SYSTEM = (
     "You write question-answer pairs for a Minecraft knowledge dataset. Use ONLY the source text you are given - "
     "never your own memory. Write questions a player would really ask (varied wording: how, what, why, can, how "
     "many). Each answer: 1-4 sentences in your own words, every fact and number taken from the source, nothing "
-    "added. For each pair copy 1-3 sentences from the source, word for word, that prove the answer (evidence). If "
+    "added. Every sentence of the source has a number like [7]: for each pair give the numbers of the 1-3 sentences "
+    "that prove the answer (evidence), nothing else. If "
     "the source says the fact is for Java or Bedrock Edition only, set edition and say so in the answer. Skip "
     "anything the source is vague about, history or trivia nobody asks, and facts that depend on an old version. "
     "Return compact JSON only (one line, no indentation)."
@@ -763,7 +767,7 @@ JUDGE_SYSTEM = (
     "You check a Minecraft answer against evidence text. SUPPORTED: every fact and number in the answer is stated "
     "in the evidence. CONTRADICTED: the evidence says something different. NOT_FOUND: the evidence does not say "
     "it (or only part of it). Be strict: anything extra in the answer that the evidence does not state means "
-    "NOT_FOUND. Keep the reason to one short sentence. Return compact JSON only (one line, no indentation)."
+    "NOT_FOUND. Return compact JSON only (one line, no indentation)."
 )
 
 
@@ -1123,10 +1127,53 @@ def model_file(spec: dict, folder: Path, token: str = "", quant: str = "") -> Pa
 
 
 # ---------------------------------------------------------------------------- the pipeline
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+
+
+def numbered(passage: str) -> tuple[str, list[str]]:
+    """``(text, sentences)``: the passage with every sentence numbered ``[1] ... [2] ...`` (headings become
+    ``## heading``). The LLM names its evidence by number instead of copying it out."""
+    sentences: list[str] = []
+    lines: list[str] = []
+    for line in str(passage or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        heading = re.fullmatch(r"\[([^\]]+)\]", line)
+        if heading:
+            lines.append(f"## {heading.group(1)}")
+            continue
+        out = []
+        for piece in _SENTENCE_END.split(line):
+            if piece.strip():
+                sentences.append(piece.strip())
+                out.append(f"[{len(sentences)}] {piece.strip()}")
+        lines.append(" ".join(out))
+    return "\n".join(lines), sentences
+
+
+def _evidence(items: Any, sentences: list[str]) -> list[str]:
+    """Sentence numbers -> the sentences (a quote, from an older reply, is kept as it is: it is checked later)."""
+    out: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        text = str(item).strip().strip("[]").strip()
+        if isinstance(item, (int, float)) or text.isdigit():
+            number = int(float(text))
+            if 1 <= number <= len(sentences):
+                text = sentences[number - 1]
+            else:
+                continue  # a number that is not in the text: no evidence
+        text = " ".join(text.split())
+        if text and text not in out:
+            out.append(text)
+    return out[:3]
+
+
 def propose(llm: Any, topic: str, url: str, passage: str, k: int = 3) -> list[dict[str, Any]]:
-    user = (f"Topic: {topic}\nSource: {url}\n\nSOURCE TEXT:\n<<<\n{passage}\n>>>\n\n"
+    text, sentences = numbered(passage)
+    user = (f"Topic: {topic}\nSource: {url}\n\nSOURCE TEXT (sentences numbered):\n<<<\n{text}\n>>>\n\n"
             f"Write up to {k} question-answer pairs about {topic} that this text fully answers.")
-    reply = llm.chat(PROPOSE_SYSTEM, user, PAIR_SCHEMA, max_tokens=260 * k + 120) or {}
+    reply = llm.chat(PROPOSE_SYSTEM, user, PAIR_SCHEMA, max_tokens=200 * k + 100) or {}
     pairs = reply.get("pairs") if isinstance(reply, dict) else None
     out = []
     for pair in pairs or []:
@@ -1134,7 +1181,7 @@ def propose(llm: Any, topic: str, url: str, passage: str, k: int = 3) -> list[di
             continue
         question = " ".join(str(pair.get("question") or "").split())
         answer = " ".join(str(pair.get("answer") or "").split())
-        evidence = [" ".join(str(e).split()) for e in pair.get("evidence") or [] if str(e).strip()]
+        evidence = _evidence(pair.get("evidence"), sentences)
         if question and answer and evidence:
             out.append({"question": question, "answer": answer, "evidence": evidence[:3],
                         "edition": str(pair.get("edition") or "unknown")})
@@ -1143,7 +1190,7 @@ def propose(llm: Any, topic: str, url: str, passage: str, k: int = 3) -> list[di
 
 def judge(llm: Any, question: str, answer: str, evidence: str) -> tuple[str, str]:
     user = f"QUESTION: {question}\nANSWER: {answer}\n\nEVIDENCE:\n<<<\n{evidence}\n>>>"
-    reply = llm.chat(JUDGE_SYSTEM, user, VERDICT_SCHEMA, max_tokens=90) or {}
+    reply = llm.chat(JUDGE_SYSTEM, user, VERDICT_SCHEMA, max_tokens=16) or {}
     verdict = str(reply.get("verdict") or "NOT_FOUND").upper() if isinstance(reply, dict) else "NOT_FOUND"
     return (verdict if verdict in ("SUPPORTED", "CONTRADICTED", "NOT_FOUND") else "NOT_FOUND",
             str(reply.get("reason") or "")[:300] if isinstance(reply, dict) else "")
@@ -1169,12 +1216,24 @@ def check_pair(pair: dict, page: str, llm: Any, book: dict) -> tuple[bool, dict[
     verdict, reason = judge(llm, question, answer, "\n".join(pair["evidence"]))
     checks["second_look"] = verdict
     if verdict != "SUPPORTED":
-        return False, checks, f"second look: {verdict} ({reason[:120]})"
+        return False, checks, f"second look: {verdict}" + (f" ({reason[:120]})" if reason else "")
     status, note = data_check(question, answer, book)
     checks["game_data"] = status
     if status == "contradicts":
         return False, checks, note
     return True, checks, ""
+
+
+def about_it(pair: dict, text: str, share: float = 0.3) -> bool:
+    """Does this passage of another page even talk about the pair (30% of its words, by their first 4 letters)?
+    When not, the LLM is not asked - it could only say NOT_FOUND. A page that CONTRADICTS the answer talks about
+    the same things, so it is still checked."""
+    words = {w[:4] for w in norm(pair["question"] + " " + pair["answer"]).split()
+             if len(w) > 3 and w not in _STOP and not w.isdigit()}
+    if not words:
+        return True
+    have = {w[:4] for w in norm(text).split() if len(w) > 3}
+    return len(words & have) / len(words) >= share
 
 
 def corroborate(llm: Any, pair: dict, search: Callable[[str], list[dict]], fetch: Callable[[str], str],
@@ -1189,7 +1248,7 @@ def corroborate(llm: Any, pair: dict, search: Callable[[str], list[dict]], fetch
             text = passages(fetch(url), pair["question"] + " " + pair["answer"], size=1200, top=1)
         except Exception:  # noqa: BLE001 - one page failing is fine
             continue
-        if not text:
+        if not text or not about_it(pair, text):
             continue
         verdict, _reason = judge(llm, pair["question"], pair["answer"], text)
         if verdict in ("SUPPORTED", "CONTRADICTED"):
@@ -1755,6 +1814,18 @@ def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collecto
     return rows, rejected
 
 
+def session_topics(topic_list: list[str], sessions: int, session: int, help_others: bool = True) -> list[str]:
+    """This session's share (every ``sessions``-th topic: no two sessions read the same one), then - when it is
+    done early (a TPU session is ~15x faster than a CPU one) - the OTHER shares from their END, taking turns, so it
+    helps the slower sessions without meeting them (they work from the front)."""
+    own = topic_list[session - 1::sessions]
+    if not help_others or sessions <= 1:
+        return own
+    others = [topic_list[s::sessions][::-1] for s in range(sessions) if s != session - 1]
+    longest = max((len(share) for share in others), default=0)
+    return own + [share[i] for i in range(longest) for share in others if i < len(share)]
+
+
 def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: list[str],
             search: Callable[[str], list[dict]], fetch: Callable[[str], str], deadline: float,
             on_upload: Callable[[str], None] = lambda _m: None, discord: Discord | None = None,
@@ -1933,7 +2004,8 @@ def main(cfg: dict) -> dict:
         sessions, session = max(1, int(cfg.get("sessions", 1))), int(cfg.get("session", 1))
         if not 1 <= session <= sessions:
             raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions})")
-        topic_list = topic_list[session - 1::sessions]  # this session's share: no two sessions read the same topic
+        share = len(topic_list[session - 1::sessions])  # this session's share: no two sessions read the same topic
+        topic_list = session_topics(topic_list, sessions, session, bool(cfg.get("help_others", True)))
         collector = Collector(folder, spec["name"], session)
         stats = collector.stats()
         if session == 1 and cfg.get("game_data", True):  # exact rows from the game data, in a second, no LLM
@@ -2024,8 +2096,10 @@ def main(cfg: dict) -> dict:
             + (" with n-gram speculation" if speculating else ""))
         discord.send(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s ({parallel} requests at once).",
                      "LLM ready")
-        log(f"session {session} of {sessions}: {len(topic_list)} topics, {len(collector.finished() & set(topic_list))} "
-            f"done before; {len(book)} recipes for the game-data check; {stats['rows']} rows so far (all sessions)")
+        log(f"session {session} of {sessions}: {share} topics of its own"
+            + (f" (then it helps the other sessions with theirs, from their end: {len(topic_list) - share} more)"
+               if len(topic_list) > share else "")
+            + f", {len(collector.finished() & set(topic_list))} done before; {len(book)} recipes for the game-data check; {stats['rows']} rows so far (all sessions)")
         collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
                 PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()

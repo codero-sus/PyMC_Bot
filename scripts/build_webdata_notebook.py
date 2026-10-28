@@ -36,8 +36,10 @@ stopped (`RESUME`).
 **Much faster, still no GPU hours: Accelerator *TPU*.** A Kaggle TPU session comes with ~96+ CPU cores and 330+ GB
 of RAM (it uses your weekly **TPU** quota, ~20 h, not GPU hours). The TPU chips are not used - only those CPUs:
 the notebook sees the cores and runs several llama-servers at once (~8 cores each, all sharing one copy of the
-model in RAM), so it works on many more topics at once. TPU sessions end after 9 h, so `MAX_HOURS` is capped to 8.75
-there by itself. Give it its own `SESSION` number like any other session.
+model in RAM), so it works on many more topics at once - roughly the work of 15 CPU sessions. TPU sessions end
+after 9 h, so `MAX_HOURS` is capped to 8.75 there by itself. Give it its own `SESSION` number (e.g. `SESSIONS = 6`:
+5 CPU sessions + the TPU one). Done with its own share early? It goes on with the other sessions' topics, from the
+end of their shares (`HELP_OTHERS`), so it never sits idle.
 
 **Instant rows:** session 1 first writes ~4,300 **exact** rows straight from the game's data (recipes, stack sizes,
 durability, hardness, mining tools, food, enchantments, mobs, biomes) - no LLM, done in a second (`GAME_DATA`).
@@ -45,9 +47,10 @@ durability, hardness, mining tools, food, enchantments, mobs, biomes) - no LLM, 
 **How an answer gets in** (each step can reject it):
 1. Pages only from sites whose licence allows commercial use - Minecraft Fandom wiki (CC BY-SA 3.0) and Wikipedia
    (CC BY-SA 4.0). minecraft.wiki is CC BY-NC-SA, so it is never read. Official Mojang pages only *confirm* answers.
-2. The LLM writes question/answer pairs from the page text alone and copies the sentences that prove them.
-3. Every quoted sentence must really be on the page, and every number in the answer must be in the quotes.
-4. A second LLM pass sees only question, answer and quotes and must say SUPPORTED.
+2. The LLM writes question/answer pairs from the page text alone and names the sentences that prove them.
+3. The evidence - 1-3 of the page's own sentences, which the LLM names by number - must really be on the page, and
+   every number in the answer must be in it.
+4. A second LLM pass sees only question, answer and those sentences and must say SUPPORTED.
 5. Crafting answers must match the game's own recipes (minecraft-data, MIT) - outdated recipes are caught.
 6. Optional (`CORROBORATE = True`, off by default because it is the slowest part on a CPU): answers the game data
    did not confirm are searched again - an independent page that contradicts the answer rejects it, one that
@@ -93,7 +96,7 @@ PARALLEL = 0             # topics per llama-server at once; 0 = auto: 4 (a TPU s
 MIN_TOKENS_PER_S = 0     # 0 = quality first: always the biggest model that fits (the 30B on Kaggle). A number (e.g. 20)
                          # = speed first: measures each model here and keeps the biggest that writes that many tokens/s
 PROCESSES = True         # web search, downloads and page parsing in PARALLEL worker processes (outside the main one)
-SPECULATE = "auto"       # n-gram speculation (guesses the quotes it copies, checks many tokens at once):
+SPECULATE = "auto"       # n-gram speculation (guesses text it repeats from the prompt, checks many tokens at once):
                          # "auto" = measure with and without, keep the faster; "on" / "off"
 DEVICE = "cpu"           # "cpu" = never uses a GPU (no GPU hours). "auto" / "gpu" = a GPU when attached (optional)
 WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other article of the Fandom wiki (thousands more)
@@ -101,6 +104,7 @@ PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2
 PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
 SESSIONS = 5             # Kaggle sessions you run AT THE SAME TIME (Kaggle allows 5 CPU ones); each its own share
 SESSION = 1              # which one this is: 1 ... SESSIONS - Save Version with 1, then 2, ... (see the top)
+HELP_OTHERS = True       # done with its own share early (a TPU session is ~15x faster)? go on with the others' topics
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
 MAX_ROWS = 0             # 0 = no limit
 MAX_HOURS = 11.75        # Kaggle stops a session after 12 h; the last upload happens before this
@@ -146,7 +150,7 @@ result = main({
     "keep": KEEP, "corroborate": CORROBORATE, "game_data": GAME_DATA, "parallel": PARALLEL, "device": DEVICE,
     "min_tokens_per_s": MIN_TOKENS_PER_S, "speculate": SPECULATE,
     "processes": PROCESSES, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,
-    "wiki_pages": WIKI_PAGES, "sessions": SESSIONS, "session": SESSION,
+    "wiki_pages": WIKI_PAGES, "sessions": SESSIONS, "session": SESSION, "help_others": HELP_OTHERS,
     "max_topics": MAX_TOPICS, "max_rows": MAX_ROWS, "max_hours": MAX_HOURS, "upload_every_min": UPLOAD_EVERY_MIN,
     "hf_secret": HF_SECRET, "discord": DISCORD, "discord_secret": DISCORD_SECRET,
     "ping_role_secret": PING_ROLE_SECRET, "work": WORK, "tmp": TMP,

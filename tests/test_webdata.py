@@ -315,7 +315,7 @@ def test_llama_server_starts_answers_with_the_schema_and_stops(tmp_path):
     server = w.LlamaServer(binary, model, threads=2, port=port, hybrid=True).start(wait=60)
     try:
         verdict, reason = w.judge(server, "q?", "a", "evidence")
-        assert verdict == "SUPPORTED" and json.loads(reason) == [["reason", "verdict"], {"enable_thinking": False}]
+        assert verdict == "SUPPORTED" and json.loads(reason) == [["verdict"], {"enable_thinking": False}]
         assert server.calls == 1
     finally:
         server.stop()
@@ -459,7 +459,7 @@ def test_llama_server_runs_parallel_slots_and_reports_its_speed():
     assert w.llm_speed(server) == ""
     server.tokens.update(prompt=900, prompt_ms=20000, cached=100, out=300, out_ms=40000)
     assert w.llm_speed(server) == "LLM reads 45 tok/s (10% from cache), writes 7.5 tok/s per request x 4 at once"
-    assert w.VERDICT_SCHEMA["properties"]["reason"]["maxLength"] <= 200  # short judge replies
+    assert list(w.VERDICT_SCHEMA["properties"]) == ["verdict"]  # the judge writes ~3 tokens, not a sentence
 
 
 class Timed:
@@ -913,3 +913,53 @@ def test_a_kaggle_tpu_session_is_known_by_its_96_cores_even_without_tpu_variable
     assert w.tpu_session()                        # Kaggle + 96 threads = the TPU VM (ends after 9 h)
     monkeypatch.setattr(w.os, "cpu_count", lambda: 4)
     assert not w.tpu_session()                    # Kaggle CPU / GPU session: 4 cores, 12 h
+
+
+def test_the_llm_names_its_evidence_by_sentence_number_and_the_row_keeps_the_exact_sentences():
+    passage = "[Crafting]\nLeads can be crafted from 5 string. One craft gives 2 leads.\nA lead breaks past 10 blocks."
+    text, sentences = w.numbered(passage)
+    assert text.splitlines() == ["## Crafting", "[1] Leads can be crafted from 5 string. [2] One craft gives 2 leads.",
+                                 "[3] A lead breaks past 10 blocks."]
+    seen = {}
+
+    class LLM:
+        def chat(self, system, user, schema, max_tokens=700):
+            seen["user"], seen["schema"] = user, schema
+            return {"pairs": [{"question": "How many leads does one craft give?", "answer": "Two, from 5 string.",
+                               "evidence": [1, 2, 2], "edition": "both"},
+                              {"question": "Made up?", "answer": "Yes.", "evidence": [9], "edition": "both"}]}
+
+    pairs = w.propose(LLM(), "Lead", "https://minecraft.fandom.com/wiki/Lead", passage, 3)
+    assert "[2] One craft gives 2 leads." in seen["user"]
+    assert seen["schema"]["properties"]["pairs"]["items"]["properties"]["evidence"]["items"]["type"] == "integer"
+    assert pairs == [{"question": "How many leads does one craft give?", "answer": "Two, from 5 string.",
+                      "evidence": ["Leads can be crafted from 5 string.", "One craft gives 2 leads."],
+                      "edition": "both"}]  # a number that is not in the text = no evidence = no pair
+    assert all(w.quote_found(e, passage) for e in pairs[0]["evidence"])
+
+
+def test_another_page_is_only_judged_when_it_talks_about_the_same_thing():
+    pair = {"question": "How do you craft a lead?", "answer": "Leads are crafted from 5 string; one craft makes 2."}
+    assert w.about_it(pair, "Leads are crafted from 4 string and 1 slimeball.")  # contradicts it: still judged
+    assert not w.about_it(pair, "Zombies burn in daylight unless they wear a helmet.")
+    calls = []
+
+    class LLM:
+        def chat(self, system, user, schema, max_tokens=700):
+            calls.append(user)
+            return {"verdict": "SUPPORTED"}
+
+    pages = {"https://a.example/zombie": "Zombies burn in daylight unless they wear a helmet.",
+             "https://minecraft.fandom.com/wiki/Lead": "Leads are crafted from 5 string, and one craft makes 2 leads."}
+    verdict, url = w.corroborate(LLM(), pair, lambda q: [{"url": u} for u in pages], pages.__getitem__, set())
+    assert (verdict, url) == ("SUPPORTED", "https://minecraft.fandom.com/wiki/Lead") and len(calls) == 1
+
+
+def test_a_session_that_is_done_early_helps_the_others_from_the_end_of_their_shares():
+    topics = [f"t{i}" for i in range(12)]
+    assert w.session_topics(topics, 3, 1, help_others=False) == ["t0", "t3", "t6", "t9"]
+    assert w.session_topics(topics, 1, 1) == topics
+    order = w.session_topics(topics, 3, 3)
+    assert order[:4] == ["t2", "t5", "t8", "t11"]  # its own share first
+    assert order[4:] == ["t9", "t10", "t6", "t7", "t3", "t4", "t0", "t1"]  # then the others, from their end
+    assert sorted(order) == sorted(topics)
