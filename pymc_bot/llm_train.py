@@ -265,7 +265,7 @@ def think_text(reasoning: str, answer: str, question: str = "") -> str:
 def prepare_messages(row: dict[str, Any], preset: dict[str, Any]) -> list[dict[str, str]]:
     """The chat a row is trained on for this edition (thinking editions get the trace)."""
     messages = [dict(m) for m in row["messages"]]
-    if preset.get("reasoning"):
+    if preset.get("reasoning") and row.get("kind") != "tools":  # tool rows carry a trace in every assistant turn
         question = next((str(m.get("content") or "") for m in reversed(messages[:-1]) if m.get("role") == "user"), "")
         messages[-1]["content"] = think_text(row.get("reasoning", ""), messages[-1]["content"], question)
     return messages
@@ -917,6 +917,8 @@ def used_datasets(args: argparse.Namespace, preset: dict[str, Any]) -> list[str]
         if preset.get("reasoning"):
             used.append(args.reasoning_dataset)
         used.append(args.general_dataset)  # thinking editions too: it fills what the traces don't
+    if getattr(args, "tools", 0) > 0:
+        used.append(args.tool_dataset)
     if getattr(args, "minecraft_qa", 0) > 0:
         used.append(args.minecraft_qa_dataset)
     if getattr(args, "stream_vision", 0) > 0 and preset.get("vision"):
@@ -954,6 +956,7 @@ def data_sources(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[d
     """Every dataset the training rows came from, with its licence (for the model card)."""
     by_source = {"general": getattr(args, "general_dataset", ""), "reasoning": getattr(args, "reasoning_dataset", ""),
                  "minecraft-qa": getattr(args, "minecraft_qa_dataset", ""), "minecraft-data": MINECRAFT_DATA,
+                 "tools": getattr(args, "tool_dataset", "") or TOOL_DATASET,
                  "minecraft-vlp": getattr(args, "vision_dataset", ""),
                  "minecraft-raytrace": getattr(args, "vision_dataset", ""), "wiki": "minecraft.wiki"}
     names: list[str] = []
@@ -1609,6 +1612,25 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                 records = cached(args, f"hub:{name}:{split}:{args.general}:{args.seed}:3",
                                  lambda: load_hub_records(name, split, args.general, args.seed), "everyday chat")
                 rows += general_rows(records, wanted, args.system_prompt, bool(args.uncensored))
+    if getattr(args, "tools", 0) > 0:
+        if offline:
+            print(f"would add up to {args.tools} tool-calling chats from {args.tool_dataset} "
+                  f"(+~15% 'no tool fits' rows, {TOOL_EVAL} held out for the agentic score)")
+        else:
+            try:
+                name, split = hub_split(args.tool_dataset, "tool_calling")
+                records = cached(args, f"hub:{name}:{split}:{args.tools}:{args.seed}:4",
+                                 lambda: load_hub_records(name, split, args.tools + TOOL_EVAL, args.seed, factor=4),
+                                 "tool-calling chats")
+                chats = [r for r in rows if r.get("source") in ("general", "reasoning")]
+                found, held = tool_rows(records, args.tools, args.system_prompt, bool(preset.get("reasoning")), rng,
+                                        chats, max_chars=args.max_seq * 3)
+                rows += found
+                args.tool_eval = held
+                print(f"+{len(found)} tool-calling rows ({sum(r['kind'] == 'tools-none' for r in found)} where no tool "
+                      f"fits); {len(held)} held out for the agentic score")
+            except Exception as exc:  # noqa: BLE001 - never lose a training session to a download problem
+                print(f"warning: could not stream {args.tool_dataset} ({type(exc).__name__}: {exc}) - skipped")
     if args.minecraft_qa > 0:
         generated = args.minecraft_qa_dataset == MINECRAFT_DATA
         version = getattr(args, "minecraft_data_version", MINECRAFT_DATA_VERSION)
@@ -1661,6 +1683,232 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
             except Exception as exc:  # noqa: BLE001
                 print(f"warning: could not stream pictures from {args.vision_dataset} ({type(exc).__name__}: {exc})")
     return rows
+
+
+# --------------------------------------------------------------------------- tool calling (agentic)
+#: Multi-turn tool use (function calling) written by Qwen3-235B-A22B - the same family as the 4B bases - with the
+#: tools of each chat (NVIDIA, CC BY 4.0, 310k chats). ``reasoning: on`` rows have a <think> trace in every
+#: assistant turn (thinking editions), ``off`` rows have none.
+TOOL_DATASET = "nvidia/Nemotron-Post-Training-Dataset-v1:tool_calling"
+#: Held-out chats the agentic score is measured on (never trained on), plus everyday prompts that need no tool.
+TOOL_EVAL = 60
+NO_TOOL_PROMPTS = (
+    "Explain compound interest simply, with a quick example.", "Write a haiku about rain.",
+    "What's the difference between a list and a tuple in Python?", "How do I get iron in Minecraft?",
+    "Give me three tips for sleeping better.", "Translate 'good morning, friends' into Spanish.",
+    "Why is the sky blue? Two sentences.", "What does a creeper drop in Minecraft?",
+    "Summarise the plot of Romeo and Juliet in one paragraph.", "Is 391 a prime number?",
+    "Suggest a name for a cozy Minecraft village.", "How many minutes are in a week?",
+)
+_THINK_SPLIT = re.compile(r"</think>", re.I)
+_TOOL_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def tools_block(tools: list[Any]) -> str:
+    """Qwen3's own tool prompt, character for character (what its chat template writes for ``tools=...``), so
+    the rows train exactly what the model sees at run time - with any chat template."""
+    return ("# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with "
+            "function signatures within <tools></tools> XML tags:\n<tools>"
+            + "".join("\n" + json.dumps(tool, ensure_ascii=False) for tool in tools)
+            + "\n</tools>\n\nFor each function call, return a json object with function name and arguments within "
+              "<tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": "
+              "<args-json-object>}\n</tool_call>")
+
+
+def tool_call_text(call: dict[str, Any]) -> str:
+    """One call as Qwen3 writes it: ``<tool_call>\\n{"name": ..., "arguments": {...}}\\n</tool_call>``."""
+    function = call.get("function") if isinstance(call.get("function"), dict) else call
+    arguments = function.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)
+    return '<tool_call>\n{"name": "' + str(function.get("name") or "") + '", "arguments": ' + arguments.strip() + "}\n</tool_call>"
+
+
+def _split_trace(content: str) -> tuple[str, str]:
+    if not _THINK_SPLIT.search(content):
+        return "", content.strip()
+    trace, answer = _THINK_SPLIT.split(content, 1)
+    return trace.replace("<think>", "").strip(), answer.strip()
+
+
+def tool_messages(messages: list[dict[str, Any]], tools: list[Any], system: str,
+                  thinking: bool) -> list[dict[str, str]] | None:
+    """A tool chat as plain role/content turns, rendered the way Qwen3's template renders ``tools`` /
+    ``tool_calls`` / ``role: tool`` (tool results become ``<tool_response>`` user turns, which are never trained
+    on). Thinking editions keep the trace of every assistant turn; the others drop it. None = unusable."""
+    out = [{"role": "system", "content": (f"{system}\n\n" if system else "") + tools_block(tools)}]
+    tool_turn = False
+    for message in messages:
+        role, content = message.get("role"), str(message.get("content") or "")
+        if role == "user":
+            if not content.strip():
+                return None
+            out.append({"role": "user", "content": content.strip()})
+            tool_turn = False
+        elif role == "assistant":
+            trace, answer = _split_trace(content)
+            if thinking and not trace:
+                return None
+            text = answer
+            for call in message.get("tool_calls") or []:
+                text += ("\n" if text else "") + tool_call_text(call)
+            if not text:
+                return None
+            out.append({"role": "assistant", "content": f"<think>\n{trace}\n</think>\n\n{text}" if thinking else text})
+            tool_turn = False
+        elif role == "tool":
+            wrapped = f"<tool_response>\n{content.strip()}\n</tool_response>"
+            if tool_turn:
+                out[-1]["content"] += "\n" + wrapped
+            else:
+                out.append({"role": "user", "content": wrapped})
+            tool_turn = True
+        elif role != "system":
+            return None
+    while out and out[-1]["role"] != "assistant":
+        out.pop()
+    return out if any(m["role"] == "assistant" for m in out) and any(
+        m["role"] == "user" and not m["content"].startswith("<tool_response>") for m in out) else None
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z]{4,}", text.lower()))
+
+
+def _tool_words(tools: list[Any]) -> set[str]:
+    """What the tools are about: their names, descriptions and parameter names (not JSON-schema words)."""
+    words: set[str] = set()
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) and isinstance(tool.get("function"), dict) else tool
+        if not isinstance(function, dict):
+            continue
+        properties = (function.get("parameters") or {}).get("properties") or {}
+        words |= _words(" ".join([str(function.get("name") or "").replace("_", " "), str(function.get("description") or ""),
+                                  " ".join(str(k).replace("_", " ") for k in properties)]))
+    return words
+
+
+def no_tool_messages(question: str, answer: str, tools: list[Any], system: str) -> list[dict[str, str]] | None:
+    """Tools are offered but none fits the question: the answer is a normal reply (no call). Tools that share a
+    word with the question are not used for this (they might fit)."""
+    if _tool_words(tools) & _words(question):
+        return None
+    return [{"role": "system", "content": (f"{system}\n\n" if system else "") + tools_block(tools)},
+            {"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+
+
+def tool_rows(records: Any, limit: int, system: str, thinking: bool, rng: Any, chats: list[dict[str, Any]] = (),
+              max_chars: int = 9000, held_out: int = TOOL_EVAL) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(training rows, eval rows)`` from the tool-calling chats. Thinking editions use the ``reasoning: on``
+    chats (with traces), the others prefer ``off`` ones. Half the rows get our system prompt, half only the tool
+    prompt (how benchmarks and apps call it). ~15% more rows offer tools for an everyday question from ``chats``
+    and answer it without a call, so it learns WHEN to call, not just how. The first ``held_out`` usable chats
+    are kept for the agentic score (base vs fine-tuned), never trained on."""
+    rows: list[dict[str, Any]] = []
+    held: list[dict[str, Any]] = []
+    toolsets: list[list[Any]] = []
+    for record in records:
+        if len(rows) >= limit:
+            break
+        on = str(record.get("reasoning") or "").lower() == "on"
+        if thinking and not on:
+            continue
+        try:
+            tools = json.loads(record.get("metadata") or "{}").get("tools") or []
+        except (TypeError, ValueError):
+            continue
+        messages = record.get("messages") or []
+        if not tools or not isinstance(messages, list):
+            continue
+        prompt = system if rng.random() < 0.5 else ""
+        turns = tool_messages(messages, tools, prompt, thinking)
+        if not turns or sum(len(m["content"]) for m in turns) > max_chars:
+            continue
+        toolsets.append(tools)
+        first = next(i for i, m in enumerate(turns) if m["role"] == "assistant")
+        calls = [json.loads(c) for c in _TOOL_CALL.findall(turns[first]["content"]) if _json_ok(c)]
+        if len(held) < held_out and calls:
+            held.append({"messages": turns[:first + 1], "kind": "tools", "source": "tools", "check": {},
+                         "tool_expect": [{"name": c.get("name"), "arguments": c.get("arguments")} for c in calls]})
+            continue
+        rows.append({"messages": turns, "kind": "tools", "source": "tools", "check": {}})
+    plain = [c for c in chats if len(c.get("messages") or []) == 3 and c["messages"][1]["role"] == "user"]
+    rng.shuffle(plain)
+    for chat in plain[:max(0, len(rows) * 15 // 100)]:
+        if not toolsets:
+            break
+        made = no_tool_messages(chat["messages"][1]["content"], chat["messages"][2]["content"], rng.choice(toolsets),
+                                system if rng.random() < 0.5 else "")
+        if made:
+            rows.append({"messages": made, "kind": "tools-none", "source": "tools", "reasoning": chat.get("reasoning", ""),
+                         "check": {}})
+    for question in NO_TOOL_PROMPTS if toolsets else ():
+        made = None
+        for _ in range(8):
+            made = no_tool_messages(question, "-", rng.choice(toolsets), "")
+            if made:
+                break
+        if made:
+            held.append({"messages": made, "kind": "tools", "source": "tools", "check": {}, "tool_expect": []})
+    return rows, held
+
+
+def _json_ok(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except ValueError:
+        return False
+
+
+def _arguments(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def tool_score(row: dict[str, Any], reply: str) -> dict[str, bool]:
+    """``right_tool``: the same function names (or no call when none was wanted); ``exact``: names AND
+    arguments, the strict function-calling score."""
+    calls = []
+    for raw in _TOOL_CALL.findall(strip_thinking(reply)):
+        if _json_ok(raw):
+            call = json.loads(raw)
+            calls.append((str(call.get("name")), _arguments(call.get("arguments"))))
+    wanted = [(str(c["name"]), _arguments(c.get("arguments"))) for c in row.get("tool_expect") or []]
+    names = sorted(n for n, _a in calls) == sorted(n for n, _a in wanted)
+    exact = names and all(any(n == m and a == b for m, b in calls) for n, a in wanted)
+    return {"right_tool": names, "exact": bool(exact), "needs_call": bool(wanted)}
+
+
+def agentic_summary(results: list[dict[str, bool]]) -> dict[str, Any]:
+    calls = [r for r in results if r["needs_call"]]
+    none = [r for r in results if not r["needs_call"]]
+    pct = lambda part, whole: round(100 * part / whole, 1) if whole else None  # noqa: E731
+    return {"score": pct(sum(r["exact"] for r in results), len(results)),
+            "right_tool": pct(sum(r["right_tool"] for r in calls), len(calls)),
+            "exact_calls": pct(sum(r["exact"] for r in calls), len(calls)),
+            "no_call_when_none_fits": pct(sum(r["exact"] for r in none), len(none)), "asked": len(results)}
+
+
+def agentic_eval(generate: Any, rows: list[dict[str, Any]], model: Any = None, log: Any = print) -> dict[str, Any]:
+    """The fine-tuned model's tool-calling score on the held-out chats - and the BASE model's on the same ones
+    (the LoRA switched off for a moment), so the card can show base vs fine-tuned."""
+    report = {"tuned": agentic_summary([tool_score(r, a) for r, a in zip(rows, answer_all(generate, rows), strict=False)])}
+    switch = getattr(model, "disable_adapter", None)
+    if callable(switch):
+        try:
+            with switch():
+                report["base"] = agentic_summary([tool_score(r, a) for r, a in
+                                                  zip(rows, answer_all(generate, rows), strict=False)])
+        except Exception as exc:  # noqa: BLE001 - the fine-tuned score is still reported
+            log(f"agentic eval: base model not measured ({type(exc).__name__}: {exc})")
+    base = (report.get("base") or {}).get("score")
+    log(f"agentic (tool calling, {len(rows)} held-out chats): fine-tuned {report['tuned']['score']}%"
+        + (f" vs base {base}%" if base is not None else ""))
+    return report
 
 
 # --------------------------------------------------------------------------- tests
@@ -2686,6 +2934,19 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         eval_lines = ("\n## Evaluation (held-out rows)\n\n| valid JSON | right action | right answers | rows |\n|---|---|---|---|\n"
                       f"| {pct('json_valid_pct')} | {pct('action_match_pct')} | {pct('answer_keywords_pct')} | "
                       f"{evaluation.get('rows', '-')} |\n")
+    agentic = report.get("agentic") or {}
+    if agentic.get("tuned"):
+        tuned, base = agentic["tuned"], agentic.get("base") or {}
+        cell = lambda d, k: "-" if d.get(k) is None else f"{d[k]}%"  # noqa: E731
+        base_name = str(report.get("base_model") or "base").split("/")[-1]
+        eval_lines += ("\n## Agentic score (tool calling)\n\nHeld-out multi-turn tool chats it never trained on "
+                       f"({tuned.get('asked', '?')} prompts: the right function with exactly the right arguments, and no "
+                       "call when no tool fits), base model measured on the same prompts:\n\n"
+                       "| model | score | right tool | exact calls | no call when none fits |\n|---|---|---|---|---|\n"
+                       + (f"| {base_name} | {cell(base, 'score')} | {cell(base, 'right_tool')} | {cell(base, 'exact_calls')} | "
+                          f"{cell(base, 'no_call_when_none_fits')} |\n" if base else "")
+                       + f"| **{display_name(preset_name, preset)}** | **{cell(tuned, 'score')}** | {cell(tuned, 'right_tool')} | "
+                         f"{cell(tuned, 'exact_calls')} | {cell(tuned, 'no_call_when_none_fits')} |\n")
     vision_text = ("\nIt also **sees**: it was trained on first-person screenshots recorded with the PyMC Bot Fabric mod, "
                    "paired with what the player did next and grounded descriptions of each picture. In PyMC Bot turn on "
                    "*let the model see (vision)* in the panel's AI settings and the bot sends its rendered view every few turns.\n") if vision else ""
@@ -4502,6 +4763,12 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         summary = run_tests(generate, test_rows(eval_rows, preset, args.system_prompt))
         (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         report["tests"] = {key: value for key, value in summary.items() if key != "results"}
+    if getattr(args, "tool_eval", None):
+        for_inference()
+        try:
+            report["agentic"] = agentic_eval(generate, args.tool_eval, model)
+        except Exception as exc:  # noqa: BLE001 - never lose the trained model to the eval
+            print(f"agentic eval failed ({type(exc).__name__}: {exc})")
 
     if getattr(args, "stopped_early", None):
         report["stopped_early"] = args.stopped_early
@@ -4784,6 +5051,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="dataset with <think> traces used instead for the thinking editions ('name:split'; "
                              f"default {REASONING_DATASET}; --commercial: {COMMERCIAL_REASONING_DATASET})")
     parser.add_argument("--no-identity", action="store_true", help="skip the 'who are you' rows")
+    parser.add_argument("--tools", type=int, default=0,
+                        help="tool-calling (agentic) chats to mix in, in Qwen3's own tool format; the agentic score "
+                             f"(base vs fine-tuned, {TOOL_EVAL} held-out chats) goes into the report and the card")
+    parser.add_argument("--tool-dataset", default=TOOL_DATASET, help="'name:split' with messages/tool_calls and "
+                                                                     "metadata.tools (default %(default)s, CC BY 4.0)")
     parser.add_argument("--minecraft-qa", type=int, default=0,
                         help="Minecraft Q&A rows streamed from a big Hugging Face Q&A set (sampled and filtered)")
     parser.add_argument("--minecraft-qa-dataset",

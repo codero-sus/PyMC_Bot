@@ -268,15 +268,31 @@ def turn_reasoning(state: dict[str, Any], decision: dict[str, Any] | str, *, nam
             decision = json.loads(decision)
         except ValueError:
             decision = {}
-    parts = [status_line(state, rng), place_line(state)]
+    status, place = status_line(state, rng), place_line(state)
     threats, hostile = threats_line(state, db)
-    parts.append(threats)
-    parts.append(players_line(state))
-    parts.append(chat_line(history, name, db))
-    parts.append(memory_line(mind))
-    parts.append(rules_line(allowed or {}, str(decision.get("action") or ""), hostile, history))
-    parts.append(action_line(decision, state, hostile, rng))
-    return _limit(" ".join(p for p in parts if p))
+    players, chat, memory = players_line(state), chat_line(history, name, db), memory_line(mind)
+    # what matters most comes first, like a player would notice it - never the same opener on every turn (all
+    # 6,000 traces used to start with "Health X/20, food Y/20.", even with a creeper 3 blocks away)
+    health, food = _hp(state.get("health", 20)), _hp(state.get("food", 20))
+    near = min((_dist(e) for e in hostile), default=99.0)
+    first: list[str] = []
+    if health <= 6:
+        first.append(status)
+    if hostile and near <= 8:
+        first.append(threats)
+    if chat:
+        first.append(chat)
+    if food <= 6 and status not in first:
+        first.append(status)
+    rest = [p for p in (status, place, threats, players, memory) if p and p not in first]
+    rng.shuffle(rest)
+    tail = " ".join(p for p in (rules_line(allowed or {}, str(decision.get("action") or ""), hostile, history),
+                                 action_line(decision, state, hostile, rng)) if p)
+    body: list[str] = []
+    for part in first + rest:  # the least important context goes when it is too long - never the decision
+        if part and len(" ".join([*body, part, tail])) <= MAX_TRACE:
+            body.append(part)
+    return _limit(" ".join([*body, tail]))
 
 
 def decision_reasoning(decision: dict[str, Any] | str, prompt: str = "") -> str:

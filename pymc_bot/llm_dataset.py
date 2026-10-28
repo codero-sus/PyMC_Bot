@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import re
 import time
@@ -628,14 +629,32 @@ class SituationMaker:
         return sit, decision_text("sleep", "it's dark, sleep before phantoms show up", "get through the night"), {"action": "sleep"}
 
 
-def rule_examples(count: int, rng: random.Random, db: MobDatabase | None = None) -> list[Example]:
+def _action(reply: str) -> str:
+    try:
+        return str(json.loads(reply).get("action") or "")
+    except (ValueError, AttributeError):
+        return ""
+
+
+def rule_examples(count: int, rng: random.Random, db: MobDatabase | None = None,
+                  max_share: float = 0.15) -> list[Example]:
+    """``count`` game turns. No action gets more than ``max_share`` of them: the situations alone made 27% of the
+    turns ``say``, and a model trained on that chats when it should act (the same for any other action)."""
     maker = SituationMaker(rng, db)
     out: list[Example] = []
+    per: Counter[str] = Counter()
+    cap = max(1, math.ceil(count * max_share)) if 0 < max_share < 1 else count
+    tries = 0
     while len(out) < count:
+        tries += 1
         made = maker.scenario()
         if made is None:
             continue
         sit, reply, check = made
+        action = _action(reply)
+        if per[action] >= cap and tries < count * 50:  # (the guard: never loop forever on a tiny count)
+            continue
+        per[action] += 1
         source = "chat" if check.get("contains") else "rules"
         out.append(sit.example(reply, source, check))
     return out
