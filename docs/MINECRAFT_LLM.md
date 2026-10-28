@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/66ef4fe13afa74ef50576ed49bebae1f01592a4a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/66ef4fe13afa74ef50576ed49bebae1f01592a4a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -606,7 +606,12 @@ topics until everything is done; **Ctrl+C** stops it and uploads what it has), `
 `--topics N` (a test run), `--no-upload`. With an NVIDIA GPU it downloads llama.cpp's Windows CUDA 12.4 build and
 its runtime DLLs (Linux: the Ubuntu CUDA build) and runs **Qwen3.5-4B** (UD-Q4_K_XL, ~3 GB) fully on the GPU with 8
 requests at once - an RTX 3050 8 GB holds it with room to spare and needs little system RAM; no GPU = the CPU
-build. The Hugging Face token comes from `HF_TOKEN` or the `hf auth login` one (the same account as the Kaggle
+build. **The GPU writes, the CPU scrapes:** with the LLM on a GPU, the web part (wiki downloads, HTML parsing,
+splitting pages, searches) runs in its own worker processes - `max(2 x requests at once, CPU threads - 2)`, e.g. 16
+on a 6-core / 12-thread Ryzen with 8 requests at once - at below-normal priority, fetching that many topics ahead so
+the GPU never waits for a page. Windows has no `fork`, so they are *spawned* (that works because the PC runs the file
+as a script). On a 4-core Kaggle CPU it stays one worker per topic at once and one topic ahead (the LLM needs the
+cores there). The Hugging Face token comes from `HF_TOKEN` or the `hf auth login` one (the same account as the Kaggle
 secret); Discord messages from the `DISCORD_WEBHOOK_INFORM_ME1` / `PING_ROLE` environment variables if set. The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
@@ -626,7 +631,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/66ef4fe13afa74ef50576ed49bebae1f01592a4a/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
