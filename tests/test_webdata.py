@@ -1108,3 +1108,58 @@ def test_main_with_session_zero_claims_a_number_on_the_hub_and_frees_it_at_the_e
     assert sessions_seen[-1] == "02"
     with pytest.raises(SystemExit, match="already running"):  # a number set by hand that runs elsewhere
         w.main({**cfg, "session": 1})
+
+
+def test_without_fork_the_pc_script_still_scrapes_in_worker_processes(tmp_path):
+    """Windows has no fork: run as a script (scripts/collect_dataset_pc.bat), the web workers are spawned - the
+    functions live in __main__ there, exactly like this copy of the file run with fork switched off."""
+    source = (ROOT / "pymc_bot" / "llm_webdata.py").read_text(encoding="utf-8")
+    guard = source.index('if __name__ == "__main__" and "ipykernel" not in sys.modules:')
+    cache = tmp_path / "pages"
+    cache.mkdir()
+    url = "https://minecraft.fandom.com/wiki/Lead"
+    import hashlib
+
+    (cache / (hashlib.sha1(url.encode()).hexdigest() + ".txt")).write_text(page_text() * 20, encoding="utf-8")
+    script = tmp_path / "collector.py"
+    script.write_text(source[:guard] + f'''
+if __name__ == "__main__":
+    import multiprocessing
+    real = multiprocessing.get_context
+    multiprocessing.get_context = lambda method=None: (_ for _ in ()).throw(ValueError()) if method == "fork" \\
+        else real(method)
+    pool = process_pool(3)
+    found = pool.submit(gather, "Lead", {{"pages_per_topic": 1}}, WebSearch(1), PageFetcher(Path({str(cache)!r}))).result()
+    print(pool._mp_context.get_start_method(), len(found), found[0][0])
+    pool.shutdown()
+''', encoding="utf-8")
+    done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]
+    method, parts, first = done.stdout.strip().splitlines()[-1].split()
+    assert method == "spawn" and int(parts) >= 2 and first == url
+
+
+def test_with_a_fast_gpu_many_topics_are_fetched_ahead(tmp_path):
+    from concurrent.futures import Future
+
+    submitted = []
+
+    class Pool:  # the web worker processes, run in place: records which topics were fetched, in order
+        def submit(self, fn, topic, *args):
+            submitted.append(topic)
+            future = Future()
+            future.set_result(fn(topic, *args))
+            return future
+
+    class Watching(FakeLLM):
+        def chat(self, system, user, schema, max_tokens=700):
+            if self.calls == 0:
+                seen.append(list(submitted))
+            return super().chat(system, user, schema, max_tokens)
+
+    seen, topics = [], [f"Lead {n}" for n in range(8)]
+    collector = w.Collector(tmp_path / "d", "m")
+    w.collect({"prefetch": 4, "corroborate": False}, Watching(), collector, {}, topics, lambda q: [],
+              lambda u: page_text(), deadline=1e18, processes=Pool())
+    assert seen[0] == topics[:5]  # the first topic's LLM work starts with 4 more topics' pages already fetched
+    assert submitted == topics and collector.done == topics  # each fetched once, all done in order

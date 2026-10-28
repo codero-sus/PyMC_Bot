@@ -592,8 +592,13 @@ def _worker_start() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # the Kaggle stop button is for the main process (it saves)
     try:
         os.nice(10)  # web search / parsing waits a moment; the LLM (the slow part) gets the CPU first
-    except (OSError, AttributeError):
-        pass
+    except (OSError, AttributeError):  # Windows: no nice - "below normal" priority instead
+        try:
+            import psutil  # type: ignore[import-not-found]
+
+            psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        except Exception:  # noqa: BLE001, S110 - normal priority then
+            pass
 
 
 def _ready(_index: int = 0) -> int:
@@ -608,8 +613,11 @@ def process_pool(workers: int) -> Any:
 
     try:
         context = multiprocessing.get_context("fork")  # the notebook's functions live in __main__: fork, not spawn
-    except ValueError:
-        return None
+    except ValueError:  # Windows: no fork - spawn works when this file runs as a script (your PC), not in Jupyter
+        main_file = getattr(sys.modules.get("__main__"), "__file__", "") or ""
+        if not main_file or "ipykernel" in sys.modules:
+            return None
+        context = multiprocessing.get_context("spawn")
     pool = ProcessPoolExecutor(max_workers=max(1, workers), mp_context=context, initializer=_worker_start)
     pids = set(pool.map(_ready, range(max(1, workers) * 2)))
     log(f"{len(pids)} worker processes for web search and page parsing")
@@ -2057,8 +2065,8 @@ def collect(cfg: dict, llm: Any, collector: Collector, book: dict, topic_list: l
                 if stale is not None:
                     stale.cancel()
                 continue
-            fetch_ahead(index)
-            fetch_ahead(index + 1)  # the next topic's pages, while the LLM works
+            for ahead in range(1 + max(1, int(cfg.get("prefetch", 1)))):  # the next topics' pages, while the LLM works
+                fetch_ahead(index + ahead)
             if llm_pool is None:
                 finish(index + 1, topic, run(index))
                 continue
@@ -2137,7 +2145,10 @@ def main(cfg: dict) -> dict:
             + ("PRIVATE: only you can see it" if private else "PUBLIC: anyone can see it (PRIVATE = False)"))
     llm = collector = None
     # the web part in worker processes, started before llama-server and the topic threads
-    workers = process_pool(min(parallel, 32)) if cfg.get("processes", True) else None
+    # a GPU writes far faster than one topic's pages arrive: more web workers (every free CPU thread), fetching
+    # many topics ahead. On a 4-core Kaggle CPU the LLM needs the cores: one worker per topic at once, as before.
+    web = min(32, max(2 * parallel, cpu_cores()[1] - 2)) if gpus else min(parallel, 32)
+    workers = process_pool(web) if cfg.get("processes", True) else None
     prefetch = None
     if not gpus:  # the CPU: llama.cpp and the model download while the game data and the instant rows get ready
 
@@ -2277,7 +2288,8 @@ def main(cfg: dict) -> dict:
             raise RuntimeError("llama.cpp did not start on the GPU or the CPU (see llama-server.log)")
         device, llm, key, speed, speculating = chosen
         spec = MODELS[key]
-        settings = {**tuned(device != "CPU"), "parallel": int(getattr(llm, "parallel", 1))}  # all copies together
+        settings = {**tuned(device != "CPU"), "parallel": int(getattr(llm, "parallel", 1)),  # all copies together
+                    "prefetch": web if device != "CPU" else 1}  # topics whose pages are fetched ahead
         parallel = settings["parallel"]
         cfg = {**cfg, **settings, "model": spec["name"]}
         collector.model = spec["name"]
