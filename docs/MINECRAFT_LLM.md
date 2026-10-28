@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/0db1ce2ba6c076d5c74a3e39689b1284d7221a90/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/0db1ce2ba6c076d5c74a3e39689b1284d7221a90/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/5d83577d32796de3abbc9476034646fbbeff266d/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/5d83577d32796de3abbc9476034646fbbeff266d/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -166,6 +166,7 @@ The settings cell:
 | `TRAINER` | `"auto"` | the dataset's trainer, or the newest from GitHub when it is too old; `"latest"` / `"dataset"` |
 | `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
 | `GENERAL_CHAT` | `3000` | everyday chat rows mixed in, so it stays a good daily assistant (`0` = Minecraft only) |
+| `TOOL_CALLING` | `2000` | tool-calling (agentic) chats, so it calls tools better than its base instead of forgetting how (see *Agentic: tool calling* below; `0` = none) |
 | `COMMERCIAL_ONLY` | `True` | only data whose licence allows commercial use ([below](#commercial-use-data)) |
 | `MINECRAFT_QA` | `20000` | Minecraft Q&A: generated from minecraft-data, or streamed from a 695k-row set ([below](#big-minecraft-datasets-streamed)) |
 | `STREAM_PICTURES` | `3000` | VL editions: Minecraft pictures with questions and answers, streamed from Hugging Face |
@@ -449,6 +450,7 @@ commercial use:
 | Part | Dataset | Licence | What the trainer does with it |
 | --- | --- | --- | --- |
 | Everyday chat (`GENERAL_CHAT`) | [`OpenAssistant/oasst_top1_2023-08-25`](https://huggingface.co/datasets/OpenAssistant/oasst_top1_2023-08-25) | Apache-2.0 | ~13k chats written by people, multilingual. Thinking editions get it too: it fills every everyday row the traces below don't, and with `DISTILL` the teacher writes the thinking for up to `DISTILL_ROWS` of them |
+| Tool calling (`TOOL_CALLING`) | [`nvidia/Nemotron-Post-Training-Dataset-v1`](https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1) (`tool_calling`) | CC BY 4.0 | 310k multi-turn tool chats with their tool definitions, by Qwen3-235B-A22B; with and without `<think>` traces |
 | Thinking traces (thinking editions) | [`nvidia/Nemotron-Post-Training-Dataset-v1`](https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1), `math` split | CC BY 4.0 | maths with real `<think>` traces (DeepSeek-R1 answers). Only traces that fit `--max-seq` are used; most are far longer, so expect a few dozen rows (the log says how many) |
 | Minecraft Q&A (`MINECRAFT_QA`) | [`PrismarineJS/minecraft-data`](https://github.com/PrismarineJS/minecraft-data), Java 1.21.8 | MIT | about 3,300 exact facts made into Q&A: recipes with their layout, which pickaxe a block needs, block drops, light levels, hardness and blast resistance, stack sizes, durability, food, mob drops and hitboxes, enchantments, effects, biomes. Each fact has up to 3 phrasings, so about 10k rows at most |
 | Pictures (`STREAM_PICTURES`) | [`shinohararin/minecraft-raytrace`](https://huggingface.co/datasets/shinohararin/minecraft-raytrace) | MIT | 10,222 first-person 1.21.8 frames with raycast labels. Two exact Q&A per frame: biome, time of day, rain or snow, the block at the crosshair and its distance, the blocks in view, the mobs in view, a short description |
@@ -472,6 +474,29 @@ commercial use:
   the data now allows commercial use, the data is no longer a reason you couldn't pick a different licence for your
   own fine-tune. The base models are Apache-2.0, including the abliterated copies. Not legal advice. "Minecraft" is Mojang's trademark, so check their usage guidelines
   before you sell anything with the name.
+
+## Agentic: tool calling, and less bias
+
+A fine-tune on mostly Minecraft rows slowly forgets what the base model could do - and tool calling (what agentic
+benchmarks measure) is the first to go. `TOOL_CALLING = 2000` (`--tools`) mixes in multi-turn tool chats from
+[`nvidia/Nemotron-Post-Training-Dataset-v1`](https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1)
+(`tool_calling` split, CC BY 4.0, written by Qwen3-235B-A22B - the bases' own family):
+
+* **Qwen3's own format, character for character**: the tool list in the system prompt, `<tool_call>` JSON in the
+  answers, tool results as `<tool_response>` turns (never trained on) - a test renders the rows with Qwen's real chat
+  template and compares. So it works the same in Ollama, llama.cpp, vLLM or anything that sends `tools`.
+* **Thinking editions** train on the chats with a `<think>` trace in every assistant turn; the others on plain ones.
+* **When to call, not only how**: ~15% more rows offer tools that don't fit an everyday question, and the answer is a
+  normal reply. Half the rows have the Minecraftism system prompt, half only the tool prompt (like benchmarks).
+* **Agentic score, base vs fine-tuned**: 60 held-out tool chats it never trained on, plus 12 everyday prompts with
+  tools that don't fit. Right function with exactly the right arguments, and no call when none fits. The base model
+  is measured on the same prompts with the LoRA switched off, and both scores go into the model card and the summary.
+
+**Bias fixes in the game data** (the next run trains on them; the models uploaded before Oct 27 do not have them):
+no bot action takes more than 15% of the game turns (`say` used to be 27%, so the model chatted when it should act);
+thinking traces start with what matters (a creeper 3 blocks away, a player talking, low health) instead of always
+"Health X/20, food Y/20."; when a trace is too long the context is trimmed, never the decision; and the earlier fixes
+(no fixed thinking scaffold, no "simple one" shortcut, any-planks recipes).
 
 ## Big Minecraft datasets, streamed
 
@@ -571,7 +596,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/d7b82844a5cb248c118cd36531fbf894b3c61299/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/5d83577d32796de3abbc9476034646fbbeff266d/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
