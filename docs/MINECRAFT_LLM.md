@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/4e7799da54530fac6e4d558b347172208e419cf1/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/4e7799da54530fac6e4d558b347172208e419cf1/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/66ef4fe13afa74ef50576ed49bebae1f01592a4a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/66ef4fe13afa74ef50576ed49bebae1f01592a4a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -563,12 +563,13 @@ from the game data** (minecraft-data 1.21.8, MIT, by templates - no LLM, done in
 recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it, hunger from
 food, enchantment levels / conflicts / treasure-only, mob hitbox sizes, biome dimensions; `GAME_DATA = True`); (2) the
 second web search per answer is off (`CORROBORATE = False`) - it was the slowest part on a CPU, about half the rows
-per hour; every other check stays; (3) **5 sessions at once** (`SESSIONS = 5`): Kaggle runs up to 5 CPU sessions at
-the same time, so save 5 versions with `SESSION = 1 ... 5` (each version keeps its own settings). **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
+per hour; every other check stays; (3) **many sessions at once, no editing** (`SESSIONS = 11`, `SESSION = 0`):
+Kaggle runs up to 5 CPU sessions at the same time per account, so click *Save & Run All* 5 times (and 5 more on a
+second account with the same `HF_TOKEN`) - each session takes the lowest free number by itself (see below). **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
 the weekly TPU quota (~20 h), not GPU hours; the TPU chips stay idle - the notebook sees the cores and runs several
 llama-servers (~8 cores each, up to 8, all sharing one memory-mapped copy of the model, 4 requests each), and caps
 `MAX_HOURS` at 8.75 because TPU sessions end after 9 h - roughly the work of 15 CPU sessions. Give it its own
-`SESSION` number (e.g. `SESSIONS = 6`: 5 CPU sessions + the TPU one). When a session is done with its own share early
+`SESSION` number (or `SESSION = 0`). When a session is done with its own share early
 (the TPU one will be), it goes on with the other sessions' topics from the END of their shares (`HELP_OTHERS =
 True`), so the fast session never sits idle and never meets the slow ones. Optional **GPU T4 x2**
 (Settings → Accelerator; uses your weekly GPU hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
@@ -584,9 +585,29 @@ data-value/ID tables, block-state and translation sections skipped - the minecra
 numbers, and those pairs were mostly rejected after costing an LLM call; a short last sentence joins the part before
 it instead of being lost), with 5 pairs per part. Free code checks (numbers, item names, length) run before the LLM
 judge, so a pair that fails them never costs a judge call. To go faster, run several copies of the notebook at the same time with
-`SESSIONS = N` and `SESSION = 1 ... N`: each takes every N-th topic and writes its own `data/train-NN.jsonl`,
-`meta/progress-NN.json` (it uploads only those), and reads the others' rows and topics so nothing is done twice.
-`load_dataset` reads all the files. The LLM writes question/answer pairs
+`SESSIONS = N`: each takes every N-th topic and writes its own `data/train-NN.jsonl`, `meta/progress-NN.json` (it
+uploads only those), and reads the others' rows and topics so nothing is done twice - at the start and again after
+every upload (every 30 minutes), so a topic another session finished meanwhile is skipped. `load_dataset` reads all
+the files. **Session numbers by themselves** (`SESSION = 0`, the default): a session writes a claim
+(`meta/claim-NN.json`) for the lowest number no running session holds, waits ~20 s and reads it back - two sessions
+that took the same number at the same moment never both keep it (the later write wins, the other takes the next
+free one). The claim is refreshed with every upload and marked ended at the end (also after Stop or an error); one
+older than 3 h is from a session that died, and its number - with its rows - is taken over. A number set by hand
+that is running elsewhere stops right away (two sessions with one number would overwrite each other's rows).
+`SESSIONS` higher than the sessions that really run is fine: the others take over the missing shares
+(`HELP_OTHERS`).
+
+**Your own PC as one more session.** `scripts/collect_dataset_pc.bat` (Windows; double-click it - it makes
+`.venv-dataset`, installs `ddgs`, `huggingface_hub`, `psutil`, and runs `hf auth login` once if there is no token)
+or `python pymc_bot/llm_webdata.py` (Linux / macOS) runs the same collector on your computer: `--sessions 11`
+(the notebooks' `SESSIONS`), `--session 0` (auto), `--hours 0` (no limit: it goes on with the slower sessions'
+topics until everything is done; **Ctrl+C** stops it and uploads what it has), `--device auto|gpu|cpu`,
+`--model`, `--parallel`, `--folder` (default `~/Minecraftism`: the dataset, the model and llama.cpp),
+`--topics N` (a test run), `--no-upload`. With an NVIDIA GPU it downloads llama.cpp's Windows CUDA 12.4 build and
+its runtime DLLs (Linux: the Ubuntu CUDA build) and runs **Qwen3.5-4B** (UD-Q4_K_XL, ~3 GB) fully on the GPU with 8
+requests at once - an RTX 3050 8 GB holds it with room to spare and needs little system RAM; no GPU = the CPU
+build. The Hugging Face token comes from `HF_TOKEN` or the `hf auth login` one (the same account as the Kaggle
+secret); Discord messages from the `DISCORD_WEBHOOK_INFORM_ME1` / `PING_ROLE` environment variables if set. The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
 | check | rejects |
@@ -605,7 +626,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/4e7799da54530fac6e4d558b347172208e419cf1/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/66ef4fe13afa74ef50576ed49bebae1f01592a4a/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
