@@ -57,7 +57,9 @@ LLAMA_CPP_REPO = "ggml-org/llama.cpp"
 #: ``ram_gb`` = what it needs in RAM (the GGUF + 4 parallel 4K contexts + llama.cpp). Qwen3-30B-A3B is a mixture of experts: 30B weights in RAM, but only ~3B work per token, so on a CPU it
 #: runs about as fast as the 4B and judges far better - it fits Kaggle's 30 GB.
 MODELS = {
+    # CPU: Q5_K_M (21.7 GB, ~7x less precision loss than Q4_K_M) when ~26 GB RAM is free, else Q4_K_M (18.6 GB)
     "qwen3-30b-a3b": {"repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF", "quant": "Q4_K_M",
+                      "best_quant": "Q5_K_M", "best_ram_gb": 26,
                       "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 23,
                       "gpu_quant": "Q5_K_M", "gpu_vram_gb": 27},
     "qwen3.5-9b": {"repo": "unsloth/Qwen3.5-9B-GGUF", "quant": "Q4_K_M", "name": "Qwen3.5-9B", "hybrid": True,
@@ -110,6 +112,34 @@ def gpu_quant(key: str, vram_gb: float) -> str:
     Q5_K_M), else the CPU one (llama.cpp then keeps what does not fit in RAM)."""
     spec = MODELS[key]
     return spec.get("gpu_quant", spec["quant"]) if vram_gb >= spec.get("gpu_vram_gb", 1e9) else spec["quant"]
+
+
+def cpu_quant(key: str, ram_gb: float, choice: str = "auto") -> str:
+    """The GGUF quant on the CPU: ``QUANT`` when set, else the better one (``best_quant``: the 30B in Q5_K_M) when
+    the free RAM holds it, else the normal one (Q4_K_M)."""
+    spec = MODELS[key]
+    if choice and choice != "auto":
+        return choice
+    return spec["best_quant"] if spec.get("best_quant") and ram_gb >= spec.get("best_ram_gb", 1e9) else spec["quant"]
+
+
+def cpu_cores() -> tuple[int, int]:
+    """``(physical cores, logical threads)``. Kaggle's 4 "CPUs" can be 2 cores with 2 hyper-threads each."""
+    logical = max(1, os.cpu_count() or 4)
+    try:
+        cores, block = set(), {}
+        for line in Path("/proc/cpuinfo").read_text().splitlines() + [""]:
+            if not line.strip():
+                if "core id" in block:
+                    cores.add((block.get("physical id", "0"), block["core id"]))
+                block = {}
+            elif ":" in line:
+                name, value = line.split(":", 1)
+                block[name.strip()] = value.strip()
+        physical = len(cores)
+    except OSError:
+        physical = 0
+    return (min(physical, logical) if physical else logical), logical
 
 
 def pick_model(choice: str = "auto", ram_gb: float | None = None) -> tuple[str, str]:
@@ -492,6 +522,10 @@ def _worker_start() -> None:
     import signal
 
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # the Kaggle stop button is for the main process (it saves)
+    try:
+        os.nice(10)  # web search / parsing waits a moment; the LLM (the slow part) gets the CPU first
+    except OSError:
+        pass
 
 
 def _ready(_index: int = 0) -> int:
@@ -702,14 +736,25 @@ PROPOSE_SYSTEM = (
     "added. For each pair copy 1-3 sentences from the source, word for word, that prove the answer (evidence). If "
     "the source says the fact is for Java or Bedrock Edition only, set edition and say so in the answer. Skip "
     "anything the source is vague about, history or trivia nobody asks, and facts that depend on an old version. "
-    "Return JSON only."
+    "Return compact JSON only (one line, no indentation)."
 )
 JUDGE_SYSTEM = (
     "You check a Minecraft answer against evidence text. SUPPORTED: every fact and number in the answer is stated "
     "in the evidence. CONTRADICTED: the evidence says something different. NOT_FOUND: the evidence does not say "
     "it (or only part of it). Be strict: anything extra in the answer that the evidence does not state means "
-    "NOT_FOUND. Keep the reason to one short sentence. Return JSON only."
+    "NOT_FOUND. Keep the reason to one short sentence. Return compact JSON only (one line, no indentation)."
 )
+
+
+def _allow_mlock() -> None:
+    """In llama-server's process, before it starts: lift the locked-memory limit so ``--mlock`` can keep the whole
+    model in RAM (works as root, as on Kaggle; elsewhere llama.cpp just warns and runs normally)."""
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_MEMLOCK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    except (ImportError, ValueError, OSError):
+        pass
 
 
 class LlamaServer:
@@ -718,7 +763,11 @@ class LlamaServer:
     def __init__(self, binary: Path, model: Path, threads: int = 0, ctx: int = 8192, port: int = 8089,
                  hybrid: bool = False, parallel: int = 1, speculate: bool = False, gpu: int | None = None) -> None:
         self.binary, self.model, self.port, self.hybrid = Path(binary), Path(model), port, hybrid
-        self.threads = threads or max(1, os.cpu_count() or 4)
+        physical, logical = cpu_cores()
+        # writing a token is memory-bound: one thread per physical core (hyper-threads only fight over the cache);
+        # reading the prompt is compute-bound: every thread
+        self.threads = threads or physical
+        self.threads_batch = max(self.threads, logical)
         self.ctx = ctx  # per slot
         self.parallel = max(1, int(parallel))  # slots: requests the server works on together (continuous batching)
         self.gpu = gpu  # only this GPU (one copy of a small model per GPU), None = all / the CPU
@@ -735,7 +784,8 @@ class LlamaServer:
             env["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
         command = self.command()
         logfile = open(self.log_path(), "w")  # noqa: SIM115 - lives as long as the server
-        self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env)
+        self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env,
+                                        preexec_fn=_allow_mlock)
         end = time.time() + wait
         while time.time() < end:
             if self.process.poll() is not None:
@@ -754,8 +804,12 @@ class LlamaServer:
 
     def command(self) -> list[str]:
         command = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx * self.parallel), "-t",
-                   str(self.threads), "--host", "127.0.0.1", "--port", str(self.port), "--jinja", "-np",
-                   str(self.parallel), "--no-webui"]
+                   str(self.threads), "-tb", str(self.threads_batch), "--host", "127.0.0.1", "--port", str(self.port),
+                   "--jinja", "-np", str(self.parallel), "--no-webui",
+                   # none of these change a single output token:
+                   "--mlock",  # the model stays in RAM (never paged out and re-read from disk when Python needs memory)
+                   "--prio", "2", "--prio-batch", "2",  # llama.cpp's threads before the web workers
+                   "--cache-reuse", "256"]  # reuse the cached part of a prompt even when it moved (same page, new ask)
         if self.speculate:  # no draft model: the guesses come from the prompt and what it wrote (the quotes, JSON keys)
             command += ["--spec-type", "ngram-simple", "--spec-ngram-simple-size-n", "8",
                         "--spec-ngram-simple-size-m", "32", "--spec-draft-n-max", "32"]
@@ -1776,7 +1830,8 @@ def main(cfg: dict) -> dict:
         raise SystemExit(f"MODEL = {cfg.get('model')!r} is not known - use \"auto\" or one of: {', '.join(MODELS)}")
     if cfg.get("keep", "medium") not in ("medium", "high"):
         raise SystemExit(f"KEEP = {cfg.get('keep')!r} - use \"medium\" or \"high\"")
-    key, why = pick_model(cfg.get("model", "auto"))
+    ram = available_ram_gb()
+    key, why = pick_model(cfg.get("model", "auto"), ram)
     keys = list(MODELS)[list(MODELS).index(key):] if cfg.get("model", "auto") == "auto" else [key]
     spec = MODELS[key]
     auto = cfg.get("model", "auto") == "auto"
@@ -1789,7 +1844,7 @@ def main(cfg: dict) -> dict:
         log(f"GPU: {len(gpus)} x {gpus[0]['name']} ({vram:.0f} GB VRAM) - llama.cpp runs on it")
     gpu_keys = [GPU_MODEL] if auto else [key]  # the GPU: the small fast one, one copy per GPU
     log(f"LLM: {MODELS[gpu_keys[0]]['name']} on the GPU (else {spec['name']} on the CPU)" if gpus else
-        f"LLM: {spec['name']} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
+        f"LLM: {spec['name']} {cpu_quant(key, ram, cfg.get('quant', 'auto'))} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
                                           if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 0)) > 0 else ""))
 
     def tuned(on_gpu: bool) -> dict[str, int]:
@@ -1816,6 +1871,18 @@ def main(cfg: dict) -> dict:
     llm = collector = None
     # the web part in worker processes, started before llama-server and the topic threads
     workers = process_pool(parallel) if cfg.get("processes", True) else None
+    prefetch = None
+    if not gpus:  # the CPU: llama.cpp and the model download while the game data and the instant rows get ready
+
+        def download() -> None:
+            try:
+                llama_server_binary(tmp / "tools")
+                model_file(spec, tmp / "models", token, cpu_quant(key, ram, cfg.get("quant", "auto")))
+            except Exception as exc:  # noqa: BLE001 - the normal start below tries again and reports it
+                log(f"background download failed ({type(exc).__name__}: {str(exc)[:160]}) - trying again")
+
+        prefetch = threading.Thread(target=download, name="download-llm", daemon=True)
+        prefetch.start()
 
     def upload(message: str) -> None:
         if api is not None and repo_id and collector is not None:
@@ -1834,17 +1901,42 @@ def main(cfg: dict) -> dict:
         discord.send(f"Collecting a trusted Minecraft dataset on the {'GPU' if gpus else 'CPU'} "
                      f"(testing {spec['name']} first)"
                      + (f" -> {repo_id}" if repo_id else "") + ".", "Notebook started", "info", important=True)
+        data = load_minecraft_data(cfg.get("minecraft_version", MINECRAFT_DATA_VERSION))
+        book = recipe_book(data)
+        topic_list = all_topics(data, tmp, cfg)
+        sessions, session = max(1, int(cfg.get("sessions", 1))), int(cfg.get("session", 1))
+        if not 1 <= session <= sessions:
+            raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions})")
+        topic_list = topic_list[session - 1::sessions]  # this session's share: no two sessions read the same topic
+        collector = Collector(folder, spec["name"], session)
+        stats = collector.stats()
+        if session == 1 and cfg.get("game_data", True):  # exact rows from the game data, in a second, no LLM
+            new = [r for r in game_data_rows(data, book, int(cfg.get("seed", 0))) if not collector.seen(r["question"])]
+            if int(cfg.get("max_rows", 0)) > 0:
+                new = new[:max(0, int(cfg["max_rows"]) - len(collector.rows))]
+            for row in new:
+                collector.add(row)
+            if new:
+                collector.save()
+                log(f"{len(new)} exact rows from the game data (recipes, stack sizes, durability, hardness, tools, "
+                    f"food, enchantments, mobs, biomes) - no LLM needed")
+                upload(f"game data: {len(new)} exact rows")
+        if prefetch is not None:
+            prefetch.join()
+
         def starter(binary: Path, on_gpu: bool) -> Callable[[str, bool], Any]:
             def start(name: str, speculate: bool) -> Any:
                 one_gpu = min((g["vram_gb"] for g in gpus), default=0.0)
                 # a copy on EACH GPU when the model fits one (2 x T4: twice the work), else one model across them
                 copies = len(gpus) if on_gpu and len(gpus) > 1 and one_gpu >= MODELS[name].get("gpu_vram_gb", 1e9) + 2 \
                     else 1
-                quant = gpu_quant(name, one_gpu if copies > 1 else vram) if on_gpu else ""
+                chosen_quant = str(cfg.get("quant", "auto") or "auto")
+                quant = (chosen_quant if chosen_quant != "auto" else gpu_quant(name, one_gpu if copies > 1 else vram)) \
+                    if on_gpu else cpu_quant(name, ram, chosen_quant)
                 model = model_file(MODELS[name], tmp / "models", token, quant)
                 slots = tuned(on_gpu)["parallel"]
                 where = (f"{copies} GPUs, one copy on each" if copies > 1 else f"{len(gpus)} GPU(s)") if on_gpu \
-                    else f"{os.cpu_count()} CPU threads"
+                    else "{} CPU cores / {} threads".format(*cpu_cores())
                 log(f"starting llama-server with {model.name} on {where}, {slots} requests at once"
                     + (" each" if copies > 1 else "") + (", n-gram speculation" if speculate else ""))
                 servers: list[LlamaServer] = []
@@ -1894,34 +1986,15 @@ def main(cfg: dict) -> dict:
         settings = {**tuned(device != "CPU"), "parallel": int(getattr(llm, "parallel", 1))}  # all copies together
         parallel = settings["parallel"]
         cfg = {**cfg, **settings, "model": spec["name"]}
+        collector.model = spec["name"]
         log(f"{parallel} topics at once, {cfg['pages_per_topic']} page(s) per topic read whole, "
             f"{cfg['pairs_per_page']} pairs per part of the page")
         log(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s"
             + (" with n-gram speculation" if speculating else ""))
         discord.send(f"LLM: {spec['name']} on the {device}, writing {speed:.1f} tok/s ({parallel} requests at once).",
                      "LLM ready")
-        data = load_minecraft_data(cfg.get("minecraft_version", MINECRAFT_DATA_VERSION))
-        book = recipe_book(data)
-        topic_list = all_topics(data, tmp, cfg)
-        sessions, session = max(1, int(cfg.get("sessions", 1))), int(cfg.get("session", 1))
-        if not 1 <= session <= sessions:
-            raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions})")
-        topic_list = topic_list[session - 1::sessions]  # this session's share: no two sessions read the same topic
-        collector = Collector(folder, spec["name"], session)
-        stats = collector.stats()
         log(f"session {session} of {sessions}: {len(topic_list)} topics, {len(collector.finished() & set(topic_list))} "
             f"done before; {len(book)} recipes for the game-data check; {stats['rows']} rows so far (all sessions)")
-        if session == 1 and cfg.get("game_data", True):  # exact rows from the game data, in a second, no LLM
-            new = [r for r in game_data_rows(data, book, int(cfg.get("seed", 0))) if not collector.seen(r["question"])]
-            if int(cfg.get("max_rows", 0)) > 0:
-                new = new[:max(0, int(cfg["max_rows"]) - len(collector.rows))]
-            for row in new:
-                collector.add(row)
-            if new:
-                collector.save()
-                log(f"{len(new)} exact rows from the game data (recipes, stack sizes, durability, hardness, tools, "
-                    f"food, enchantments, mobs, biomes) - no LLM needed")
-                upload(f"game data: {len(new)} exact rows")
         collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
                 PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()

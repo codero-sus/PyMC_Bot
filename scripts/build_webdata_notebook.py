@@ -16,7 +16,8 @@ NOTEBOOK = ROOT / "pynb" / "Minecraftism_Dataset_Kaggle.ipynb"
 
 INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle (CPU edition: no GPU hours)
 
-The game's own data + web search + an LLM on llama.cpp (Qwen3-30B-A3B, a mixture of experts, in the 30 GB of RAM)
+The game's own data + web search + an LLM on llama.cpp (Qwen3-30B-A3B in **Q5_K_M**, a mixture of experts, in the
+30 GB of RAM)
 collect Minecraft questions and answers, check every one, and upload them to your Hugging Face dataset
 **`<you>/Minecraftism-dataset`** - **private**: only you can see it (`PRIVATE = True`; a repo that already exists
 as public is switched to private too).
@@ -51,8 +52,11 @@ durability, hardness, mining tools, food, enchantments, mobs, biomes) - no LLM, 
 
 Rejected pairs and the reason go to `meta/rejected-NN.jsonl` for review. The dataset uploads every 30 minutes, and
 the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
-It uses the whole machine: llama-server works on 4 topics at once on all 4 CPU threads (it batches them), while web
-search, downloads and page parsing run in separate worker processes. Before it starts, it measures the model with and
+It uses the whole machine, tuned without changing a single answer: llama-server works on 4 topics at once (it
+batches them), writes with one thread per physical core and reads prompts with every thread, keeps the model locked in
+RAM (`--mlock`: never paged out), runs at high priority, and reuses cached prompt parts. Web search, downloads and
+page parsing run in separate, lower-priority worker processes. llama.cpp and the model download in the background
+while the game data and the instant rows are prepared (and uploaded), and the LLM writes compact JSON (fewer tokens). Before it starts, it measures the model with and
 without n-gram speculation (the text stays exactly the same) and keeps the faster way. The log shows the rows/h and
 the LLM's tokens/s. Load it with `load_dataset("<you>/Minecraftism-dataset")` (or `"high"` for the confirmed rows
 only), or train with it: `train_minecraft_llm.py --minecraft-qa-dataset <you>/Minecraftism-dataset`.
@@ -62,10 +66,13 @@ Made with ❤️ by codero-sus · [the-codero.web.app](https://the-codero.web.ap
 """
 
 SETTINGS = """# ============================== settings ==============================
-MODEL = "auto"           # "auto" = "qwen3-30b-a3b": Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~23 GB
+MODEL = "auto"           # "auto" = "qwen3-30b-a3b": Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~26 GB
                          # RAM, only ~3B work per token - on a CPU as fast as a 4B, and far more careful)
                          # "qwen3.5-9b" / "qwen3.5-4b" / "qwen3-4b" / "qwen3-1.7b": smaller (on a CPU NOT much faster
                          # except 1.7B, which is the least careful)
+QUANT = "auto"           # "auto" = Q5_K_M (21.7 GB, ~0.2% precision loss) when ~26 GB RAM is free (Kaggle: yes),
+                         # else Q4_K_M (18.6 GB, ~1.5% loss, ~15% faster). Or "Q4_K_M" / "Q5_K_M" / "Q6_K" (25 GB:
+                         # very tight in Kaggle's 30 GB). Q8_0 / FP16 / FP32 do not fit.
 DATASET_REPO = "Minecraftism-dataset"  # -> <your HF name>/Minecraftism-dataset (or "name/repo")
 UPLOAD = True            # upload to Hugging Face (every UPLOAD_EVERY_MIN minutes, at the end and when stopped)
 PRIVATE = True           # True = only you can see it (an existing public repo is switched to private);
@@ -129,7 +136,7 @@ print("internet: OK")
 
 RUN = """# ============================== run ==============================
 result = main({
-    "model": MODEL, "dataset_repo": DATASET_REPO, "upload": UPLOAD, "private": PRIVATE, "resume": RESUME,
+    "model": MODEL, "quant": QUANT, "dataset_repo": DATASET_REPO, "upload": UPLOAD, "private": PRIVATE, "resume": RESUME,
     "keep": KEEP, "corroborate": CORROBORATE, "game_data": GAME_DATA, "parallel": PARALLEL, "device": DEVICE,
     "min_tokens_per_s": MIN_TOKENS_PER_S, "speculate": SPECULATE,
     "processes": PROCESSES, "pages_per_topic": PAGES_PER_TOPIC, "pairs_per_page": PAIRS_PER_PAGE,

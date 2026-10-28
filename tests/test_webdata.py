@@ -268,6 +268,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
     assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
     assert seen["wiki_pages"] is True and seen["sessions"] == 5 and seen["session"] == 1  # Kaggle: 5 CPU sessions at once
+    assert seen["quant"] == "auto"
     assert seen["corroborate"] is False and seen["game_data"] is True  # the slow web re-check is opt-in on a CPU
     assert seen["processes"] is True
     assert seen["max_hours"] == 11.75 and seen["ping_role_secret"] == "ping_role"
@@ -673,7 +674,7 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     broken = {"cuda-pre", "cuda-built"}  # no GPU build works: the CPU, with the CPU settings
     w.main(cfg)
     assert calls[-1] == ("collect", 5, 4, Path("/bin/cpu/llama-server"))
-    assert started[-1] == ("cpu", "Q4_K_M", 4, None)  # the CPU: the 30B-A3B (fits the RAM, as fast as a 4B there)
+    assert started[-1] == ("cpu", "Q5_K_M", 4, None)  # the CPU: the 30B-A3B in Q5_K_M (29 GB free RAM holds it)
     # session 1 also wrote the exact game-data rows (no LLM), once - running again adds none twice
     rows = [json.loads(line) for line in (tmp_path / w.DATASET_NAME / "data" / "train-01.jsonl").read_text().splitlines()]
     assert rows and all(r["source"] == "game-data" and r["trust"] == "high" for r in rows)
@@ -824,6 +825,21 @@ def test_a_pool_of_servers_sends_each_request_to_the_least_busy_one():
     assert one.stopped == [("a", False)] and two.stopped == [("b", False)]
     server = w.LlamaServer(Path("llama-server"), Path("/m/x.gguf"), port=8090, gpu=1)
     assert server.gpu == 1 and server.log_path().name == "llama-server-8090.log"
+
+
+def test_the_30b_runs_in_q5_when_the_ram_holds_it_and_the_cpu_flags_never_change_the_output(monkeypatch):
+    assert w.cpu_quant("qwen3-30b-a3b", 29.5) == "Q5_K_M"  # Kaggle's 30 GB
+    assert w.cpu_quant("qwen3-30b-a3b", 24) == "Q4_K_M"  # less free RAM: still the 30B, in Q4_K_M
+    assert w.cpu_quant("qwen3-30b-a3b", 29.5, "Q6_K") == "Q6_K" and w.cpu_quant("qwen3-4b", 29.5) == "Q4_K_M"
+    monkeypatch.setattr(w, "cpu_cores", lambda: (2, 4))  # 2 cores with 2 hyper-threads each
+    command = w.LlamaServer(Path("llama-server"), Path("m.gguf"), parallel=4).command()
+    assert command[command.index("-t") + 1] == "2" and command[command.index("-tb") + 1] == "4"
+    assert "--mlock" in command and command[command.index("--prio") + 1] == "2" and "--cache-reuse" in command
+    for flag in ("-ctk", "-ctv", "--temp", "-fa"):  # nothing that changes the output (KV cache stays f16)
+        assert flag not in command
+    physical, logical = w.cpu_cores()
+    assert 1 <= physical <= logical
+    assert "compact JSON" in w.PROPOSE_SYSTEM and "compact JSON" in w.JUDGE_SYSTEM
 
 
 def test_llama_server_speculation_flags():
