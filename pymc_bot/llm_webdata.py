@@ -142,6 +142,23 @@ def cpu_cores() -> tuple[int, int]:
     return (min(physical, logical) if physical else logical), logical
 
 
+def cpu_plan(physical: int, logical: int, per_copy: int = 8, max_copies: int = 8) -> tuple[int, int, int]:
+    """``(llama-servers, threads, prompt threads)`` for the CPU. A normal session (4 threads) = one server. A big
+    machine - a Kaggle **TPU** session has ~96+ CPU threads and 330+ GB RAM - runs several servers with ~8 cores
+    each: they share ONE copy of the model in RAM (the file is memory-mapped once), and together work on many more
+    requests than one server could feed with that many cores."""
+    copies = max(1, min(max_copies, physical // per_copy)) if physical >= 2 * per_copy else 1
+    return copies, max(1, physical // copies), max(1, logical // copies)
+
+
+def tpu_session() -> bool:
+    """A Kaggle TPU session (Accelerator: TPU): only its CPUs are used here, and it ends after 9 h, not 12 h."""
+    import glob
+
+    return bool(os.environ.get("TPU_NAME") or os.environ.get("TPU_ACCELERATOR_TYPE") or os.environ.get("COLAB_TPU_ADDR")
+                or glob.glob("/dev/accel*") or glob.glob("/dev/vfio/[0-9]*"))
+
+
 def pick_model(choice: str = "auto", ram_gb: float | None = None) -> tuple[str, str]:
     """``(model key, why)``: ``"auto"`` = the biggest model that fits in the free RAM."""
     ram = available_ram_gb() if ram_gb is None else ram_gb
@@ -761,13 +778,14 @@ class LlamaServer:
     """llama.cpp's ``llama-server`` with one GGUF, on CPU; ``chat()`` returns parsed JSON (schema-constrained)."""
 
     def __init__(self, binary: Path, model: Path, threads: int = 0, ctx: int = 8192, port: int = 8089,
-                 hybrid: bool = False, parallel: int = 1, speculate: bool = False, gpu: int | None = None) -> None:
+                 hybrid: bool = False, parallel: int = 1, speculate: bool = False, gpu: int | None = None,
+                 threads_batch: int = 0) -> None:
         self.binary, self.model, self.port, self.hybrid = Path(binary), Path(model), port, hybrid
         physical, logical = cpu_cores()
         # writing a token is memory-bound: one thread per physical core (hyper-threads only fight over the cache);
         # reading the prompt is compute-bound: every thread
         self.threads = threads or physical
-        self.threads_batch = max(self.threads, logical)
+        self.threads_batch = threads_batch or max(self.threads, logical)
         self.ctx = ctx  # per slot
         self.parallel = max(1, int(parallel))  # slots: requests the server works on together (continuous batching)
         self.gpu = gpu  # only this GPU (one copy of a small model per GPU), None = all / the CPU
@@ -1835,7 +1853,11 @@ def main(cfg: dict) -> dict:
     keys = list(MODELS)[list(MODELS).index(key):] if cfg.get("model", "auto") == "auto" else [key]
     spec = MODELS[key]
     auto = cfg.get("model", "auto") == "auto"
-    deadline = started + float(cfg.get("max_hours", 11.75)) * 3600 - float(cfg.get("reserve_min", 15)) * 60
+    max_hours = float(cfg.get("max_hours", 11.75))
+    if tpu_session() and max_hours > 8.75:  # Kaggle stops TPU sessions after 9 h: the last upload comes before that
+        log(f"TPU session: only its CPUs are used, and it ends after 9 h - MAX_HOURS {max_hours:g} -> 8.75")
+        max_hours = 8.75
+    deadline = started + max_hours * 3600 - float(cfg.get("reserve_min", 15)) * 60
     gpus = gpu_info() if cfg.get("device", "auto") in ("auto", "gpu") else []
     if cfg.get("device") == "gpu" and not gpus:
         log("DEVICE = \"gpu\" but no NVIDIA GPU is attached (Settings > Accelerator > GPU T4 x2) - using the CPU")
@@ -1853,7 +1875,7 @@ def main(cfg: dict) -> dict:
                 "pages_per_topic": int(cfg.get("pages_per_topic", 0) or 1),  # the whole page is read
                 "pairs_per_page": min(6, int(cfg.get("pairs_per_page", 0) or 5))}  # per part of ~2,800 characters
 
-    parallel = tuned(bool(gpus))["parallel"]
+    parallel = tuned(bool(gpus))["parallel"] * (1 if gpus else cpu_plan(*cpu_cores())[0])  # all servers together
     api = repo_id = None
     if cfg.get("upload", True):
         if not token:
@@ -1870,7 +1892,7 @@ def main(cfg: dict) -> dict:
             + ("PRIVATE: only you can see it" if private else "PUBLIC: anyone can see it (PRIVATE = False)"))
     llm = collector = None
     # the web part in worker processes, started before llama-server and the topic threads
-    workers = process_pool(parallel) if cfg.get("processes", True) else None
+    workers = process_pool(min(parallel, 32)) if cfg.get("processes", True) else None
     prefetch = None
     if not gpus:  # the CPU: llama.cpp and the model download while the game data and the instant rows get ready
 
@@ -1930,13 +1952,17 @@ def main(cfg: dict) -> dict:
                 # a copy on EACH GPU when the model fits one (2 x T4: twice the work), else one model across them
                 copies = len(gpus) if on_gpu and len(gpus) > 1 and one_gpu >= MODELS[name].get("gpu_vram_gb", 1e9) + 2 \
                     else 1
+                threads = threads_batch = 0  # 0 = LlamaServer's own choice (all cores)
+                if not on_gpu:  # a big CPU machine (TPU session): several servers sharing the model in RAM
+                    copies, threads, threads_batch = cpu_plan(*cpu_cores())
                 chosen_quant = str(cfg.get("quant", "auto") or "auto")
                 quant = (chosen_quant if chosen_quant != "auto" else gpu_quant(name, one_gpu if copies > 1 else vram)) \
                     if on_gpu else cpu_quant(name, ram, chosen_quant)
                 model = model_file(MODELS[name], tmp / "models", token, quant)
                 slots = tuned(on_gpu)["parallel"]
                 where = (f"{copies} GPUs, one copy on each" if copies > 1 else f"{len(gpus)} GPU(s)") if on_gpu \
-                    else "{} CPU cores / {} threads".format(*cpu_cores())
+                    else ("{} CPU cores / {} threads".format(*cpu_cores()) if copies == 1 else
+                          f"{copies} servers x {threads} CPU cores (one shared copy of the model in RAM)")
                 log(f"starting llama-server with {model.name} on {where}, {slots} requests at once"
                     + (" each" if copies > 1 else "") + (", n-gram speculation" if speculate else ""))
                 servers: list[LlamaServer] = []
@@ -1944,7 +1970,8 @@ def main(cfg: dict) -> dict:
                     for index in range(copies):
                         servers.append(LlamaServer(binary, model, ctx=int(cfg.get("ctx", 4096)),
                                                    hybrid=MODELS[name]["hybrid"], parallel=slots, speculate=speculate,
-                                                   port=8089 + index, gpu=index if copies > 1 else None).start())
+                                                   port=8089 + index, gpu=index if copies > 1 and on_gpu else None,
+                                                   threads=threads, threads_batch=threads_batch).start())
                 except BaseException:
                     for server in servers:
                         server.stop()

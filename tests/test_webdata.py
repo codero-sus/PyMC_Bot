@@ -638,7 +638,8 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
         return Path(f"/bin/{'cuda-' + ('pre' if prebuilt else 'built') if cuda_arch else 'cpu'}/llama-server")
 
     class Server(Timed):
-        def __init__(self, binary, model, ctx, hybrid, parallel, speculate, port=8089, gpu=None):
+        def __init__(self, binary, model, ctx, hybrid, parallel, speculate, port=8089, gpu=None, threads=0,
+                     threads_batch=0):
             super().__init__(model.name, speculate, 50, [])
             self.binary, self.parallel, self.seconds, self.gpu, self.port = binary, parallel, 0.0, gpu, port
 
@@ -840,6 +841,46 @@ def test_the_30b_runs_in_q5_when_the_ram_holds_it_and_the_cpu_flags_never_change
     physical, logical = w.cpu_cores()
     assert 1 <= physical <= logical
     assert "compact JSON" in w.PROPOSE_SYSTEM and "compact JSON" in w.JUDGE_SYSTEM
+
+
+def test_a_big_cpu_machine_runs_several_servers_sharing_the_model(tmp_path, monkeypatch):
+    assert w.cpu_plan(2, 4) == (1, 2, 4)  # a Kaggle CPU session: one server, as before
+    assert w.cpu_plan(4, 4) == (1, 4, 4) and w.cpu_plan(12, 24) == (1, 12, 24)
+    assert w.cpu_plan(48, 96) == (6, 8, 16)  # a TPU session's 96 threads: 6 servers x 8 cores
+    assert w.cpu_plan(112, 224) == (8, 14, 28)  # never more than 8 servers
+    started = []
+
+    class Server(Timed):
+        def __init__(self, binary, model, ctx, hybrid, parallel, speculate, port=8089, gpu=None, threads=0,
+                     threads_batch=0):
+            super().__init__(model.name, speculate, 50, [])
+            self.parallel, self.seconds = parallel, 0.0
+            started.append((port, gpu, threads, threads_batch, parallel))
+
+        def stop(self):
+            pass
+
+        def start(self):
+            return self
+
+    seen = {}
+    monkeypatch.setattr(w, "cpu_cores", lambda: (48, 96))
+    monkeypatch.setattr(w, "tpu_session", lambda: True)
+    monkeypatch.setattr(w, "gpu_info", lambda: [])
+    monkeypatch.setattr(w, "llama_server_binary", lambda *a, **k: Path("/bin/cpu/llama-server"))
+    monkeypatch.setattr(w, "LlamaServer", Server)
+    monkeypatch.setattr(w, "model_file", lambda spec, folder, token="", quant="": Path(quant or spec["quant"]))
+    monkeypatch.setattr(w, "available_ram_gb", lambda: 320.0)
+    monkeypatch.setattr(w, "collect", lambda cfg, llm, collector, book, topics, search, fetch, deadline, *a, **k:
+                        seen.update(parallel=cfg["parallel"], deadline=deadline))
+    monkeypatch.setattr(w, "load_minecraft_data", lambda version=None: _data())
+    monkeypatch.setattr(w, "wiki_titles", lambda cache=None: ["Lead"])
+    started_at = time.time()
+    w.main({"upload": False, "work": str(tmp_path), "tmp": str(tmp_path / "t"), "processes": False,
+            "speculate": "off", "session_start": started_at})
+    assert started == [(8089 + i, None, 8, 16, 4) for i in range(6)]  # 6 servers, no GPU pinning, 8 cores each
+    assert seen["parallel"] == 24  # 6 x 4 topics at once
+    assert seen["deadline"] <= started_at + 8.75 * 3600  # a TPU session ends after 9 h, not 12
 
 
 def test_llama_server_speculation_flags():

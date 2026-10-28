@@ -33,6 +33,12 @@ saved version keeps its own settings, takes its own fifth of the topics and writ
 overwrite each other). 5 sessions = 5x the rows in the same 12 hours. Run them again later and each goes on where it
 stopped (`RESUME`).
 
+**Much faster, still no GPU hours: Accelerator *TPU*.** A Kaggle TPU session comes with ~96+ CPU cores and 330+ GB
+of RAM (it uses your weekly **TPU** quota, ~20 h, not GPU hours). The TPU chips are not used - only those CPUs:
+the notebook sees the cores and runs several llama-servers at once (~8 cores each, all sharing one copy of the
+model in RAM), so it works on many more topics at once. TPU sessions end after 9 h, so `MAX_HOURS` is capped to 8.75
+there by itself. Give it its own `SESSION` number like any other session.
+
 **Instant rows:** session 1 first writes ~4,300 **exact** rows straight from the game's data (recipes, stack sizes,
 durability, hardness, mining tools, food, enchantments, mobs, biomes) - no LLM, done in a second (`GAME_DATA`).
 
@@ -83,7 +89,7 @@ KEEP = "medium"          # "medium" = every row that passed all checks (each has
 CORROBORATE = False      # True = search each answer again and ask an independent page (catches outdated pages, makes
                          # more rows `high`) - but it is the slowest part on a CPU: about half the rows per hour
 GAME_DATA = True         # session 1: ~4,300 exact rows from the game data first (no LLM, takes a second)
-PARALLEL = 0             # topics worked on at once; 0 = auto: 4 on the CPU (1 = one at a time, slowest)
+PARALLEL = 0             # topics per llama-server at once; 0 = auto: 4 (a TPU session's big CPU runs several servers)
 MIN_TOKENS_PER_S = 0     # 0 = quality first: always the biggest model that fits (the 30B on Kaggle). A number (e.g. 20)
                          # = speed first: measures each model here and keeps the biggest that writes that many tokens/s
 PROCESSES = True         # web search, downloads and page parsing in PARALLEL worker processes (outside the main one)
