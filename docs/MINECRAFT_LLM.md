@@ -506,7 +506,13 @@ trainer prints a warning and trains on the rest.
 `pynb/Minecraftism_Dataset_Kaggle.ipynb` builds **`<you>/Minecraftism-dataset`** on Hugging Face without a GPU:
 DuckDuckGo search (`ddgs`) finds pages, and an LLM runs in Kaggle's 30 GB of RAM on llama.cpp's CPU server.
 `MODEL = "auto"` (the default) takes the biggest that fits the free RAM: on Kaggle **Qwen3-30B-A3B-Instruct-2507**
-(Q4_K_M, ~23 GB RAM). It is a mixture of experts: all 30B weights sit in RAM but only ~3B work on each token, so on
+in **Q5_K_M** (21.7 GB file, ~26 GB RAM; about 0.2% precision loss against the full model, ~7x less than Q4_K_M)
+when the free RAM holds it - on Kaggle it does - else Q4_K_M (18.6 GB, ~23 GB RAM); `QUANT` picks one yourself
+(Q6_K, 25 GB, is very tight in 30 GB; Q8_0 / FP16 / FP32 do not fit). CPU tuning that never changes an answer:
+one thread per physical core for writing and every thread for reading prompts (`-t` / `-tb`), the model locked in
+RAM (`--mlock`), llama.cpp at high priority (`--prio 2`) and the web workers at low priority, cached prompt parts
+reused (`--cache-reuse`), compact JSON replies (fewer tokens), and llama.cpp plus the model downloading in the
+background while the game data and the instant rows are prepared. It is a mixture of experts: all 30B weights sit in RAM but only ~3B work on each token, so on
 a CPU it runs about as fast as a 4B model and judges far better. `"qwen3-4b"` (~4 GB) and `"qwen3-1.7b"` (~2.5 GB,
 2-3× faster, least careful) are the smaller choices and the fallback on smaller machines.
 For speed on the CPU it works on `PARALLEL = 4` topics at once (llama-server's parallel slots batch them, and
@@ -557,7 +563,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/c65fc977b6ccd6331b2851d36af0fa1946f4ce59/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/ffbab601043b339dac48cc6caa76bf70dad86ec1/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
