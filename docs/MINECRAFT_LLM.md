@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -563,9 +563,8 @@ from the game data** (minecraft-data 1.21.8, MIT, by templates - no LLM, done in
 recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it, hunger from
 food, enchantment levels / conflicts / treasure-only, mob hitbox sizes, biome dimensions; `GAME_DATA = True`); (2) the
 second web search per answer is off (`CORROBORATE = False`) - it was the slowest part on a CPU, about half the rows
-per hour; every other check stays; (3) **many sessions at once, no editing** (`SESSIONS = 11`, `SESSION = 0`):
-Kaggle runs up to 5 CPU sessions at the same time per account, so click *Save & Run All* 5 times (and 5 more on a
-second account with the same `HF_TOKEN`) - each session takes the lowest free number by itself (see below). **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
+per hour; every other check stays; (3) **many sessions at once, no editing** (`SESSIONS = 10`, `SESSION = 0`):
+Run the CPU sessions your account and quotas permit using *Save & Run All* (with the same `HF_TOKEN` wherever you run them) - each session takes the lowest free number by itself (see below). **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
 the weekly TPU quota (~20 h), not GPU hours; the TPU chips stay idle - the notebook sees the cores and runs several
 llama-servers (~8 cores each, up to 8, all sharing one memory-mapped copy of the model, 4 requests each), and caps
 `MAX_HOURS` at 8.75 because TPU sessions end after 9 h - roughly the work of 15 CPU sessions. Give it its own
@@ -597,22 +596,19 @@ that is running elsewhere stops right away (two sessions with one number would o
 `SESSIONS` higher than the sessions that really run is fine: the others take over the missing shares
 (`HELP_OTHERS`).
 
-**Your own PC as one more session.** `scripts/collect_dataset_pc.bat` (Windows; double-click it - it makes
-`.venv-dataset`, installs `ddgs`, `huggingface_hub`, `psutil`, and runs `hf auth login` once if there is no token)
-or `python pymc_bot/llm_webdata.py` (Linux / macOS) runs the same collector on your computer: `--sessions 11`
-(the notebooks' `SESSIONS`), `--session 0` (auto), `--hours 0` (no limit: it goes on with the slower sessions'
-topics until everything is done; **Ctrl+C** stops it and uploads what it has), `--device auto|gpu|cpu`,
-`--model`, `--parallel`, `--folder` (default `~/Minecraftism`: the dataset, the model and llama.cpp),
-`--topics N` (a test run), `--no-upload`. With an NVIDIA GPU it downloads llama.cpp's Windows CUDA 12.4 build and
-its runtime DLLs (Linux: the Ubuntu CUDA build) and runs **Qwen3.5-4B** (UD-Q4_K_XL, ~3 GB) fully on the GPU with 8
-requests at once - an RTX 3050 8 GB holds it with room to spare and needs little system RAM; no GPU = the CPU
-build. **The GPU writes, the CPU scrapes:** with the LLM on a GPU, the web part (wiki downloads, HTML parsing,
-splitting pages, searches) runs in its own worker processes - `max(2 x requests at once, CPU threads - 2)`, e.g. 16
-on a 6-core / 12-thread Ryzen with 8 requests at once - at below-normal priority, fetching that many topics ahead so
-the GPU never waits for a page. Windows has no `fork`, so they are *spawned* (that works because the PC runs the file
-as a script). On a 4-core Kaggle CPU it stays one worker per topic at once and one topic ahead (the LLM needs the
-cores there). The Hugging Face token comes from `HF_TOKEN` or the `hf auth login` one (the same account as the Kaggle
-secret); Discord messages from the `DISCORD_WEBHOOK_INFORM_ME1` / `PING_ROLE` environment variables if set. The LLM writes question/answer pairs
+**PC scraper (no LLM or GPU).** On Windows, double-click `scripts/collect_dataset_pc.bat`. On other systems,
+install `ddgs` and `huggingface_hub`, log in with `hf auth login`, then run `python scripts/scrape_dataset_pc.py`.
+Use the same Hugging Face account as the Kaggle `HF_TOKEN`. The PC uses parallel CPU processes to fetch and parse
+wiki pages and uploads batches under `scrape-cache/` in the private dataset; it does not create dataset rows or
+claim a session number. The Kaggle workers import these batches at startup and during their 30-minute uploads;
+if a page is missing they fetch it themselves. Ctrl+C uploads finished pages. `--workers N`, `--topics N`,
+`--folder PATH`, and `--dataset-repo NAME` are optional. If an upload fails the local pages remain for retry.
+Before uploading, the PC checks existing `scrape-cache` batches and skips pages with the same URL or exactly the
+same text, including after a restart or loss of local state. Different URLs with identical text are uploaded only
+once; if Kaggle needs a skipped URL it can fetch it normally. This exact-content check does not deduplicate Q&A rows
+across sessions, and it is intended for one PC scraper at a time (simultaneous scrapers can race). Scraping may be
+limited by the site's rate limits and network; it does not guarantee a particular speedup.
+The LLM writes question/answer pairs
 only from the page text, and each pair has to pass every check:
 
 | check | rejects |
@@ -631,7 +627,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python

@@ -8,8 +8,8 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
@@ -57,17 +57,16 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (CPU only)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/29d4bfaf93eab5b653ea960b8102333c6b1da729/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **None** (`DEVICE = "cpu"`: it needs no GPU and uses none of your GPU quota), Internet **on**.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
-4. **Save Version → Save & Run All** - 5 times, no editing in between (`SESSIONS = 11`, `SESSION = 0` = auto: each
-   session takes the lowest free number by itself, its own share of the topics and its own files; Kaggle runs 5 CPU
-   sessions at once per account - a second account with the same `HF_TOKEN` adds 5 more). Every 30 minutes each
-   one skips what the others finished. **Your PC as one more session:** double-click
-   `scripts/collect_dataset_pc.bat` (Windows, NVIDIA GPU or CPU; Python 3.10+) - it runs Qwen3.5-4B on the GPU while the CPU scrapes in parallel worker processes and,
-   after its own share, the slower sessions' topics until everything is done (Ctrl+C uploads and stops). Session 1 first writes ~4,200 exact rows from the game data (no LLM, a second). Each works through 84 game mechanics, then mobs, items, blocks, enchantments,
+4. **Save Version → Save & Run All** for each available Kaggle CPU session (`SESSIONS = 10`, `SESSION = 0`).
+   The separate PC scraper does not take a session number. On Windows double-click `scripts/collect_dataset_pc.bat`:
+   it scrapes with CPU processes, uploads source pages, and runs no LLM or GPU. Kaggle imports the pages at startup
+   and every 30 minutes; missing pages are fetched normally. Use the same Hugging Face account on both machines.
+   Ctrl+C uploads completed pages. Session 1 first writes ~4,200 exact rows from the game data (no LLM, a second). Each works through 84 game mechanics, then mobs, items, blocks, enchantments,
    effects and biomes until `MAX_HOURS`, uploads every 30 minutes, and the next run goes on where it stopped.
    **Stop** keeps and uploads what it has. The dataset is **private** (`PRIVATE = True`): only you can see it, and a
    repo that already exists as public is switched to private before every upload.
