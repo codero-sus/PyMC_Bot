@@ -241,7 +241,7 @@ def test_notebook_is_built_from_the_module_and_runs_on_cpu():
     settings = sources[1]
     assert 'DATASET_REPO = "mr-sus/Minecraftism-dataset"' in settings and 'HF_SECRET = "HF_TOKEN"' in settings
     assert 'DISCORD_SECRET = "discord_webhook_inform_me1"' in settings and 'PING_ROLE_SECRET = "ping_role"' in settings
-    assert "MAX_HOURS = 11.75" in settings and 'DEVICE = "cpu"' in settings  # CPU edition: never uses GPU hours
+    assert "MAX_HOURS = 11.75" in settings and 'DEVICE = "auto"' in settings  # GPU when available, else CPU
     assert '"/kaggle/working", "/kaggle/tmp"' in sources[2]
     assert "Made with ❤️ by codero-sus" in sources[0] and "minecraft.wiki is CC BY-NC-SA" in sources[0]
     for code in sources[1:]:
@@ -266,8 +266,8 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     exec(compile(sources[4], "run", "exec"), namespace)
     assert seen["dataset_repo"] == "mr-sus/Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
-    assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
-    assert seen["wiki_pages"] is True and seen["sessions"] == 20 and seen["session"] == 0  # Kaggle sessions only
+    assert seen["device"] == "auto" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
+    assert seen["wiki_pages"] is True and seen["sessions"] == 16 and seen["session"] == 0  # Kaggle sessions only
     assert seen["quant"] == "auto"
     assert seen["corroborate"] is False and seen["game_data"] is True  # the slow web re-check is opt-in on a CPU
     assert seen["processes"] is True
@@ -956,21 +956,22 @@ def test_another_page_is_only_judged_when_it_talks_about_the_same_thing():
     assert (verdict, url) == ("SUPPORTED", "https://minecraft.fandom.com/wiki/Lead") and len(calls) == 1
 
 
-def test_parts_are_stable_disjoint_and_cover_topics_even_if_lists_change():
+@pytest.mark.parametrize("count", [16, 20])
+def test_parts_are_stable_disjoint_and_cover_topics_even_if_lists_change(count):
     topics = [f"t{i}" for i in range(100)]
-    parts = [w.session_topics(topics, 20, part, help_others=False) for part in range(1, 21)]
+    parts = [w.session_topics(topics, count, part, help_others=False) for part in range(1, count + 1)]
     assert sorted(t for part in parts for t in part) == sorted(topics)
     assert sum(map(len, parts)) == len(set(t for part in parts for t in part))
-    for part in range(1, 21):
-        changed = w.session_topics(["new topic", *reversed(topics)], 20, part, help_others=False)
+    for part in range(1, count + 1):
+        changed = w.session_topics(["new topic", *reversed(topics)], count, part, help_others=False)
         assert set(changed) - {"new topic"} == set(parts[part - 1])
     assert w.session_topics(topics, 1, 1) == topics
-    for part in range(1, 21):
-        order = w.session_topics(topics, 20, part, help_others=True)
+    for part in range(1, count + 1):
+        order = w.session_topics(topics, count, part, help_others=True)
         assert order[:len(parts[part - 1])] == parts[part - 1]
         assert sorted(order) == sorted(topics)
     with pytest.raises(ValueError):
-        w.session_topics(topics, 20, 0)
+        w.session_topics(topics, count, 0)
 
 
 # ------------------------------------------------------------------ your own PC + many sessions at once
@@ -1328,3 +1329,25 @@ def test_pc_reconciles_legacy_upload_state(tmp_path):
 
     pc.upload_pending(Hub(), "me/data", pages, state, tmp_path / "batch")
     assert second in json.loads(state.read_text())["urls"]
+
+
+def test_failed_resume_stops_instead_of_overwriting_slice(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(
+        snapshot_download=lambda *a, **k: (_ for _ in ()).throw(OSError("network"))))
+    hub = types.SimpleNamespace(repo_exists=lambda *a, **k: True)
+    with pytest.raises(RuntimeError, match="stopping to protect existing dataset slices"):
+        w.hub_resume(hub, "me/data", tmp_path, "token")
+
+
+def test_claims_fail_closed_when_hub_or_existing_claim_is_unreadable(tmp_path, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise OSError("network")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=unavailable))
+    hub = types.SimpleNamespace(list_repo_files=unavailable)
+    read, _ = w.hub_claims(hub, "me/data", "token", tmp_path)
+    with pytest.raises(OSError):
+        read()
+    hub.list_repo_files = lambda *args, **kwargs: ["meta/claim-01.json"]
+    with pytest.raises(RuntimeError, match="Cannot read session claim"):
+        read()

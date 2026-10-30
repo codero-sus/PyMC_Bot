@@ -1792,9 +1792,9 @@ def hub_resume(api: Any, repo_id: str, folder: Path, token: str) -> bool:
         snapshot_download(repo_id, repo_type="dataset", local_dir=str(folder), token=token or None,
                           allow_patterns=["data/*", "meta/*"])
         return any((Path(folder) / "data").glob("train*.jsonl"))
-    except Exception as exc:  # noqa: BLE001 - start fresh rather than fail
-        log(f"could not resume from {repo_id} ({type(exc).__name__}) - starting fresh")
-        return False
+    except Exception as exc:  # noqa: BLE001 - never overwrite an existing slice after a failed resume
+        raise RuntimeError(f"Could not resume from {repo_id} ({type(exc).__name__}); stopping to protect existing "
+                           "dataset slices. Check access/network and retry.") from exc
 
 
 def hub_upload(api: Any, repo_id: str, folder: Path, private: bool, message: str,
@@ -1886,10 +1886,7 @@ def hub_claims(api: Any, repo_id: str, token: str, target: Path) -> tuple[Callab
 
     def read() -> dict[int, dict]:
         claims: dict[int, dict] = {}
-        try:
-            names = api.list_repo_files(repo_id, repo_type="dataset")
-        except Exception:  # noqa: BLE001 - a new repo: nothing claimed yet
-            return claims
+        names = api.list_repo_files(repo_id, repo_type="dataset")  # fail closed if claims cannot be checked
         for name in names:
             found = re.fullmatch(r"meta/claim-(\d+)\.json", name)
             if not found:
@@ -1898,8 +1895,8 @@ def hub_claims(api: Any, repo_id: str, token: str, target: Path) -> tuple[Callab
                 path = hf_hub_download(repo_id, name, repo_type="dataset", token=token or None,
                                        local_dir=str(target), force_download=True)
                 claims[int(found.group(1))] = json.loads(Path(path).read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001 - unreadable = not claimed
-                continue
+            except Exception as exc:  # noqa: BLE001 - unreadable claims must not be treated as free
+                raise RuntimeError(f"Cannot read session claim {name}; stopping to protect dataset slices") from exc
         return claims
 
     def write(number: int, claim: dict) -> None:

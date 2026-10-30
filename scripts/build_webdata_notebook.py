@@ -14,25 +14,25 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "pymc_bot" / "llm_webdata.py"
 NOTEBOOK = ROOT / "pynb" / "Minecraftism_Dataset_Kaggle.ipynb"
 
-INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle (CPU edition: no GPU hours)
+INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected in Kaggle slices
 
-The game's own data + web search + an LLM on llama.cpp (Qwen3-30B-A3B in **Q5_K_M**, a mixture of experts, in the
-30 GB of RAM)
-collect Minecraft questions and answers, check every one, and upload them to your Hugging Face dataset
+The game's own data + web search + an LLM on llama.cpp (Qwen3.5-4B on GPU, or Qwen3-30B-A3B on CPU with
+a Q5_K_M or Q4_K_M quant chosen for available RAM) collect Minecraft questions and answers, check every one, and upload them to your Hugging Face dataset
 **`mr-sus/Minecraftism-dataset`** - **private**: only you can see it (`PRIVATE = True`; a repo that already exists
 as public is switched to private too).
 
-**Kaggle setup:** Settings → *Accelerator*: **None** (free - no GPU quota used; `DEVICE = "cpu"` never touches a GPU)
+**Kaggle setup:** Settings → *Accelerator*: **GPU T4 ×2** for your 16 GPU runs (`DEVICE = "auto"` tries the GPU,
+then falls back to CPU if unavailable); select None and `DEVICE = "cpu"` if you want a CPU run instead
 · *Internet* **On** · Add-ons → Secrets: `HF_TOKEN` (a Hugging Face **write** token). Optional:
 `discord_webhook_inform_me1` (status messages) and `ping_role` (the Discord role pinged on start, uploads, errors
 and the end).
 
 **Run separate parts across accounts:** All notebooks use the same `DATASET_REPO`, write-enabled `HF_TOKEN`,
-`SESSIONS = 20`, `RESUME = True`, and `HELP_OTHERS = False`. Give each concurrently running notebook a **different**
-`SESSION` from 1 to 20 (for example account 1: 1–5, account 2: 6–10). Each number writes its own train and progress
+`SESSIONS = 16`, `RESUME = True`, and `HELP_OTHERS = False`. Give each concurrently running notebook a **different**
+`SESSION` from 1 to 16 (account 1: 1–5, account 2: 6–10, account 3: 11–15, account 4: 16). Each number writes its own train and progress
 files and gets a stable topic partition, even if the topic lists are in different orders. Save & Run All separately
 with each setting. Restart the same part number to resume it. Do not run the same number twice at once. You may use
-`SESSION = 0` to auto-claim, but concurrent claims are best-effort and explicit numbers are safer. All 20 parts must
+`SESSION = 0` to auto-claim, but concurrent claims are best-effort and explicit numbers are safer. All 16 parts must
 run to cover all topics; to let a fast session help missing parts, set `HELP_OTHERS = True` (possible overlap).
 Stop old notebooks before changing the number of parts or switching to this new partition scheme. Pages that redirect
 to the same article and independently generated Q&A can still overlap; review/deduplicate the dataset before training.
@@ -108,12 +108,12 @@ MIN_TOKENS_PER_S = 0     # 0 = quality first: always the biggest model that fits
 PROCESSES = True         # web search, downloads and page parsing in PARALLEL worker processes (outside the main one)
 SPECULATE = "auto"       # n-gram speculation (guesses text it repeats from the prompt, checks many tokens at once):
                          # "auto" = measure with and without, keep the faster; "on" / "off"
-DEVICE = "cpu"           # "cpu" = never uses a GPU (no GPU hours). "auto" / "gpu" = a GPU when attached (optional)
+DEVICE = "auto"          # try GPU when attached, else CPU; "cpu" uses no GPU hours
 WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other article of the Fandom wiki (thousands more)
 PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2,800 characters); 0 = auto: 1
 PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
-SESSIONS = 20            # Kaggle LLM sessions; the separate PC scraper does not take a session number
-SESSION = 0              # 0 = best-effort auto; safer: set a DIFFERENT part number 1 ... 20 for every active run
+SESSIONS = 16            # 5 + 5 + 5 + 1 Kaggle runs; the separate PC scraper takes no slice
+SESSION = 0              # 0 = best-effort auto; safer: set a DIFFERENT part number 1 ... 16 for every active run
 HELP_OTHERS = False      # False = only this part; True = also help other parts (can duplicate active work)
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
 MAX_ROWS = 0             # 0 = no limit
