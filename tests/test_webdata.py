@@ -239,7 +239,7 @@ def test_notebook_is_built_from_the_module_and_runs_on_cpu():
     module = (ROOT / "pymc_bot" / "llm_webdata.py").read_text(encoding="utf-8")
     assert any(s.endswith(module.rstrip("\n")) for s in sources), "the collector cell is the module, verbatim"
     settings = sources[1]
-    assert 'DATASET_REPO = "Minecraftism-dataset"' in settings and 'HF_SECRET = "HF_TOKEN"' in settings
+    assert 'DATASET_REPO = "mr-sus/Minecraftism-dataset"' in settings and 'HF_SECRET = "HF_TOKEN"' in settings
     assert 'DISCORD_SECRET = "discord_webhook_inform_me1"' in settings and 'PING_ROLE_SECRET = "ping_role"' in settings
     assert "MAX_HOURS = 11.75" in settings and 'DEVICE = "cpu"' in settings  # CPU edition: never uses GPU hours
     assert '"/kaggle/working", "/kaggle/tmp"' in sources[2]
@@ -264,7 +264,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     namespace["main"] = lambda cfg: seen.update(cfg) or result
     namespace.update(WORK=str(tmp_path), TMP=str(tmp_path / "tmp"))
     exec(compile(sources[4], "run", "exec"), namespace)
-    assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
+    assert seen["dataset_repo"] == "mr-sus/Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
     assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
     assert seen["wiki_pages"] is True and seen["sessions"] == 20 and seen["session"] == 0  # Kaggle sessions only

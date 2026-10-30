@@ -19,7 +19,7 @@ INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected on Kaggle (
 The game's own data + web search + an LLM on llama.cpp (Qwen3-30B-A3B in **Q5_K_M**, a mixture of experts, in the
 30 GB of RAM)
 collect Minecraft questions and answers, check every one, and upload them to your Hugging Face dataset
-**`<you>/Minecraftism-dataset`** - **private**: only you can see it (`PRIVATE = True`; a repo that already exists
+**`mr-sus/Minecraftism-dataset`** - **private**: only you can see it (`PRIVATE = True`; a repo that already exists
 as public is switched to private too).
 
 **Kaggle setup:** Settings → *Accelerator*: **None** (free - no GPU quota used; `DEVICE = "cpu"` never touches a GPU)
@@ -88,7 +88,7 @@ MODEL = "auto"           # "auto" = "qwen3-30b-a3b": Qwen3-30B-A3B-Instruct-2507
 QUANT = "auto"           # "auto" = Q5_K_M (21.7 GB, ~0.2% precision loss) when ~26 GB RAM is free (Kaggle: yes),
                          # else Q4_K_M (18.6 GB, ~1.5% loss, ~15% faster). Or "Q4_K_M" / "Q5_K_M" / "Q6_K" (25 GB:
                          # very tight in Kaggle's 30 GB). Q8_0 / FP16 / FP32 do not fit.
-DATASET_REPO = "Minecraftism-dataset"  # -> <your HF name>/Minecraftism-dataset (or "name/repo")
+DATASET_REPO = "mr-sus/Minecraftism-dataset"  # Hugging Face dataset repository
 UPLOAD = True            # upload to Hugging Face (every UPLOAD_EVERY_MIN minutes, at the end and when stopped)
 PRIVATE = True           # True = only you can see it (an existing public repo is switched to private);
                          # False = public - only once you have looked through it
