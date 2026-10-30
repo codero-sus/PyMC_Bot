@@ -2015,13 +2015,20 @@ def work_topic(topic: str, found: list, cfg: dict, llm: Any, collector: Collecto
 
 
 def session_topics(topic_list: list[str], sessions: int, session: int, help_others: bool = True) -> list[str]:
-    """This session's share (every ``sessions``-th topic: no two sessions read the same one), then - when it is
-    done early (a TPU session is ~15x faster than a CPU one) - the OTHER shares from their END, taking turns, so it
-    helps the slower sessions without meeting them (they work from the front)."""
-    own = topic_list[session - 1::sessions]
-    if not help_others or sessions <= 1:
+    """Assign topics by a stable hash, independent of topic list order or changes between notebooks.
+
+    Optional helping processes other parts after the session's own. Helping can overlap with active sessions.
+    """
+    if sessions < 1 or not 1 <= session <= sessions:
+        raise ValueError("session must be between 1 and sessions")
+    shares: list[list[str]] = [[] for _ in range(sessions)]
+    for topic in topic_list:
+        digest = hashlib.sha256(norm(topic).encode("utf-8")).digest()
+        shares[int.from_bytes(digest[:8], "big") % sessions].append(topic)
+    own = shares[session - 1]
+    if not help_others or sessions == 1:
         return own
-    others = [topic_list[s::sessions][::-1] for s in range(sessions) if s != session - 1]
+    others = [share[::-1] for i, share in enumerate(shares) if i != session - 1]
     longest = max((len(share) for share in others), default=0)
     return own + [share[i] for i in range(longest) for share in others if i < len(share)]
 
@@ -2240,7 +2247,7 @@ def main(cfg: dict) -> dict:
             write_claim(session, {"run": run, "time": time.time(), "ended": False})
         if not 1 <= session <= sessions:
             raise SystemExit(f"SESSION = {session} - use 1 to SESSIONS ({sessions}), or 0 = auto")
-        share = len(topic_list[session - 1::sessions])  # this session's share: no two sessions read the same topic
+        share = len(session_topics(topic_list, sessions, session, help_others=False))
         topic_list = session_topics(topic_list, sessions, session, bool(cfg.get("help_others", True)))
         collector = Collector(folder, spec["name"], session)
         collector.run = run  # the claim on the Hub is refreshed with every upload

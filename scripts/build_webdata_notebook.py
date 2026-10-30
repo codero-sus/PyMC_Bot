@@ -27,12 +27,16 @@ as public is switched to private too).
 `discord_webhook_inform_me1` (status messages) and `ping_role` (the Discord role pinged on start, uploads, errors
 and the end).
 
-**Fast on a CPU - run many at once, no editing:** Run as many Kaggle CPU sessions as your accounts and quotas permit.
-Leave `SESSIONS = 20` and `SESSION = 0` (auto) and click *Save Version → Save & Run All* for each available
-CPU session (use the same `HF_TOKEN` everywhere). Each session takes the lowest free number by itself (a claim file on the
-Hub, `meta/claim-NN.json`), its own share of the topics, and writes its own files - they never overwrite each other.
-Every 30 minutes each one also reads what the others finished and skips it. More sessions = more rows in the same 12
-hours. Run them again later and each goes on where it stopped (`RESUME`).
+**Run separate parts across accounts:** All notebooks use the same `DATASET_REPO`, write-enabled `HF_TOKEN`,
+`SESSIONS = 20`, `RESUME = True`, and `HELP_OTHERS = False`. Give each concurrently running notebook a **different**
+`SESSION` from 1 to 20 (for example account 1: 1–5, account 2: 6–10). Each number writes its own train and progress
+files and gets a stable topic partition, even if the topic lists are in different orders. Save & Run All separately
+with each setting. Restart the same part number to resume it. Do not run the same number twice at once. You may use
+`SESSION = 0` to auto-claim, but concurrent claims are best-effort and explicit numbers are safer. All 20 parts must
+run to cover all topics; to let a fast session help missing parts, set `HELP_OTHERS = True` (possible overlap).
+Stop old notebooks before changing the number of parts or switching to this new partition scheme. Pages that redirect
+to the same article and independently generated Q&A can still overlap; review/deduplicate the dataset before training.
+Kaggle availability, quotas and account rules still apply.
 
 **PC scraper (no LLM):** double-click `scripts\\collect_dataset_pc.bat` on Windows. The CPU downloads and parses
 wiki pages in worker processes and uploads batches to `scrape-cache/` in the private dataset. Kaggle imports the
@@ -44,8 +48,8 @@ of RAM (it uses your weekly **TPU** quota, ~20 h, not GPU hours). The TPU chips 
 the notebook sees the cores and runs several llama-servers at once (~8 cores each, all sharing one copy of the
 model in RAM), so it works on many more topics at once - roughly the work of 15 CPU sessions. TPU sessions end
 after 9 h, so `MAX_HOURS` is capped to 8.75 there by itself. Give it its own `SESSION` number (e.g. `SESSIONS = 6`:
-5 CPU sessions + the TPU one). Done with its own share early? It goes on with the other sessions' topics, from the
-end of their shares (`HELP_OTHERS`), so it never sits idle.
+5 CPU sessions + the TPU one). Set `HELP_OTHERS = True` if finished sessions should help with the other parts;
+this can overlap with their work.
 
 **Instant rows:** session 1 first writes ~4,300 **exact** rows straight from the game's data (recipes, stack sizes,
 durability, hardness, mining tools, food, enchantments, mobs, biomes) - no LLM, done in a second (`GAME_DATA`).
@@ -109,8 +113,8 @@ WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other articl
 PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2,800 characters); 0 = auto: 1
 PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
 SESSIONS = 20            # Kaggle LLM sessions; the separate PC scraper does not take a session number
-SESSION = 0              # 0 = auto: the lowest number nobody runs (just Save & Run All again and again); or 1 ... SESSIONS
-HELP_OTHERS = True       # done with its own share early (a TPU session is ~15x faster)? go on with the others' topics
+SESSION = 0              # 0 = best-effort auto; safer: set a DIFFERENT part number 1 ... 20 for every active run
+HELP_OTHERS = False      # False = only this part; True = also help other parts (can duplicate active work)
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
 MAX_ROWS = 0             # 0 = no limit
 MAX_HOURS = 11.75        # Kaggle stops a session after 12 h; the last upload happens before this

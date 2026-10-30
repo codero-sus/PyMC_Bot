@@ -956,14 +956,21 @@ def test_another_page_is_only_judged_when_it_talks_about_the_same_thing():
     assert (verdict, url) == ("SUPPORTED", "https://minecraft.fandom.com/wiki/Lead") and len(calls) == 1
 
 
-def test_a_session_that_is_done_early_helps_the_others_from_the_end_of_their_shares():
-    topics = [f"t{i}" for i in range(12)]
-    assert w.session_topics(topics, 3, 1, help_others=False) == ["t0", "t3", "t6", "t9"]
+def test_parts_are_stable_disjoint_and_cover_topics_even_if_lists_change():
+    topics = [f"t{i}" for i in range(100)]
+    parts = [w.session_topics(topics, 20, part, help_others=False) for part in range(1, 21)]
+    assert sorted(t for part in parts for t in part) == sorted(topics)
+    assert sum(map(len, parts)) == len(set(t for part in parts for t in part))
+    for part in range(1, 21):
+        changed = w.session_topics(["new topic", *reversed(topics)], 20, part, help_others=False)
+        assert set(changed) - {"new topic"} == set(parts[part - 1])
     assert w.session_topics(topics, 1, 1) == topics
-    order = w.session_topics(topics, 3, 3)
-    assert order[:4] == ["t2", "t5", "t8", "t11"]  # its own share first
-    assert order[4:] == ["t9", "t10", "t6", "t7", "t3", "t4", "t0", "t1"]  # then the others, from their end
-    assert sorted(order) == sorted(topics)
+    for part in range(1, 21):
+        order = w.session_topics(topics, 20, part, help_others=True)
+        assert order[:len(parts[part - 1])] == parts[part - 1]
+        assert sorted(order) == sorted(topics)
+    with pytest.raises(ValueError):
+        w.session_topics(topics, 20, 0)
 
 
 # ------------------------------------------------------------------ your own PC + many sessions at once
