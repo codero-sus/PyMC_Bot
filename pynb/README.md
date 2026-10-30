@@ -3,13 +3,13 @@
 | Notebook | Runs on | What it does |
 | --- | --- | --- |
 | [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, uploads the compact 16-bit **safetensors** first, then **every GGUF quant** made from them (29 files: F16 and BF16 down to IQ1_S, with an importance matrix from the training data, each uploaded as soon as it is ready; the model card has a "which file?" guide and the full table), both with `tokenizer.json` and the configs |
-| [`Minecraftism_Dataset_Kaggle.ipynb`](Minecraftism_Dataset_Kaggle.ipynb) | Kaggle, **CPU** (free, no GPU hours; 5 sessions at once) | collects a **trusted Minecraft Q&A dataset**: ~4,200 exact rows straight from the game data (no LLM) first, then web search + an LLM in Kaggle's 30 GB of RAM on llama.cpp (`MODEL = "auto"`: Qwen3-30B-A3B in Q5_K_M, a mixture of experts that runs about as fast as a 4B model; Qwen3-4B or 1.7B on smaller machines) write answers only from pages that allow commercial use, every answer is checked (quotes on the page, numbers in the quotes, a second LLM look, the game's recipes, an independent page), then it is uploaded to your Hugging Face dataset `<you>/Minecraftism-dataset` |
+| [`Minecraftism_Dataset_Kaggle.ipynb`](Minecraftism_Dataset_Kaggle.ipynb) | Kaggle, **CPU** (free, no GPU hours; 5 sessions at once) | collects a **trusted Minecraft Q&A dataset**: ~4,200 exact rows straight from the game data (no LLM) first, then web search + an LLM in Kaggle's 30 GB of RAM on llama.cpp (`MODEL = "auto"`: Qwen3-30B-A3B in Q5_K_M, a mixture of experts that runs about as fast as a 4B model; Qwen3-4B or 1.7B on smaller machines) write answers only from pages that allow commercial use, every answer is checked (quotes on the page, numbers in the quotes, a second LLM look, the game's recipes, an independent page), then it is uploaded to your Hugging Face dataset `mr-sus/Minecraftism-dataset` |
 
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
@@ -57,13 +57,13 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (CPU only)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **None** (`DEVICE = "cpu"`: it needs no GPU and uses none of your GPU quota), Internet **on**.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
 4. **Save Version → Save & Run All** for each available Kaggle CPU session (`SESSIONS = 20`, `SESSION = 0`).
-   The separate PC scraper does not take a session number. On Windows double-click `scripts/collect_dataset_pc.bat`:
+   The default dataset is `mr-sus/Minecraftism-dataset`; its token must have write access. Change `DATASET_REPO` to use another repository. The separate PC scraper does not take a session number. On Windows double-click `scripts/collect_dataset_pc.bat`:
    it scrapes with CPU processes, uploads source pages, and runs no LLM or GPU. Kaggle imports the pages at startup
    and every 30 minutes; missing pages are fetched normally. Use the same Hugging Face account on both machines.
    Ctrl+C uploads completed pages. Session 1 first writes ~4,200 exact rows from the game data (no LLM, a second). Each works through 84 game mechanics, then mobs, items, blocks, enchantments,
@@ -77,7 +77,7 @@ on the CPU, `CORROBORATE = True` turns it on; `load_dataset(..., "high")` loads 
 back it. Rejected pairs and why are in `meta/rejected-NN.jsonl`. Only Minecraft Fandom wiki (CC BY-SA 3.0) and
 Wikipedia (CC BY-SA 4.0) text is used, so the dataset is CC BY-SA 4.0 and allows commercial use. minecraft.wiki is
 non-commercial and never read. Train on it with `train_minecraft_llm.py --minecraft-qa-dataset
-<you>/Minecraftism-dataset`. The code is `pymc_bot/llm_webdata.py`. After editing it, run `python scripts/build_webdata_notebook.py`.
+mr-sus/Minecraftism-dataset`. The code is `pymc_bot/llm_webdata.py`. After editing it, run `python scripts/build_webdata_notebook.py`.
 
 Full guide: [docs/MINECRAFT_LLM.md](../docs/MINECRAFT_LLM.md). Releases do not attach the notebook: their notes link it pinned to the release's commit.
 

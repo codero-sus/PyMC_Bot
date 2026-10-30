@@ -620,7 +620,7 @@ python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_dat
 #   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
 #   Discord: secret discord_webhook_inform_me1 = your webhook URL -> server online + URL, status, warnings before it closes
 #   secret ping_role = a Discord role ID -> pinged on startup, stages, uploads, errors, 5/3/2/1 h left, the end
-#   latest notebook (Kaggle: File -> Import Notebook -> paste): https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb
+#   latest notebook (Kaggle: File -> Import Notebook -> paste): https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb
 #   GPU_MODE = "parallel": two editions at once, one per T4 (one edition: both T4s merge on it); MAX_HOURS keeps the upload inside 12 h
 #   DISTILL: Qwen3-style strong-to-weak distillation - Qwen3-14B writes answers, Qwen3-8B teaches the 4B token by token
 #   (the teacher runs on vLLM over both T4s; its answers are kept on HF so the next session reuses them)

@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -534,7 +534,7 @@ trainer prints a warning and trains on the rest.
 
 ## A trusted dataset of your own (Kaggle, CPU only)
 
-`pynb/Minecraftism_Dataset_Kaggle.ipynb` builds **`<you>/Minecraftism-dataset`** on Hugging Face without a GPU:
+`pynb/Minecraftism_Dataset_Kaggle.ipynb` builds **`mr-sus/Minecraftism-dataset`** on Hugging Face without a GPU:
 DuckDuckGo search (`ddgs`) finds pages, and an LLM runs in Kaggle's 30 GB of RAM on llama.cpp's CPU server.
 `MODEL = "auto"` (the default) takes the biggest that fits the free RAM: on Kaggle **Qwen3-30B-A3B-Instruct-2507**
 in **Q5_K_M** (21.7 GB file, ~26 GB RAM; about 0.2% precision loss against the full model, ~7x less than Q4_K_M)
@@ -625,11 +625,11 @@ keeps only the confirmed ones). Rejected pairs and the reason go to `meta/reject
 minutes and `RESUME = True` continues the topic list in the next session; **Stop** keeps and uploads what it has.
 The dataset is **private** by default (`PRIVATE = True`; an existing public repo is switched to private before every
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
-LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
+LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
-Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
+Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
 scripts/build_webdata_notebook.py` rebuilds it).
 
