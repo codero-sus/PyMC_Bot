@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/8b160756feedcc41275a80f436d112ca733751eb/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8b160756feedcc41275a80f436d112ca733751eb/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -563,14 +563,13 @@ from the game data** (minecraft-data 1.21.8, MIT, by templates - no LLM, done in
 recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it, hunger from
 food, enchantment levels / conflicts / treasure-only, mob hitbox sizes, biome dimensions; `GAME_DATA = True`); (2) the
 second web search per answer is off (`CORROBORATE = False`) - it was the slowest part on a CPU, about half the rows
-per hour; every other check stays; (3) **many sessions at once, no editing** (`SESSIONS = 20`, `SESSION = 0`):
-Run the CPU sessions your account and quotas permit using *Save & Run All* (with the same `HF_TOKEN` wherever you run them) - each session takes the lowest free number by itself (see below). **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
+per hour; every other check stays; (3) **separate parts** (`SESSIONS = 20`, `HELP_OTHERS = False`): assign a
+unique `SESSION` from 1 to 20 to each concurrent notebook, on any account. Use the same `HF_TOKEN` and repository. **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
 the weekly TPU quota (~20 h), not GPU hours; the TPU chips stay idle - the notebook sees the cores and runs several
 llama-servers (~8 cores each, up to 8, all sharing one memory-mapped copy of the model, 4 requests each), and caps
 `MAX_HOURS` at 8.75 because TPU sessions end after 9 h - roughly the work of 15 CPU sessions. Give it its own
 `SESSION` number (or `SESSION = 0`). When a session is done with its own share early
-(the TPU one will be), it goes on with the other sessions' topics from the END of their shares (`HELP_OTHERS =
-True`), so the fast session never sits idle and never meets the slow ones. Optional **GPU T4 x2**
+it can help other parts if `HELP_OTHERS = True`; this can overlap work with active sessions. Optional **GPU T4 x2**
 (Settings → Accelerator; uses your weekly GPU hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
 (~20-30 min, once per session), else back to the CPU. On the GPU `MODEL = "auto"` runs **Qwen3.5-4B** (on
 benchmarks about as strong as the 30B-A3B, ~4x smaller): it fits one T4, so each T4 gets its own copy (two
@@ -584,17 +583,16 @@ data-value/ID tables, block-state and translation sections skipped - the minecra
 numbers, and those pairs were mostly rejected after costing an LLM call; a short last sentence joins the part before
 it instead of being lost), with 5 pairs per part. Free code checks (numbers, item names, length) run before the LLM
 judge, so a pair that fails them never costs a judge call. To go faster, run several copies of the notebook at the same time with
-`SESSIONS = N`: each takes every N-th topic and writes its own `data/train-NN.jsonl`, `meta/progress-NN.json` (it
-uploads only those), and reads the others' rows and topics so nothing is done twice - at the start and again after
-every upload (every 30 minutes), so a topic another session finished meanwhile is skipped. `load_dataset` reads all
-the files. **Session numbers by themselves** (`SESSION = 0`, the default): a session writes a claim
-(`meta/claim-NN.json`) for the lowest number no running session holds, waits ~20 s and reads it back - two sessions
-that took the same number at the same moment never both keep it (the later write wins, the other takes the next
-free one). The claim is refreshed with every upload and marked ended at the end (also after Stop or an error); one
-older than 3 h is from a session that died, and its number - with its rows - is taken over. A number set by hand
-that is running elsewhere stops right away (two sessions with one number would overwrite each other's rows).
-`SESSIONS` higher than the sessions that really run is fine: the others take over the missing shares
-(`HELP_OTHERS`).
+`SESSIONS = N`: a stable hash assigns each topic to one part independently of the topic-list order. Set
+`SESSION` to a unique number from 1 to N for each active run. Each part writes `data/train-NN.jsonl` and
+`meta/progress-NN.json`; restart the same number to resume it. Keep `HELP_OTHERS = False` to restrict work to its
+own part. Run all parts to cover all topics, or set it to `True` to help missing parts at the risk of overlapping
+active work. Different topics can still resolve to the same page, and sessions can produce similar questions: this
+is not a global row-deduplication guarantee. `SESSION = 0` claims a number automatically using Hub claim files, but
+claims aren't atomic, so assigning distinct numbers manually is safer. Never run the same number simultaneously.
+Use the same dataset, token, `SESSIONS` and notebook version everywhere. Stop the old runs before switching to the
+hash-based partitioning or changing `SESSIONS`; progress is reused when resumed. The Hub syncs other sessions'
+progress every upload (30 minutes by default).
 
 **PC scraper (no LLM or GPU).** On Windows, double-click `scripts/collect_dataset_pc.bat`. On other systems,
 install `ddgs` and `huggingface_hub`, log in with `hf auth login`, then run `python scripts/scrape_dataset_pc.py`.
@@ -627,7 +625,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/2b11fc0680d3ea1f614d200281f67a0a32bcb580/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/8b160756feedcc41275a80f436d112ca733751eb/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
