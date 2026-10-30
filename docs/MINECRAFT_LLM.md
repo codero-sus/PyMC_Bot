@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/8b160756feedcc41275a80f436d112ca733751eb/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8b160756feedcc41275a80f436d112ca733751eb/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/3b1f7c0dcd87a4b2187f74756d8b931dedb81688/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/3b1f7c0dcd87a4b2187f74756d8b931dedb81688/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -532,7 +532,7 @@ The 106 GB `CraftJarvis/minecraft-vla-sft` set is **not** used: its answers are 
 for the JARVIS model, not text a chat model can learn from. Without internet, or if a stream fails, the
 trainer prints a warning and trains on the rest.
 
-## A trusted dataset of your own (Kaggle, CPU only)
+## A trusted dataset of your own (Kaggle, GPU or CPU)
 
 `pynb/Minecraftism_Dataset_Kaggle.ipynb` builds **`mr-sus/Minecraftism-dataset`** on Hugging Face without a GPU:
 DuckDuckGo search (`ddgs`) finds pages, and an LLM runs in Kaggle's 30 GB of RAM on llama.cpp's CPU server.
@@ -557,14 +557,14 @@ and picking passages run in `PARALLEL` separate worker **processes** (`PROCESSES
 main Python process. A short speed test on the real job measures llama.cpp's n-gram speculation (`SPECULATE =
 "auto"`: it guesses text the LLM repeats from the prompt and checks many tokens in one step; the text stays the same) and keeps
 the faster way. Set `MIN_TOKENS_PER_S = 20` for speed over quality: it then keeps the biggest model that writes at
-least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. **CPU edition** (the default, `DEVICE = "cpu"`: never uses a GPU or
+least 20 tok/s (probably the 4B or 1.7B). The log shows the speed test, rows/h and the LLM's tokens/s. **CPU edition** (`DEVICE = "cpu"`: never uses a GPU or
 your GPU hours). Three things make it fast without a GPU: (1) session 1 first writes **~4,200 exact rows straight
 from the game data** (minecraft-data 1.21.8, MIT, by templates - no LLM, done in a second, all `high`: crafting
 recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it, hunger from
 food, enchantment levels / conflicts / treasure-only, mob hitbox sizes, biome dimensions; `GAME_DATA = True`); (2) the
 second web search per answer is off (`CORROBORATE = False`) - it was the slowest part on a CPU, about half the rows
-per hour; every other check stays; (3) **separate parts** (`SESSIONS = 20`, `HELP_OTHERS = False`): assign a
-unique `SESSION` from 1 to 20 to each concurrent notebook, on any account. Use the same `HF_TOKEN` and repository. **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
+per hour; every other check stays; (3) **separate parts** (`SESSIONS = 16`, `HELP_OTHERS = False`): assign a
+unique `SESSION` from 1 to 16 to each concurrent notebook, on any account. Use the same `HF_TOKEN` and repository. **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
 the weekly TPU quota (~20 h), not GPU hours; the TPU chips stay idle - the notebook sees the cores and runs several
 llama-servers (~8 cores each, up to 8, all sharing one memory-mapped copy of the model, 4 requests each), and caps
 `MAX_HOURS` at 8.75 because TPU sessions end after 9 h - roughly the work of 15 CPU sessions. Give it its own
@@ -592,7 +592,8 @@ is not a global row-deduplication guarantee. `SESSION = 0` claims a number autom
 claims aren't atomic, so assigning distinct numbers manually is safer. Never run the same number simultaneously.
 Use the same dataset, token, `SESSIONS` and notebook version everywhere. Stop the old runs before switching to the
 hash-based partitioning or changing `SESSIONS`; progress is reused when resumed. The Hub syncs other sessions'
-progress every upload (30 minutes by default).
+progress every upload (30 minutes by default). If resume or the claim files cannot be read, the run stops rather
+than risking overwriting an existing slice. Avoid running the same slice twice: claims are not atomic.
 
 **PC scraper (no LLM or GPU).** On Windows, double-click `scripts/collect_dataset_pc.bat`. On other systems,
 install `ddgs` and `huggingface_hub`, log in with `hf auth login`, then run `python scripts/scrape_dataset_pc.py`.
@@ -625,7 +626,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/8b160756feedcc41275a80f436d112ca733751eb/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/3b1f7c0dcd87a4b2187f74756d8b931dedb81688/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
