@@ -8,8 +8,8 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
@@ -57,12 +57,12 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (CPU only)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **None** (`DEVICE = "cpu"`: it needs no GPU and uses none of your GPU quota), Internet **on**.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
-4. **Save Version → Save & Run All** for each available Kaggle CPU session (`SESSIONS = 10`, `SESSION = 0`).
+4. **Save Version → Save & Run All** for each available Kaggle CPU session (`SESSIONS = 20`, `SESSION = 0`).
    The separate PC scraper does not take a session number. On Windows double-click `scripts/collect_dataset_pc.bat`:
    it scrapes with CPU processes, uploads source pages, and runs no LLM or GPU. Kaggle imports the pages at startup
    and every 30 minutes; missing pages are fetched normally. Use the same Hugging Face account on both machines.

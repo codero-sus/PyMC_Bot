@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -563,7 +563,7 @@ from the game data** (minecraft-data 1.21.8, MIT, by templates - no LLM, done in
 recipes, stack sizes, durability and repairs, block hardness / blast resistance / the tool that mines it, hunger from
 food, enchantment levels / conflicts / treasure-only, mob hitbox sizes, biome dimensions; `GAME_DATA = True`); (2) the
 second web search per answer is off (`CORROBORATE = False`) - it was the slowest part on a CPU, about half the rows
-per hour; every other check stays; (3) **many sessions at once, no editing** (`SESSIONS = 10`, `SESSION = 0`):
+per hour; every other check stays; (3) **many sessions at once, no editing** (`SESSIONS = 20`, `SESSION = 0`):
 Run the CPU sessions your account and quotas permit using *Save & Run All* (with the same `HF_TOKEN` wherever you run them) - each session takes the lowest free number by itself (see below). **Faster without GPU hours: Accelerator TPU.** A Kaggle TPU session has ~96+ CPU cores and 330+ GB RAM and uses
 the weekly TPU quota (~20 h), not GPU hours; the TPU chips stay idle - the notebook sees the cores and runs several
 llama-servers (~8 cores each, up to 8, all sharing one memory-mapped copy of the model, 4 requests each), and caps
@@ -627,7 +627,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("<you>/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/94a6fafdf77794c2b05fc92df77424cf3d4525d3/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/fcd408accf69bd5780c7d74ca164790f636fae74/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset <you>/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
