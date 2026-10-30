@@ -267,7 +267,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
     assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
-    assert seen["wiki_pages"] is True and seen["sessions"] == 10 and seen["session"] == 0  # Kaggle sessions only
+    assert seen["wiki_pages"] is True and seen["sessions"] == 20 and seen["session"] == 0  # Kaggle sessions only
     assert seen["quant"] == "auto"
     assert seen["corroborate"] is False and seen["game_data"] is True  # the slow web re-check is opt-in on a CPU
     assert seen["processes"] is True

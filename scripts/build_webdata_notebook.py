@@ -28,7 +28,7 @@ as public is switched to private too).
 and the end).
 
 **Fast on a CPU - run many at once, no editing:** Run as many Kaggle CPU sessions as your accounts and quotas permit.
-Leave `SESSIONS = 10` and `SESSION = 0` (auto) and click *Save Version → Save & Run All* for each available
+Leave `SESSIONS = 20` and `SESSION = 0` (auto) and click *Save Version → Save & Run All* for each available
 CPU session (use the same `HF_TOKEN` everywhere). Each session takes the lowest free number by itself (a claim file on the
 Hub, `meta/claim-NN.json`), its own share of the topics, and writes its own files - they never overwrite each other.
 Every 30 minutes each one also reads what the others finished and skips it. More sessions = more rows in the same 12
@@ -108,7 +108,7 @@ DEVICE = "cpu"           # "cpu" = never uses a GPU (no GPU hours). "auto" / "gp
 WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other article of the Fandom wiki (thousands more)
 PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2,800 characters); 0 = auto: 1
 PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
-SESSIONS = 10            # Kaggle LLM sessions; the separate PC scraper does not take a session number
+SESSIONS = 20            # Kaggle LLM sessions; the separate PC scraper does not take a session number
 SESSION = 0              # 0 = auto: the lowest number nobody runs (just Save & Run All again and again); or 1 ... SESSIONS
 HELP_OTHERS = True       # done with its own share early (a TPU session is ~15x faster)? go on with the others' topics
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
