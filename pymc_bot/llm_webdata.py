@@ -1819,6 +1819,35 @@ def hub_progress(repo_id: str, token: str, target: Path) -> Path:
     return Path(target)
 
 
+def sync_scraped_pages(repo_id: str, token: str, target: Path, cache: Path) -> int:
+    """Import PC scrape batches without touching dataset rows or trusting archive paths."""
+    import zipfile
+
+    from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
+
+    snapshot_download(repo_id, repo_type="dataset", local_dir=str(target), token=token or None,
+                      allow_patterns=["scrape-cache/*.zip"])
+    cache.mkdir(parents=True, exist_ok=True)
+    added = 0
+    for archive in sorted((target / "scrape-cache").glob("*.zip")):
+        try:
+            with zipfile.ZipFile(archive) as batch:
+                for entry in batch.infolist():
+                    if not re.fullmatch(r"[0-9a-f]{40}\.txt", entry.filename) or entry.file_size > 10_000_000:
+                        continue
+                    dest = cache / entry.filename
+                    if not dest.exists():
+                        data = batch.read(entry)
+                        data.decode("utf-8")
+                        temp = dest.with_suffix(".scrape-tmp")
+                        temp.write_bytes(data)
+                        temp.replace(dest)
+                        added += 1
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            log(f"skipping invalid scrape batch {archive.name}: {type(exc).__name__}")
+    return added
+
+
 def claim_live(claim: dict | None, now: float) -> bool:
     return bool(claim) and not claim.get("ended") and now - float(claim.get("time", 0)) < CLAIM_STALE_HOURS * 3600
 
@@ -2170,6 +2199,12 @@ def main(cfg: dict) -> dict:
                 discord.send(f"{message}: {link}", "Uploaded", "good", important=True)
             except Exception as exc:  # noqa: BLE001 - try again at the next upload
                 log(f"upload failed ({type(exc).__name__}: {str(exc)[:200]})")
+            try:
+                added = sync_scraped_pages(repo_id, token, tmp / "scrape-sync", tmp / "pages")
+                if added:
+                    log(f"{added} scraped pages imported from the PC")
+            except Exception as exc:  # noqa: BLE001 - normal web fetch remains the fallback
+                log(f"could not sync PC scrape cache ({type(exc).__name__})")
             if int(cfg.get("sessions", 1)) > 1 and not collector.ended:  # what the others did meanwhile: skipped
                 try:
                     new = collector.note_others(hub_progress(repo_id, token, tmp / "sync"))
@@ -2303,6 +2338,12 @@ def main(cfg: dict) -> dict:
             + (f" (then it helps the other sessions with theirs, from their end: {len(topic_list) - share} more)"
                if len(topic_list) > share else "")
             + f", {len(collector.finished() & set(topic_list))} done before; {len(book)} recipes for the game-data check; {stats['rows']} rows so far (all sessions)")
+        if api is not None and repo_id:
+            try:
+                added = sync_scraped_pages(repo_id, token, tmp / "scrape-sync", tmp / "pages")
+                log(f"{added} scraped pages imported from the PC; missing pages are fetched normally")
+            except Exception as exc:  # noqa: BLE001
+                log(f"PC scrape cache unavailable ({type(exc).__name__}); fetching pages normally")
         collect(cfg, llm, collector, book, topic_list, WebSearch(int(cfg.get("search_results", 8))),
                 PageFetcher(tmp / "pages"), deadline, upload, discord, processes=workers)
         stats = collector.stats()

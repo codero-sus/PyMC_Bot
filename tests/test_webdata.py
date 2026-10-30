@@ -267,7 +267,7 @@ def test_notebook_cells_run_in_order_without_kaggle(tmp_path, monkeypatch):
     assert seen["dataset_repo"] == "Minecraftism-dataset" and seen["private"] is True and seen["model"] == "auto"
     assert seen["parallel"] == 0 and seen["min_tokens_per_s"] == 0 and seen["speculate"] == "auto"  # 0 = auto
     assert seen["device"] == "cpu" and seen["pages_per_topic"] == 0 and seen["pairs_per_page"] == 0
-    assert seen["wiki_pages"] is True and seen["sessions"] == 11 and seen["session"] == 0  # 2 x 5 Kaggle + PC, auto
+    assert seen["wiki_pages"] is True and seen["sessions"] == 10 and seen["session"] == 0  # Kaggle sessions only
     assert seen["quant"] == "auto"
     assert seen["corroborate"] is False and seen["game_data"] is True  # the slow web re-check is opt-in on a CPU
     assert seen["processes"] is True
@@ -1059,7 +1059,7 @@ def test_the_pc_joins_as_one_more_session_with_no_time_limit(tmp_path):
     assert cfg["discord_secret"] == "discord_webhook_inform_me1"
     assert w.pc_config(["--hours", "12", "--no-upload", "--session", "11"])["upload"] is False
     bat = (ROOT / "scripts" / "collect_dataset_pc.bat").read_bytes()
-    assert b"\r\n" in bat and b"pymc_bot\\llm_webdata.py %*" in bat and b"hf.exe\" auth login" in bat
+    assert b"\r\n" in bat and b"scripts\\scrape_dataset_pc.py %*" in bat and b"hf.exe\" auth login" in bat
     assert b"token" not in bat.split(b"auth login")[1].lower()  # the token is typed into hf, never into this file
     assert w.server_name() == ("llama-server.exe" if os.name == "nt" else "llama-server")
 
@@ -1163,3 +1163,161 @@ def test_with_a_fast_gpu_many_topics_are_fetched_ahead(tmp_path):
               lambda u: page_text(), deadline=1e18, processes=Pool())
     assert seen[0] == topics[:5]  # the first topic's LLM work starts with 4 more topics' pages already fetched
     assert submitted == topics and collector.done == topics  # each fetched once, all done in order
+
+
+def test_pc_scraper_uploads_pages_and_kaggle_imports_only_safe_names(tmp_path, monkeypatch):
+    import importlib.util
+    import zipfile
+
+    spec = importlib.util.spec_from_file_location("pc_scraper", ROOT / "scripts" / "scrape_dataset_pc.py")
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    pages = tmp_path / "pc"
+    pages.mkdir()
+    name = "a" * 40 + ".txt"
+    (pages / name).write_text("source page", encoding="utf-8")
+    remote = tmp_path / "remote" / "scrape-cache"
+    remote.mkdir(parents=True)
+
+    class Hub:
+        def upload_file(self, path_or_fileobj, path_in_repo, **kwargs):
+            import shutil
+
+            shutil.copy(path_or_fileobj, remote / Path(path_in_repo).name)
+
+    state = tmp_path / "state.json"
+    pc.upload_pending(Hub(), "me/dataset", pages, state, tmp_path / "batches")
+    assert name in json.loads(state.read_text())["urls"]
+    with zipfile.ZipFile(remote / "malicious.zip", "w") as archive:
+        archive.writestr("../evil.txt", "bad")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(
+        snapshot_download=lambda *args, **kwargs: None))
+    cache = tmp_path / "kaggle" / "pages"
+    assert w.sync_scraped_pages("me/dataset", "token", remote.parent, cache) == 1
+    assert (cache / name).read_text() == "source page"
+    assert not (cache.parent / "evil.txt").exists()
+    assert w.sync_scraped_pages("me/dataset", "token", remote.parent, cache) == 0
+
+
+def test_scrape_upload_failure_preserves_retryable_pages(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pc_scraper", ROOT / "scripts" / "scrape_dataset_pc.py")
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    (pages / ("b" * 40 + ".txt")).write_text("page")
+
+    class FailedHub:
+        def upload_file(self, **kwargs):
+            raise OSError("offline")
+
+    state = tmp_path / "state.json"
+    with pytest.raises(OSError):
+        pc.upload_pending(FailedHub(), "me/dataset", pages, state, tmp_path / "batches")
+    assert not state.exists() and len(list(pages.glob("*.txt"))) == 1
+
+
+def test_pc_scraper_retries_connection_errors_and_searches_missing_titles(tmp_path, monkeypatch):
+    import importlib.util
+    import urllib.error
+
+    spec = importlib.util.spec_from_file_location("pc_scraper", ROOT / "scripts" / "scrape_dataset_pc.py")
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    calls = []
+    alternate = "https://minecraft.fandom.com/wiki/Trading"
+
+    def fetch(url, cache):
+        calls.append(url)
+        if url == alternate:
+            if calls.count(alternate) == 1:
+                raise urllib.error.URLError("connection reset")
+            return "page"
+        raise ValueError("no article")
+
+    monkeypatch.setattr(pc.web, "fetch_page", fetch)
+    monkeypatch.setattr(pc.web, "web_search", lambda query: [{"url": alternate}])
+    monkeypatch.setattr(pc.time, "sleep", lambda delay: None)
+    assert pc.scrape("Villager trading", str(tmp_path)) == alternate
+    assert calls == [pc.web.wiki_url("Villager trading"), alternate, alternate]
+
+
+def test_pc_scraper_does_not_retry_http_forbidden(tmp_path, monkeypatch):
+    import importlib.util
+    import urllib.error
+
+    spec = importlib.util.spec_from_file_location("pc_scraper", ROOT / "scripts" / "scrape_dataset_pc.py")
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    calls = []
+
+    def forbidden(url, cache):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, 403, "forbidden", None, None)
+
+    monkeypatch.setattr(pc.web, "fetch_page", forbidden)
+    with pytest.raises(urllib.error.HTTPError):
+        pc.fetch_with_retry("https://minecraft.fandom.com/wiki/Lead", tmp_path)
+    assert len(calls) == 1
+
+
+def test_pc_deduplicates_identical_text_across_batches_and_restart(tmp_path, monkeypatch):
+    import importlib.util
+    import zipfile
+
+    spec = importlib.util.spec_from_file_location("pc_scraper", ROOT / "scripts" / "scrape_dataset_pc.py")
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    remote = tmp_path / "remote" / "scrape-cache"
+    remote.mkdir(parents=True)
+    first, second = "a" * 40 + ".txt", "b" * 40 + ".txt"
+    (pages / first).write_text("identical content", encoding="utf-8")
+    (pages / second).write_text("identical content", encoding="utf-8")
+
+    class Hub:
+        def upload_file(self, path_or_fileobj, path_in_repo, **kwargs):
+            import shutil
+
+            shutil.copy(path_or_fileobj, remote / Path(path_in_repo).name)
+
+    state = tmp_path / "state.json"
+    pc.upload_pending(Hub(), "me/data", pages, state, tmp_path / "batch")
+    archives = list(remote.glob("*.zip"))
+    assert len(archives) == 1
+    with zipfile.ZipFile(archives[0]) as z:
+        assert z.namelist() == [first]
+    # Lost local state / another PC: inspect the remote before trying to upload.
+    state.unlink()
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(
+        snapshot_download=lambda *args, **kwargs: None))
+    names, hashes = pc.remote_inventory("me/data", "token", remote.parent)
+    pc.upload_pending(Hub(), "me/data", pages, state, tmp_path / "batch", names, hashes)
+    assert len(list(remote.glob("*.zip"))) == 1
+    assert set(json.loads(state.read_text())["urls"]) >= {first, second}
+
+
+def test_pc_reconciles_legacy_upload_state(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pc_scraper", ROOT / "scripts" / "scrape_dataset_pc.py")
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    first, second = "a" * 40 + ".txt", "b" * 40 + ".txt"
+    (pages / first).write_text("same")
+    (pages / second).write_text("same")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps([first]))
+
+    class Hub:
+        def upload_file(self, **kwargs):
+            raise AssertionError("duplicate should not upload")
+
+    pc.upload_pending(Hub(), "me/data", pages, state, tmp_path / "batch")
+    assert second in json.loads(state.read_text())["urls"]

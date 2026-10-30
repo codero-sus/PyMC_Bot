@@ -1,6 +1,6 @@
 @echo off
-rem PyMC Bot - collect the Minecraftism dataset on this PC (one more session next to the Kaggle notebooks).
-rem Double-click it. Extra options go to pymc_bot\llm_webdata.py, e.g.:  collect_dataset_pc.bat --hours 12
+rem PyMC Bot - collect the Minecraftism dataset on this PC (scrapes pages for Kaggle; no LLM runs on this PC).
+rem Double-click it. Extra options go to scripts\scrape_dataset_pc.py, e.g.:  collect_dataset_pc.bat --topics 10
 rem Made with love by codero-sus - https://the-codero.web.app/
 setlocal
 title PyMC Bot - Minecraftism dataset
@@ -23,10 +23,9 @@ echo It is saved on this PC only - the same account as the HF_TOKEN secret on Ka
 :run
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
-nvidia-smi -L 2>nul || echo No NVIDIA GPU found - the CPU will do the work, much slower.
-"%VENV%\Scripts\python.exe" pymc_bot\llm_webdata.py %*
+"%VENV%\Scripts\python.exe" scripts\scrape_dataset_pc.py %* || goto :failed
 echo.
-echo Finished - the rows are on your Hugging Face dataset and in %USERPROFILE%\Minecraftism
+echo Finished - scraped pages are on the Hub and in %USERPROFILE%\Minecraftism-scrape
 pause
 exit /b 0
 :nopython

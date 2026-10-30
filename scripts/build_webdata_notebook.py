@@ -27,17 +27,17 @@ as public is switched to private too).
 `discord_webhook_inform_me1` (status messages) and `ping_role` (the Discord role pinged on start, uploads, errors
 and the end).
 
-**Fast on a CPU - run many at once, no editing:** Kaggle runs up to **5 CPU sessions at the same time** per account.
-Leave `SESSIONS = 11` and `SESSION = 0` (auto) and click *Save Version → Save & Run All* 5 times (and 5 more on a
-second account with the same `HF_TOKEN`). Each session takes the lowest free number by itself (a claim file on the
+**Fast on a CPU - run many at once, no editing:** Run as many Kaggle CPU sessions as your accounts and quotas permit.
+Leave `SESSIONS = 10` and `SESSION = 0` (auto) and click *Save Version → Save & Run All* for each available
+CPU session (use the same `HF_TOKEN` everywhere). Each session takes the lowest free number by itself (a claim file on the
 Hub, `meta/claim-NN.json`), its own share of the topics, and writes its own files - they never overwrite each other.
 Every 30 minutes each one also reads what the others finished and skips it. More sessions = more rows in the same 12
 hours. Run them again later and each goes on where it stopped (`RESUME`).
 
-**Your own PC as one more session** (Windows, an NVIDIA GPU - e.g. an RTX 3050 8 GB - or just the CPU): download the
-repo, double-click `scripts\\collect_dataset_pc.bat` (Python 3.10+ needed; it logs in to Hugging Face once). It takes
-a free session number like the notebooks, runs the small Qwen3.5-4B on the GPU, and keeps going after its own share
-with the topics of the slower sessions until everything is done; Ctrl+C stops it and uploads what it has.
+**PC scraper (no LLM):** double-click `scripts\\collect_dataset_pc.bat` on Windows. The CPU downloads and parses
+wiki pages in worker processes and uploads batches to `scrape-cache/` in the private dataset. Kaggle imports the
+cache at startup and every 30 minutes, falling back to its own fetch if a page is missing. Your PC does not use its
+GPU, run an LLM, generate rows, or take a Kaggle session number. Ctrl+C uploads completed pages.
 
 **Much faster, still no GPU hours: Accelerator *TPU*.** A Kaggle TPU session comes with ~96+ CPU cores and 330+ GB
 of RAM (it uses your weekly **TPU** quota, ~20 h, not GPU hours). The TPU chips are not used - only those CPUs:
@@ -108,8 +108,7 @@ DEVICE = "cpu"           # "cpu" = never uses a GPU (no GPU hours). "auto" / "gp
 WIKI_PAGES = True        # after the ~1,700 game-data topics, EVERY other article of the Fandom wiki (thousands more)
 PAGES_PER_TOPIC = 0      # wiki pages per topic (each read WHOLE, in parts of ~2,800 characters); 0 = auto: 1
 PAIRS_PER_PAGE = 0       # question/answer pairs the LLM writes per part of a page (max 6); 0 = auto: 5
-SESSIONS = 11            # sessions AT THE SAME TIME, everywhere the same (5 CPU ones per Kaggle account, x2 accounts,
-                         # + your PC); more than really run is fine: the others take over the missing shares
+SESSIONS = 10            # Kaggle LLM sessions; the separate PC scraper does not take a session number
 SESSION = 0              # 0 = auto: the lowest number nobody runs (just Save & Run All again and again); or 1 ... SESSIONS
 HELP_OTHERS = True       # done with its own share early (a TPU session is ~15x faster)? go on with the others' topics
 MAX_TOPICS = 0           # 0 = as many as the time allows (84 mechanics, then mobs, items, blocks, enchantments...)
