@@ -836,7 +836,7 @@ def test_the_30b_runs_in_q5_when_the_ram_holds_it_and_the_cpu_flags_never_change
     monkeypatch.setattr(w, "cpu_cores", lambda: (2, 4))  # 2 cores with 2 hyper-threads each
     command = w.LlamaServer(Path("llama-server"), Path("m.gguf"), parallel=4).command()
     assert command[command.index("-t") + 1] == "2" and command[command.index("-tb") + 1] == "4"
-    assert "--mlock" in command and command[command.index("--prio") + 1] == "2" and "--cache-reuse" in command
+    assert "--mlock" not in command and command[command.index("--prio") + 1] == "2" and "--cache-reuse" in command
     for flag in ("-ctk", "-ctv", "--temp", "-fa"):  # nothing that changes the output (KV cache stays f16)
         assert flag not in command
     physical, logical = w.cpu_cores()

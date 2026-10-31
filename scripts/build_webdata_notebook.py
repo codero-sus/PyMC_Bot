@@ -72,8 +72,8 @@ durability, hardness, mining tools, food, enchantments, mobs, biomes) - no LLM, 
 Rejected pairs and the reason go to `meta/rejected-NN.jsonl` for review. The dataset uploads every 30 minutes, and
 the next session goes on where this one stopped (`RESUME`). Pressing **Stop** keeps and uploads what was collected.
 It uses the whole machine, tuned without changing a single answer: llama-server works on 4 topics at once (it
-batches them), writes with one thread per physical core and reads prompts with every thread, keeps the model locked in
-RAM (`--mlock`: never paged out), runs at high priority, and reuses cached prompt parts. Web search, downloads and
+batches them), writes with one thread per physical core and reads prompts with every thread, runs at high priority,
+and reuses cached prompt parts. Web search, downloads and
 page parsing run in separate, lower-priority worker processes. llama.cpp and the model download in the background
 while the game data and the instant rows are prepared (and uploaded), and the LLM writes compact JSON (fewer tokens). Before it starts, it measures the model with and
 without n-gram speculation (the text stays exactly the same) and keeps the faster way. The log shows the rows/h and
@@ -133,7 +133,7 @@ import sys
 import urllib.error
 import urllib.request
 
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "ddgs", "huggingface_hub>=0.30"], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "ddgs", "huggingface_hub>=0.34,<2"], check=True)
 WORK, TMP = "/kaggle/working", "/kaggle/tmp"  # the dataset in /kaggle/working; model, llama.cpp, page cache in /kaggle/tmp
 for folder in (WORK, TMP):
     os.makedirs(folder, exist_ok=True)

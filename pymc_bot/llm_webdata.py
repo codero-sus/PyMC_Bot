@@ -826,17 +826,6 @@ JUDGE_SYSTEM = (
 )
 
 
-def _allow_mlock() -> None:
-    """In llama-server's process, before it starts: lift the locked-memory limit so ``--mlock`` can keep the whole
-    model in RAM (works as root, as on Kaggle; elsewhere llama.cpp just warns and runs normally)."""
-    try:
-        import resource
-
-        resource.setrlimit(resource.RLIMIT_MEMLOCK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
-    except (ImportError, ValueError, OSError):
-        pass
-
-
 class LlamaServer:
     """llama.cpp's ``llama-server`` with one GGUF, on CPU; ``chat()`` returns parsed JSON (schema-constrained)."""
 
@@ -865,8 +854,7 @@ class LlamaServer:
             env["CUDA_VISIBLE_DEVICES"] = str(self.gpu)
         command = self.command()
         logfile = open(self.log_path(), "w")  # noqa: SIM115 - lives as long as the server
-        extra: dict[str, Any] = {} if IS_WINDOWS else {"preexec_fn": _allow_mlock}  # no preexec_fn on Windows
-        self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env, **extra)
+        self.process = subprocess.Popen(command, stdout=logfile, stderr=subprocess.STDOUT, env=env)
         end = time.time() + wait
         while time.time() < end:
             if self.process.poll() is not None:
@@ -888,7 +876,6 @@ class LlamaServer:
                    str(self.threads), "-tb", str(self.threads_batch), "--host", "127.0.0.1", "--port", str(self.port),
                    "--jinja", "-np", str(self.parallel), "--no-webui",
                    # none of these change a single output token:
-                   "--mlock",  # the model stays in RAM (never paged out and re-read from disk when Python needs memory)
                    "--prio", "2", "--prio-batch", "2",  # llama.cpp's threads before the web workers
                    "--cache-reuse", "256"]  # reuse the cached part of a prompt even when it moved (same page, new ask)
         if self.speculate:  # no draft model: the guesses come from the prompt and what it wrote (the quotes, JSON keys)
