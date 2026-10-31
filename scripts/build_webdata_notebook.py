@@ -16,7 +16,7 @@ NOTEBOOK = ROOT / "pynb" / "Minecraftism_Dataset_Kaggle.ipynb"
 
 INTRO = """# Minecraftism dataset - trusted Minecraft Q&A, collected in Kaggle slices
 
-The game's own data + web search + an LLM on llama.cpp (Qwen3.5-4B on GPU, or Qwen3-30B-A3B on CPU with
+The game's own data + web search + an LLM on llama.cpp (Qwen3.5-9B Q5_K_M on T4 GPUs, or Qwen3-30B-A3B on CPU with
 a Q5_K_M or Q4_K_M quant chosen for available RAM) collect Minecraft questions and answers, check every one, and upload them to your Hugging Face dataset
 **`mr-sus/Minecraftism-dataset`** - **private**: only you can see it (`PRIVATE = True`; a repo that already exists
 as public is switched to private too).
@@ -85,7 +85,7 @@ Made with ❤️ by codero-sus · [the-codero.web.app](https://the-codero.web.ap
 """
 
 SETTINGS = """# ============================== settings ==============================
-MODEL = "auto"           # "auto" = "qwen3-30b-a3b": Qwen3-30B-A3B-Instruct-2507 (mixture of experts: 30B in ~26 GB
+MODEL = "auto"           # GPU: Qwen3.5-9B Q5 on T4 (4B on smaller GPUs). CPU: Qwen3-30B-A3B (30B in ~26 GB
                          # RAM, only ~3B work per token - on a CPU as fast as a 4B, and far more careful)
                          # "qwen3.5-9b" / "qwen3.5-4b" / "qwen3-4b" / "qwen3-1.7b": smaller (on a CPU NOT much faster
                          # except 1.7B, which is the least careful)
@@ -102,8 +102,8 @@ KEEP = "medium"          # "medium" = every row that passed all checks (each has
 CORROBORATE = False      # True = search each answer again and ask an independent page (catches outdated pages, makes
                          # more rows `high`) - but it is the slowest part on a CPU: about half the rows per hour
 GAME_DATA = True         # session 1: ~4,300 exact rows from the game data first (no LLM, takes a second)
-PARALLEL = 0             # topics per llama-server at once; 0 = auto: 4 (a TPU session's big CPU runs several servers)
-MIN_TOKENS_PER_S = 0     # 0 = quality first: always the biggest model that fits (the 30B on Kaggle). A number (e.g. 20)
+PARALLEL = 0             # slots per server: auto 4 for 9B, 8 for 4B, 4 on CPU; override to tune
+MIN_TOKENS_PER_S = 0     # 0 = quality first: keep the selected model. A number (e.g. 20)
                          # = speed first: measures each model here and keeps the biggest that writes that many tokens/s
 PROCESSES = True         # web search, downloads and page parsing in PARALLEL worker processes (outside the main one)
 SPECULATE = "auto"       # n-gram speculation (guesses text it repeats from the prompt, checks many tokens at once):
