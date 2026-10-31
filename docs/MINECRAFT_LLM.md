@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -571,10 +571,11 @@ llama-servers (~8 cores each, up to 8, all sharing one memory-mapped copy of the
 `SESSION` number (or `SESSION = 0`). When a session is done with its own share early
 it can help other parts if `HELP_OTHERS = True`; this can overlap work with active sessions. Optional **GPU T4 x2**
 (Settings → Accelerator; uses your weekly GPU hours): `DEVICE = "auto"` runs llama.cpp's CUDA build on both GPUs - the prebuilt one, else compiled here for the T4
-(~20-30 min, once per session), else back to the CPU. On the GPU `MODEL = "auto"` runs **Qwen3.5-4B** (on
-benchmarks about as strong as the 30B-A3B, ~4x smaller): it fits one T4, so each T4 gets its own copy (two
-llama-servers, 8 requests each, every request to the least busy one) - roughly 60-90 tok/s per request on a T4.
-`"qwen3.5-9b"` is stronger at about half the speed. On the CPU the 30B-A3B stays (there it is as fast as a 4B).
+(~20-30 min, once per session), else back to the CPU. On T4 ×2, `MODEL = "auto"` selects **Qwen3.5-9B Q5_K_M**
+with one model per GPU and 4 parallel slots each. Its stronger model may improve dataset quality but can be slower than
+the previous 4B; neither quality nor speed is guaranteed. Smaller GPUs select Qwen3.5-4B. Set `MODEL = "qwen3.5-4b"`
+for the faster option; `PARALLEL` can override the per-server slot count. The speculation speed tests run sequentially
+to avoid loading two benchmark configurations on the same GPU at once. The CPU auto model remains Qwen3-30B-A3B.
 
 **As many rows as possible.** After the ~1,700 game-data topics it reads every other article of the Fandom wiki
 (`WIKI_PAGES = True`; without version/snapshot pages, other games and sub-pages except tutorials), opens each page
@@ -626,7 +627,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
