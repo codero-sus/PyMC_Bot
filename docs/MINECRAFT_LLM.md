@@ -143,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/3b1f7c0dcd87a4b2187f74756d8b931dedb81688/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/3b1f7c0dcd87a4b2187f74756d8b931dedb81688/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -541,7 +541,7 @@ in **Q5_K_M** (21.7 GB file, ~26 GB RAM; about 0.2% precision loss against the f
 when the free RAM holds it - on Kaggle it does - else Q4_K_M (18.6 GB, ~23 GB RAM); `QUANT` picks one yourself
 (Q6_K, 25 GB, is very tight in 30 GB; Q8_0 / FP16 / FP32 do not fit). CPU tuning that never changes an answer:
 one thread per physical core for writing and every thread for reading prompts (`-t` / `-tb`), the model locked in
-RAM (`--mlock`), llama.cpp at high priority (`--prio 2`) and the web workers at low priority, cached prompt parts
+RAM via memory mapping, llama.cpp at high priority (`--prio 2`) and the web workers at low priority, cached prompt parts
 reused (`--cache-reuse`), compact JSON replies (fewer tokens), and llama.cpp plus the model downloading in the
 background while the game data and the instant rows are prepared. It is a mixture of experts: all 30B weights sit in RAM but only ~3B work on each token, so on
 a CPU it runs about as fast as a 4B model and judges far better. `"qwen3-4b"` (~4 GB) and `"qwen3-1.7b"` (~2.5 GB,
@@ -626,7 +626,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/3b1f7c0dcd87a4b2187f74756d8b931dedb81688/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
