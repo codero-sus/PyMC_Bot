@@ -666,10 +666,10 @@ def test_main_uses_the_gpu_and_falls_back_to_a_compiled_build_then_the_cpu(tmp_p
     broken = {"cuda-pre"}  # the prebuilt CUDA build fails on this driver: compiled for the T4, still the 30B
     w.main(cfg)
     assert calls[:2] == [("75", True), ("75", False)]
-    assert calls[-1] == ("collect", 5, 16, Path("/bin/cuda-built/llama-server"))  # 2 copies x 8 = 16 at once
-    # the small fast Qwen3.5-4B, one copy on EACH T4 (GPU 0 and 1), never the 30B on the GPU
-    assert started == [("cuda-pre", "UD-Q4_K_XL", 8, 0), ("cuda-built", "UD-Q4_K_XL", 8, 0),
-                       ("cuda-built", "UD-Q4_K_XL", 8, 1)]
+    assert calls[-1] == ("collect", 5, 8, Path("/bin/cuda-built/llama-server"))  # 2 copies x 4 = 8 at once
+    # the stronger Qwen3.5-9B Q5, one copy on EACH T4 (GPU 0 and 1)
+    assert started == [("cuda-pre", "Q5_K_M", 4, 0), ("cuda-built", "Q5_K_M", 4, 0),
+                       ("cuda-built", "Q5_K_M", 4, 1)]
 
     calls.clear(), started.clear()
     broken = {"cuda-pre", "cuda-built"}  # no GPU build works: the CPU, with the CPU settings
@@ -1351,3 +1351,30 @@ def test_claims_fail_closed_when_hub_or_existing_claim_is_unreadable(tmp_path, m
     hub.list_repo_files = lambda *args, **kwargs: ["meta/claim-01.json"]
     with pytest.raises(RuntimeError, match="Cannot read session claim"):
         read()
+
+
+def test_gpu_auto_uses_q5_9b_on_t4_but_small_gpu_keeps_4b():
+    t4s = [{"name": "Tesla T4", "vram_gb": 15.0, "arch": "75"}] * 2
+    assert w.auto_gpu_model(t4s) == "qwen3.5-9b"
+    assert w.gpu_quant("qwen3.5-9b", 15) == "Q5_K_M"
+    assert w.auto_gpu_model([{"name": "RTX 3050", "vram_gb": 8.0, "arch": "86"}]) == "qwen3.5-4b"
+    assert w.auto_gpu_model([]) == "qwen3.5-4b"
+
+
+def test_speculation_benchmarks_do_not_hold_two_models_in_gpu_memory():
+    active = []
+
+    class Exclusive(Timed):
+        def stop(self):
+            active.remove(self)
+
+    def start(key, spec):
+        assert not active, "a previous benchmark still occupies GPU memory"
+        server = Exclusive(key, spec, 25 if spec else 12, [])
+        active.append(server)
+        return server
+
+    server, key, speed, speculative = w.fast_llm(["qwen3.5-9b"], start, 0, "auto")
+    assert key == "qwen3.5-9b" and speed == pytest.approx(25) and speculative
+    assert active == [server]  # winner restarted, second configuration released
+    server.stop()

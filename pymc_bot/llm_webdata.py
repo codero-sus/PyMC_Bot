@@ -79,7 +79,7 @@ MODELS = {
                       "name": "Qwen3-30B-A3B-Instruct-2507", "hybrid": False, "license": "Apache-2.0", "ram_gb": 23,
                       "gpu_quant": "Q5_K_M", "gpu_vram_gb": 27},
     "qwen3.5-9b": {"repo": "unsloth/Qwen3.5-9B-GGUF", "quant": "Q4_K_M", "name": "Qwen3.5-9B", "hybrid": True,
-                   "license": "Apache-2.0", "ram_gb": 7, "gpu_quant": "UD-Q4_K_XL", "gpu_vram_gb": 8},
+                   "license": "Apache-2.0", "ram_gb": 7, "gpu_quant": "Q5_K_M", "gpu_vram_gb": 9},
     # the fast one for the GPU: as strong as the 30B-A3B on benchmarks, ~4x smaller, fits ONE T4 (so 2 x T4 = 2 copies)
     "qwen3.5-4b": {"repo": "unsloth/Qwen3.5-4B-GGUF", "quant": "Q4_K_M", "name": "Qwen3.5-4B", "hybrid": True,
                    "license": "Apache-2.0", "ram_gb": 4.5, "gpu_quant": "UD-Q4_K_XL", "gpu_vram_gb": 4},
@@ -120,8 +120,15 @@ def available_ram_gb() -> float:
         return 0.0
 
 
-#: ``MODEL = "auto"`` on a GPU: small and strong, ~60-90 tok/s per request on a T4, one copy per GPU.
-GPU_MODEL = "qwen3.5-4b"
+#: GPU auto: use the 9B in Q5 when each GPU has headroom; the 4B on smaller GPUs.
+GPU_MODEL = "qwen3.5-9b"
+
+
+def auto_gpu_model(gpus: list[dict[str, Any]]) -> str:
+    """Prefer 9B Q5 when every GPU has enough space for weights and runtime; no quality-based speed benchmark."""
+    if gpus and min(g["vram_gb"] for g in gpus) >= MODELS[GPU_MODEL]["gpu_vram_gb"] + 2:
+        return GPU_MODEL
+    return "qwen3.5-4b"
 
 
 def gpu_info(run: Callable[..., Any] = subprocess.run) -> list[dict[str, Any]]:
@@ -1007,6 +1014,11 @@ def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
     for number, key in enumerate(keys, 1):
         best: tuple[float, Any, bool] | None = None
         for spec in modes:
+            # Benchmark one configuration at a time. Keeping the previous GPU model alive while starting the next
+            # can double VRAM usage and make a perfectly good configuration fail to start on a T4.
+            if best is not None and best[1] is not None:
+                best[1].stop()
+                best = (best[0], None, best[2])
             try:
                 server = start(key, spec)
             except Exception as exc:  # noqa: BLE001 - e.g. an older llama.cpp without the flag: try the next way
@@ -1026,8 +1038,6 @@ def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
             if best is not None and best[0] >= speed:
                 server.stop()
                 continue
-            if best is not None:
-                best[1].stop()
             best = (speed, server, spec)
             if target > 0 and speed >= target:
                 break
@@ -1036,9 +1046,13 @@ def fast_llm(keys: list[str], start: Callable[[str, bool], Any], target: float,
                 break
             continue
         if target <= 0 or best[0] >= target or number == len(keys):
+            if best[1] is None:
+                log("restarting the fastest benchmark configuration")
+                return start(key, best[2]), key, best[0], best[2]
             return best[1], key, best[0], best[2]
         log(f"{MODELS[key]['name']} is below {target:g} tok/s - trying a smaller model")
-        best[1].stop()
+        if best[1] is not None:
+            best[1].stop()
     raise RuntimeError("no LLM could start (see llama-server.log in the models folder)")
 
 
@@ -2137,14 +2151,15 @@ def main(cfg: dict) -> dict:
     vram = sum(g["vram_gb"] for g in gpus)
     if gpus:
         log(f"GPU: {len(gpus)} x {gpus[0]['name']} ({vram:.0f} GB VRAM) - llama.cpp runs on it")
-    gpu_keys = [GPU_MODEL] if auto else [key]  # the GPU: the small fast one, one copy per GPU
+    gpu_keys = [auto_gpu_model(gpus)] if auto and gpus else [key]  # one copy per GPU when it fits
     log(f"LLM: {MODELS[gpu_keys[0]]['name']} on the GPU (else {spec['name']} on the CPU)" if gpus else
         f"LLM: {spec['name']} {cpu_quant(key, ram, cfg.get('quant', 'auto'))} ({why})" + (f", or smaller if it writes under {cfg.get('min_tokens_per_s', 0)} tok/s"
                                           if len(keys) > 1 and float(cfg.get("min_tokens_per_s", 0)) > 0 else ""))
 
     def tuned(on_gpu: bool) -> dict[str, int]:
         """The settings left at 0 (auto) for the device that really runs the LLM."""
-        return {"parallel": max(1, int(cfg.get("parallel", 0) or (8 if on_gpu else 4))),
+        default_slots = 4 if not on_gpu or gpu_keys[0] == "qwen3.5-9b" else 8
+        return {"parallel": max(1, int(cfg.get("parallel", 0) or default_slots)),
                 "pages_per_topic": int(cfg.get("pages_per_topic", 0) or 1),  # the whole page is read
                 "pairs_per_page": min(6, int(cfg.get("pairs_per_page", 0) or 5))}  # per part of ~2,800 characters
 
