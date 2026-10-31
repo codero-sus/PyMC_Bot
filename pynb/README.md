@@ -8,8 +8,8 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
@@ -57,8 +57,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (GPU or CPU)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/7c2d11729a11a37c74d60858c96744b8f8a2ae5a/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **GPU T4 ×2** for GPU runs (`DEVICE = "auto"`), Internet **on**. The notebook falls back to CPU if GPU setup fails; use `DEVICE = "cpu"` and Accelerator None for CPU-only runs.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
@@ -67,7 +67,7 @@ countdown stay silent. No secret = no role ping.
    parts 1–5, account 2 parts 6–10, account 3 parts 11–15, and account 4 part 16, subject to Kaggle limits. Restart a part with the same number to resume.
    `SESSION = 0` is best-effort auto-claiming; distinct manual numbers are safer. Stop older runs before switching
    to the stable hash-based partition scheme. Page redirects and generated questions can still duplicate across parts.
-   The default dataset is `mr-sus/Minecraftism-dataset`; its token must have write access. Change `DATASET_REPO` to use another repository. The separate PC scraper does not take a session number. On Windows double-click `scripts/collect_dataset_pc.bat`:
+   The default dataset is `mr-sus/Minecraftism-dataset`; its token must have write access. Change `DATASET_REPO` to use another repository. On T4 ×2, `MODEL = "auto"` uses the stronger Qwen3.5-9B Q5_K_M with 4 slots per GPU; `MODEL = "qwen3.5-4b"` is the faster option. The 9B is unbenchmarked here and may yield fewer rows per hour. The separate PC scraper does not take a session number. On Windows double-click `scripts/collect_dataset_pc.bat`:
    it scrapes with CPU processes, uploads source pages, and runs no LLM or GPU. Kaggle imports the pages at startup
    and every 30 minutes; missing pages are fetched normally. Use the same Hugging Face account on both machines.
    Ctrl+C uploads completed pages. Session 1 first writes ~4,200 exact rows from the game data (no LLM, a second). Each works through 84 game mechanics, then mobs, items, blocks, enchantments,
