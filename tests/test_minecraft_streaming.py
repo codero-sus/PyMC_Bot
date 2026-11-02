@@ -207,8 +207,19 @@ def test_vl_edition_trains_from_streamed_pictures_alone(kit, tmp_path):
 def test_notebook_streams_qa_and_pictures():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
-    assert "MINECRAFT_QA = 20000" in code and "STREAM_PICTURES = 3000" in code
+    assert "MINECRAFT_QA = 40000" in code and "STREAM_PICTURES = 3000" in code
     assert "--minecraft-qa {MINECRAFT_QA}" in code and "--stream-vision {STREAM_PICTURES}" in code
     assert '"--stream-vision", "--minecraft-qa"' in code, "an old trainer without streaming gets replaced"
     intro = "".join(nb["cells"][0]["source"])
     assert "106 GB" in intro and "streams" in intro
+
+
+def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned():
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    code = "\n".join("".join(cell["source"]) for cell in nb["cells"] if cell["cell_type"] == "code")
+    assert "editions_to_be_trained = {txt, txt_think}" in code
+    assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
+    assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
+    assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
+    assert 'TRAINER = "pinned"' in code and '/6e6a14c8ea79e536e6f47449e413befa901f3dde/pymc_bot/llm_train.py' in code
+    assert 'actual_user != EXPECTED_HF_USER' in code

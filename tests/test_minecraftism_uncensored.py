@@ -270,7 +270,7 @@ def test_notebook_lives_in_pynb_and_finds_data_and_trainer():
     assert NOTEBOOK.parent.name == "pynb" and (NOTEBOOK.parent / "README.md").is_file()
     assert not (ROOT / "training" / "llm").exists(), "one notebook, in ./pynb"
     code = notebook_code()
-    assert 'DATA = "auto"' in code and 'TRAINER = "auto"' in code
+    assert 'DATA = "auto"' in code and 'TRAINER = "pinned"' in code
     assert "api.github.com/repos/codero-sus/PyMC_Bot/releases" in code
     assert '"pymc-minecraft-llm-kit.zip"' in code and 'download("train_minecraft_llm.py"' in code
     source = (ROOT / "pymc_bot" / "llm_train.py").read_text(encoding="utf-8")
