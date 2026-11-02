@@ -1750,6 +1750,9 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                                          lambda: load_hub_records(name, split, args.minecraft_qa, args.seed + 1),
                                          "Minecraft Q&A")
                     found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
+                    if name == MINECRAFTISM_DATASET:
+                        for row in found:
+                            row["dataset_id"] = MINECRAFTISM_DATASET
                     if name == MINECRAFTISM_DATASET and not found:
                         raise RuntimeError("no Minecraftism Q&A rows passed the quality filters")
                     print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
@@ -3121,7 +3124,7 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
                         f"{who}:\n\n" + "\n".join(lines) + "\n")
     data_text = ""
     if sources:
-        data_text = ("\n## Training data\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
+        data_text = ("\n## Training data (scheduled rows)\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
                      + "".join(f"| [{d['name']}]({d['url']}) | {d['license']} | {'yes' if d.get('commercial') else 'no'} "
                                f"| {d.get('rows', '-')} |\n" for d in sources))
     if report.get("commercial"):
@@ -3696,6 +3699,55 @@ def run_training(trainer: Any, rebuild: Any, world: int, tries: int = 4) -> Any:
     return trainer.train()
 
 
+def ordered_training_phases(rows: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Private Minecraftism rows first; preserve the order inside each independently shuffled phase."""
+    priority = [r for r in rows if r.get("dataset_id") == MINECRAFTISM_DATASET]
+    other = [r for r in rows if r.get("dataset_id") != MINECRAFTISM_DATASET]
+    return [(name, phase) for name, phase in (("minecraftism-dataset", priority), ("other-data", other)) if phase]
+
+
+def run_ordered_phases(args: argparse.Namespace, rows: list[dict[str, Any]], run_phase: Any) -> Any:
+    """Train one epoch per partition in order; do not proceed past an interrupted priority phase.
+
+    run_phase(name, rows, remaining_steps) returns (train_output, phase_completed). The optimizer is reset between
+    phases, but the same model/LoRA weights are kept. A global --max-steps budget is shared between phases.
+    """
+    budget = int(getattr(args, "max_steps", 0) or 0)
+    remaining = budget
+    results = []
+    last = None
+    for name, phase_rows in ordered_training_phases(rows):
+        if results and (not results[-1]["complete"] or (budget > 0 and remaining <= 0)):
+            print(f"skipping {name}: earlier phase was interrupted or the step budget is exhausted")
+            break
+        deadline = float(getattr(args, "deadline", 0) or 0)
+        reserve = float(getattr(args, "reserve_minutes", 0) or 0)
+        if results and deadline and time.time() >= deadline - reserve * 60:
+            print(f"skipping {name}: the export time reserve has been reached")
+            break
+        print(f"training phase: {name} ({len(phase_rows)} rows)", flush=True)
+        last, complete = run_phase(name, phase_rows, remaining if budget > 0 else 0)
+        steps = int(getattr(last, "global_step", 0) or 0)
+        if budget > 0:
+            remaining = max(0, remaining - steps)
+        complete = bool(complete) and not bool(getattr(args, "stopped_early", None))
+        results.append({"phase": name, "rows_scheduled": len(phase_rows), "steps": steps, "complete": complete})
+        print(f"training phase {name}: {'completed' if complete else 'incomplete'} ({steps} steps)", flush=True)
+    args.training_phases = results
+    if last is None:
+        raise ValueError("No rows to train")
+    return last
+
+
+def phase_max_steps(row_count: int, batch: int, accum: int, world: int, epochs: float, budget: int) -> tuple[int, int]:
+    """Bound an optional global step budget; default -1 lets Trainer enforce the requested epochs."""
+    import math
+
+    batches = math.ceil(row_count / max(1, batch * world))
+    expected = max(1, math.ceil(max(1, batches // max(1, accum)) * epochs))
+    return (min(budget, expected) if budget > 0 else -1), expected
+
+
 def end_ddp() -> None:
     """Close the process group after training: only rank 0 goes on (eval, export, upload)."""
     try:
@@ -3851,7 +3903,8 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
     thinking = bool(preset.get("reasoning"))
     general = [i for i, row in enumerate(rows)
                if row.get("kind") == "general" and row.get("source") != "reasoning" and not row.get("images")]
-    facts = [i for i, row in enumerate(rows) if row.get("kind") == "mcqa" and not row.get("images")]
+    facts = [i for i, row in enumerate(rows) if row.get("kind") == "mcqa" and not row.get("images")
+             and row.get("dataset_id") != MINECRAFTISM_DATASET]  # learn the private dataset as supplied first
     picked: list[int] = []
     for a, b in zip(general, facts, strict=False):  # both kinds, half and half while both last
         picked += [a, b]
@@ -3932,7 +3985,7 @@ def apply_teacher_answers(rows: list[dict[str, Any]], jobs: list[dict[str, Any]]
         trace, answer = parsed  # type: ignore[misc]
         row = dict(out[job["row"]])
         row["messages"] = [dict(m) for m in row["messages"]]
-        # The teacher can supply CoT, but never replace the dataset's checked Minecraft answer.
+        # The teacher can supply CoT, but never replace the original Minecraft answer.
         row["messages"][-1]["content"] = job["reference"] if job.get("reference") else answer
         if job["thinking"]:
             row["reasoning"] = trace
@@ -4725,56 +4778,58 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     if preset["chat_template"]:
         tokenizer = get_chat_template(tokenizer, chat_template=preset["chat_template"])
 
-    trained = rows
-    if getattr(args, "merge_qa", 0) > 1 and not preset.get("reasoning"):
-        trained = merge_qa(rows, args.merge_qa)
-        chats = [r for r in trained if r.get("merged", 0) > 1]
-        if chats:
-            print(f"Q&A: {sum(r['merged'] for r in chats)} rows in {len(chats)} chats of up to {args.merge_qa} questions "
-                  f"(the system prompt read once per chat, not per question) - {len(rows)} -> {len(trained)} rows")
-    texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in trained]
-    dataset = Dataset.from_dict({"text": texts})
     user, assistant = TURN_MARKERS[preset["family"]]
-    callbacks = training_callbacks(args)
-    plan = plan_batches(token_lengths(tokenizer, texts) if args.token_budget > 0 else [], preset, world,
-                        args.max_seq, args.token_budget)
-    if plan["p95"]:
-        print(f"batches: {plan['batch']} rows per GPU x {plan['accum']} accumulation x {world} GPU(s) "
-              f"(rows: ~{plan['mean']} tokens, 95% <= {plan['p95']}; same {preset['batch'] * preset['accum']} rows per "
-              f"step as before, in fewer passes)")
-    settings = {"group": True}
 
-    def build() -> Any:
-        options = speed_options(args, preset, world, text=True, plan=plan)
-        if not settings["group"]:
-            options.pop("group_by_length", None)
-        config = SFTConfig(
-            dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=plan["batch"],
-            warmup_steps=10, num_train_epochs=args.epochs,
-            max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr, logging_steps=10,
-            optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
-            output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", **options,
-        )
-        built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
-                           callbacks=callbacks)
-        return train_on_responses_only(built, instruction_part=user, response_part=assistant)
+    def run_phase(name: str, phase_rows: list[dict[str, Any]], budget: int) -> tuple[Any, bool]:
+        trained = phase_rows
+        if getattr(args, "merge_qa", 0) > 1 and not preset.get("reasoning"):
+            trained = merge_qa(phase_rows, args.merge_qa)
+            chats = [r for r in trained if r.get("merged", 0) > 1]
+            if chats:
+                print(f"Q&A ({name}): {sum(r['merged'] for r in chats)} rows in {len(chats)} chats")
+        texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in trained]
+        dataset = Dataset.from_dict({"text": texts})
+        plan = plan_batches(token_lengths(tokenizer, texts) if args.token_budget > 0 else [], preset, world,
+                            args.max_seq, args.token_budget)
+        settings = {"group": True}
+        max_steps, _expected = phase_max_steps(len(trained), plan["batch"], plan["accum"], world, args.epochs, budget)
 
-    def rebuild(exc: BaseException) -> Any:
-        if is_oom(exc) and plan["batch"] > 1:
-            plan["batch"] = max(1, plan["batch"] // 2)
-            plan["accum"] = max(1, round(preset["batch"] * preset["accum"] / (plan["batch"] * world)))
-            print(f"out of GPU memory - trying {plan['batch']} rows per batch x {plan['accum']} accumulation")
-            torch.cuda.empty_cache()
-            return build()
-        if settings["group"] and getattr(args, "group_by_length", False) and not is_oom(exc):
-            settings["group"] = False
-            print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
-            return build()
-        return None
+        def build() -> Any:
+            options = speed_options(args, preset, world, text=True, plan=plan)
+            if not settings["group"]:
+                options.pop("group_by_length", None)
+            config = SFTConfig(
+                dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=plan["batch"],
+                warmup_steps=10, num_train_epochs=args.epochs, max_steps=max_steps,
+                learning_rate=args.lr, logging_steps=10, optim="adamw_8bit", weight_decay=0.001,
+                lr_scheduler_type="linear", seed=args.seed, output_dir=str(scratch_for(out, "checkpoints")),
+                save_strategy="no", report_to="none", **options,
+            )
+            built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
+                               callbacks=training_callbacks(args))
+            return train_on_responses_only(built, instruction_part=user, response_part=assistant)
 
-    stats = run_training(build(), rebuild, world)
+        def rebuild(exc: BaseException) -> Any:
+            if is_oom(exc) and plan["batch"] > 1:
+                plan["batch"] = max(1, plan["batch"] // 2)
+                plan["accum"] = max(1, round(preset["batch"] * preset["accum"] / (plan["batch"] * world)))
+                print(f"out of GPU memory - trying {plan['batch']} rows per batch x {plan['accum']} accumulation")
+                torch.cuda.empty_cache()
+                return build()
+            if settings["group"] and getattr(args, "group_by_length", False) and not is_oom(exc):
+                settings["group"] = False
+                print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
+                return build()
+            return None
+
+        stats = run_training(build(), rebuild, world)
+        return stats, max_steps < 0  # a step-limited run cannot guarantee a complete dataset pass
+
+    stats = run_ordered_phases(args, rows, run_phase)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
-    if getattr(args, "onpolicy_steps", 0) > 0:
+    if (getattr(args, "onpolicy_steps", 0) > 0 and
+            len(args.training_phases) == len(ordered_training_phases(rows)) and
+            all(p["complete"] for p in args.training_phases)):
         try:
             args.onpolicy_report = onpolicy_distill(args, preset, model, tokenizer, rows, world, rank)
         except Exception as exc:  # noqa: BLE001 - the fine-tuned model is kept as it is
@@ -4928,7 +4983,6 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
         finetune_attention_modules=True, finetune_mlp_modules=True, r=args.rank, lora_alpha=args.rank,
         lora_dropout=0, bias="none", random_state=args.seed,
     )
-    dataset = [{"messages": vision_messages(row, preset, load_image)} for row in rows]
     FastVisionModel.for_training(model)
     user, assistant = TURN_MARKERS[preset["family"]]
     try:  # recent unsloth-zoo: response-only loss inside the collator (also for text-only rows)
@@ -4937,18 +4991,23 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
     except TypeError:
         collator = UnslothVisionDataCollator(model, processor)
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    config = SFTConfig(
-        per_device_train_batch_size=preset["batch"], warmup_steps=10,
-        num_train_epochs=args.epochs, max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr,
-        logging_steps=10, optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
-        output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
-        remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
-        max_length=args.max_seq, **speed_options(args, preset, world, text=False),
-    )
-    callbacks = training_callbacks(args)
-    trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config,
-                         callbacks=callbacks)
-    stats = trainer.train()
+    def run_phase(name: str, phase_rows: list[dict[str, Any]], budget: int) -> tuple[Any, bool]:
+        dataset = [{"messages": vision_messages(row, preset, load_image)} for row in phase_rows]
+        accum = max(1, round(preset["accum"] / max(1, world)))
+        max_steps, _expected = phase_max_steps(len(dataset), preset["batch"], accum, world, args.epochs, budget)
+        config = SFTConfig(
+            per_device_train_batch_size=preset["batch"], warmup_steps=10,
+            num_train_epochs=args.epochs, max_steps=max_steps, learning_rate=args.lr,
+            logging_steps=10, optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
+            output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
+            remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
+            max_length=args.max_seq, **speed_options(args, preset, world, text=False),
+        )
+        trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config,
+                             callbacks=training_callbacks(args))
+        return trainer.train(), max_steps < 0  # do not move to other data on a step-limited run
+
+    stats = run_ordered_phases(args, rows, run_phase)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
     if world > 1:
         end_ddp()
@@ -5002,6 +5061,11 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         except Exception as exc:  # noqa: BLE001 - never lose the trained model to the eval
             print(f"agentic eval failed ({type(exc).__name__}: {exc})")
 
+    if getattr(args, "training_phases", None):
+        report["training_phases"] = args.training_phases
+        if (len(args.training_phases) != len(ordered_training_phases(rows)) or
+                not all(phase["complete"] for phase in args.training_phases)):
+            report["train_rows_scheduled"] = report.pop("train_rows")  # not all scheduled rows were necessarily seen
     if getattr(args, "stopped_early", None):
         report["stopped_early"] = args.stopped_early
     lock = getattr(args, "export_lock", None)

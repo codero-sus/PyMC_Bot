@@ -331,3 +331,63 @@ def test_turbo_placeholder_reservation_never_overwrites_existing_repos():
     assert api.created == ["mr-sus/Minecraftism-4B-Turbo-Uncensored"]
     assert len(api.uploads) == 1 and api.uploads[0]["path_in_repo"] == "README.md"
     assert b"no trained model" in api.uploads[0]["path_or_fileobj"]
+
+
+def test_private_dataset_training_phase_precedes_all_other_rows():
+    priority = [{"dataset_id": llm_train.MINECRAFTISM_DATASET, "id": "private-1"},
+                {"dataset_id": llm_train.MINECRAFTISM_DATASET, "id": "private-2"}]
+    other = [{"source": "minecraft-qa", "id": "external"}, {"source": "general", "id": "chat"}]
+    args = types.SimpleNamespace(max_steps=0)
+    calls = []
+
+    def run(name, rows, budget):
+        calls.append((name, [r["id"] for r in rows], budget))
+        return types.SimpleNamespace(global_step=2, training_loss=0.5), True
+
+    llm_train.run_ordered_phases(args, [other[0], priority[0], other[1], priority[1]], run)
+    assert calls == [("minecraftism-dataset", ["private-1", "private-2"], 0),
+                     ("other-data", ["external", "chat"], 0)]
+    assert [p["complete"] for p in args.training_phases] == [True, True]
+
+
+def test_private_dataset_interruption_never_trains_other_rows():
+    rows = [{"dataset_id": llm_train.MINECRAFTISM_DATASET}, {"source": "general"}]
+    args = types.SimpleNamespace(max_steps=30)
+    calls = []
+
+    def run(name, _rows, budget):
+        calls.append((name, budget))
+        return types.SimpleNamespace(global_step=15, training_loss=0.5), False
+
+    llm_train.run_ordered_phases(args, rows, run)
+    assert calls == [("minecraftism-dataset", 30)]
+    assert args.training_phases == [{"phase": "minecraftism-dataset", "rows_scheduled": 1,
+                                    "steps": 15, "complete": False}]
+
+
+def test_deadline_stops_later_phase_even_if_backend_claims_completion():
+    rows = [{"dataset_id": llm_train.MINECRAFTISM_DATASET}, {"source": "general"}]
+    args = types.SimpleNamespace(max_steps=0)
+    calls = []
+
+    def run(name, _rows, _budget):
+        calls.append(name)
+        args.stopped_early = {"step": 1, "of": 10}
+        return types.SimpleNamespace(global_step=1, training_loss=0.1), True
+
+    llm_train.run_ordered_phases(args, rows, run)
+    assert calls == ["minecraftism-dataset"] and not args.training_phases[0]["complete"]
+
+
+def test_private_stream_marks_only_accepted_dataset_rows_and_teacher_leaves_them_alone(monkeypatch):
+    args = Namespace(no_identity=True, system_prompt="S", uncensored=False, general=0, general_dataset="g",
+                     reasoning_dataset="r", max_seq=2048, seed=1, preset="minecraftism-thinking", minecraft_qa=50,
+                     minecraft_qa_dataset=llm_train.MINECRAFTISM_DATASET, stream_vision=0, vision_dataset="v/d")
+    monkeypatch.setattr(llm_train, "minecraftism_snapshot", lambda *_: ("a" * 40, ["data/train-01.jsonl"]))
+    records = [{"question": "How can I craft an item?", "answer": "Use the crafting table with materials.",
+                "reasoning": "First identify materials, then use the crafting table."}]
+    monkeypatch.setattr(llm_train, "stream_minecraftism_records", lambda *_: records)
+    rows = llm_train.extra_rows(args, llm_train.PRESETS["minecraftism-thinking"], random.Random(0))
+    assert len(rows) == 1 and rows[0]["dataset_id"] == llm_train.MINECRAFTISM_DATASET
+    assert rows[0]["reasoning_origin"] == "dataset"
+    assert llm_train.teacher_jobs(rows, llm_train.PRESETS["minecraftism-thinking"], 100, "teacher") == []
