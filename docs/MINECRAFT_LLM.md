@@ -94,11 +94,12 @@ both T4s busy ([speed](#speed-both-t4s-every-minute)).
 | `minecraftism-vl` | Qwen3-VL-4B-Instruct | `Minecraftism-VL-4B-GGUF` | ~9 GB, ~2–3 h | ~4.5 GB, + ~0.8 GB projector | The bot should *look* at the world: it gets a picture of its view every few turns. |
 | `minecraftism-vl-thinking` | Qwen3-VL-4B-Thinking | `Minecraftism-VL-4B-Thinking-GGUF` | ~9 GB, ~3 h+ | ~4.5 GB + projector | Pictures and thinking. The slowest and the most careful. |
 
-The thinking editions are trained on **reasoning traces written by built-in rules**: what the bot's health,
-food, the time and the nearby mobs mean, who said what in chat (and what the mob database knows about the
-mob they asked about), what failed last time, and which action follows from that. No teacher model is needed.
-Qwen's Thinking models must be fine-tuned *with* traces; training them on bare answers would make them
-forget how to reason, so every row has one.
+Thinking editions use `<think>` traces; the regular Instruct edition remains direct-answer. Minecraft Q&A
+uses eligible dataset-provided reasoning if available, otherwise a generated answer-plan template (not genuine
+chain-of-thought). Optional teacher distillation can replace the plan with a teacher trace while keeping the
+original answer. Game turns use built-in rule-based plans; other reasoning datasets may supply their own traces.
+Neither source traces nor teacher traces are verified facts; even a numeric consistency check cannot establish
+correctness. Teacher output is optional and may be unavailable if generation fails or the session runs out of time.
 
 The older sizes (`qwen3-4b`, `qwen3-8b`, `qwen3-14b` with `--split`, `llama-3.2-3b`, `qwen3.5-4b`)
 still work for text-only models.
@@ -142,8 +143,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/2e0a3b9164a772492d06e94dcc2c484b1c7ce36a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/2e0a3b9164a772492d06e94dcc2c484b1c7ce36a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/44f2218bb06aed7bf60e151aa0508052a893077c/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/44f2218bb06aed7bf60e151aa0508052a893077c/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -234,9 +235,9 @@ Why not something bigger or newer:
 1. **Off-policy (response distillation), `DISTILL_ROWS = 1500`.** Before training, the teacher writes the answers:
    * **everyday chat:** the human-written answers are replaced by the teacher's. Thinking editions also get the
      teacher's own `<think>` trace (Qwen3-14B and 8B are hybrid: `enable_thinking` on for them, off for the others);
-   * **Minecraft Q&A:** each one is rewritten in a natural voice, *around the exact answer*. The answer from
-     minecraft-data goes into the teacher's prompt as a reference, and a rewrite is used only if every number in
-     that reference is in it;
+   * **Minecraft Q&A:** the original dataset answer stays in place. For Thinking, an accepted teacher trace
+     can replace the source trace or template. The reference answer is supplied to the teacher; format and numeric
+     checks are only weak filters and do not verify the answer or reasoning;
    * **not touched:** game turns keep their rule-checked JSON, and the Nemotron thinking rows keep their traces
      (they already came from a far bigger model);
    * **dropped:** cut-off answers, empty answers and (when `UNCENSORED`) refusals. Those rows keep their original
@@ -631,7 +632,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/2e0a3b9164a772492d06e94dcc2c484b1c7ce36a/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/44f2218bb06aed7bf60e151aa0508052a893077c/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
