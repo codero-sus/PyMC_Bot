@@ -217,11 +217,11 @@ def test_notebook_streams_qa_and_pictures():
 def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = "\n".join("".join(cell["source"]) for cell in nb["cells"] if cell["cell_type"] == "code")
-    assert "editions_to_be_trained = {txt, txt_think}" in code
+    assert "editions_to_be_trained = {txt, txt_think, turbo}" in code
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/8f3e13acbfa4df2ce25d24688283378d04b71704/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/3fbdf3dd5697df470d59e24d5050e01cbc40ffff/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
@@ -297,3 +297,37 @@ def test_minecraft_cot_preserves_explicit_trace_and_labels_fallbacks():
     plain = llm_train.prepare_messages(sourced, llm_train.PRESETS["minecraftism"])
     assert "<think>\n" + records[0]["reasoning"] in thinking[-1]["content"]
     assert "<think>" not in plain[-1]["content"] and plain[-1]["content"] == records[0]["answer"]
+
+
+def test_turbo_placeholder_reservation_never_overwrites_existing_repos():
+    import ast
+
+    notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    code = next("".join(cell["source"]) for cell in notebook["cells"]
+                if "def reserve_turbo_repos(" in "".join(cell["source"]))
+    function = next(node for node in ast.parse(code).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "reserve_turbo_repos")
+    namespace = {}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+
+    class Api:
+        def __init__(self):
+            self.created = []
+            self.uploads = []
+
+        def repo_exists(self, repo_id, repo_type):
+            assert repo_type == "model"
+            return repo_id.endswith("-GGUF")
+
+        def create_repo(self, **kwargs):
+            assert kwargs["exist_ok"] is False
+            self.created.append(kwargs["repo_id"])
+
+        def upload_file(self, **kwargs):
+            self.uploads.append(kwargs)
+
+    api = Api()
+    namespace["reserve_turbo_repos"](api, "mr-sus", True, False, True)
+    assert api.created == ["mr-sus/Minecraftism-4B-Turbo-Uncensored"]
+    assert len(api.uploads) == 1 and api.uploads[0]["path_in_repo"] == "README.md"
+    assert b"no trained model" in api.uploads[0]["path_or_fileobj"]
