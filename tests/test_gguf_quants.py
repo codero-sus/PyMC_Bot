@@ -363,12 +363,16 @@ def test_finish_uploads_safetensors_then_each_gguf_then_the_gguf_repo(tmp_path, 
     stem = llm_train.PRESETS["minecraftism"]["file"]
     assert files == [f"{stem}.{q}.gguf" for q in ("Q8_0", "Q6_K", "Q5_K_M", "Q3_K_M")]
     st_files = hub[1][2]
-    assert "tokenizer.json" in st_files and "README.md" in st_files and "model.safetensors.index.json" in st_files
+    assert {"tokenizer.json", "README.md", "model.safetensors.index.json", "Modelfile", "IMPORTING.md"} <= set(st_files)
+    assert (out / "safetensors" / "Modelfile").read_text().startswith("FROM .\n")
+    assert "every weight shard" in (out / "safetensors" / "IMPORTING.md").read_text()
     gguf_files, ignore = hub[-1][2], hub[-1][3]
     main = report["gguf"]
     assert main.endswith(".Q4_K_M.gguf") and main in gguf_files and report["gguf_gb"] == 0.0
     assert {"tokenizer.json", "config.json", "chat_template.jinja", "Modelfile", "README.md", "pymc_model.json",
-            "generation_config.json", "tokenizer_config.json"} <= set(gguf_files)
+            "generation_config.json", "tokenizer_config.json", "IMPORTING.md"} <= set(gguf_files)
+    assert f"FROM ./{main}" in (out / "Modelfile").read_text()
+    assert f"llama-server -m ./{main}" in (out / "IMPORTING.md").read_text()
     assert not [f for f in gguf_files if f.endswith(".gguf") and f != main]  # the others went up one by one
     assert "stream_images/*" in ignore and "safetensors/*" in ignore
     assert [g["quant"] for g in report["ggufs"]] == ["Q4_K_M", "Q8_0", "Q6_K", "Q5_K_M", "Q3_K_M"]
@@ -657,3 +661,14 @@ def test_public_cards_and_existing_repo_destinations():
         assert 'src="https://2no.co/pymc_bot_REAL"' in card
         assert "third-party view counter" in card and "Copyright codero-sus" in card
         assert "polyform-noncommercial-1.0.0" in card
+
+
+def test_import_files_handle_vision_projector_and_existing_parameters(tmp_path):
+    preset = llm_train.PRESETS["minecraftism-vl"]
+    llm_train.write_import_files(tmp_path, preset, "test system", gguf="model.Q4_K_M.gguf", mmproj="mmproj.gguf")
+    modelfile = (tmp_path / "Modelfile").read_text()
+    assert "FROM ./model.Q4_K_M.gguf" in modelfile and "FROM ./mmproj.gguf" in modelfile
+    assert 'SYSTEM """test system"""' in modelfile and "PARAMETER temperature" in modelfile
+    guide = (tmp_path / "IMPORTING.md").read_text()
+    assert "--mmproj ./mmproj.gguf" in guide and "depends on the runtime" in guide
+    assert "change the first `FROM`" in guide

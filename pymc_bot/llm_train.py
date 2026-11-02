@@ -359,7 +359,7 @@ def estimate(rows: list[dict[str, Any]], preset: dict[str, Any], epochs: float, 
 def modelfile_text(gguf_name: str, family: str, template: str | None = None, mmproj: str | None = None,
                    parameters: dict[str, Any] | None = None, system: str | None = None) -> str:
     """An Ollama Modelfile. Vision models get a second ``FROM`` line with the projector (``mmproj``)."""
-    lines = [f"FROM ./{gguf_name}"]
+    lines = ["FROM ." if gguf_name == "." else f"FROM ./{gguf_name}"]
     if mmproj:
         lines.append(f"FROM ./{mmproj}")
     if template:
@@ -3029,7 +3029,8 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
             files.append(f"- `{report['imatrix']['file']}` - the importance matrix the quants were made with")
     if report.get("mmproj"):
         files.append(f"- `{report['mmproj']}` - the vision projector (needed for pictures)")
-    files += ["- `Modelfile` - for `ollama create`", "- `pymc_model.json` - training report PyMC Bot reads on import"]
+    files += ["- `Modelfile` - for `ollama create`", "- `IMPORTING.md` - Ollama and GGUF import instructions",
+              "- `pymc_model.json` - training report PyMC Bot reads on import"]
     if report.get("essentials"):
         files.append("- " + ", ".join(f"`{name}`" for name in report["essentials"][:6])
                      + (" ..." if len(report["essentials"]) > 6 else "") + " - tokenizer, config and chat template")
@@ -3040,7 +3041,8 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         gguf_repo = str(report.get("hub_repo") or f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}")
         files = ["- `model*.safetensors` - the merged weights (LoRA folded into the base, 16-bit)",
                  "- `config.json`, `generation_config.json` - model config",
-                 "- tokenizer files + `chat_template.jinja` - the chat format it was trained with"]
+                 "- tokenizer files + `chat_template.jinja` - the chat format it was trained with",
+                 "- `Modelfile` and `IMPORTING.md` - local import instructions (runtime support varies)"]
         if vision:
             files.append("- `preprocessor_config.json` / processor files - how pictures are prepared")
     evaluation = report.get("eval") or {}
@@ -3309,6 +3311,36 @@ def write_cards(out: Path, preset_name: str, preset: dict[str, Any], report: dic
         st_repo = report.get("hub_repo_safetensors") or safetensors_repo(repo)
         (folder / "README.md").write_text(model_card(preset_name, preset, report, st_repo, kind="safetensors"),
                                           encoding="utf-8")
+
+
+def write_import_files(folder: Path, preset: dict[str, Any], system: str, *, gguf: str = "", mmproj: str = "",
+                       template: str | None = None) -> None:
+    """Write portable import instructions and an Ollama Modelfile beside the actual weights."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "Modelfile").write_text(modelfile_text(gguf or ".", preset["family"], template, mmproj or None,
+                                                   preset.get("run_parameters"), system), encoding="utf-8")
+    if gguf:
+        projector = f" --mmproj ./{mmproj}" if mmproj else ""
+        vision_note = (f"Keep `{mmproj}` beside the model; image support depends on the runtime and architecture.\n"
+                       if mmproj else "This export has no vision projector; image input is unavailable.\n"
+                       if preset.get("vision") else "")
+        steps = (f"Use the shipped `{gguf}` with `Modelfile`. Download both files into the same directory "
+                 "before running the following commands there:\n\n"
+                 "```sh\nollama create minecraftism -f Modelfile\nollama run minecraftism\n```\n\n"
+                 "For a different quant, download it and change the first `FROM` in `Modelfile` to its filename.\n\n"
+                 f"llama.cpp: `llama-server -m ./{gguf}{projector}`.\n\n"
+                 "LM Studio and other GGUF clients: open the downloaded GGUF in a compatible client.\n\n"
+                 + vision_note)
+    else:
+        steps = ("Download the complete repository, including every weight shard, tokenizer and config, into one "
+                 "directory. The included `Modelfile` uses `FROM .`; from that directory run:\n\n"
+                 "```sh\nollama create minecraftism -f Modelfile\nollama run minecraftism\n```\n\n"
+                 "Safetensors import support depends on Ollama version and architecture. For Transformers or vLLM, "
+                 "load the complete directory with the compatible model and tokenizer/processor classes.\n")
+    (folder / "IMPORTING.md").write_text("# Importing Minecraftism\n\n" + steps +
+        "\nUse a current runtime that supports the model architecture. Import and vision support have not been "
+        "verified for every runtime or platform.\n", encoding="utf-8")
 
 
 def resolve_repo(repo: str, preset: dict[str, Any], whoami: Any = None) -> str:
@@ -5054,6 +5086,8 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
     st_dir = out / SAFETENSORS_DIR
     uploader = Uploader(background=bool(hub))
     # 1. the safetensors edition (merged by save_safetensors): uploaded in the background, first in the queue
+    if report.get("safetensors") and st_dir.is_dir():
+        write_import_files(st_dir, preset, args.system_prompt)
     if hub and report.get("safetensors"):
         report["hub_repo_safetensors"] = hub["safetensors"]
         write_cards(out, args.preset, preset, report, repo)
@@ -5089,9 +5123,9 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
         mmproj = out / made["mmproj"] if made.get("mmproj") else None
         if preset.get("vision") and mmproj is None:
             print("warning: no mmproj (vision projector) was exported - the model will only read text")
-        (out / "Modelfile").write_text(modelfile_text(gguf.name, preset["family"], made.get("template"),
-                                                      mmproj.name if mmproj else None,
-                                                      preset.get("run_parameters"), args.system_prompt), encoding="utf-8")
+        write_import_files(out, preset, args.system_prompt, gguf=gguf.name,
+                           mmproj=mmproj.name if mmproj else "", template=made.get("template"))
+        write_ollama_params(out, preset)
         report.update({"gguf": gguf.name, "quant": made["files"][0]["quant"], "gguf_route": made.get("route"),
                        "gguf_gb": round(gguf.stat().st_size / 1e9, 2), "ggufs": made["files"],
                        "gguf_skipped": made.get("skipped") or [], "imatrix": made.get("imatrix"),
