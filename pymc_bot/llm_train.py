@@ -66,6 +66,9 @@ _MINECRAFTISM_WHY = {
 #: Qwen's sampling advice per mode (a little cooler than chat for reliable JSON).
 RUN_THINKING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "num_ctx": 8192, "repeat_penalty": 1.0}
 RUN_VISION = {"temperature": 0.6, "top_p": 0.8, "top_k": 20, "num_ctx": 8192, "repeat_penalty": 1.05}
+# Turbo's Ollama profile limits work, not the model's intrinsic token throughput; callers can override both.
+RUN_TURBO = {"temperature": 0.6, "top_p": 0.8, "top_k": 20, "num_ctx": 2048, "num_predict": 128,
+             "repeat_penalty": 1.05}
 
 
 def _edition(name: str, model: str, base: str, *, reasoning: bool, vision: bool, hub: str, file: str) -> dict[str, Any]:
@@ -99,7 +102,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     "minecraftism-turbo": {**_edition("minecraftism-turbo", "unsloth/Qwen3-4B-Instruct-2507",
                                        "Qwen/Qwen3-4B-Instruct-2507", reasoning=False, vision=False,
                                        hub="Minecraftism-4B-Turbo-GGUF", file="minecraftism-4b-turbo"),
-                           "turbo": True},
+                           "turbo": True, "run_parameters": RUN_TURBO},
     "minecraftism-thinking": _edition("minecraftism-thinking", "unsloth/Qwen3-4B-Thinking-2507", "Qwen/Qwen3-4B-Thinking-2507",
                                       reasoning=True, vision=False, hub="Minecraftism-4B-Thinking-GGUF",
                                       file="minecraftism-4b-thinking"),
@@ -417,6 +420,7 @@ def uncensored_preset(name: str, preset: dict[str, Any]) -> dict[str, Any]:
     """The preset trained on the abliterated base, with its own file and Hugging Face names."""
     out = dict(preset, uncensored=True)
     if preset.get("uncensored_model"):
+        out["upstream_base_model"] = preset.get("base_model")
         out["model"] = out["base_model"] = preset["uncensored_model"]
     if preset.get("hub"):
         out["hub"] = str(preset["hub"]).replace("-GGUF", "-Uncensored-GGUF")
@@ -3015,7 +3019,8 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
     safetensors = kind == "safetensors"
     name = display_name(preset_name, preset) + (" (safetensors)" if safetensors else "")
     vision, reasoning = bool(preset.get("vision")), bool(preset.get("reasoning"))
-    base = preset.get("base_model") or preset["model"]
+    base = str(report.get("base_model") or preset.get("base_model") or preset["model"])
+    upstream = (preset.get("upstream_base_model") if base == preset.get("uncensored_model") else None)
     quant = str(report.get("quant") or "Q4_K_M").upper()
     tags = ["minecraft", "gguf", "pymc-bot", "minecraftism", "qwen3", "unsloth", "game-agent"]
     tags += ["vision", "image-text-to-text"] if vision else []
@@ -3214,7 +3219,8 @@ With PyMC Bot / Ollama, use the GGUF edition:
 ```bash
 python -m pymc_bot llm import --hf {gguf_repo}
 ```"""
-    card_base, relation = base, ""
+    # Hub tree groups under Qwen's original checkpoint; the body identifies the actual Huihui weights.
+    card_base, relation = upstream or base, ""
     if st_repo and not safetensors:  # the model tree: base -> fine-tune (safetensors) -> quantized (this repo)
         card_base, relation = st_repo, "\nbase_model_relation: quantized"
     elif safetensors:
@@ -3227,10 +3233,13 @@ python -m pymc_bot llm import --hf {gguf_repo}
     if st_repo and not safetensors:
         links.append(f"[safetensors](https://huggingface.co/{st_repo})")
     links += [f"[base model](https://huggingface.co/{base})", f"[PyMC Bot]({PROJECT_URL})"]
+    upstream_line = (f"| Upstream Qwen lineage | [{upstream}](https://huggingface.co/{upstream}) "
+                     "(Hub tree grouping; the training base above was used) |\n" if upstream else "")
     turbo_text = ("## Turbo\n\nThis 4B direct-answer edition trains on shorter complete everyday examples and "
                   "asks the optional teacher for concise answers. Minecraft reference answers and game JSON are not "
-                  "truncated. Shorter responses may reduce end-to-end latency, but throughput and quality have not "
-                  "been benchmarked.\n" if preset.get("turbo") else "")
+                  "truncated during training. The Ollama profile defaults to a 2048-token context and a 128-token "
+                  "output limit to bound work; long prompts or answers can be truncated. Override num_ctx and "
+                  "num_predict as needed. Speed and quality have not been benchmarked.\n" if preset.get("turbo") else "")
     return f"""---
 license: other
 license_name: polyform-noncommercial-1.0.0
@@ -3269,8 +3278,8 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 | | |
 |---|---|
 | Edition | {name} (`{preset_name}`) |
-| Base model | [{base}](https://huggingface.co/{base}) (Apache-2.0) |
-| Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
+| Training base actually used | [{base}](https://huggingface.co/{base}) |
+{upstream_line}| Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
 | Data | {data_cell} |
 | Size | {size} |
 {turbo_text}

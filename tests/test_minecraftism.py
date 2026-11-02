@@ -31,7 +31,7 @@ from pymc_bot.llm_tools import (
 from pymc_bot.ollama import OllamaClient
 
 ROOT = Path(__file__).resolve().parents[1]
-EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking")
+EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking", "minecraftism-turbo")
 
 
 def png(width: int = 8, height: int = 6) -> bytes:
@@ -72,9 +72,10 @@ def shots_playtime(tmp_path) -> Path:
 
 
 # ------------------------------------------------------------------ editions
-def test_four_editions_on_the_right_qwen_models():
+def test_editions_on_the_right_qwen_models():
     assert llm_train.DEFAULT_PRESET == "minecraftism" and tuple(llm_train.EDITIONS) == EDITIONS
     expected = {"minecraftism": ("unsloth/Qwen3-4B-Instruct-2507", False, False),
+                "minecraftism-turbo": ("unsloth/Qwen3-4B-Instruct-2507", False, False),
                 "minecraftism-thinking": ("unsloth/Qwen3-4B-Thinking-2507", True, False),
                 "minecraftism-vl": ("unsloth/Qwen3-VL-4B-Instruct", False, True),
                 "minecraftism-vl-thinking": ("unsloth/Qwen3-VL-4B-Thinking", True, True)}
@@ -85,7 +86,7 @@ def test_four_editions_on_the_right_qwen_models():
         assert preset["train_gb"] <= 16 and preset["edition"] == name
         hubs.add(preset["hub"])
         assert preset["hub"].startswith("Minecraftism") and preset["hub"].endswith("-GGUF")
-    assert len(hubs) == 4
+    assert len(hubs) == 5
     assert llm_train.display_name("minecraftism-vl-thinking", llm_train.PRESETS["minecraftism-vl-thinking"]) == \
         "Minecraftism VL 4B Thinking"
     assert llm_train.output_name("minecraftism", llm_train.PRESETS["minecraftism"], "q4_k_m") == "minecraftism-4b.Q4_K_M.gguf"

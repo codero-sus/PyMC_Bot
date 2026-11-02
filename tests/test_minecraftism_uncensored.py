@@ -279,3 +279,30 @@ def test_notebook_lives_in_pynb_and_finds_data_and_trainer():
         assert f'"{flag}"' in source, f"the notebook checks the trainer for {flag}, which it must have"
     for name in ("README.md", "docs/MINECRAFT_LLM.md", "scripts/release_kit.py", ".github/workflows/ci.yml"):
         assert "training/llm" not in (ROOT / name).read_text(encoding="utf-8"), name
+
+
+@pytest.mark.parametrize("name", llm_train.EDITIONS)
+def test_model_cards_group_qwen_but_disclose_huihui_base(name):
+    preset = llm_train.uncensored_preset(name, llm_train.PRESETS[name])
+    actual = preset["uncensored_model"]
+    upstream = llm_train.PRESETS[name]["base_model"]
+    report = {"base_model": actual, "hub_repo_safetensors": "me/model"}
+    st_card = llm_train.model_card(name, preset, report, "me/model", kind="safetensors")
+    gguf_card = llm_train.model_card(name, preset, report, "me/model-GGUF")
+    assert f"base_model: {upstream}\nbase_model_relation: finetune" in st_card
+    assert "base_model: me/model\nbase_model_relation: quantized" in gguf_card
+    for card in (st_card, gguf_card):
+        assert f"https://huggingface.co/{actual}" in card
+        assert "Training base actually used" in card and "Upstream Qwen lineage" in card
+    custom = llm_train.model_card(name, preset, {"base_model": "other/custom"}, "me/model", kind="safetensors")
+    assert "base_model: other/custom" in custom and "Upstream Qwen lineage" not in custom
+
+
+def test_turbo_profile_only_bounds_its_ollama_context_and_output(tmp_path):
+    turbo = llm_train.PRESETS["minecraftism-turbo"]
+    assert llm_train.ollama_params(turbo)["num_ctx"] == 2048
+    assert llm_train.ollama_params(turbo)["num_predict"] == 128
+    assert "num_predict" not in llm_train.ollama_params(llm_train.PRESETS["minecraftism"])
+    llm_train.write_import_files(tmp_path, turbo, "", gguf="turbo.gguf")
+    text = (tmp_path / "Modelfile").read_text()
+    assert "PARAMETER num_ctx 2048" in text and "PARAMETER num_predict 128" in text
