@@ -223,3 +223,55 @@ def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned()
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
     assert 'TRAINER = "pinned"' in code and '/6e6a14c8ea79e536e6f47449e413befa901f3dde/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
+
+
+def test_minecraftism_snapshot_uses_only_primary_slice_files_and_revision():
+    class Api:
+        def dataset_info(self, name):
+            assert name == llm_train.MINECRAFTISM_DATASET
+            return types.SimpleNamespace(sha="a" * 40)
+
+        def list_repo_files(self, name, repo_type, revision):
+            assert repo_type == "dataset" and revision == "a" * 40
+            return ["data/train-02.jsonl", "data/high/train-02.jsonl", "meta/progress-01.json",
+                    "data/train-01.jsonl", "scrape-cache/part.zip"]
+
+    revision, files = llm_train.minecraftism_snapshot(llm_train.MINECRAFTISM_DATASET, api=Api())
+    assert revision == "a" * 40 and files == ["data/train-01.jsonl", "data/train-02.jsonl"]
+    with pytest.raises(ValueError, match="revision"):
+        llm_train.minecraftism_snapshot(llm_train.MINECRAFTISM_DATASET, "main", api=Api())
+
+
+def test_minecraftism_stream_samples_shards_at_the_pinned_revision():
+    repo, revision = llm_train.MINECRAFTISM_DATASET, "a" * 40
+    prefix = f"datasets/{repo}@{revision}/"
+    files = {prefix + "data/train-01.jsonl": b'{"question":"q1"}\n{"question":"q2"}\n',
+             prefix + "data/train-02.jsonl": b'{"question":"q3"}\n'}
+    class RecordingHub(FakeHub):
+        def __init__(self, items):
+            super().__init__(items)
+            self.opened = []
+
+        def open(self, path, mode="rb", **kwargs):
+            self.opened.append(path)
+            return super().open(path, mode, **kwargs)
+
+    fs = RecordingHub(files)
+    result = llm_train.stream_minecraftism_records(repo, revision, ["data/train-01.jsonl", "data/train-02.jsonl"],
+                                                   10, 7, fs=fs)
+    assert {r["question"] for r in result} == {"q1", "q2", "q3"}
+    assert set(fs.opened) == set(files)
+    fs.files[prefix + "data/train-01.jsonl"] = b'{broken\n'
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        llm_train.stream_minecraftism_records(repo, revision, ["data/train-01.jsonl"], 10, 7, fs=fs)
+
+
+def test_minecraftism_dataset_failures_are_not_silently_skipped(monkeypatch):
+    args = Namespace(no_identity=True, system_prompt="S", uncensored=False, general=0, general_dataset="g",
+                     reasoning_dataset="r", max_seq=2048, seed=1, preset="minecraftism", minecraft_qa=50,
+                     minecraft_qa_dataset=llm_train.MINECRAFTISM_DATASET, stream_vision=0, vision_dataset="v/d")
+    def broken(*_args, **_kwargs):
+        raise OSError("denied")
+    monkeypatch.setattr(llm_train, "minecraftism_snapshot", broken)
+    with pytest.raises(RuntimeError, match="Required Minecraftism dataset could not be loaded"):
+        llm_train.extra_rows(args, llm_train.PRESETS["minecraftism"], random.Random(0))

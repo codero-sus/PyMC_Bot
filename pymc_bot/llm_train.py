@@ -601,6 +601,67 @@ def load_hub_records(name: str, split: str, limit: int, seed: int, buffer: int =
     return list(stream.take(max(limit * factor, limit + 200)))  # spare rows: the filters drop some
 
 
+MINECRAFTISM_DATASET = "mr-sus/Minecraftism-dataset"
+MINECRAFTISM_REVISION_ENV = "MINECRAFTISM_DATASET_REVISION"
+
+
+def minecraftism_snapshot(name: str, revision: str = "", api: Any = None) -> tuple[str, list[str]]:
+    """Resolve one immutable dataset revision and its main session shards, never the high/rejected copies."""
+    if api is None:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=os.environ.get("HF_TOKEN"))
+    if not revision:
+        revision = api.dataset_info(name).sha
+    if not re.fullmatch(r"[0-9a-f]{40}", str(revision)):
+        raise ValueError("Minecraftism dataset revision must be a full 40-character commit SHA")
+    files = sorted(path for path in api.list_repo_files(name, repo_type="dataset", revision=revision)
+                   if re.fullmatch(r"data/train-\d+\.jsonl", path))
+    if not files:
+        raise RuntimeError(f"{name}@{revision} has no data/train-NN.jsonl files")
+    return revision, files
+
+
+def stream_minecraftism_records(name: str, revision: str, files: list[str], limit: int, seed: int,
+                                fs: Any = None) -> list[dict[str, Any]]:
+    """Stream every selected JSONL shard at one revision, then reservoir-sample without duplicates from high/.
+
+    Keeping up to three times the requested rows gives the existing quality filters room to discard junk.
+    """
+    import random
+
+    if fs is None:
+        from huggingface_hub import HfFileSystem
+
+        fs = HfFileSystem(token=os.environ.get("HF_TOKEN"))
+    rng, sampled, seen = random.Random(seed), [], 0
+    capacity = max(limit * 3, limit + 200)
+    for path in files:
+        with fs.open(f"datasets/{name}@{revision}/{path}", "rb") as source:
+            for line_number, line in enumerate(source, 1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise ValueError(f"Invalid JSON in {path} line {line_number}") from exc
+                if not isinstance(record, dict):
+                    raise ValueError(f"Invalid row in {path} line {line_number}")
+                seen += 1
+                if len(sampled) < capacity:
+                    sampled.append(record)
+                else:
+                    index = rng.randrange(seen)
+                    if index < capacity:
+                        sampled[index] = record
+    if not seen:
+        raise RuntimeError(f"{name}@{revision} has no non-empty training rows")
+    rng.shuffle(sampled)
+    print(f"Minecraftism dataset snapshot {revision}: {len(files)} shards, {seen} raw rows, "
+          f"{len(sampled)} sampled before filtering", flush=True)
+    return sampled
+
+
 # --------------------------------------------------------------------------- streamed Minecraft datasets
 #: ~695k Minecraft Q&A pairs written from 18k Minecraft Wiki pages (CC BY-NC-SA 3.0). Synthetic, so it is
 #: sampled and filtered rather than used whole.
@@ -1648,13 +1709,25 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                     print(f"+{len(found)} Minecraft Q&A rows generated from minecraft-data {version}")
                 else:
                     name, split = hub_split(args.minecraft_qa_dataset, "train")
-                    records = cached(args, f"hub:{name}:{split}:{args.minecraft_qa}:{args.seed + 1}:3",
-                                     lambda: load_hub_records(name, split, args.minecraft_qa, args.seed + 1),
-                                     "Minecraft Q&A")
+                    if name == MINECRAFTISM_DATASET:
+                        if split != "train":
+                            raise ValueError("Minecraftism dataset supports the train slice files only")
+                        revision, files = minecraftism_snapshot(name, os.environ.get(MINECRAFTISM_REVISION_ENV, ""))
+                        records = cached(args, f"minecraftism:{name}:{revision}:{args.minecraft_qa}:{args.seed + 1}",
+                                         lambda: stream_minecraftism_records(name, revision, files, args.minecraft_qa,
+                                                                            args.seed + 1), "Minecraftism Q&A")
+                    else:
+                        records = cached(args, f"hub:{name}:{split}:{args.minecraft_qa}:{args.seed + 1}:3",
+                                         lambda: load_hub_records(name, split, args.minecraft_qa, args.seed + 1),
+                                         "Minecraft Q&A")
                     found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
+                    if name == MINECRAFTISM_DATASET and not found:
+                        raise RuntimeError("no Minecraftism Q&A rows passed the quality filters")
                     print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
                 rows += found
-            except Exception as exc:  # noqa: BLE001 - never lose a training session to a download problem
+            except Exception as exc:  # noqa: BLE001 - optional external datasets may be skipped
+                if hub_split(args.minecraft_qa_dataset, "train")[0] == MINECRAFTISM_DATASET:
+                    raise RuntimeError(f"Required Minecraftism dataset could not be loaded: {type(exc).__name__}: {exc}") from exc
                 print(f"warning: could not stream {args.minecraft_qa_dataset} ({type(exc).__name__}: {exc}) - skipped")
     if args.stream_vision > 0 and preset.get("vision"):
         raytrace = "raytrace" in args.vision_dataset
