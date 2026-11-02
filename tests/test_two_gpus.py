@@ -271,9 +271,12 @@ def test_auto_exit_ends_an_interactive_session_only_when_everything_is_uploaded(
 
 def _scheduler(mode, editions, slow=0.05):
     """Run the notebook's worker code with fake training to see which T4s each edition gets."""
+    import textwrap
     import threading
     import time as _time
-    _nb, code = _notebook()
+
+    nb, _code = _notebook()
+    code = textwrap.dedent("".join(nb["cells"][6]["source"]).split("\n", 1)[1])
     body = code[code.index("BUSY = set()"):code.index("\n\n\nthreads = [")]
     calls = []
 

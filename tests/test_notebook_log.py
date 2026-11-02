@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import json
 import re
+import textwrap
 import time
 from pathlib import Path
 
@@ -15,7 +16,7 @@ def _tidy(deadline):
     source = "".join(json.loads(NOTEBOOK.read_text(encoding="utf-8"))["cells"][6]["source"])
     block = source.split("# ---- log tidy\n", 1)[1].split("# ---- end log tidy", 1)[0]
     scope = {"re": re, "time": time, "collections": collections, "DEADLINE": deadline}
-    exec(block, scope)  # noqa: S102 - the notebook's own code
+    exec(textwrap.dedent(block), scope)  # noqa: S102 - the notebook's own code
     return scope["tidy"]
 
 

@@ -138,7 +138,9 @@ def _pick(expression):
     env: dict = {}
     exec(cells[1], env)  # the settings cell defines txt, txt_think, vl, vl_think
     env["editions_to_be_trained"] = eval(expression, env)
-    check = cells[3]
+    import textwrap
+
+    check = textwrap.dedent(cells[3].split("\n", 1)[1])
     exec("import re\n" + check[check.index("# ---- the editions picked"):check.index("def check(")], env)
     return env["EDITIONS"]
 
@@ -148,7 +150,9 @@ def _pick(expression):
     ("{txt, txt_think, vl, vl_think}", ["minecraftism-vl-thinking", "minecraftism-vl", "minecraftism-thinking",
                                         "minecraftism"]),  # longest first: both T4s finish at about the same time
     ('{"vl", "txt"}', ["minecraftism-vl", "minecraftism"]),
-    ('"all"', ["minecraftism-vl-thinking", "minecraftism-vl", "minecraftism-thinking", "minecraftism"]),
+    ('"all"', ["minecraftism-vl-thinking", "minecraftism-vl", "minecraftism-thinking", "minecraftism-turbo-thinking",
+               "minecraftism-turbo", "minecraftism"]),
+    ("{turbo_think, turbo}", ["minecraftism-turbo-thinking", "minecraftism-turbo"]),
     ('"txt_think, vl"', ["minecraftism-vl", "minecraftism-thinking"]),
     ('["minecraftism-vl", "qwen3-8b", "TXT"]', ["minecraftism-vl", "minecraftism", "qwen3-8b"]),
 ])
@@ -158,7 +162,7 @@ def test_editions_to_be_trained_picks_only_those(expression, editions, capsys):
 
 
 def test_unknown_or_no_edition_is_refused_before_any_gpu_time():
-    with pytest.raises(ValueError, match="txt, txt_think, vl, vl_think"):
+    with pytest.raises(ValueError, match="unknown edition"):
         _pick('{"vl_thinking"}')
     with pytest.raises(AssertionError):
         _pick("set()")
@@ -167,7 +171,7 @@ def test_unknown_or_no_edition_is_refused_before_any_gpu_time():
 def test_notebook_speed_flags_and_deferred_ggufs():
     cells = _notebook()
     code = "\n".join(cells)
-    assert "editions_to_be_trained = {txt}" in cells[1] and "\nEDITIONS = [" not in cells[1]
+    assert "editions_to_be_trained = {txt, txt_think, turbo, turbo_think}" in cells[1] and "\nEDITIONS = [" not in cells[1]
     assert 'os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")' in code
     assert 'FLAGS += f" --stream-cache {CACHE}"' in code and 'CACHE = f"{WORK}/cache"' in code
     assert 'RUN_FLAGS += " --defer-gguf"' in code and '"--export-only"' in code

@@ -217,11 +217,11 @@ def test_notebook_streams_qa_and_pictures():
 def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = "\n".join("".join(cell["source"]) for cell in nb["cells"] if cell["cell_type"] == "code")
-    assert "editions_to_be_trained = {txt, txt_think, turbo}" in code
+    assert "editions_to_be_trained = {txt, txt_think, turbo, turbo_think}" in code
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/8ec8425b284122f5e70556ae76e8cadfd5dd788b/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/ed5d30d4f7f036b565abfad433891cddc396bb3c/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
@@ -305,7 +305,7 @@ def test_turbo_placeholder_reservation_never_overwrites_existing_repos():
     notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     code = next("".join(cell["source"]) for cell in notebook["cells"]
                 if "def reserve_turbo_repos(" in "".join(cell["source"]))
-    function = next(node for node in ast.parse(code).body
+    function = next(node for node in ast.walk(ast.parse(code))
                     if isinstance(node, ast.FunctionDef) and node.name == "reserve_turbo_repos")
     namespace = {}
     exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
@@ -391,3 +391,111 @@ def test_private_stream_marks_only_accepted_dataset_rows_and_teacher_leaves_them
     assert len(rows) == 1 and rows[0]["dataset_id"] == llm_train.MINECRAFTISM_DATASET
     assert rows[0]["reasoning_origin"] == "dataset"
     assert llm_train.teacher_jobs(rows, llm_train.PRESETS["minecraftism-thinking"], 100, "teacher") == []
+
+
+def test_allot_mode_reserves_12_names_without_training_or_touching_existing(monkeypatch):
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    calls = []
+
+    class Api:
+        def __init__(self, token):
+            assert token == "secret-in-test"
+
+        def whoami(self):
+            return {"name": "mr-sus"}
+
+        def repo_exists(self, repo_id, repo_type):
+            assert repo_type == "model"
+            return repo_id == "mr-sus/Minecraftism-4B-Uncensored"
+
+        def create_repo(self, repo_id, **kwargs):
+            assert kwargs == {"repo_type": "model", "private": False, "exist_ok": False}
+            calls.append(("create", repo_id))
+
+        def upload_file(self, **kwargs):
+            assert kwargs["path_in_repo"] == "README.md"
+            assert b"no trained model" in kwargs["path_or_fileobj"]
+            calls.append(("upload", kwargs["repo_id"]))
+
+    class Secrets:
+        def get_secret(self, name):
+            assert name == "HF_TOKEN"
+            return "secret-in-test"
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=Api))
+    monkeypatch.setitem(sys.modules, "kaggle_secrets", types.SimpleNamespace(UserSecretsClient=Secrets))
+    env = {}
+    exec("".join(nb["cells"][1]["source"]), env)
+    env["editions_to_be_trained"] = "allot"
+
+    def python_without_shell(source):
+        return "".join((line[:len(line) - len(line.lstrip())] + "pass\n") if line.lstrip().startswith("!") else line
+                       for line in source.splitlines(keepends=True))
+
+    exec(python_without_shell("".join(nb["cells"][2]["source"])), env)
+    for index in (3, 4, 5, 6, 7, 9, 10, 12):
+        exec(python_without_shell("".join(nb["cells"][index]["source"])), env)
+    created = [repo for action, repo in calls if action == "create"]
+    assert len(created) == 11 and len([1 for action, _ in calls if action == "upload"]) == 11
+    assert "mr-sus/Minecraftism-4B-Uncensored" not in created
+    assert "mr-sus/Minecraftism-4B-Turbo-Thinking-Uncensored" in created
+    assert "mr-sus/Minecraftism-VL-4B-Thinking-Uncensored-GGUF" in created
+    assert "SCRIPT" not in env and "READY" not in env  # no dataset, dependencies, or training cells ran
+
+
+def test_normal_turbo_thinking_reservation_preserves_existing_repos():
+    import ast
+
+    notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    code = "".join(notebook["cells"][3]["source"])
+    function = next(node for node in ast.walk(ast.parse(code))
+                    if isinstance(node, ast.FunctionDef) and node.name == "reserve_turbo_repos")
+    namespace = {}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+
+    class Api:
+        def __init__(self):
+            self.created = []
+
+        def repo_exists(self, repo_id, repo_type):
+            return repo_id.endswith("-GGUF")
+
+        def create_repo(self, repo_id, **kwargs):
+            assert kwargs["exist_ok"] is False
+            self.created.append(repo_id)
+
+        def upload_file(self, **kwargs):
+            assert kwargs["path_in_repo"] == "README.md" and b"Thinking" in kwargs["path_or_fileobj"]
+
+    api = Api()
+    namespace["reserve_turbo_repos"](api, "mr-sus", True, False, True, thinking=True)
+    assert api.created == ["mr-sus/Minecraftism-4B-Turbo-Thinking-Uncensored"]
+
+
+def test_allot_mode_refuses_wrong_account_before_writing(monkeypatch):
+    notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+
+    class Api:
+        def __init__(self, token):
+            pass
+
+        def whoami(self):
+            return {"name": "wrong-account"}
+
+        def repo_exists(self, **kwargs):
+            raise AssertionError("must not access repos for the wrong account")
+
+    class Secrets:
+        def get_secret(self, name):
+            return "not-a-real-token"
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=Api))
+    monkeypatch.setitem(sys.modules, "kaggle_secrets", types.SimpleNamespace(UserSecretsClient=Secrets))
+    env = {}
+    exec("".join(notebook["cells"][1]["source"]), env)
+    env["editions_to_be_trained"] = "allot"
+    source = "".join(notebook["cells"][2]["source"])
+    source = "".join((line[:len(line) - len(line.lstrip())] + "pass\n") if line.lstrip().startswith("!") else line
+                     for line in source.splitlines(keepends=True))
+    with pytest.raises(RuntimeError, match="wrong-account"):
+        exec(source, env)
