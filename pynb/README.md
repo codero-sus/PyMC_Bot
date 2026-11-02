@@ -8,9 +8,11 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
-   The `txt_think` edition uses dataset or optional teacher reasoning traces, falling back to generated plans;
+   `https://github.com/codero-sus/PyMC_Bot/raw/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   The trainer learns accepted private Minecraftism rows first, then other data in a second phase. Deadline or
+   step-limit interruptions can prevent later training; phase counts are scheduled counts. The `txt_think` edition
+   uses dataset or optional teacher reasoning traces, falling back to generated plans;
    these traces are not fact-checked. The `txt` edition stays direct-answer. `turbo` is a separate 4B direct-answer edition trained toward shorter replies;
    speed is unbenchmarked. Its Ollama profile defaults to a 2048-token context and 128-token output limit;
    longer tasks may be truncated. Exported model folders include Ollama `Modelfile` and `IMPORTING.md`; runtime
@@ -64,8 +66,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (GPU or CPU)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **GPU T4 ×2** for GPU runs (`DEVICE = "auto"`), Internet **on**. The notebook falls back to CPU if GPU setup fails; use `DEVICE = "cpu"` and Accelerator None for CPU-only runs.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).

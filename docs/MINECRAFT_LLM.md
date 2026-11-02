@@ -97,8 +97,8 @@ both T4s busy ([speed](#speed-both-t4s-every-minute)).
 
 Thinking editions use `<think>` traces; the regular Instruct edition remains direct-answer. Minecraft Q&A
 uses eligible dataset-provided reasoning if available, otherwise a generated answer-plan template (not genuine
-chain-of-thought). Optional teacher distillation can replace the plan with a teacher trace while keeping the
-original answer. Game turns use built-in rule-based plans; other reasoning datasets may supply their own traces.
+chain-of-thought). For other Q&A, optional teacher distillation can replace a plan with a teacher trace while keeping the
+original answer; the private Minecraftism rows retain their source traces or fallback plans. Game turns use built-in rule-based plans; other reasoning datasets may supply their own traces.
 Neither source traces nor teacher traces are verified facts; even a numeric consistency check cannot establish
 correctness. Teacher output is optional and may be unavailable if generation fails or the session runs out of time.
 
@@ -106,6 +106,13 @@ The default uncensored fine-tunes use Huihui's abliterated weights. Their safete
 Qwen checkpoint for upstream Hub-tree grouping while explicitly identifying the actual Huihui training base.
 GGUF cards link to the corresponding safetensors fine-tune when available. Custom base overrides are not
 misrepresented as Qwen.
+
+**Dataset-first training:** accepted `mr-sus/Minecraftism-dataset` rows train in the first phase; other rows
+train afterward on the same weights, with a fresh optimizer. `EPOCHS=1` schedules one pass through each phase,
+not two passes through the private dataset. If the first phase is interrupted or step-limited, later training and
+on-policy distillation are skipped. Loading data and generating optional teacher answers for other data happen
+before model training. The logs and `pymc_model.json` include phase status and scheduled counts; counts do not
+prove every row was seen. A session deadline can interrupt training.
 
 The notebook also selects **Turbo** by default. It favors complete, shorter everyday examples and optionally
 requests concise teacher answers, without truncating Minecraft references or game JSON. A shorter answer may
@@ -158,8 +165,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -258,8 +265,8 @@ tokenizers. These choices and runtime compatibility must be tested on the actual
 1. **Off-policy (response distillation), `DISTILL_ROWS = 1500`.** Before training, the teacher writes the answers:
    * **everyday chat:** the human-written answers are replaced by the teacher's. Thinking editions also get the
      teacher's own `<think>` trace (Qwen3-14B and 8B are hybrid: `enable_thinking` on for them, off for the others);
-   * **Minecraft Q&A:** the original dataset answer stays in place. For Thinking, an accepted teacher trace
-     can replace the source trace or template. The reference answer is supplied to the teacher; format and numeric
+   * **Minecraft Q&A:** the original dataset answer stays in place. Private Minecraftism rows are not sent
+     to the teacher. For other Thinking Q&A, an accepted teacher trace can replace the source trace or template. The reference answer is supplied to the teacher; format and numeric
      checks are only weak filters and do not verify the answer or reasoning;
    * **not touched:** game turns keep their rule-checked JSON, and the Nemotron thinking rows keep their traces
      (they already came from a far bigger model);
@@ -655,7 +662,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
