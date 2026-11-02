@@ -90,6 +90,7 @@ both T4s busy ([speed](#speed-both-t4s-every-minute)).
 | Edition | Base model | Hugging Face repo | Train | Run on your PC | Pick it when |
 | --- | --- | --- | --- | --- | --- |
 | **`minecraftism`** (default) | Qwen3-4B-Instruct-2507 | `Minecraftism-4B-GGUF` | ~7 GB, ~1–2 h | ~3.5 GB, file ~2.5 GB | You want the bot's brain. Quick JSON answers, works next to several bots. **Recommended.** |
+| `minecraftism-turbo` | Qwen3-4B-Instruct-2507 | `Minecraftism-4B-Turbo-GGUF` | ~7 GB | ~3.5 GB | Concise direct-answer training. Actual speed and quality are unbenchmarked. |
 | `minecraftism-thinking` | Qwen3-4B-Thinking-2507 | `Minecraftism-4B-Thinking-GGUF` | ~7 GB, ~1.5–3 h | ~3.5 GB | Tricky situations (low health + mobs + a request in chat). It's slower: it thinks before every turn. |
 | `minecraftism-vl` | Qwen3-VL-4B-Instruct | `Minecraftism-VL-4B-GGUF` | ~9 GB, ~2–3 h | ~4.5 GB, + ~0.8 GB projector | The bot should *look* at the world: it gets a picture of its view every few turns. |
 | `minecraftism-vl-thinking` | Qwen3-VL-4B-Thinking | `Minecraftism-VL-4B-Thinking-GGUF` | ~9 GB, ~3 h+ | ~4.5 GB + projector | Pictures and thinking. The slowest and the most careful. |
@@ -100,6 +101,13 @@ chain-of-thought). Optional teacher distillation can replace the plan with a tea
 original answer. Game turns use built-in rule-based plans; other reasoning datasets may supply their own traces.
 Neither source traces nor teacher traces are verified facts; even a numeric consistency check cannot establish
 correctness. Teacher output is optional and may be unavailable if generation fails or the session runs out of time.
+
+The notebook also selects **Turbo** by default. It favors complete, shorter everyday examples and optionally
+requests concise teacher answers, without truncating Minecraft references or game JSON. A shorter answer may
+reduce end-to-end latency but does not guarantee faster token generation. Three editions take more time and may
+not all finish within the session limit. With automatic Hugging Face uploads, the notebook creates README-only
+Turbo placeholders for newly created safetensors and GGUF repos before training; existing repositories are left
+untouched. Reservation happens only when the notebook runs with appropriate write access, not when it is imported.
 
 The older sizes (`qwen3-4b`, `qwen3-8b`, `qwen3-14b` with `--split`, `llama-3.2-3b`, `qwen3.5-4b`)
 still work for text-only models.
@@ -143,8 +151,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/44f2218bb06aed7bf60e151aa0508052a893077c/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/44f2218bb06aed7bf60e151aa0508052a893077c/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -632,7 +640,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/44f2218bb06aed7bf60e151aa0508052a893077c/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
