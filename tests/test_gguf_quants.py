@@ -120,8 +120,8 @@ def _parse(argv):
 def test_quant_list_puts_the_main_quant_first():
     assert llm_train.gguf_quants(_parse([])) == ["q4_k_m"]
     every = llm_train.gguf_quants(_parse(["--hub-repo", "auto"]))  # uploading: every quant by default
-    assert every[0] == "q4_k_m" and sorted(every) == sorted(llm_train.ALL_QUANTS) and len(every) == 29
-    assert every[1:4] == ["q8_0", "q6_k", "q5_k_m"] and every[-2:] == ["bf16", "f16"]  # most useful first
+    assert every[0] == "q4_k_m" and sorted(every) == sorted(llm_train.ALL_QUANTS) and len(every) == 34
+    assert every[1:4] == ["q8_0", "q6_k", "q5_k_m"] and every[-5:] == ["q1_0", "q2_0", "tq1_0", "tq2_0", "f32"]  # most useful first
     assert llm_train.gguf_quants(_parse(["--hub-repo", "auto", "--gguf-quants", "standard"])) == \
         ["q4_k_m", "q8_0", "q6_k", "q5_k_m", "q3_k_m"]
     assert llm_train.gguf_quants(_parse(["--gguf-quants", "iq4_xs,all"]))[:3] == ["q4_k_m", "iq4_xs", "q8_0"]
@@ -572,7 +572,7 @@ def test_every_quant_gets_the_imatrix_made_on_q8_0_and_the_f16_goes_last(tmp_pat
     assert "BF16" not in quantized and "F16" not in quantized  # never re-quantised
     assert seen[:2] == ["Q8_0", "IMATRIX"] and seen[-1] == "F16" and seen.count("F16") == 1
     files = result["files"]
-    assert files[0]["quant"] == "Q4_K_M" and len(files) == 29 and result["skipped"] == []
+    assert files[0]["quant"] == "Q4_K_M" and len(files) == 34 and result["skipped"] == []
     assert {f["quant"] for f in files} == {q.upper() for q in llm_train.ALL_QUANTS}
     by = {f["quant"]: f for f in files}
     assert by["IQ1_S"]["imatrix"] and not by["Q8_0"]["imatrix"] and not by["BF16"]["imatrix"]
@@ -616,13 +616,13 @@ def test_uploading_makes_every_quant_and_the_card_lists_them(tmp_path, monkeypat
             for _ in range(200)]
     (tmp_path / "train.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
     code, _model, report = _finish(tmp_path, monkeypatch, ["--hub-repo", "auto"])
-    assert code == 0 and len(report["ggufs"]) == 22  # no llama-imatrix in _tools: the 7 that need one are skipped
+    assert code == 0 and len(report["ggufs"]) == 27  # no llama-imatrix in _tools: the 7 that need one are skipped
     assert len(report["gguf_skipped"]) == 7 and report["imatrix"] is None
     uploaded = [e[2] for e in hub if e[0] == "file"]
-    assert len(uploaded) == 21 and uploaded[-1].endswith(".F16.gguf")
+    assert len(uploaded) == 26 and uploaded[-1].endswith(".F16.gguf")
     card = (tmp_path / "out" / "README.md").read_text()
-    assert "## All quants (22 files)" in card and "## Which file should I download?" in card
-    assert "**Not made this time:** `IQ3_XXS`" in card and "TQ1_0 / TQ2_0" in card
+    assert "## All quants (27 files)" in card and "## Which file should I download?" in card
+    assert "**Not made this time:** `IQ3_XXS`" in card and "experimental" in card.lower()
     assert "base_model: me/Minecraftism-4B\nbase_model_relation: quantized" in card
     assert "llama-server -hf me/Minecraftism-4B-GGUF:Q4_K_M" in card and "## Prompt format" in card
 
@@ -630,4 +630,30 @@ def test_uploading_makes_every_quant_and_the_card_lists_them(tmp_path, monkeypat
 def test_unsloth_fallback_makes_only_the_standard_quants(tmp_path, monkeypatch, hub):
     code, model, report = _finish(tmp_path, monkeypatch, ["--safetensors", "none", "--gguf-quants", "all"])
     assert code == 0 and model.calls == [("gguf", ["q4_k_m", "q8_0", "q6_k", "q5_k_m", "q3_k_m"])]
-    assert len(report["gguf_skipped"]) == 24 and "llama.cpp was not available" in report["gguf_skipped"][0]["why"]
+    assert len(report["gguf_skipped"]) == 29 and "llama.cpp was not available" in report["gguf_skipped"][0]["why"]
+
+
+def test_an_unsupported_optional_quant_is_reported_not_fatal(tmp_path):
+    seen = []
+    result = llm_train.make_ggufs(
+        tmp_path / "st", tmp_path / "work", "m", ["q4_k_m", "q1_0", "q8_0"],
+        vision=False, tools=_tools(tmp_path), run=FakeRun(fail="Q1_0"),
+        on_file=lambda path, quant: seen.append(quant),
+    )
+    assert [entry["quant"] for entry in result["files"]] == ["Q4_K_M", "Q8_0"]
+    assert result["skipped"][0]["quant"] == "Q1_0"
+    assert seen == ["Q4_K_M", "Q8_0"]
+
+
+def test_public_cards_and_existing_repo_destinations():
+    for name, base in (("minecraftism", "Minecraftism-4B"),
+                       ("minecraftism-thinking", "Minecraftism-4B-Thinking")):
+        preset = llm_train.uncensored_preset(name, llm_train.PRESETS[name])
+        repo = llm_train.resolve_repo("auto", preset, lambda: {"name": "mr-sus"})
+        assert repo == f"mr-sus/{base}-Uncensored-GGUF"
+        assert llm_train.safetensors_repo(repo) == f"mr-sus/{base}-Uncensored"
+        card = llm_train.model_card(name, preset, {}, repo)
+        assert "https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg" in card
+        assert 'src="https://2no.co/pymc_bot_REAL"' in card
+        assert "third-party view counter" in card and "Copyright codero-sus" in card
+        assert "polyform-noncommercial-1.0.0" in card

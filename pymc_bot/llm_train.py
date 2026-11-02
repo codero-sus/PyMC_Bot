@@ -2211,21 +2211,20 @@ def copy_essentials(src: Path, dst: Path) -> list[str]:
 #: The standard GGUFs (``--gguf-quants standard``, and all that Unsloth's slow fallback exporter makes).
 GGUF_QUANTS = ("q8_0", "q6_k", "q5_k_m", "q4_k_m", "q3_k_m")
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
-#: Every llama.cpp quant type that works on a normal (dense, 16-bit trained) model, in the order they are made
+#: Distinct dense-model llama.cpp formats, including experimental low-bit types, in the order they are attempted
 #: when there is not time for all of them: the useful ones first, the tiny and legacy ones last. ``--gguf-quants all``
 #: (the default when uploading). Q8_0 comes first because the importance matrix is computed with it.
 ALL_QUANTS = ("q8_0", "q4_k_m", "q6_k", "q5_k_m", "iq4_xs", "q3_k_m", "q4_k_s", "q5_k_s", "iq4_nl", "q3_k_l", "iq3_m",
               "iq3_xs", "q3_k_s", "iq3_s", "iq3_xxs", "q2_k", "iq2_m", "iq2_s", "iq2_xs", "iq2_xxs", "q2_k_s", "iq1_m",
-              "iq1_s", "q4_0", "q4_1", "q5_0", "q5_1", "bf16", "f16")
+              "iq1_s", "q4_0", "q4_1", "q5_0", "q5_1", "bf16", "f16", "q1_0", "q2_0", "tq1_0", "tq2_0", "f32")
 #: llama-quantize refuses these without an importance matrix ("the result will be garbage").
 IMATRIX_REQUIRED = frozenset({"IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "Q2_K_S"})
 #: Quants that do not use the importance matrix (full precision, or Q8_0, which has no use for it).
 NO_IMATRIX = frozenset({"F16", "BF16", "F32", "Q8_0"})
 #: llama.cpp types that are not made, and why (listed on the model card so nobody wonders).
-NOT_MADE = {"F32": "32-bit floats: twice the size of F16/BF16 and no better, the model was trained in 16-bit",
-            "TQ1_0 / TQ2_0": "ternary formats for models trained ternary (BitNet); a normal model turns into gibberish",
-            "Q1_0 / Q2_0": "formats for models trained at 1-2 bits; a normal model turns into gibberish",
-            "MXFP4_MOE": "only for mixture-of-experts models; Minecraftism is dense"}
+NOT_MADE = {"MXFP4_MOE": "mixture-of-experts format; Minecraftism is a dense model",
+            "COPY": "a copy operation, not a distinct quantization",
+            "Q3_K / Q4_K / Q5_K": "aliases of the corresponding K_M formats"}
 #: The "use it when" column of the model card's quant table.
 QUANT_USE = {"F16": "full precision (16-bit floats), as big as the safetensors",
              "BF16": "full precision in bfloat16, the format it was trained in",
@@ -2255,7 +2254,12 @@ QUANT_USE = {"F16": "full precision (16-bit floats), as big as the safetensors",
              "Q4_0": "legacy format for old apps; fast on ARM CPUs (llama.cpp repacks it)",
              "Q4_1": "legacy format for old apps",
              "Q5_0": "legacy format for old apps",
-             "Q5_1": "legacy format for old apps"}
+             "Q5_1": "legacy format for old apps",
+             "Q1_0": "experimental 1-bit quant; quality may be very poor",
+             "Q2_0": "experimental 2-bit quant; quality may be very poor",
+             "TQ1_0": "experimental ternary quant; quality may be very poor",
+             "TQ2_0": "experimental ternary quant; quality may be very poor",
+             "F32": "expanded from F16; larger without recovering original precision"}
 #: Marked as recommended on the model card.
 RECOMMENDED_QUANTS = ("Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "IQ4_XS", "IQ3_M")
 #: Text the importance matrix is computed on: chunks of 512 tokens from the training data (CPU: ~10 min for 4B).
@@ -2536,9 +2540,19 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
         if quant not in ("F16", "BF16"):
             command = [str(quantize)] + (["--imatrix", str(imatrix)] if use_imatrix else []) + \
                       [str(base), str(target), quant]
-            _run_tool(run, command, f"F16 -> {quant}" + (" (imatrix)" if use_imatrix else ""), env=env)
+            try:
+                _run_tool(run, command, f"F16 -> {quant}" + (" (imatrix)" if use_imatrix else ""), env=env)
+            except RuntimeError as exc:
+                if quant == primary:
+                    raise
+                target.unlink(missing_ok=True)
+                result["skipped"].append({"quant": quant, "why": str(exc)[-500:]})
+                continue
         if not target.is_file():
-            raise RuntimeError(f"llama-quantize wrote no {quant} file")
+            if quant == primary:
+                raise RuntimeError(f"llama-quantize wrote no {quant} file")
+            result["skipped"].append({"quant": quant, "why": "quantizer produced no file"})
+            continue
         made[quant] = {"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2),
                        "imatrix": use_imatrix}
         if quant != "F16":  # the F16 is the source of every quant: handed over last
@@ -2840,7 +2854,10 @@ def gguf_quant_guide(report: dict[str, Any], repo: str, quant: str) -> str:
         table.append(f"| {mark} | `{g['quant']}` | {g.get('gb', '?')} GB | {_ram_gb(g.get('gb'), 1.0 + mmproj_gb)} | "
                      f"{'yes' if g.get('imatrix') else '-'} | {QUANT_USE.get(g['quant'], '')} | "
                      f"[{g['file']}](https://huggingface.co/{repo}/resolve/main/{g['file']}) |")
-    notes = ["", "⭐ default · 👍 recommended. RAM to run = file + ~1 GB for a 4096-token context"
+    notes = ["", "Experimental low-bit and ternary quants can have severe quality loss; evaluate before use. "
+             "F32 is expanded from F16 and does not restore precision. Older files in an existing repository may be "
+             "from an earlier run if a quant was skipped; check file revisions.",
+             "", "⭐ default · 👍 recommended. RAM to run = file + ~1 GB for a 4096-token context"
              + (" + the vision projector" if mmproj_gb else "") + "; a longer context needs more."]
     if imatrix:
         notes.append(f"\n**imatrix:** the quants marked *yes* were made with an importance matrix computed on "
@@ -3120,7 +3137,13 @@ pipeline_tag: {'image-text-to-text' if vision else 'text-generation'}
 library_name: {library}
 ---
 
+![PyMC Bot banner](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg)
+
 # {name}
+
+<img src="https://2no.co/pymc_bot_REAL" width="1" height="1" alt="Page view counter" />
+
+This page uses a third-party view counter at 2no.co; it may receive a request when the card is viewed.
 
 **Minecraftism** is a small model that knows Minecraft and plays it: the brain of
 [PyMC Bot]({PROJECT_URL}), a Minecraft player bot. Given the bot's situation it replies with the next
