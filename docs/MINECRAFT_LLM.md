@@ -151,8 +151,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -239,6 +239,14 @@ Why not something bigger or newer:
   linear-attention layers are untested on a T4.
 * **Qwen3.5 or Llama students** (`--preset qwen3.5-4b`, `llama-3.2-3b`): the trainer checks that the tokenizers
   match and skips phase 2 when they don't. Phase 1 still uses the teacher's answers.
+
+**Choosing a teacher:** For the default uncensored text, Thinking and Turbo editions, `TEACHER = "auto"`
+uses the abliterated Qwen3-8B for both writing and grading. This is a practical starting point for two T4s,
+not a proven best teacher; compare held-out accuracy, tool use, latency and refusals. For VL editions the same
+text teacher can supply text examples only; it does not supervise images, and on-policy distillation is text-only.
+With `UNCENSORED = False`, auto may use Qwen3-14B-AWQ on vLLM for writing and Qwen3-8B for grading.
+An explicit teacher is used for both phases, so it can run out of GPU memory; on-policy also requires compatible
+tokenizers. These choices and runtime compatibility must be tested on the actual hardware.
 
 1. **Off-policy (response distillation), `DISTILL_ROWS = 1500`.** Before training, the teacher writes the answers:
    * **everyday chat:** the human-written answers are replaced by the teacher's. Thinking editions also get the
@@ -640,7 +648,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
@@ -740,3 +748,10 @@ the notebook again. The same Hugging Face repo gets a new commit.
   the licence of every training source ([commercial-use data](#commercial-use-data)).
 
 <sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)</sub>
+
+### Import files in model exports
+
+The GGUF folder includes `Modelfile`, `params` and `IMPORTING.md` alongside the default GGUF and available
+config/tokenizer files. The safetensors folder also contains its own `Modelfile` and `IMPORTING.md`, next to its
+weights and tokenizer/config. Download the full files required by your runtime before importing; vision requires a
+projector when exported. Ollama, llama.cpp and other applications vary in architecture and vision support.

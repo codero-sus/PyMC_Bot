@@ -8,11 +8,12 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
    The `txt_think` edition uses dataset or optional teacher reasoning traces, falling back to generated plans;
    these traces are not fact-checked. The `txt` edition stays direct-answer. `turbo` is a separate 4B direct-answer edition trained toward shorter replies;
-   speed is unbenchmarked. When selected, the running notebook reserves new Turbo repos with README-only placeholders
+   speed is unbenchmarked. Exported model folders include Ollama `Modelfile` and `IMPORTING.md`; runtime
+   compatibility varies. When selected, the running notebook reserves new Turbo repos with README-only placeholders
    using the Kaggle `HF_TOKEN` secret; it does not overwrite existing repos. Three editions may exceed the session limit.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
@@ -62,8 +63,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (GPU or CPU)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8ada5b5644d230ca3908dea5b24f665d072968f5/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **GPU T4 ×2** for GPU runs (`DEVICE = "auto"`), Internet **on**. The notebook falls back to CPU if GPU setup fails; use `DEVICE = "cpu"` and Accelerator None for CPU-only runs.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
