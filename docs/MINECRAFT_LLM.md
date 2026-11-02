@@ -142,8 +142,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/2e0a3b9164a772492d06e94dcc2c484b1c7ce36a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/2e0a3b9164a772492d06e94dcc2c484b1c7ce36a/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -154,6 +154,12 @@ behaviour prompts are **never** written to the files: examples carry only the be
    the training script and never prints it. For a real run, a missing secret stops the notebook rather than silently skipping the requested uploads.
 5. Edit the settings cell (below), then press **Run All**. First time? Set `QUICK_TEST = True`: 30 steps,
    small eval, no export or upload. It checks the whole pipeline in about 10–15 minutes.
+
+The default private `mr-sus/Minecraftism-dataset` is required for real training. The notebook resolves and logs one
+immutable dataset revision, and both editions read only that revision's `data/train-NN.jsonl` shards. High-trust
+subset copies and cache archives are excluded; identical questions and rows that fail the Q&A filters are dropped.
+A missing, unreadable, malformed or empty dataset fails the run instead of silently training without it. `40000` is a
+maximum, not a guarantee of accepted rows. Review source licences before publishing or commercial use.
 
 The settings cell:
 
@@ -196,7 +202,7 @@ The settings cell:
 | `PING_ROLE_SECRET` | `"ping_role"` | name of the Kaggle secret that holds a Discord role ID (or `<@&ID>`); that role is pinged on the important messages: startup (setup ready), each stage (training, distilling, quantizing, uploading), every Hugging Face upload, each model ready, errors and failures, low disk, THE 12 HOURs at 5 h, 3 h, 2 h and 1 h, the close and the notebook's end. Server status and the last-hour countdown stay silent. No secret = no role ping; never printed. Turn on *Allow anyone to @mention this role* in Discord |
 | `NOTEBOOK_URL` | `""` | this notebook's Kaggle address, shown in the messages |
 | `EPOCHS`, `EXTRA` | `1`, `""` | more training / any other trainer flag |
-| `STOP_WHEN_LEARNED` | `True` | ends an edition once its training loss has stopped falling for 10% of the run (only after 3/4 of the first epoch): templated data is learned long before the last epoch, so hours of weekly GPU time go to the next edition instead |
+| `STOP_WHEN_LEARNED` | `False` | aim for the full epoch; a deadline can still stop training early. Set `True` to stop based on loss |
 
 Before any training starts, the notebook checks the GPU, the internet, the free disk, the dataset and
 the `HF_TOKEN` secret, and prints the trainer flags.
@@ -625,7 +631,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/2e0a3b9164a772492d06e94dcc2c484b1c7ce36a/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
