@@ -102,9 +102,16 @@ original answer. Game turns use built-in rule-based plans; other reasoning datas
 Neither source traces nor teacher traces are verified facts; even a numeric consistency check cannot establish
 correctness. Teacher output is optional and may be unavailable if generation fails or the session runs out of time.
 
+The default uncensored fine-tunes use Huihui's abliterated weights. Their safetensors cards use the original
+Qwen checkpoint for upstream Hub-tree grouping while explicitly identifying the actual Huihui training base.
+GGUF cards link to the corresponding safetensors fine-tune when available. Custom base overrides are not
+misrepresented as Qwen.
+
 The notebook also selects **Turbo** by default. It favors complete, shorter everyday examples and optionally
 requests concise teacher answers, without truncating Minecraft references or game JSON. A shorter answer may
-reduce end-to-end latency but does not guarantee faster token generation. Three editions take more time and may
+reduce end-to-end latency but does not guarantee faster token generation. Turbo's Ollama profile limits context
+to 2048 tokens and output to 128 tokens; change `num_ctx` and `num_predict` for longer tasks. These limits can
+truncate input or output and are not applied automatically in other runtimes. Three editions take more time and may
 not all finish within the session limit. With automatic Hugging Face uploads, the notebook creates README-only
 Turbo placeholders for newly created safetensors and GGUF repos before training; existing repositories are left
 untouched. Reservation happens only when the notebook runs with appropriate write access, not when it is imported.
@@ -151,8 +158,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -648,7 +655,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/14c63b37a6346cfeac8340156cafe8559d74b2c7/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/e2e75a28881d7f4ef44c6208447aab6968073a69/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
