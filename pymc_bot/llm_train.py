@@ -57,6 +57,7 @@ _MINECRAFTISM_WHY = {
     "minecraftism": "Recommended. The fast one: replies straight away with the action JSON. Trains in ~1-2 h on one "
                     "T4 and runs on most PCs (4 GB VRAM or CPU).",
     "minecraftism-turbo": "4B direct-answer edition trained toward concise responses; speed depends on workload and hardware.",
+    "minecraftism-turbo-thinking": "4B Thinking edition trained toward concise answers, with bounded Ollama output; speed is unbenchmarked.",
     "minecraftism-thinking": "Thinks before it acts (a short <think> about health, mobs, chat and its goal), so it "
                              "makes fewer silly moves - but every turn takes a few seconds longer.",
     "minecraftism-vl": "Sees the game: learns from your recorded screenshots and gets the bot's rendered view while "
@@ -69,6 +70,7 @@ RUN_VISION = {"temperature": 0.6, "top_p": 0.8, "top_k": 20, "num_ctx": 8192, "r
 # Turbo's Ollama profile limits work, not the model's intrinsic token throughput; callers can override both.
 RUN_TURBO = {"temperature": 0.6, "top_p": 0.8, "top_k": 20, "num_ctx": 2048, "num_predict": 128,
              "repeat_penalty": 1.05}
+RUN_TURBO_THINKING = {**RUN_THINKING, "num_ctx": 4096, "num_predict": 512}
 
 
 def _edition(name: str, model: str, base: str, *, reasoning: bool, vision: bool, hub: str, file: str) -> dict[str, Any]:
@@ -103,6 +105,11 @@ PRESETS: dict[str, dict[str, Any]] = {
                                        "Qwen/Qwen3-4B-Instruct-2507", reasoning=False, vision=False,
                                        hub="Minecraftism-4B-Turbo-GGUF", file="minecraftism-4b-turbo"),
                            "turbo": True, "run_parameters": RUN_TURBO},
+    "minecraftism-turbo-thinking": {**_edition("minecraftism-turbo-thinking", "unsloth/Qwen3-4B-Thinking-2507",
+                                                "Qwen/Qwen3-4B-Thinking-2507", reasoning=True, vision=False,
+                                                hub="Minecraftism-4B-Turbo-Thinking-GGUF",
+                                                file="minecraftism-4b-turbo-thinking"),
+                                    "turbo": True, "run_parameters": RUN_TURBO_THINKING},
     "minecraftism-thinking": _edition("minecraftism-thinking", "unsloth/Qwen3-4B-Thinking-2507", "Qwen/Qwen3-4B-Thinking-2507",
                                       reasoning=True, vision=False, hub="Minecraftism-4B-Thinking-GGUF",
                                       file="minecraftism-4b-thinking"),
@@ -191,6 +198,7 @@ UNCENSORED_MODELS = {
     "minecraftism": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
     "minecraftism-thinking": "huihui-ai/Huihui-Qwen3-4B-Thinking-2507-abliterated",
     "minecraftism-turbo": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
+    "minecraftism-turbo-thinking": "huihui-ai/Huihui-Qwen3-4B-Thinking-2507-abliterated",
     "minecraftism-vl": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
     "minecraftism-vl-thinking": "huihui-ai/Huihui-Qwen3-VL-4B-Thinking-abliterated",
 }
@@ -198,7 +206,8 @@ for _name, _model in UNCENSORED_MODELS.items():
     PRESETS[_name]["uncensored_model"] = _model
 DEFAULT_PRESET = "minecraftism"
 #: The four Minecraftism editions, in the order the notebook trains them.
-EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking", "minecraftism-turbo")
+EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking", "minecraftism-turbo",
+            "minecraftism-turbo-thinking")
 MODEL_NAME = "Minecraftism"
 AUTHOR = "codero-sus"
 AUTHOR_URL = "https://github.com/codero-sus"
@@ -2144,8 +2153,8 @@ def output_name(preset_name: str, preset: dict[str, Any], quant: str) -> str:
 def display_name(preset_name: str, preset: dict[str, Any]) -> str:
     if not preset.get("edition"):
         return f"PyMC Minecraft ({preset_name})"
-    return (MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Thinking" if preset.get("reasoning") else "")
-            + (" Turbo" if preset.get("turbo") else "") + (" Uncensored" if preset.get("uncensored") else ""))
+    return (MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Turbo" if preset.get("turbo") else "")
+            + (" Thinking" if preset.get("reasoning") else "") + (" Uncensored" if preset.get("uncensored") else ""))
 
 
 SAFETENSORS_DIR = "safetensors"
@@ -3238,11 +3247,13 @@ python -m pymc_bot llm import --hf {gguf_repo}
     links += [f"[base model](https://huggingface.co/{base})", f"[PyMC Bot]({PROJECT_URL})"]
     upstream_line = (f"| Upstream Qwen lineage | [{upstream}](https://huggingface.co/{upstream}) "
                      "(Hub tree grouping; the training base above was used) |\n" if upstream else "")
-    turbo_text = ("## Turbo\n\nThis 4B direct-answer edition trains on shorter complete everyday examples and "
-                  "asks the optional teacher for concise answers. Minecraft reference answers and game JSON are not "
-                  "truncated during training. The Ollama profile defaults to a 2048-token context and a 128-token "
-                  "output limit to bound work; long prompts or answers can be truncated. Override num_ctx and "
-                  "num_predict as needed. Speed and quality have not been benchmarked.\n" if preset.get("turbo") else "")
+    turbo_text = ("## Turbo\n\nThis 4B edition selects shorter complete everyday examples and asks the optional "
+                  "teacher for concise answers. " + ("Thinking traces are retained. " if reasoning else "")
+                  + "Minecraft reference answers and game JSON are not truncated during training. The Ollama "
+                  f"profile defaults to {preset['run_parameters']['num_ctx']} context tokens and "
+                  f"{preset['run_parameters']['num_predict']} output tokens, including any thinking trace. "
+                  "Long prompts or answers can be truncated; override num_ctx and num_predict as needed. "
+                  "Speed and quality have not been benchmarked.\n" if preset.get("turbo") else "")
     return f"""---
 license: other
 license_name: polyform-noncommercial-1.0.0

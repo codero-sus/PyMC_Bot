@@ -306,3 +306,18 @@ def test_turbo_profile_only_bounds_its_ollama_context_and_output(tmp_path):
     llm_train.write_import_files(tmp_path, turbo, "", gguf="turbo.gguf")
     text = (tmp_path / "Modelfile").read_text()
     assert "PARAMETER num_ctx 2048" in text and "PARAMETER num_predict 128" in text
+
+
+def test_turbo_thinking_preserves_reasoning_and_has_separate_limits_and_model_card(tmp_path):
+    preset = llm_train.uncensored_preset("minecraftism-turbo-thinking", llm_train.PRESETS["minecraftism-turbo-thinking"])
+    assert preset["model"] == llm_train.UNCENSORED_MODELS["minecraftism-thinking"]
+    assert preset["hub"] == "Minecraftism-4B-Turbo-Thinking-Uncensored-GGUF"
+    assert llm_train.display_name("minecraftism-turbo-thinking", preset) == "Minecraftism 4B Turbo Thinking Uncensored"
+    row = {"messages": [{"role": "user", "content": "Why?"}, {"role": "assistant", "content": "Answer."}],
+           "reasoning": "First consider the evidence."}
+    assert "<think>" in llm_train.prepare_messages(row, preset)[-1]["content"]
+    llm_train.write_import_files(tmp_path, preset, "", gguf="model.gguf")
+    text = (tmp_path / "Modelfile").read_text()
+    assert "PARAMETER num_ctx 4096" in text and "PARAMETER num_predict 512" in text
+    card = llm_train.model_card("minecraftism-turbo-thinking", preset, {}, "me/model", kind="safetensors")
+    assert "Thinking traces are retained" in card and "512 output tokens" in card
