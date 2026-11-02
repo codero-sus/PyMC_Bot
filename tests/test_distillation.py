@@ -597,3 +597,21 @@ def test_teacher_cot_never_replaces_the_minecraft_reference_answer():
     assert row["messages"][-1]["content"] == fact["reference"]
     assert row["reasoning"] == "Check the value." and row["reasoning_origin"] == "teacher"
     assert rows[fact["row"]] is not row
+
+
+def test_turbo_uses_complete_short_examples_and_concise_teacher():
+    preset = llm_train.uncensored_preset("minecraftism-turbo", llm_train.PRESETS["minecraftism-turbo"])
+    assert preset["model"] == llm_train.UNCENSORED_MODELS["minecraftism"]
+    assert "Turbo" in llm_train.display_name("minecraftism-turbo", preset)
+    assert preset["hub"] == "Minecraftism-4B-Turbo-Uncensored-GGUF"
+    records = [
+        {"messages": [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A" * n}]}
+        for n in (601, 20)
+    ]
+    selected = llm_train.general_rows(records, 2, "", False, max_assistant_chars=600)
+    assert [r["messages"][-1]["content"] for r in selected] == ["A" * 20]
+    jobs = llm_train.teacher_jobs(_rows(), preset, 2, "teacher")
+    chat, fact = jobs
+    assert "concisely" in chat["messages"][0]["content"]
+    assert llm_train.accept_teacher_answer(chat, "", "x" * 601, False) == "too long"
+    assert fact["reference"] and fact["max_answer_chars"] is None

@@ -56,6 +56,7 @@ COMPACT_TAG = "[PyMC Bot Minecraft brain]"
 _MINECRAFTISM_WHY = {
     "minecraftism": "Recommended. The fast one: replies straight away with the action JSON. Trains in ~1-2 h on one "
                     "T4 and runs on most PCs (4 GB VRAM or CPU).",
+    "minecraftism-turbo": "4B direct-answer edition trained toward concise responses; speed depends on workload and hardware.",
     "minecraftism-thinking": "Thinks before it acts (a short <think> about health, mobs, chat and its goal), so it "
                              "makes fewer silly moves - but every turn takes a few seconds longer.",
     "minecraftism-vl": "Sees the game: learns from your recorded screenshots and gets the bot's rendered view while "
@@ -95,6 +96,10 @@ def _edition(name: str, model: str, base: str, *, reasoning: bool, vision: bool,
 PRESETS: dict[str, dict[str, Any]] = {
     "minecraftism": _edition("minecraftism", "unsloth/Qwen3-4B-Instruct-2507", "Qwen/Qwen3-4B-Instruct-2507",
                              reasoning=False, vision=False, hub="Minecraftism-4B-GGUF", file="minecraftism-4b"),
+    "minecraftism-turbo": {**_edition("minecraftism-turbo", "unsloth/Qwen3-4B-Instruct-2507",
+                                       "Qwen/Qwen3-4B-Instruct-2507", reasoning=False, vision=False,
+                                       hub="Minecraftism-4B-Turbo-GGUF", file="minecraftism-4b-turbo"),
+                           "turbo": True},
     "minecraftism-thinking": _edition("minecraftism-thinking", "unsloth/Qwen3-4B-Thinking-2507", "Qwen/Qwen3-4B-Thinking-2507",
                                       reasoning=True, vision=False, hub="Minecraftism-4B-Thinking-GGUF",
                                       file="minecraftism-4b-thinking"),
@@ -182,6 +187,7 @@ PRESETS: dict[str, dict[str, Any]] = {
 UNCENSORED_MODELS = {
     "minecraftism": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
     "minecraftism-thinking": "huihui-ai/Huihui-Qwen3-4B-Thinking-2507-abliterated",
+    "minecraftism-turbo": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
     "minecraftism-vl": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
     "minecraftism-vl-thinking": "huihui-ai/Huihui-Qwen3-VL-4B-Thinking-abliterated",
 }
@@ -189,7 +195,7 @@ for _name, _model in UNCENSORED_MODELS.items():
     PRESETS[_name]["uncensored_model"] = _model
 DEFAULT_PRESET = "minecraftism"
 #: The four Minecraftism editions, in the order the notebook trains them.
-EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking")
+EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking", "minecraftism-turbo")
 MODEL_NAME = "Minecraftism"
 AUTHOR = "codero-sus"
 AUTHOR_URL = "https://github.com/codero-sus"
@@ -459,7 +465,8 @@ def chat_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
     return out if any(m["role"] == "user" for m in out) else None
 
 
-def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_chars: int = 6000) -> list[dict[str, Any]]:
+def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_chars: int = 6000,
+                 max_assistant_chars: int | None = None) -> list[dict[str, Any]]:
     """Everyday chat rows (system prompt replaced by ours); refusals dropped when uncensored."""
     rows = []
     for record in records:
@@ -468,6 +475,9 @@ def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_ch
         messages = chat_messages(record)
         if not messages or sum(len(m["content"]) for m in messages) > max_chars:
             continue
+        if max_assistant_chars is not None and any(m["role"] == "assistant" and len(m["content"]) > max_assistant_chars
+                                                   for m in messages):
+            continue  # select complete shorter examples; never truncate answers
         if any(m["role"] == "assistant" and (is_refusal(m["content"]) if uncensored else False) for m in messages):
             continue
         rows.append({"messages": with_system(messages, system), "source": "general", "kind": "general", "check": {}})
@@ -1686,7 +1696,8 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                 name, split = hub_split(args.general_dataset, "train")
                 records = cached(args, f"hub:{name}:{split}:{args.general}:{args.seed}:3",
                                  lambda: load_hub_records(name, split, args.general, args.seed), "everyday chat")
-                rows += general_rows(records, wanted, args.system_prompt, bool(args.uncensored))
+                rows += general_rows(records, wanted, args.system_prompt, bool(args.uncensored),
+                                     max_assistant_chars=600 if preset.get("turbo") else None)
     if getattr(args, "tools", 0) > 0:
         if offline:
             print(f"would add up to {args.tools} tool-calling chats from {args.tool_dataset} "
@@ -2127,7 +2138,7 @@ def display_name(preset_name: str, preset: dict[str, Any]) -> str:
     if not preset.get("edition"):
         return f"PyMC Minecraft ({preset_name})"
     return (MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Thinking" if preset.get("reasoning") else "")
-            + (" Uncensored" if preset.get("uncensored") else ""))
+            + (" Turbo" if preset.get("turbo") else "") + (" Uncensored" if preset.get("uncensored") else ""))
 
 
 SAFETENSORS_DIR = "safetensors"
@@ -3214,6 +3225,10 @@ python -m pymc_bot llm import --hf {gguf_repo}
     if st_repo and not safetensors:
         links.append(f"[safetensors](https://huggingface.co/{st_repo})")
     links += [f"[base model](https://huggingface.co/{base})", f"[PyMC Bot]({PROJECT_URL})"]
+    turbo_text = ("## Turbo\n\nThis 4B direct-answer edition trains on shorter complete everyday examples and "
+                  "asks the optional teacher for concise answers. Minecraft reference answers and game JSON are not "
+                  "truncated. Shorter responses may reduce end-to-end latency, but throughput and quality have not "
+                  "been benchmarked.\n" if preset.get("turbo") else "")
     return f"""---
 license: other
 license_name: polyform-noncommercial-1.0.0
@@ -3256,6 +3271,7 @@ It is also an everyday assistant: questions, writing, code, advice or just a cha
 | Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
 | Data | {data_cell} |
 | Size | {size} |
+{turbo_text}
 {eval_lines}{test_lines}{distill_text}{data_text}{system_text}
 ## Files
 
@@ -3807,6 +3823,12 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
             continue
         messages = [dict(m) for m in row["messages"][:-1]]
         reference = row["messages"][-1]["content"] if row.get("kind") == "mcqa" else ""
+        if preset.get("turbo") and not reference:
+            note = "Answer concisely and directly while retaining the details needed to answer correctly."
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + note
+            else:
+                messages.insert(0, {"role": "system", "content": note})
         if reference:
             note = ("Reference answer supplied for this question: " + reference
                     + "\nAnswer the user naturally and helpfully in your own words. Keep every fact, number and name "
@@ -3816,6 +3838,7 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
             else:
                 messages.insert(0, {"role": "system", "content": note})
         jobs.append({"row": index, "messages": messages, "reference": reference, "thinking": thinking,
+                     "max_answer_chars": 600 if preset.get("turbo") and not reference else None,
                      "key": _job_key(teacher, messages, thinking)})
     return jobs
 
@@ -3839,6 +3862,8 @@ def accept_teacher_answer(job: dict[str, Any], trace: str, answer: str, uncensor
     """Why a teacher answer is dropped (``""`` = keep it)."""
     if len(answer) < 2:
         return "empty"
+    if job.get("max_answer_chars") and len(answer) > job["max_answer_chars"]:
+        return "too long"
     if uncensored and is_refusal(answer):
         return "refusal"
     if job.get("reference"):
