@@ -584,3 +584,16 @@ def test_the_teacher_really_leaves_the_gpu_after_on_policy():
     body = source[source.index("def onpolicy_distill("):source.index("def train(args")]
     assert "free_gpu(teacher" not in body  # a local name still held it: the eval then ran out of memory
     assert "teacher = optimizer = scaler = None" in body
+
+
+def test_teacher_cot_never_replaces_the_minecraft_reference_answer():
+    rows = _rows()
+    jobs = llm_train.teacher_jobs(rows, llm_train.PRESETS["minecraftism-thinking"], 100, "teacher")
+    fact = next(job for job in jobs if job["reference"])
+    text = "<think>Check the value.</think>\nRestated: " + fact["reference"]
+    result, stats = llm_train.apply_teacher_answers(rows, [fact], {fact["key"]: text}, "teacher", uncensored=True)
+    row = result[fact["row"]]
+    assert stats["used"] == 1
+    assert row["messages"][-1]["content"] == fact["reference"]
+    assert row["reasoning"] == "Check the value." and row["reasoning_origin"] == "teacher"
+    assert rows[fact["row"]] is not row

@@ -777,6 +777,19 @@ def _parts_text(content: Any) -> str:
     return str(content or "")
 
 
+def minecraft_qa_reasoning(record: dict[str, Any], question: str, answer: str) -> tuple[str, str]:
+    """Use an explicit, bounded source trace when present; otherwise label the generated plan honestly.
+
+    These format checks do not prove a trace is factually correct. Dataset evidence and evaluation still matter.
+    """
+    trace = record.get("reasoning")
+    if isinstance(trace, str):
+        trace = trace.strip()
+        if 8 <= len(trace) <= 3000 and not re.search(r"</?(?:think|tool_call|script)\b", trace, re.I):
+            return trace, "dataset"
+    return answer_plan(question, answer), "template"
+
+
 def minecraft_qa_rows(records: Any, limit: int, system: str, rng: Any) -> list[dict[str, Any]]:
     """Minecraft Q&A rows from ``question``/``answer`` (or chat-format) records: refusals, junk, very short
     or very long answers and repeated questions are dropped."""
@@ -793,9 +806,10 @@ def minecraft_qa_rows(records: Any, limit: int, system: str, rng: Any) -> list[d
         if is_refusal(answer) or _QA_JUNK.search(answer):
             continue
         seen.add(key)
+        trace, origin = minecraft_qa_reasoning(record, question, answer)
         rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
                                   {"role": "assistant", "content": answer}],
-                     "reasoning": answer_plan(question, answer),
+                     "reasoning": trace, "reasoning_origin": origin,
                      "source": "minecraft-qa", "kind": "mcqa", "check": {}})
     rng.shuffle(rows)
     return rows
@@ -1724,6 +1738,10 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                     if name == MINECRAFTISM_DATASET and not found:
                         raise RuntimeError("no Minecraftism Q&A rows passed the quality filters")
                     print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
+                    if preset.get("reasoning"):
+                        supplied = sum(row.get("reasoning_origin") == "dataset" for row in found)
+                        print(f"CoT: {supplied} dataset-provided traces; {len(found) - supplied} generated plans "
+                              "(teacher traces may be added later; traces are not verified facts)")
                 rows += found
             except Exception as exc:  # noqa: BLE001 - optional external datasets may be skipped
                 if hub_split(args.minecraft_qa_dataset, "train")[0] == MINECRAFTISM_DATASET:
@@ -3066,11 +3084,10 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         lines = []
         off, on = distill.get("offpolicy") or {}, distill.get("onpolicy") or {}
         if off:
-            lines.append(f"- **Off-policy:** the teacher wrote {off.get('used', 0)} of the training answers "
-                         f"({off.get('general', 0)} everyday chat, {off.get('mcqa', 0)} Minecraft facts rewritten "
-                         "around the exact answer"
-                         + (", with its own thinking traces" if reasoning else "") + "). Game turns kept their "
-                         "rule-checked JSON.")
+            lines.append(f"- **Off-policy:** teacher output was accepted for {off.get('used', 0)} training rows "
+                         f"({off.get('general', 0)} everyday chat, {off.get('mcqa', 0)} Minecraft facts). "
+                         "Minecraft answers remain unchanged; teacher traces may contain errors. "
+                         "Game turns kept their rule-checked JSON.")
         if on:
             lines.append(f"- **On-policy:** {on.get('steps', 0)} steps ({on.get('replies', 0)} replies written by the "
                          f"student and graded token by token by the teacher, reverse KL "
@@ -3771,7 +3788,7 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
     """The rows the teacher answers in phase 1 (off-policy distillation).
 
     * everyday chat (human-written answers) gets the teacher's answer, with a thinking trace for thinking editions;
-    * Minecraft Q&A is rewritten around its exact answer (it goes in as a reference, so nothing is invented);
+    * Minecraft Q&A can receive teacher reasoning, but its original answer remains unchanged;
     * game turns keep their rule-checked JSON, and Nemotron's thinking rows were already distilled from a far bigger
       model, so neither is touched."""
     thinking = bool(preset.get("reasoning"))
@@ -3791,7 +3808,7 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
         messages = [dict(m) for m in row["messages"][:-1]]
         reference = row["messages"][-1]["content"] if row.get("kind") == "mcqa" else ""
         if reference:
-            note = ("Reference facts for your answer (exact, from the game's own data): " + reference
+            note = ("Reference answer supplied for this question: " + reference
                     + "\nAnswer the user naturally and helpfully in your own words. Keep every fact, number and name "
                       "exactly as in the reference and add nothing you are not sure about. Never mention the reference.")
             if messages and messages[0]["role"] == "system":
@@ -3849,9 +3866,11 @@ def apply_teacher_answers(rows: list[dict[str, Any]], jobs: list[dict[str, Any]]
         trace, answer = parsed  # type: ignore[misc]
         row = dict(out[job["row"]])
         row["messages"] = [dict(m) for m in row["messages"]]
-        row["messages"][-1]["content"] = answer
+        # The teacher can supply CoT, but never replace the dataset's checked Minecraft answer.
+        row["messages"][-1]["content"] = job["reference"] if job.get("reference") else answer
         if job["thinking"]:
             row["reasoning"] = trace
+            row["reasoning_origin"] = "teacher"
         row["teacher"] = teacher
         out[job["row"]] = row
         stats["used"] += 1
@@ -4405,7 +4424,7 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
         args.writer_fallback = retry_with
         return distill_offpolicy(args, preset, rows, world, generate)
     distilled, stats = apply_teacher_answers(rows, jobs, known, teacher, bool(getattr(args, "uncensored", False)))
-    print(f"distillation: {stats['used']}/{stats['asked']} rows now carry the teacher's answer"
+    print(f"distillation: {stats['used']}/{stats['asked']} rows now use teacher output or reasoning"
           + (f" (kept the original for: {json.dumps(stats['dropped'])})" if stats["dropped"] else ""))
     args.distill_report = stats
     return distilled

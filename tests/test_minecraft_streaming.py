@@ -277,3 +277,23 @@ def test_minecraftism_dataset_failures_are_not_silently_skipped(monkeypatch):
     monkeypatch.setattr(llm_train, "minecraftism_snapshot", broken)
     with pytest.raises(RuntimeError, match="Required Minecraftism dataset could not be loaded"):
         llm_train.extra_rows(args, llm_train.PRESETS["minecraftism"], random.Random(0))
+
+
+def test_minecraft_cot_preserves_explicit_trace_and_labels_fallbacks():
+    records = [
+        {"question": "How do you make a stick?", "answer": "Place two planks vertically to make four sticks.",
+         "reasoning": "Check the two-plank vertical layout before giving the output."},
+        {"question": "How do you make a torch?", "answer": "Put coal or charcoal above a stick to make torches."},
+        {"question": "How do you make a ladder?", "answer": "Arrange seven sticks in an H shape to make ladders.",
+         "reasoning": "<think>nested markup must not be used</think>"},
+    ]
+    rows = llm_train.minecraft_qa_rows(records, 10, "SYS", random.Random(0))
+    rows = {row["messages"][1]["content"]: row for row in rows}
+    sourced = rows["How do you make a stick?"]
+    assert sourced["reasoning_origin"] == "dataset" and sourced["reasoning"] == records[0]["reasoning"]
+    assert rows["How do you make a torch?"]["reasoning_origin"] == "template"
+    assert rows["How do you make a ladder?"]["reasoning_origin"] == "template"
+    thinking = llm_train.prepare_messages(sourced, llm_train.PRESETS["minecraftism-thinking"])
+    plain = llm_train.prepare_messages(sourced, llm_train.PRESETS["minecraftism"])
+    assert "<think>\n" + records[0]["reasoning"] in thinking[-1]["content"]
+    assert "<think>" not in plain[-1]["content"] and plain[-1]["content"] == records[0]["answer"]
