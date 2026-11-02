@@ -91,6 +91,7 @@ both T4s busy ([speed](#speed-both-t4s-every-minute)).
 | --- | --- | --- | --- | --- | --- |
 | **`minecraftism`** (default) | Qwen3-4B-Instruct-2507 | `Minecraftism-4B-GGUF` | ~7 GB, ~1–2 h | ~3.5 GB, file ~2.5 GB | You want the bot's brain. Quick JSON answers, works next to several bots. **Recommended.** |
 | `minecraftism-turbo` | Qwen3-4B-Instruct-2507 | `Minecraftism-4B-Turbo-GGUF` | ~7 GB | ~3.5 GB | Concise direct-answer training. Actual speed and quality are unbenchmarked. |
+| `minecraftism-turbo-thinking` | Qwen3-4B-Thinking-2507 | `Minecraftism-4B-Turbo-Thinking-GGUF` | ~7 GB | ~3.5 GB | Thinking with bounded Ollama output. Speed and quality are unbenchmarked. |
 | `minecraftism-thinking` | Qwen3-4B-Thinking-2507 | `Minecraftism-4B-Thinking-GGUF` | ~7 GB, ~1.5–3 h | ~3.5 GB | Tricky situations (low health + mobs + a request in chat). It's slower: it thinks before every turn. |
 | `minecraftism-vl` | Qwen3-VL-4B-Instruct | `Minecraftism-VL-4B-GGUF` | ~9 GB, ~2–3 h | ~4.5 GB, + ~0.8 GB projector | The bot should *look* at the world: it gets a picture of its view every few turns. |
 | `minecraftism-vl-thinking` | Qwen3-VL-4B-Thinking | `Minecraftism-VL-4B-Thinking-GGUF` | ~9 GB, ~3 h+ | ~4.5 GB + projector | Pictures and thinking. The slowest and the most careful. |
@@ -107,6 +108,12 @@ Qwen checkpoint for upstream Hub-tree grouping while explicitly identifying the 
 GGUF cards link to the corresponding safetensors fine-tune when available. Custom base overrides are not
 misrepresented as Qwen.
 
+**Allot names without training:** set `editions_to_be_trained = "allot"` and run all notebook cells.
+With the current `UNCENSORED` setting it reserves GGUF and safetensors names for all six editions (12 names)
+using README-only placeholders. Existing repositories are not modified; account identity is checked via the
+Kaggle `HF_TOKEN` secret. No training stack, dataset, model weights or GPU training are run in this mode. Names
+are not reserved until this mode actually runs.
+
 **Dataset-first training:** accepted `mr-sus/Minecraftism-dataset` rows train in the first phase; other rows
 train afterward on the same weights, with a fresh optimizer. `EPOCHS=1` schedules one pass through each phase,
 not two passes through the private dataset. If the first phase is interrupted or step-limited, later training and
@@ -114,11 +121,12 @@ on-policy distillation are skipped. Loading data and generating optional teacher
 before model training. The logs and `pymc_model.json` include phase status and scheduled counts; counts do not
 prove every row was seen. A session deadline can interrupt training.
 
-The notebook also selects **Turbo** by default. It favors complete, shorter everyday examples and optionally
+The notebook selects **Turbo** and **Turbo Thinking** by default. It favors complete, shorter everyday examples and optionally
 requests concise teacher answers, without truncating Minecraft references or game JSON. A shorter answer may
 reduce end-to-end latency but does not guarantee faster token generation. Turbo's Ollama profile limits context
 to 2048 tokens and output to 128 tokens; change `num_ctx` and `num_predict` for longer tasks. These limits can
-truncate input or output and are not applied automatically in other runtimes. Three editions take more time and may
+truncate input or output and are not applied automatically in other runtimes. Turbo Thinking keeps reasoning traces and defaults in Ollama to a 4096-token context and 512-token output budget,
+which includes thinking and may cut off the answer. Four editions take more time and may
 not all finish within the session limit. With automatic Hugging Face uploads, the notebook creates README-only
 Turbo placeholders for newly created safetensors and GGUF repos before training; existing repositories are left
 untouched. Reservation happens only when the notebook runs with appropriate write access, not when it is imported.
@@ -165,8 +173,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/ccce411ba796d8ac386d63cb2dc26716826bb3d6/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/ccce411ba796d8ac386d63cb2dc26716826bb3d6/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -662,7 +670,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/15528d19e5c3e2769ce7fecd3731dd486455687e/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/ccce411ba796d8ac386d63cb2dc26716826bb3d6/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
