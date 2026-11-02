@@ -2,26 +2,25 @@
 
 | Notebook | Runs on | What it does |
 | --- | --- | --- |
-| [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, uploads the compact 16-bit **safetensors** first, then **every GGUF quant** made from them (29 files: F16 and BF16 down to IQ1_S, with an importance matrix from the training data, each uploaded as soon as it is ready; the model card has a "which file?" guide and the full table), both with `tokenizer.json` and the configs |
+| [`PyMC_Minecraft_LLM_Kaggle.ipynb`](PyMC_Minecraft_LLM_Kaggle.ipynb) | Kaggle, GPU T4 ×2 | trains **Minecraftism**, PyMC Bot's own LLM: a Minecraft expert and an everyday assistant, uncensored by default, trained only on data that allows commercial use (`COMMERCIAL_ONLY = True`). Four editions (text / vision × fast / thinking), optional test suite, uploads the compact 16-bit **safetensors** first, then **requested GGUF formats** made from them (34 attempted, including experimental formats; availability depends on tools, calibration and time; the model card lists made and skipped files), both with `tokenizer.json` and the configs |
 | [`Minecraftism_Dataset_Kaggle.ipynb`](Minecraftism_Dataset_Kaggle.ipynb) | Kaggle, **GPU or CPU** | collects a **trusted Minecraft Q&A dataset**: ~4,200 exact rows straight from the game data (no LLM) first, then web search + an LLM in Kaggle's 30 GB of RAM on llama.cpp (`MODEL = "auto"`: Qwen3-30B-A3B in Q5_K_M, a mixture of experts that runs about as fast as a 4B model; Qwen3-4B or 1.7B on smaller machines) write answers only from pages that allow commercial use, every answer is checked (quotes on the page, numbers in the quotes, a second LLM look, the game's recipes, an independent page), then it is uploaded to your Hugging Face dataset `mr-sus/Minecraftism-dataset` |
 
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
 2. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
 3. Optional:
    * **Add Input** → your own `llm_data` from `python -m pymc_bot llm build`. Without it, the ready-made kit
      is downloaded from the newest GitHub release.
-   * **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token) to publish the model.
+   * **Add-ons → Secrets** → `HF_TOKEN` with access to the private dataset and write access to the model repositories. The defaults target the existing `mr-sus` uncensored text and thinking repositories, replacing same-named files; the account is checked before upload.
 4. Edit the settings cell. Pick the editions with `editions_to_be_trained = {txt, txt_think, vl, vl_think}`
    (only those are trained, e.g. `{txt}` or `{txt, vl}`). `GPU_MODE = "parallel"` (default) trains two editions at once, one per T4, and merges both T4s on a single
    edition (DDP launched with HF Accelerate, fp16); `"merge"` = both T4s on every edition, one after another. `DISTILL = True` runs Qwen3's strong-to-weak distillation: Qwen3-14B (4-bit AWQ) writes the answers to
    `DISTILL_ROWS` chat and Minecraft prompts, then Qwen3-8B teaches the fine-tuned 4B token by token on its own replies
    (`ONPOLICY_STEPS`, reverse KL; with `UNCENSORED` the abliterated Qwen3-8B does both). The teacher writes with vLLM on both T4s (`VLLM_TEACHER`, installed in its own venv in
-   the background) and its answers are kept in a private HF dataset for the next session (`TEACHER_CACHE`). `MAX_HOURS` makes training stop early
-   enough for the export and upload to finish before Kaggle's 12 h limit. `FAST = True` sizes batches by tokens,
+   the background) and its answers are kept in a private HF dataset for the next session (`TEACHER_CACHE`). `MAX_HOURS` reserves time for export and upload, but a session can still end with incomplete uploads. `FAST = True` sizes batches by tokens,
    streams the shared data once for all editions, uploads while llama.cpp makes the GGUFs and, with more editions
    than T4s, makes the GGUFs on the CPU while the T4 already trains the next edition. The first time, use `QUICK_TEST = True`, which takes about 15-25 minutes. Then **Run All**.
 5. On your PC: `python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF`.
@@ -57,8 +56,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (GPU or CPU)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **GPU T4 ×2** for GPU runs (`DEVICE = "auto"`), Internet **on**. The notebook falls back to CPU if GPU setup fails; use `DEVICE = "cpu"` and Accelerator None for CPU-only runs.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).

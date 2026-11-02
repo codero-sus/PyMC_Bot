@@ -27,7 +27,7 @@ Every edition is published in **two formats**, each in its own Hugging Face repo
 | Repo | Format | Use it with |
 | --- | --- | --- |
 | `you/Minecraftism-4B` | **safetensors**: the LoRA merged into the base, 16-bit (~8 GB, VL ~9 GB), `tokenizer.json` + configs | transformers, vLLM, further fine-tuning, your own quantisations (AWQ, EXL2) |
-| `you/Minecraftism-4B-GGUF` | GGUF: **every quant**, `F16` / `BF16` down to `IQ1_S` (29 files, `Q4_K_M` the default; + `mmproj` projector for VL), the importance matrix, `Modelfile`, `params`, `tokenizer.json` + configs | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
+| `you/Minecraftism-4B-GGUF` | GGUF: **34 requested formats**, including experimental types (`Q4_K_M` the default; + `mmproj` projector for VL); some may be skipped, the importance matrix, `Modelfile`, `params`, `tokenizer.json` + configs | Ollama, llama.cpp, LM Studio, **PyMC Bot** (`llm import --hf`) |
 
 The safetensors repo is the GGUF repo's name without `-GGUF` (uncensored: `Minecraftism-4B-Uncensored`). Both
 model cards link to each other; the safetensors card has transformers and vLLM code. `llm import --hf` on a
@@ -39,9 +39,9 @@ Each quant is uploaded as soon as it is ready and deleted, so the disk never hol
 quant. The GGUF card lists every file with its size (`ollama run hf.co/you/Minecraftism-4B-GGUF:Q8_0` picks one;
 `llm import --hf ... --quant Q8_0` does it for the bot). llama.cpp comes from its newest GitHub release (Linux
 build + source at the same tag; `llama-quantize` is compiled when the prebuilt one cannot run), or from
-`$LLAMA_CPP_DIR`. If that route fails, Unsloth's own GGUF exporter makes the same quants.
+`$LLAMA_CPP_DIR`. If that route fails, Unsloth's own GGUF exporter makes only the standard formats and reports the rest as skipped.
 
-`GGUF_QUANTS = "all"` (the default) makes **every llama.cpp quant** that works on a normal model, 29 files:
+`GGUF_QUANTS = "all"` (the default) attempts 34 distinct dense-model formats. Tool support, time, disk space and calibration may limit the files actually produced:
 
 | Group | Quants | 4B files | Use them when |
 | --- | --- | --- | --- |
@@ -51,6 +51,7 @@ build + source at the same tag; `llama-quantize` is compiled when the prebuilt o
 | low RAM | `Q3_K_L`, `Q3_K_M`, `Q3_K_S`, `IQ3_M`, `IQ3_S`, `IQ3_XS`, `IQ3_XXS` | 1.7-2.2 GB | old laptops, phones |
 | tiny | `Q2_K`, `Q2_K_S`, `IQ2_M`, `IQ2_S`, `IQ2_XS`, `IQ2_XXS`, `IQ1_M`, `IQ1_S` | 1.1-1.7 GB | experiments: clearly weaker |
 | legacy | `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1` | 2.4-3.1 GB | old apps; `Q4_0` is fast on ARM CPUs |
+| experimental | `Q1_0`, `Q2_0`, `TQ1_0`, `TQ2_0`, `F32` | varies | low-bit and ternary formats can be poor quality; F32 is expanded from F16 and does not restore precision |
 
 (VL editions add the `mmproj` vision projector, ~0.8 GB.)
 
@@ -58,15 +59,13 @@ build + source at the same tag; `llama-quantize` is compiled when the prebuilt o
 `--imatrix-chunks` (64) x 512 tokens of the edition's own training data (~10 min on the CPU) and every quant below
 Q8_0 is made with it: better quality at the same size, and the `IQ1`/`IQ2`/`IQ3_XXS`/`Q2_K_S` quants can't be made
 without one (llama.cpp refuses: "the result will be garbage"). The matrix is uploaded too
-(`*.imatrix.gguf`), so anyone can make more quants. Not made on purpose: `F32` (twice the size, no better),
-`TQ1_0`/`TQ2_0` and `Q1_0`/`Q2_0` (only for models *trained* ternary or at 1-2 bits) and `MXFP4_MOE`
-(mixture-of-experts only).
+(`*.imatrix.gguf`), so anyone can make more quants. `MXFP4_MOE` is excluded for this dense model; aliases and COPY
+are not separate formats.
 
-**Time.** All 29 take roughly an hour of CPU per edition plus ~80 GB of uploads. They are made most useful first
-(`Q8_0`, `Q4_K_M`, `Q6_K`, `Q5_K_M`, `IQ4_XS`, `Q3_K_M`, ...; the legacy ones, `BF16` and `F16` last) and whatever does
-not fit before `--deadline` is skipped and listed on the model card, so the session never runs out mid-upload.
-With more editions than T4s this happens on the CPU while the next edition trains; only the last edition can run
-short. `GGUF_QUANTS = "standard"` makes just `Q8_0`, `Q6_K`, `Q5_K_M`, `Q4_K_M`, `Q3_K_M`.
+**Time.** Export and upload times vary. Unsupported formats, missing imatrix, deadline and disk constraints can leave
+files missing; review the model card and logs. Uploads replace files by name in the existing repos, but old files not
+replaced may remain from an earlier run. Check revisions before using them. `GGUF_QUANTS = "standard"` makes just
+`Q8_0`, `Q6_K`, `Q5_K_M`, `Q4_K_M`, `Q3_K_M`.
 
 **The model card** (written by the trainer) has a quick start for PyMC Bot, Ollama, llama.cpp (`-hf`) and
 `hf download`, a "which file should I download?" guide, the full quant table (size, RAM to run, imatrix, direct
@@ -143,17 +142,16 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
    streamed pictures (`STREAM_PICTURES`).
-   If your dataset was built by an older PyMC Bot, the notebook fetches the newest `train_minecraft_llm.py`
-   from the release, so the new settings (uncensored, tests, everyday chat) still work.
+   The notebook defaults to a commit-pinned trainer so its behavior matches the notebook.
 4. To publish on Hugging Face: **Add-ons → Secrets → Add secret**, name `HF_TOKEN`, value = a **write** token from
    huggingface.co/settings/tokens, and tick it for this notebook. The notebook reads it into the environment for
-   the training script and never prints it. Without the secret the models simply stay in `/kaggle/working`.
+   the training script and never prints it. For a real run, a missing secret stops the notebook rather than silently skipping the requested uploads.
 5. Edit the settings cell (below), then press **Run All**. First time? Set `QUICK_TEST = True`: 30 steps,
    small eval, no export or upload. It checks the whole pipeline in about 10–15 minutes.
 
@@ -161,20 +159,20 @@ The settings cell:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `editions_to_be_trained` | `{txt}` | **only these editions are trained**: any of `{txt, txt_think, vl, vl_think}` (= `minecraftism`, `-thinking`, `-vl`, `-vl-thinking`), e.g. `{txt, vl}`; `"all"` = all four. Quotes are optional. They run longest first |
+| `editions_to_be_trained` | `{txt, txt_think}` | **only these editions are trained**: any of `{txt, txt_think, vl, vl_think}` (= `minecraftism`, `-thinking`, `-vl`, `-vl-thinking`), e.g. `{txt, vl}`; `"all"` = all four. Quotes are optional. They run longest first |
 | `DATA` | `"auto"` | your dataset (Add Input), else the kit from the newest GitHub release; or a path |
-| `TRAINER` | `"auto"` | the dataset's trainer, or the newest from GitHub when it is too old; `"latest"` / `"dataset"` |
+| `TRAINER` | `"pinned"` | download the tested trainer at the notebook's fixed commit; `"auto"`, `"latest"` and `"dataset"` remain optional |
 | `UNCENSORED` | `True` | abliterated base, refusal-free chat data, `-Uncensored` names ([below](#uncensored-and-everyday-use)) |
 | `GENERAL_CHAT` | `3000` | everyday chat rows mixed in, so it stays a good daily assistant (`0` = Minecraft only) |
 | `TOOL_CALLING` | `2000` | tool-calling (agentic) chats, so it calls tools better than its base instead of forgetting how (see *Agentic: tool calling* below; `0` = none) |
 | `COMMERCIAL_ONLY` | `True` | only data whose licence allows commercial use ([below](#commercial-use-data)) |
-| `MINECRAFT_QA` | `20000` | Minecraft Q&A: generated from minecraft-data, or streamed from a 695k-row set ([below](#big-minecraft-datasets-streamed)) |
+| `MINECRAFT_QA` | `40000` | maximum sampled rows from the private dataset selected in `EXTRA`; fewer can pass filters. Check source licences |
 | `STREAM_PICTURES` | `3000` | VL editions: Minecraft pictures with questions and answers, streamed from Hugging Face |
 | `PERSONA_MIX` | `0.5` | share of Minecraft Q&A rows that use `SYSTEM_PROMPT` (game turns keep the bot's prompt) |
 | `SYSTEM_PROMPT` | Minecraftism prompt | the model's default personality: trained in and written into the `Modelfile` |
-| `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Hugging Face upload |
+| `HF_REPO`, `HF_PRIVATE`, `HF_LORA` | `"auto"`, `False`, `False` | Update the existing public text and thinking repos under `mr-sus`; same-named files are replaced. `EXPECTED_HF_USER` checks the token account |
 | `SAFETENSORS` | `True` | also export the merged 16-bit safetensors edition and upload it to `<repo without -GGUF>` (`--safetensors none` = GGUF only, made by Unsloth) |
-| `GGUF_QUANTS` | `"all"` | GGUFs made from the safetensors and uploaded one by one (only when uploading): `"all"` = every llama.cpp quant (29, F16 to IQ1_S, with an imatrix; what does not fit in the time is skipped), `"standard"` = `q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m`, or a list; `""` = only `q4_k_m` |
+| `GGUF_QUANTS` | `"all"` | GGUFs made from the safetensors and uploaded one by one (only when uploading): `"all"` = attempt 34 formats including experimental ones, subject to tool, imatrix, space and time limits, `"standard"` = `q8_0,q6_k,q5_k_m,q4_k_m,q3_k_m`, or a list; `""` = only `q4_k_m` |
 | `QUICK_TEST` | `False` | short test run of the whole pipeline |
 | `RUN_TESTS` | `True` | test suite after training ([below](#testing)) |
 | `TEST_GGUF` | `False` | also installs Ollama in the notebook and chats with the exported GGUF |
@@ -627,7 +625,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/05f81f10349b409d04e372c41348369b6a7ac1db/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/224ad2810144a3da9f8c4b0937b71234a81c7645/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
