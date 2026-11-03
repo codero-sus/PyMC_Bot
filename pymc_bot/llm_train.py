@@ -2620,7 +2620,7 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
                tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None,
                calibration: Path | None = None, imatrix_chunks: int = IMATRIX_CHUNKS, stop_at: float = 0,
                clock: Any = time.time, require_primary: bool = True, gpu_imatrix: bool = False,
-               notify: Any = None) -> dict[str, Any]:
+               notify: Any = None, imatrix_from_base: bool = False) -> dict[str, Any]:
     """safetensors -> one F16 GGUF (+ BF16, + the F16 vision projector) -> an importance matrix -> every quant.
 
     ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk). With a
@@ -2681,7 +2681,8 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
 
     def compute_imatrix() -> None:
         nonlocal imatrix
-        model = scratch / f"{stem}.Q8_0.gguf" if "Q8_0" in made and (scratch / f"{stem}.Q8_0.gguf").is_file() else base
+        model = (scratch / f"{stem}.Q8_0.gguf" if not imatrix_from_base and "Q8_0" in made
+                 and (scratch / f"{stem}.Q8_0.gguf").is_file() else base)
         target = scratch / f"{stem}.imatrix.gguf"
         seconds = 45 * 60.0
         if stop_at:
@@ -2793,14 +2794,17 @@ def existing_quantizations(files: list[str], quants: Any = ALL_QUANTS) -> dict[s
 
 def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, scratch: Path,
                      tools: tuple[Path, Path], calibration: Path, deadline: float = 0,
-                     download: Any = None, run: Any = None, gpu_imatrix: bool = False, notify: Any = None) -> dict[str, Any]:
-    """Generate missing quants from a pinned existing safetensors repo, without retraining or overwriting files.
+                     download: Any = None, run: Any = None, gpu_imatrix: bool = False, notify: Any = None,
+                     replace_existing: bool = False) -> dict[str, Any]:
+    """Generate quants from a pinned safetensors repo without retraining; overwrite only in explicit replace mode.
 
     Uploads are sequential and guarded by parent commit. The private calibration and imatrix stay local.
     Existing GGUFs can be from another revision; callers must not present a mixed set as one verified checkpoint.
     """
     if preset_name not in EDITIONS or PRESETS[preset_name].get("vision"):
         raise ValueError("GGUF repair currently supports text models only")
+    if replace_existing and (preset_name != "minecraftism-thinking" or not uncensored):
+        raise ValueError("GGUF replacement is limited to Minecraftism 4B Thinking Uncensored")
     preset = PRESETS[preset_name]
     if uncensored:
         preset = uncensored_preset(preset_name, preset)
@@ -2816,19 +2820,24 @@ def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, s
     target_rev = str(api.model_info(gguf_repo).sha)  # must already exist; never create/replace repositories here
     target_files = api.list_repo_files(gguf_repo, repo_type="model", revision=target_rev)
     existing = existing_quantizations(target_files)
-    missing = [q for q in ALL_QUANTS if q.upper() not in existing]
+    missing = [q for q in ALL_QUANTS if replace_existing or q.upper() not in existing]
     report: dict[str, Any] = {"preset": preset_name, "source": st_repo, "source_revision": source_rev,
-                              "destination": gguf_repo, "existing": existing, "uploaded": [], "skipped": []}
+                              "destination": gguf_repo, "existing": existing, "uploaded": [], "skipped": [],
+                              "replace_existing": replace_existing}
     if not missing:
         print(f"{gguf_repo}: all requested quant types already exist; no files changed")
         return report
     if deadline and time.time() >= deadline - 15 * 60:
         report["skipped"] = [{"quant": q.upper(), "why": "not enough session time"} for q in missing]
         return report
-    print(f"{gguf_repo}: {len(existing)} existing quant types, {len(missing)} missing; source {st_repo}@{source_rev}")
+    action = "replace or add" if replace_existing else "missing"
+    print(f"{gguf_repo}: {len(existing)} existing quant types, {len(missing)} to {action}; source {st_repo}@{source_rev}")
     if notify:
-        notify(f"{preset_name}: {len(existing)} existing formats, {len(missing)} missing; starting export", True)
-    print("Existing quants are not overwritten and may come from a different checkpoint revision.")
+        notify(f"{preset_name}: {len(existing)} existing formats, {len(missing)} to {action}; starting export", True)
+    if replace_existing:
+        print("Replacement is per file, not atomic: incomplete runs can leave mixed checkpoint revisions.")
+    else:
+        print("Existing quants are not overwritten and may come from a different checkpoint revision.")
     if download is None:
         from huggingface_hub import snapshot_download
 
@@ -2848,26 +2857,46 @@ def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, s
                              for name in shards):
             raise RuntimeError("Safetensors index references missing shards")
 
-    def on_file(path: Path, quant: str) -> None:
-        if quant == "IMATRIX":
-            return  # never publish calibration material or its derived matrix from the private dataset
+    # Upload at most one file in the background while the next is quantized. Commit checks still
+    # run serially per repository, and every upload completes before its scratch directory is removed.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def upload_quant(path: Path, quant: str) -> None:
         current = str(api.model_info(gguf_repo).sha)
         current_files = api.list_repo_files(gguf_repo, repo_type="model", revision=current)
-        if quant in existing_quantizations(current_files, [quant]):
+        found = existing_quantizations(current_files, [quant]).get(quant)
+        if found and not replace_existing:
             print(f"  {quant}: another run already uploaded it; leaving the existing file untouched")
         else:
-            api.upload_file(repo_id=gguf_repo, repo_type="model", path_in_repo=path.name,
+            destination = found or path.name
+            verb = "Replace" if found else "Add"
+            api.upload_file(repo_id=gguf_repo, repo_type="model", path_in_repo=destination,
                             path_or_fileobj=str(path), parent_commit=current,
-                            commit_message=f"Add {quant} GGUF from {st_repo}@{source_rev[:12]}")
-            report["uploaded"].append({"quant": quant, "file": path.name})
-            print(f"  uploaded {quant} to {gguf_repo}", flush=True)
+                            commit_message=f"{verb} {quant} GGUF from {st_repo}@{source_rev}")
+            report["uploaded"].append({"quant": quant, "file": destination, "replaced": bool(found)})
+            print(f"  {'replaced' if found else 'uploaded'} {quant} in {gguf_repo}", flush=True)
             if notify:
-                notify(f"{preset_name}: uploaded {quant} to {gguf_repo}", True)
+                notify(f"{preset_name}: {'replaced' if found else 'uploaded'} {quant} in {gguf_repo}", True)
         path.unlink(missing_ok=True)
 
-    result = make_ggufs(st_dir, scratch / "quants", preset["file"], missing, vision=False, tools=tools,
-                        on_file=on_file, calibration=calibration, stop_at=deadline - 15 * 60 if deadline else 0, run=run,
-                        require_primary=False, gpu_imatrix=gpu_imatrix, notify=notify)
+    pending = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="gguf-upload") as pool:
+        def on_file(path: Path, quant: str) -> None:
+            nonlocal pending
+            if quant == "IMATRIX":
+                return  # private calibration text and its derived importance matrix remain local
+            if pending is not None:
+                pending.result()  # bounded to one in flight; propagate failures before making another upload
+            pending = pool.submit(upload_quant, path, quant)
+
+        try:
+            result = make_ggufs(st_dir, scratch / "quants", preset["file"], missing, vision=False, tools=tools,
+                                on_file=on_file, calibration=calibration,
+                                stop_at=deadline - 15 * 60 if deadline else 0, run=run,
+                                require_primary=False, gpu_imatrix=gpu_imatrix, notify=notify, imatrix_from_base=True)
+        finally:
+            if pending is not None:
+                pending.result()
     report["skipped"] = result["skipped"]
     report["imatrix_used"] = bool(result.get("imatrix"))
     return report

@@ -820,3 +820,44 @@ def test_gpu_matrix_fails_instead_of_silently_running_without_it(tmp_path):
         llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m"], vision=False,
                              tools=_tools_with_imatrix(tmp_path), calibration=_calibration(tmp_path), run=run,
                              gpu_imatrix=True, on_file=lambda *_: None)
+
+
+def test_replacement_reuploads_existing_quant_names_only_for_thinking_uncensored(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_train, "ALL_QUANTS", ("q8_0", "q4_k_m", "q5_k_m"))
+    uploaded = []
+
+    class Api:
+        def __init__(self):
+            self.files = ["older-model.Q8_0.gguf", "older-model.Q4_K_M.gguf", "README.md"]
+
+        def model_info(self, repo):
+            return types.SimpleNamespace(sha="a" * 40 if not repo.endswith("-GGUF") else "b" * 40)
+
+        def list_repo_files(self, repo, repo_type, revision):
+            return list(self.files) if repo.endswith("-GGUF") else ["model.safetensors", "config.json"]
+
+        def upload_file(self, **kwargs):
+            assert kwargs["parent_commit"] == "b" * 40 and Path(kwargs["path_or_fileobj"]).exists()
+            uploaded.append(kwargs)
+            self.files.append(kwargs["path_in_repo"])
+
+    def download(**kwargs):
+        folder = Path(kwargs["local_dir"])
+        folder.mkdir(parents=True)
+        (folder / "config.json").write_text("{}")
+        (folder / "model.safetensors").write_bytes(b"weights")
+
+    run = FakeRun()
+    report = llm_train.repair_hub_ggufs(Api(), "me", "minecraftism-thinking", True, tmp_path / "work",
+                                         _tools_with_imatrix(tmp_path), _calibration(tmp_path), download=download,
+                                         run=run, replace_existing=True)
+    assert report["replace_existing"] and report["source_revision"] == "a" * 40
+    assert {x["path_in_repo"] for x in uploaded} == {"older-model.Q8_0.gguf", "older-model.Q4_K_M.gguf",
+                                                        "minecraftism-4b-thinking-uncensored.Q5_K_M.gguf"}
+    assert sum(x["replaced"] for x in report["uploaded"]) == 2
+    assert all("@" + "a" * 40 in x["commit_message"] for x in uploaded)
+    matrix = next(call for call in run.calls if Path(call[0]).name == "llama-imatrix")
+    assert matrix[matrix.index("-m") + 1].endswith(".F16.gguf")  # Q8 may already be uploading/deleted
+    with pytest.raises(ValueError, match="limited"):
+        llm_train.repair_hub_ggufs(Api(), "me", "minecraftism", True, tmp_path, (), tmp_path / "c",
+                                   replace_existing=True)
