@@ -3394,10 +3394,6 @@ library_name: {library}
 
 # {name}
 
-<img src="https://2no.co/pymc_bot_REAL" width="1" height="1" alt="Page view counter" />
-
-This page uses a third-party view counter at 2no.co; it may receive a request when the card is viewed.
-
 **Minecraftism** is a small model that knows Minecraft and plays it: the brain of
 [PyMC Bot]({PROJECT_URL}), a Minecraft player bot. Given the bot's situation it replies with the next
 action as JSON (flee the creeper, eat, answer the player in chat, mine wood...), it chats like a player, and it
@@ -3444,6 +3440,9 @@ shares these weights, or quants or fine-tunes made from them, must pass on this 
 - **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and
   {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.
 - Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+
+<sub>This page uses a third-party view counter at 2no.co; it may receive a request when the card is viewed.</sub>
+<img src="https://2no.co/pymc_bot_REAL" width="1" height="1" alt="Page view counter" />
 """
 
 

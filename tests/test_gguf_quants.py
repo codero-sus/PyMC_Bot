@@ -660,6 +660,8 @@ def test_public_cards_and_existing_repo_destinations():
         assert "https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg" in card
         assert 'src="https://2no.co/pymc_bot_REAL"' in card
         assert "third-party view counter" in card and "Copyright codero-sus" in card
+        assert card.index("third-party view counter") > card.index("## License and credits")
+        assert card.index('src="https://2no.co/pymc_bot_REAL"') > card.index("## License and credits")
         assert "polyform-noncommercial-1.0.0" in card
 
 
