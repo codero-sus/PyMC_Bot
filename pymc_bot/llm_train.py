@@ -2563,7 +2563,7 @@ def imatrix_binary(quantize: Path) -> Path | None:
 def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
                tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None,
                calibration: Path | None = None, imatrix_chunks: int = IMATRIX_CHUNKS, stop_at: float = 0,
-               clock: Any = time.time) -> dict[str, Any]:
+               clock: Any = time.time, require_primary: bool = True) -> dict[str, Any]:
     """safetensors -> one F16 GGUF (+ BF16, + the F16 vision projector) -> an importance matrix -> every quant.
 
     ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk). With a
@@ -2589,8 +2589,14 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
     result: dict[str, Any] = {"files": [], "mmproj": None, "skipped": [], "imatrix": None}
     bf16 = scratch / f"{stem}.BF16.gguf"
     if "BF16" in wanted:  # straight from the 16-bit safetensors, while they are still here (exact, not via F16)
-        _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(bf16), "--outtype", "bf16"],
-                  "safetensors -> BF16 GGUF")
+        try:
+            _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(bf16), "--outtype", "bf16"],
+                      "safetensors -> BF16 GGUF")
+        except RuntimeError as exc:
+            if primary == "BF16" and require_primary:
+                raise
+            bf16.unlink(missing_ok=True)
+            result["skipped"].append({"quant": "BF16", "why": str(exc)[-500:]})
     if vision:
         mmproj = scratch / f"mmproj-{stem}.F16.gguf"
         before = set(scratch.glob("*.gguf"))
@@ -2653,6 +2659,8 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
             result["skipped"].append({"quant": quant, "why": "needs an importance matrix (llama-imatrix was not "
                                                               "available or had no time)"})
             continue
+        if quant == "BF16" and not bf16.is_file() and any(item["quant"] == "BF16" for item in result["skipped"]):
+            continue
         target = {"F16": base, "BF16": bf16}.get(quant, scratch / f"{stem}.{quant}.gguf")
         use_imatrix = imatrix is not None and quant not in NO_IMATRIX
         if quant not in ("F16", "BF16"):
@@ -2661,13 +2669,13 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
             try:
                 _run_tool(run, command, f"F16 -> {quant}" + (" (imatrix)" if use_imatrix else ""), env=env)
             except RuntimeError as exc:
-                if quant == primary:
+                if quant == primary and require_primary:
                     raise
                 target.unlink(missing_ok=True)
                 result["skipped"].append({"quant": quant, "why": str(exc)[-500:]})
                 continue
         if not target.is_file():
-            if quant == primary:
+            if quant == primary and require_primary:
                 raise RuntimeError(f"llama-quantize wrote no {quant} file")
             result["skipped"].append({"quant": quant, "why": "quantizer produced no file"})
             continue
@@ -2681,6 +2689,116 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
     if base.exists() and "F16" not in made:
         base.unlink()
     return result
+
+
+def gguf_calibration_from_private_dataset(api: Any, folder: Path, limit: int = 2048) -> tuple[Path, str]:
+    """Make local-only calibration text from a pinned private dataset snapshot; never upload it."""
+    import random
+
+    revision, shards = minecraftism_snapshot(MINECRAFTISM_DATASET, api=api)
+    records = stream_minecraftism_records(MINECRAFTISM_DATASET, revision, shards, limit, seed=3407)
+    rows = minecraft_qa_rows(records, limit, "", random.Random(3407))
+    text = "\n\n".join(str(message["content"]) for row in rows for message in row["messages"]
+                       if message.get("role") in ("user", "assistant"))[:400_000]
+    if len(text) < 20_000:
+        raise RuntimeError("The private dataset did not provide enough accepted calibration text")
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "private-calibration.txt"
+    path.write_text(text, encoding="utf-8")
+    print(f"GGUF calibration: {len(rows)} accepted private rows from snapshot {revision}; kept locally only")
+    return path, revision
+
+
+def existing_quantizations(files: list[str], quants: Any = ALL_QUANTS) -> dict[str, str]:
+    """Map existing root GGUFs to quant names without mistaking an imatrix or projector for weights."""
+    found = {}
+    for quant in quants:
+        q = str(quant).upper()
+        pattern = re.compile(r"(?:^|[._-])" + re.escape(q) + r"\.gguf$", re.I)
+        matches = sorted(name for name in files if "/" not in name and "imatrix" not in name.lower()
+                         and "mmproj" not in name.lower() and pattern.search(name))
+        if matches:
+            found[q] = matches[0]
+    return found
+
+
+def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, scratch: Path,
+                     tools: tuple[Path, Path], calibration: Path, deadline: float = 0,
+                     download: Any = None, run: Any = None) -> dict[str, Any]:
+    """Generate missing quants from a pinned existing safetensors repo, without retraining or overwriting files.
+
+    Uploads are sequential and guarded by parent commit. The private calibration and imatrix stay local.
+    Existing GGUFs can be from another revision; callers must not present a mixed set as one verified checkpoint.
+    """
+    if preset_name not in EDITIONS or PRESETS[preset_name].get("vision"):
+        raise ValueError("GGUF repair currently supports text models only")
+    preset = PRESETS[preset_name]
+    if uncensored:
+        preset = uncensored_preset(preset_name, preset)
+    gguf_repo = f"{owner}/{preset['hub']}"
+    st_repo = safetensors_repo(gguf_repo)
+    source_rev = str(api.model_info(st_repo).sha)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_rev):
+        raise RuntimeError(f"Cannot pin a valid safetensors revision for {st_repo}")
+    source_files = api.list_repo_files(st_repo, repo_type="model", revision=source_rev)
+    weights = [name for name in source_files if "/" not in name and name.endswith(".safetensors")]
+    if not weights or "config.json" not in source_files:
+        raise RuntimeError(f"{st_repo}@{source_rev} has no complete model weights and config (possibly a placeholder)")
+    target_rev = str(api.model_info(gguf_repo).sha)  # must already exist; never create/replace repositories here
+    target_files = api.list_repo_files(gguf_repo, repo_type="model", revision=target_rev)
+    existing = existing_quantizations(target_files)
+    missing = [q for q in ALL_QUANTS if q.upper() not in existing]
+    report: dict[str, Any] = {"preset": preset_name, "source": st_repo, "source_revision": source_rev,
+                              "destination": gguf_repo, "existing": existing, "uploaded": [], "skipped": []}
+    if not missing:
+        print(f"{gguf_repo}: all requested quant types already exist; no files changed")
+        return report
+    if deadline and time.time() >= deadline - 15 * 60:
+        report["skipped"] = [{"quant": q.upper(), "why": "not enough session time"} for q in missing]
+        return report
+    print(f"{gguf_repo}: {len(existing)} existing quant types, {len(missing)} missing; source {st_repo}@{source_rev}")
+    print("Existing quants are not overwritten and may come from a different checkpoint revision.")
+    if download is None:
+        from huggingface_hub import snapshot_download
+
+        download = snapshot_download
+    scratch = Path(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    st_dir = scratch / "safetensors"
+    download(repo_id=st_repo, repo_type="model", revision=source_rev, local_dir=str(st_dir),
+             allow_patterns=["*.safetensors", "*.json", "*.model", "*.jinja", "*.txt"],
+             token=os.environ.get("HF_TOKEN"))
+    if not all((st_dir / name).is_file() for name in weights) or not (st_dir / "config.json").is_file():
+        raise RuntimeError(f"Incomplete snapshot download from {st_repo}@{source_rev}")
+    index = st_dir / "model.safetensors.index.json"
+    if index.is_file():
+        shards = set(json.loads(index.read_text(encoding="utf-8")).get("weight_map", {}).values())
+        if not shards or any(not isinstance(name, str) or Path(name).name != name or not (st_dir / name).is_file()
+                             for name in shards):
+            raise RuntimeError("Safetensors index references missing shards")
+
+    def on_file(path: Path, quant: str) -> None:
+        if quant == "IMATRIX":
+            return  # never publish calibration material or its derived matrix from the private dataset
+        current = str(api.model_info(gguf_repo).sha)
+        current_files = api.list_repo_files(gguf_repo, repo_type="model", revision=current)
+        if quant in existing_quantizations(current_files, [quant]):
+            print(f"  {quant}: another run already uploaded it; leaving the existing file untouched")
+        else:
+            api.upload_file(repo_id=gguf_repo, repo_type="model", path_in_repo=path.name,
+                            path_or_fileobj=str(path), parent_commit=current,
+                            commit_message=f"Add {quant} GGUF from {st_repo}@{source_rev[:12]}")
+            report["uploaded"].append({"quant": quant, "file": path.name})
+            print(f"  uploaded {quant} to {gguf_repo}", flush=True)
+        path.unlink(missing_ok=True)
+
+    result = make_ggufs(st_dir, scratch / "quants", preset["file"], missing, vision=False, tools=tools,
+                        on_file=on_file, calibration=calibration, stop_at=deadline - 15 * 60 if deadline else 0, run=run,
+                        require_primary=False)
+    report["skipped"] = result["skipped"]
+    report["imatrix_used"] = bool(result.get("imatrix"))
+    return report
 
 
 def pick_gguf(found: list[str], quant: str) -> str | None:
@@ -2848,10 +2966,15 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
             upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {what}")
             print(f"  uploaded {path.name} ({path.stat().st_size / 1e9:.2f} GB) -> {hub['gguf']}", flush=True)
             uploaded[quant] = True
-            path.unlink()
+            # Every later quant still reads the shared importance matrix. Deleting it after its
+            # asynchronous upload makes the remaining quantizations fail with "No such file".
+            if quant != "IMATRIX":
+                path.unlink()
         except Exception as exc:  # keep the file; the folder upload at the end tries again
-            print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {out}", flush=True)
-            keep(path)
+            location = path.parent if quant == "IMATRIX" else out
+            print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {location}", flush=True)
+            if quant != "IMATRIX":
+                keep(path)  # the matrix must stay at its original path for every quant
 
     def on_file(path: Path, quant: str) -> None:
         if hub and quant not in (primary, "MMPROJ"):

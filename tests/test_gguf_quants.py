@@ -672,3 +672,101 @@ def test_import_files_handle_vision_projector_and_existing_parameters(tmp_path):
     guide = (tmp_path / "IMPORTING.md").read_text()
     assert "--mmproj ./mmproj.gguf" in guide and "depends on the runtime" in guide
     assert "change the first `FROM`" in guide
+
+
+@pytest.mark.parametrize("fail_matrix_upload", [False, True])
+def test_imatrix_survives_early_upload_and_failure_until_all_quants_finish(tmp_path, monkeypatch, fail_matrix_upload):
+    args = _parse(["--hub-repo", "auto", "--out", str(tmp_path / "out"), "--gguf-scratch", str(tmp_path / "work")])
+    args.data_dir = str(tmp_path)
+    args.deadline = 0
+    (tmp_path / "train.jsonl").write_text("\n".join(json.dumps({"messages": [
+        {"role": "user", "content": "Minecraft question " * 30},
+        {"role": "assistant", "content": "Minecraft answer " * 30}]}) for _ in range(100)))
+    tools = _tools_with_imatrix(tmp_path)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "st").mkdir()
+
+    class VerifyMatrix(FakeRun):
+        def __call__(self, command, **kwargs):
+            if "--imatrix" in command:
+                assert Path(command[command.index("--imatrix") + 1]).is_file()
+            return super().__call__(command, **kwargs)
+
+    def upload(_hub, _repo, path, _message):
+        assert path.exists()
+        if fail_matrix_upload and "imatrix" in path.name:
+            raise OSError("offline")
+
+    monkeypatch.setattr(llm_train, "upload_hub_file", upload)
+    made = llm_train.export_ggufs(args, llm_train.PRESETS["minecraftism"], None, None, tmp_path / "out",
+                                  tmp_path / "st", ["q4_k_m", "q6_k", "q5_k_m"],
+                                  hub={"gguf": "me/model"}, tools=tools, run=VerifyMatrix(),
+                                  uploader=llm_train.Uploader(background=False))
+    assert [item["quant"] for item in made["files"]] == ["Q4_K_M", "Q6_K", "Q5_K_M"]
+    assert made["skipped"] == []
+
+
+def test_repair_uploads_missing_quants_without_overwriting_existing_or_private_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_train, "ALL_QUANTS", ("q4_k_m", "q5_k_m", "iq4_xs", "iq1_s"))
+    calls = []
+
+    class Api:
+        def __init__(self):
+            self.files = ["minecraftism-4b-uncensored.Q4_K_M.gguf", "README.md"]
+
+        def model_info(self, repo):
+            return types.SimpleNamespace(sha="a" * 40 if not repo.endswith("-GGUF") else "b" * 40)
+
+        def list_repo_files(self, repo, repo_type, revision):
+            assert repo_type == "model"
+            return list(self.files) if repo.endswith("-GGUF") else ["model.safetensors", "config.json"]
+
+        def upload_file(self, **kwargs):
+            assert kwargs["parent_commit"] == "b" * 40
+            assert "imatrix" not in kwargs["path_in_repo"]
+            assert kwargs["path_in_repo"] not in self.files
+            assert Path(kwargs["path_or_fileobj"]).exists()
+            self.files.append(kwargs["path_in_repo"])
+            calls.append(kwargs["path_in_repo"])
+
+    def download(**kwargs):
+        assert kwargs["revision"] == "a" * 40
+        folder = Path(kwargs["local_dir"])
+        folder.mkdir(parents=True)
+        (folder / "config.json").write_text("{}")
+        (folder / "model.safetensors").write_bytes(b"weights")
+
+    class VerifyMatrix(FakeRun):
+        def __call__(self, command, **kwargs):
+            if "--imatrix" in command:
+                assert Path(command[command.index("--imatrix") + 1]).is_file()
+            return super().__call__(command, **kwargs)
+
+    result = llm_train.repair_hub_ggufs(Api(), "me", "minecraftism", True, tmp_path / "work",
+                                         _tools_with_imatrix(tmp_path), _calibration(tmp_path), download=download,
+                                         run=VerifyMatrix())
+    assert result["source"] == "me/Minecraftism-4B-Uncensored"
+    assert result["source_revision"] == "a" * 40 and result["imatrix_used"]
+    assert {item["quant"] for item in result["uploaded"]} == {"Q5_K_M", "IQ4_XS", "IQ1_S"}
+    assert len(calls) == 3 and result["skipped"] == []
+    assert result["existing"]["Q4_K_M"].endswith("Q4_K_M.gguf")
+
+
+def test_repair_rejects_placeholder_safetensors_and_vision(tmp_path):
+    class Api:
+        def model_info(self, repo):
+            return types.SimpleNamespace(sha="a" * 40)
+
+        def list_repo_files(self, repo, repo_type, revision):
+            return ["README.md"]
+
+    with pytest.raises(RuntimeError, match="no complete model weights"):
+        llm_train.repair_hub_ggufs(Api(), "me", "minecraftism-turbo", True, tmp_path, (), tmp_path / "calibration")
+    with pytest.raises(ValueError, match="text models"):
+        llm_train.repair_hub_ggufs(Api(), "me", "minecraftism-vl", True, tmp_path, (), tmp_path / "calibration")
+
+
+def test_existing_quantization_detection_is_case_insensitive_and_ignores_sidecars():
+    found = llm_train.existing_quantizations(["model.Q4_K_M.gguf", "model-q5_k_m.GGUF", "mmproj.Q6_K.gguf",
+                                              "model.imatrix.Q8_0.gguf", "nested/model.F16.gguf"])
+    assert found == {"Q4_K_M": "model.Q4_K_M.gguf", "Q5_K_M": "model-q5_k_m.GGUF"}
