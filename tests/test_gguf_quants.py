@@ -772,3 +772,51 @@ def test_existing_quantization_detection_is_case_insensitive_and_ignores_sidecar
     found = llm_train.existing_quantizations(["model.Q4_K_M.gguf", "model-q5_k_m.GGUF", "mmproj.Q6_K.gguf",
                                               "model.imatrix.Q8_0.gguf", "nested/model.F16.gguf"])
     assert found == {"Q4_K_M": "model.Q4_K_M.gguf", "Q5_K_M": "model-q5_k_m.GGUF"}
+
+
+def test_cuda_tools_verify_visible_gpu_and_set_library_path(tmp_path, monkeypatch):
+    downloads = []
+    release = [{"tag_name": "b99", "assets": [
+        {"name": "llama-b99-bin-ubuntu-cuda-12.8-x64.tar.gz", "browser_download_url": "https://example/bin"},
+        {"name": "cudart-llama-b99-bin-ubuntu-cuda-12.8-x64.tar.gz", "browser_download_url": "https://example/runtime"}]}]
+
+    def download(url, path):
+        downloads.append(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if "codeload" in url:
+            contents = {"llama.cpp/convert_hf_to_gguf.py": b"# convert"}
+        elif "runtime" in url:
+            contents = {"cuda/libcudart.so.12": b"runtime"}
+        else:
+            contents = {"cuda/llama-quantize": b"binary", "cuda/llama-imatrix": b"binary"}
+        path.write_bytes(_tarball(contents))
+        return path
+
+    def run(command, **kwargs):
+        assert command[-1] == "--list-devices"
+        found = "runtime" in kwargs["env"]["LD_LIBRARY_PATH"]
+        return types.SimpleNamespace(returncode=0 if found else 1, stdout="CUDA0: T4\nCUDA1: T4" if found else "", stderr="")
+
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    convert, quant = llm_train.llama_cpp_cuda_tools(tmp_path, run=run, fetch_json=lambda _: release, download=download)
+    assert convert.name == "convert_hf_to_gguf.py" and quant.name == "llama-quantize"
+    assert downloads[-1] == "https://example/runtime" and "runtime" in __import__("os").environ["LD_LIBRARY_PATH"]
+
+
+def test_gpu_matrix_offloads_layers_and_uses_both_devices_by_default(tmp_path):
+    run = FakeRun()
+    result = llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m", "iq1_s"], vision=False,
+                                  tools=_tools_with_imatrix(tmp_path), calibration=_calibration(tmp_path), run=run,
+                                  gpu_imatrix=True, on_file=lambda *_: None)
+    command = next(call for call in run.calls if Path(call[0]).name == "llama-imatrix")
+    assert command[command.index("--gpu-layers") + 1] == "all"
+    assert command[command.index("--split-mode") + 1] == "layer"
+    assert result["imatrix"] is not None and not result["skipped"]
+
+
+def test_gpu_matrix_fails_instead_of_silently_running_without_it(tmp_path):
+    run = FakeRun(fail="llama-imatrix")
+    with pytest.raises(RuntimeError, match="llama-imatrix failed"):
+        llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m"], vision=False,
+                             tools=_tools_with_imatrix(tmp_path), calibration=_calibration(tmp_path), run=run,
+                             gpu_imatrix=True, on_file=lambda *_: None)

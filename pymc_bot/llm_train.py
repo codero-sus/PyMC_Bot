@@ -2547,6 +2547,62 @@ def llama_cpp_tools(scratch: Path, run: Any = None, fetch_json: Any = None, down
     return convert.resolve(), binary.resolve()
 
 
+def llama_cpp_cuda_tools(scratch: Path, run: Any = None, fetch_json: Any = None, download: Any = None,
+                         log: Any = print) -> tuple[Path, Path]:
+    """Get a CUDA release and verify llama-imatrix actually sees NVIDIA GPUs; never silently use the CPU."""
+    import subprocess
+
+    run, fetch_json, download = run or subprocess.run, fetch_json or _fetch_json, download or _download
+    releases = fetch_json(f"https://api.github.com/repos/{LLAMA_CPP_REPO}/releases?per_page=10")
+    selected = None
+    for release in releases:
+        tag = release.get("tag_name", "")
+        assets = {a.get("name"): a for a in release.get("assets") or []}
+        binary = assets.get(f"llama-{tag}-bin-ubuntu-cuda-12.8-x64.tar.gz")
+        runtime = assets.get(f"cudart-llama-{tag}-bin-ubuntu-cuda-12.8-x64.tar.gz")
+        if binary and runtime:
+            selected = tag, binary, runtime
+            break
+    if not selected:
+        raise RuntimeError("No compatible Linux CUDA 12.8 llama.cpp release found; refusing CPU-only calibration")
+    tag, binary, runtime = selected
+    root = Path(scratch) / f"llama.cpp-cuda-{tag}"
+    root.mkdir(parents=True, exist_ok=True)
+    log(f"llama.cpp: downloading CUDA release {tag} and matching source")
+    _extract(download(binary["browser_download_url"], root / "bin.tar.gz"), root / "bin")
+    _extract(download(f"https://codeload.github.com/{LLAMA_CPP_REPO}/tar.gz/refs/tags/{tag}", root / "src.tar.gz"),
+             root / "src")
+    convert = next(iter(sorted((root / "src").rglob("convert_hf_to_gguf.py"))), None)
+    quantize = _find_binary(root / "bin", "llama-quantize")
+    matrix = _find_binary(root / "bin", "llama-imatrix")
+    if not convert or not quantize or not matrix or matrix.parent != quantize.parent:
+        raise RuntimeError("CUDA release lacks converter, llama-quantize or adjacent llama-imatrix")
+
+    def check() -> tuple[list[str], str]:
+        dirs = {str(quantize.parent)}
+        if (root / "runtime").is_dir():
+            dirs.update(str(p.parent) for p in (root / "runtime").rglob("*.so*"))
+        env = {**os.environ, "LD_LIBRARY_PATH": ":".join(sorted(dirs)) + ":" + os.environ.get("LD_LIBRARY_PATH", "")}
+        try:
+            result = run([str(matrix), "--list-devices"], capture_output=True, text=True, env=env, timeout=60)
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            devices = sorted(set(re.findall(r"\bCUDA\d+\b", output))) if result.returncode == 0 else []
+            return devices, env["LD_LIBRARY_PATH"]
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return [], env["LD_LIBRARY_PATH"]
+
+    devices, libraries = check()
+    if not devices:
+        log("CUDA libraries not usable yet; downloading the matching CUDA runtime")
+        _extract(download(runtime["browser_download_url"], root / "runtime.tar.gz"), root / "runtime")
+        devices, libraries = check()
+    if not devices:
+        raise RuntimeError("CUDA llama-imatrix could not see a GPU. Check Kaggle GPU/driver compatibility; no CPU fallback")
+    os.environ["LD_LIBRARY_PATH"] = libraries
+    log(f"llama-imatrix CUDA devices: {', '.join(devices)}; GPU layers will be offloaded")
+    return convert.resolve(), quantize.resolve()
+
+
 def _run_tool(run: Any, command: list[str], what: str, env: dict[str, str] | None = None) -> None:
     print(f"  {what}...", flush=True)
     done = run(command, capture_output=True, text=True, env=env)
@@ -2563,7 +2619,8 @@ def imatrix_binary(quantize: Path) -> Path | None:
 def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
                tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None,
                calibration: Path | None = None, imatrix_chunks: int = IMATRIX_CHUNKS, stop_at: float = 0,
-               clock: Any = time.time, require_primary: bool = True) -> dict[str, Any]:
+               clock: Any = time.time, require_primary: bool = True, gpu_imatrix: bool = False,
+               notify: Any = None) -> dict[str, Any]:
     """safetensors -> one F16 GGUF (+ BF16, + the F16 vision projector) -> an importance matrix -> every quant.
 
     ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk). With a
@@ -2613,6 +2670,8 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
         on_base()
     imatrix_tool = imatrix_binary(Path(quantize)) if calibration else None
     wants_imatrix = imatrix_tool is not None and any(q not in NO_IMATRIX for q in wanted)
+    if gpu_imatrix and calibration and not imatrix_tool:
+        raise RuntimeError("CUDA llama-imatrix is missing; refusing CPU-only calibration")
     order = list(wanted)
     if wants_imatrix and "Q8_0" in order:  # Q8_0 first: the importance matrix is computed with it
         order.remove("Q8_0")
@@ -2632,16 +2691,25 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
             return
         command = [str(imatrix_tool), "-m", str(model), "-f", str(calibration), "-o", str(target), "-c", "512",
                    "--chunks", str(int(imatrix_chunks)), "--no-ppl", "-ofreq", "8", "-t", str(os.cpu_count() or 4)]
+        if gpu_imatrix:
+            command += ["--gpu-layers", "all", "--split-mode", "layer"]
+        if notify:
+            notify("Computing importance matrix on GPU" if gpu_imatrix else "Computing importance matrix", False)
         print(f"  importance matrix ({imatrix_chunks} x 512 tokens of the training data, on {model.name.split('.')[-2]})"
               "...", flush=True)
         partial = False
         try:
             done = run(command, capture_output=True, text=True, env=env, timeout=seconds)
             if done.returncode != 0:
-                print(f"  llama-imatrix failed: {(done.stderr or done.stdout or '')[-600:]}", flush=True)
+                message = f"llama-imatrix failed: {(done.stderr or done.stdout or '')[-600:]}"
+                if gpu_imatrix:
+                    raise RuntimeError(message)
+                print(f"  {message}", flush=True)
         except subprocess.TimeoutExpired:  # it saves every 8 chunks: a partial matrix still helps a lot
             partial = True
             print(f"  llama-imatrix stopped after {seconds / 60:.0f} min - using what it saved", flush=True)
+        if gpu_imatrix and not (target.is_file() and target.stat().st_size > 0):
+            raise RuntimeError("CUDA llama-imatrix produced no matrix; refusing to silently continue")
         if target.is_file() and target.stat().st_size > 0:
             imatrix = target
             result["imatrix"] = {"file": target.name, "chunks": int(imatrix_chunks), "partial": partial,
@@ -2725,7 +2793,7 @@ def existing_quantizations(files: list[str], quants: Any = ALL_QUANTS) -> dict[s
 
 def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, scratch: Path,
                      tools: tuple[Path, Path], calibration: Path, deadline: float = 0,
-                     download: Any = None, run: Any = None) -> dict[str, Any]:
+                     download: Any = None, run: Any = None, gpu_imatrix: bool = False, notify: Any = None) -> dict[str, Any]:
     """Generate missing quants from a pinned existing safetensors repo, without retraining or overwriting files.
 
     Uploads are sequential and guarded by parent commit. The private calibration and imatrix stay local.
@@ -2758,6 +2826,8 @@ def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, s
         report["skipped"] = [{"quant": q.upper(), "why": "not enough session time"} for q in missing]
         return report
     print(f"{gguf_repo}: {len(existing)} existing quant types, {len(missing)} missing; source {st_repo}@{source_rev}")
+    if notify:
+        notify(f"{preset_name}: {len(existing)} existing formats, {len(missing)} missing; starting export", True)
     print("Existing quants are not overwritten and may come from a different checkpoint revision.")
     if download is None:
         from huggingface_hub import snapshot_download
@@ -2791,11 +2861,13 @@ def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, s
                             commit_message=f"Add {quant} GGUF from {st_repo}@{source_rev[:12]}")
             report["uploaded"].append({"quant": quant, "file": path.name})
             print(f"  uploaded {quant} to {gguf_repo}", flush=True)
+            if notify:
+                notify(f"{preset_name}: uploaded {quant} to {gguf_repo}", True)
         path.unlink(missing_ok=True)
 
     result = make_ggufs(st_dir, scratch / "quants", preset["file"], missing, vision=False, tools=tools,
                         on_file=on_file, calibration=calibration, stop_at=deadline - 15 * 60 if deadline else 0, run=run,
-                        require_primary=False)
+                        require_primary=False, gpu_imatrix=gpu_imatrix, notify=notify)
     report["skipped"] = result["skipped"]
     report["imatrix_used"] = bool(result.get("imatrix"))
     return report
