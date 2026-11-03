@@ -221,7 +221,7 @@ def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned()
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/e3ce0d892d14d9c76d42007439f12445415ee9da/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/392cfa2653251b2bb5f163a32a86dc8eaed6d136/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
