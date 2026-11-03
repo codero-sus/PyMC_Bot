@@ -221,7 +221,7 @@ def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned()
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/392cfa2653251b2bb5f163a32a86dc8eaed6d136/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/7e28cc0c67d1fa9be5e8a4e41f48d498f46cf64e/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
@@ -521,12 +521,12 @@ def test_gguf_mode_repairs_selected_models_and_skips_training_cells(tmp_path):
             return folder / "private.txt", "a" * 40
 
         @staticmethod
-        def llama_cpp_tools(folder):
+        def llama_cpp_cuda_tools(folder):
             return (folder / "convert", folder / "quantize")
 
         @staticmethod
-        def repair_hub_ggufs(api, owner, name, uncensored, folder, tools, calibration, deadline):
-            assert owner == "mr-sus" and uncensored and deadline == 123
+        def repair_hub_ggufs(api, owner, name, uncensored, folder, tools, calibration, deadline, gpu_imatrix, notify):
+            assert owner == "mr-sus" and uncensored and deadline == 123 and gpu_imatrix
             seen.append(name)
             if name == "minecraftism-thinking":
                 raise RuntimeError("placeholder, no weights")
@@ -544,3 +544,39 @@ def test_gguf_mode_repairs_selected_models_and_skips_training_cells(tmp_path):
                          for line in source.splitlines(keepends=True))
         exec(source, env)
     assert "SCRIPT" not in env and "READY" not in env
+
+
+def test_gguf_discord_mentions_only_important_messages(monkeypatch):
+    import ast
+    import urllib.request
+
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    source = "".join(nb["cells"][2]["source"])
+    clean = "".join((line[:len(line) - len(line.lstrip())] + "pass\n") if line.lstrip().startswith("!") else line
+                    for line in source.splitlines(keepends=True))
+    node = next(n for n in ast.walk(ast.parse(clean)) if isinstance(n, ast.ClassDef) and n.name == "GgufNotifications")
+    env = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "<notebook>", "exec"), env)
+    sent = []
+
+    class Secrets:
+        def get_secret(self, name):
+            return {"webhook": "https://discord.com/api/webhooks/12345/secret", "role": "123456789"}[name]
+
+    class Response:
+        def close(self):
+            pass
+
+    def fake_urlopen(req, timeout):
+        sent.append(json.loads(req.data))
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    notifier = env["GgufNotifications"](Secrets(), True, "webhook", "role", "", 30)
+    notifier.notify("regular update", False)
+    notifier.notify("quant uploaded", True)
+    notifier.close()
+    assert len(sent) == 2
+    assert sent[0]["allowed_mentions"] == {"parse": []} and "<@&" not in sent[0]["content"]
+    assert sent[1]["allowed_mentions"] == {"parse": [], "roles": ["123456789"]}
+    assert "<@&123456789>" in sent[1]["content"]
