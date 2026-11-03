@@ -221,7 +221,7 @@ def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned()
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/7e28cc0c67d1fa9be5e8a4e41f48d498f46cf64e/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/77a8fdb84fc9e580c641e85682955ec04a8731cc/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
@@ -525,8 +525,9 @@ def test_gguf_mode_repairs_selected_models_and_skips_training_cells(tmp_path):
             return (folder / "convert", folder / "quantize")
 
         @staticmethod
-        def repair_hub_ggufs(api, owner, name, uncensored, folder, tools, calibration, deadline, gpu_imatrix, notify):
-            assert owner == "mr-sus" and uncensored and deadline == 123 and gpu_imatrix
+        def repair_hub_ggufs(api, owner, name, uncensored, folder, tools, calibration, deadline, gpu_imatrix, notify,
+                             replace_existing):
+            assert owner == "mr-sus" and uncensored and deadline == 123 and gpu_imatrix and not replace_existing
             seen.append(name)
             if name == "minecraftism-thinking":
                 raise RuntimeError("placeholder, no weights")
@@ -580,3 +581,39 @@ def test_gguf_discord_mentions_only_important_messages(monkeypatch):
     assert sent[0]["allowed_mentions"] == {"parse": []} and "<@&" not in sent[0]["content"]
     assert sent[1]["allowed_mentions"] == {"parse": [], "roles": ["123456789"]}
     assert "<@&123456789>" in sent[1]["content"]
+
+
+def test_gguf_replace_is_scoped_to_uncensored_thinking(tmp_path):
+    import ast
+
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    source = "".join(nb["cells"][2]["source"])
+    clean = "".join((line[:len(line) - len(line.lstrip())] + "pass\n") if line.lstrip().startswith("!") else line
+                    for line in source.splitlines(keepends=True))
+    node = next(n for n in ast.walk(ast.parse(clean)) if isinstance(n, ast.FunctionDef) and n.name == "run_gguf_mode")
+    env = {"EXPECTED_HF_USER": "mr-sus"}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "<notebook>", "exec"), env)
+    seen = []
+
+    class Trainer:
+        @staticmethod
+        def gguf_calibration_from_private_dataset(api, folder, limit):
+            return folder / "calibration", "a" * 40
+
+        @staticmethod
+        def llama_cpp_cuda_tools(folder):
+            return (folder / "convert", folder / "quantize")
+
+        @staticmethod
+        def repair_hub_ggufs(api, owner, name, uncensored, folder, tools, calibration, **kwargs):
+            assert owner == "mr-sus" and uncensored and kwargs["gpu_imatrix"] and kwargs["replace_existing"]
+            seen.append(name)
+            return {"preset": name, "uploaded": [], "skipped": []}
+
+    run = env["run_gguf_mode"]
+    run(None, Trainer(), tmp_path / "tmp", tmp_path / "out", ["txt_think"], True, 100, 2048, replace_existing=True)
+    assert seen == ["minecraftism-thinking"]
+    with pytest.raises(ValueError, match="only for"):
+        run(None, Trainer(), tmp_path / "tmp", tmp_path / "out", ["turbo"], True, 100, 2048, replace_existing=True)
+    with pytest.raises(ValueError, match="only for"):
+        run(None, Trainer(), tmp_path / "tmp", tmp_path / "out", ["txt_think"], False, 100, 2048, replace_existing=True)
