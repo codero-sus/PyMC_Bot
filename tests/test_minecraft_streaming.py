@@ -221,7 +221,7 @@ def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned()
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/ed5d30d4f7f036b565abfad433891cddc396bb3c/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/e3ce0d892d14d9c76d42007439f12445415ee9da/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
@@ -499,3 +499,48 @@ def test_allot_mode_refuses_wrong_account_before_writing(monkeypatch):
                      for line in source.splitlines(keepends=True))
     with pytest.raises(RuntimeError, match="wrong-account"):
         exec(source, env)
+
+
+def test_gguf_mode_repairs_selected_models_and_skips_training_cells(tmp_path):
+    import ast
+
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    cell = "".join(nb["cells"][2]["source"])
+    clean = "".join((line[:len(line) - len(line.lstrip())] + "pass\n") if line.lstrip().startswith("!") else line
+                    for line in cell.splitlines(keepends=True))
+    function = next(node for node in ast.walk(ast.parse(clean))
+                    if isinstance(node, ast.FunctionDef) and node.name == "run_gguf_mode")
+    env = {"EXPECTED_HF_USER": "mr-sus", "GGUF_MODE": True, "ALLOT_MODE": False}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), env)
+    seen = []
+
+    class Trainer:
+        @staticmethod
+        def gguf_calibration_from_private_dataset(api, folder, limit):
+            assert limit == 2048
+            return folder / "private.txt", "a" * 40
+
+        @staticmethod
+        def llama_cpp_tools(folder):
+            return (folder / "convert", folder / "quantize")
+
+        @staticmethod
+        def repair_hub_ggufs(api, owner, name, uncensored, folder, tools, calibration, deadline):
+            assert owner == "mr-sus" and uncensored and deadline == 123
+            seen.append(name)
+            if name == "minecraftism-thinking":
+                raise RuntimeError("placeholder, no weights")
+            return {"preset": name, "uploaded": [{"quant": "Q5_K_M"}], "skipped": []}
+
+    reports = env["run_gguf_mode"](None, Trainer(), tmp_path / "tmp", tmp_path / "out",
+                                   {"txt", "txt_think"}, True, 123, 2048)
+    assert set(seen) == {"minecraftism", "minecraftism-thinking"}
+    assert any("placeholder" in report.get("error", "") for report in reports)
+    assert json.loads((tmp_path / "out/gguf-repair-report.json").read_text()) == reports
+    assert not list((tmp_path / "tmp").iterdir())  # per-model and private calibration data removed
+    for index in (3, 4, 5, 6, 7, 9, 10, 12):
+        source = "".join(nb["cells"][index]["source"])
+        source = "".join((line[:len(line) - len(line.lstrip())] + "pass\n") if line.lstrip().startswith("!") else line
+                         for line in source.splitlines(keepends=True))
+        exec(source, env)
+    assert "SCRIPT" not in env and "READY" not in env
