@@ -8,12 +8,13 @@
 **Quick start**
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook:
-   `https://github.com/codero-sus/PyMC_Bot/raw/4db77d170c46045d24576207b87347ab0dedbf76/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/4db77d170c46045d24576207b87347ab0dedbf76/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload this `.ipynb`.
    Set `editions_to_be_trained = "gguf"` to create missing quant types from existing text-edition safetensors,
    without retraining or overwriting existing files. The private calibration sample and matrix stay local; missing
    weights, unsupported formats or the deadline can leave gaps. CUDA GPUs are required for calibration; quantization
-   runs on CPU. Discord sends important-event pings using the existing secrets. Inspect `gguf-repair-report.json`
+   runs on CPU. Two editions run in parallel on separate GPUs when scratch space permits; otherwise GPUs are
+   combined for one edition. Discord sends important-event pings using the existing secrets. Inspect `gguf-repair-report.json`
    and re-run to retry.
    Set `editions_to_be_trained = "gguf_replace"` with `UNCENSORED = True` to regenerate and replace the Thinking
    Uncensored GGUF files only, from existing safetensors. Interrupted runs can leave mixed revisions; rerunning
@@ -78,8 +79,8 @@ countdown stay silent. No secret = no role ping.
 ## Trusted dataset notebook (GPU or CPU)
 
 1. kaggle.com → **Code → New Notebook → File → Import Notebook** → paste:
-   `https://github.com/codero-sus/PyMC_Bot/raw/4db77d170c46045d24576207b87347ab0dedbf76/pynb/Minecraftism_Dataset_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/4db77d170c46045d24576207b87347ab0dedbf76/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
+   `https://github.com/codero-sus/PyMC_Bot/raw/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/Minecraftism_Dataset_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/Minecraftism_Dataset_Kaggle.ipynb)).
 2. **Settings** → Accelerator **GPU T4 ×2** for GPU runs (`DEVICE = "auto"`), Internet **on**. The notebook falls back to CPU if GPU setup fails; use `DEVICE = "cpu"` and Accelerator None for CPU-only runs.
 3. **Add-ons → Secrets** → `HF_TOKEN` (a Hugging Face *write* token; a read token is caught before anything starts). Optional: `discord_webhook_inform_me1` and
    `ping_role` (pinged on start, uploads, errors and the end; the hourly progress stays silent).
