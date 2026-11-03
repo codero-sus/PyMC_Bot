@@ -798,9 +798,11 @@ def test_cuda_tools_verify_visible_gpu_and_set_library_path(tmp_path, monkeypatc
         return types.SimpleNamespace(returncode=0 if found else 1, stdout="CUDA0: T4\nCUDA1: T4" if found else "", stderr="")
 
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.delenv("PYMC_GGUF_CUDA_DEVICES", raising=False)
     convert, quant = llm_train.llama_cpp_cuda_tools(tmp_path, run=run, fetch_json=lambda _: release, download=download)
     assert convert.name == "convert_hf_to_gguf.py" and quant.name == "llama-quantize"
     assert downloads[-1] == "https://example/runtime" and "runtime" in __import__("os").environ["LD_LIBRARY_PATH"]
+    assert __import__("os").environ["PYMC_GGUF_CUDA_DEVICES"] == "CUDA0,CUDA1"
 
 
 def test_gpu_matrix_offloads_layers_and_uses_both_devices_by_default(tmp_path):
@@ -861,3 +863,20 @@ def test_replacement_reuploads_existing_quant_names_only_for_thinking_uncensored
     with pytest.raises(ValueError, match="limited"):
         llm_train.repair_hub_ggufs(Api(), "me", "minecraftism", True, tmp_path, (), tmp_path / "c",
                                    replace_existing=True)
+
+
+def test_parallel_gpu_device_is_explicit_and_cpu_threads_are_bounded(tmp_path):
+    run = FakeRun()
+    tools = _tools_with_imatrix(tmp_path)
+    llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m"], vision=False,
+                          tools=tools, calibration=_calibration(tmp_path), run=run,
+                          gpu_imatrix=True, gpu_device="CUDA1", cpu_threads=2, on_file=lambda *_: None)
+    matrix = next(call for call in run.calls if Path(call[0]).name == "llama-imatrix")
+    assert matrix[matrix.index("--device") + 1] == "CUDA1"
+    assert matrix[matrix.index("--split-mode") + 1] == "none" and matrix[matrix.index("-t") + 1] == "2"
+    quant = next(call for call in run.calls if Path(call[0]).name == "llama-quantize")
+    assert quant[-1] == "2" and quant[-2] == "Q4_K_M"
+    with pytest.raises(ValueError, match="verified CUDA"):
+        llm_train.make_ggufs(tmp_path / "st", tmp_path / "work", "m", ["q4_k_m"], vision=False,
+                              tools=tools, run=run, gpu_imatrix=True,
+                              gpu_device="CPU", on_file=lambda *_: None)

@@ -2599,6 +2599,7 @@ def llama_cpp_cuda_tools(scratch: Path, run: Any = None, fetch_json: Any = None,
     if not devices:
         raise RuntimeError("CUDA llama-imatrix could not see a GPU. Check Kaggle GPU/driver compatibility; no CPU fallback")
     os.environ["LD_LIBRARY_PATH"] = libraries
+    os.environ["PYMC_GGUF_CUDA_DEVICES"] = ",".join(devices)
     log(f"llama-imatrix CUDA devices: {', '.join(devices)}; GPU layers will be offloaded")
     return convert.resolve(), quantize.resolve()
 
@@ -2620,7 +2621,8 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
                tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None,
                calibration: Path | None = None, imatrix_chunks: int = IMATRIX_CHUNKS, stop_at: float = 0,
                clock: Any = time.time, require_primary: bool = True, gpu_imatrix: bool = False,
-               notify: Any = None, imatrix_from_base: bool = False) -> dict[str, Any]:
+               notify: Any = None, imatrix_from_base: bool = False, gpu_device: str | None = None,
+               cpu_threads: int | None = None) -> dict[str, Any]:
     """safetensors -> one F16 GGUF (+ BF16, + the F16 vision projector) -> an importance matrix -> every quant.
 
     ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk). With a
@@ -2632,6 +2634,10 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
     import subprocess
 
     run = run or subprocess.run
+    if gpu_device and (not gpu_imatrix or not re.fullmatch(r"CUDA[0-9]+", gpu_device)):
+        raise ValueError("gpu_device must be a verified CUDA device and requires gpu_imatrix")
+    if cpu_threads is not None and cpu_threads < 1:
+        raise ValueError("cpu_threads must be positive")
     convert, quantize = tools
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
@@ -2691,9 +2697,11 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
             print("  no time left for the importance matrix", flush=True)
             return
         command = [str(imatrix_tool), "-m", str(model), "-f", str(calibration), "-o", str(target), "-c", "512",
-                   "--chunks", str(int(imatrix_chunks)), "--no-ppl", "-ofreq", "8", "-t", str(os.cpu_count() or 4)]
+                   "--chunks", str(int(imatrix_chunks)), "--no-ppl", "-ofreq", "8", "-t", str(cpu_threads or os.cpu_count() or 4)]
         if gpu_imatrix:
-            command += ["--gpu-layers", "all", "--split-mode", "layer"]
+            command += ["--gpu-layers", "all", "--split-mode", "none" if gpu_device else "layer"]
+            if gpu_device:
+                command += ["--device", gpu_device]
         if notify:
             notify("Computing importance matrix on GPU" if gpu_imatrix else "Computing importance matrix", False)
         print(f"  importance matrix ({imatrix_chunks} x 512 tokens of the training data, on {model.name.split('.')[-2]})"
@@ -2735,6 +2743,8 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
         if quant not in ("F16", "BF16"):
             command = [str(quantize)] + (["--imatrix", str(imatrix)] if use_imatrix else []) + \
                       [str(base), str(target), quant]
+            if cpu_threads is not None:
+                command.append(str(cpu_threads))
             try:
                 _run_tool(run, command, f"F16 -> {quant}" + (" (imatrix)" if use_imatrix else ""), env=env)
             except RuntimeError as exc:
@@ -2795,7 +2805,8 @@ def existing_quantizations(files: list[str], quants: Any = ALL_QUANTS) -> dict[s
 def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, scratch: Path,
                      tools: tuple[Path, Path], calibration: Path, deadline: float = 0,
                      download: Any = None, run: Any = None, gpu_imatrix: bool = False, notify: Any = None,
-                     replace_existing: bool = False) -> dict[str, Any]:
+                     replace_existing: bool = False, gpu_device: str | None = None,
+                     cpu_threads: int | None = None) -> dict[str, Any]:
     """Generate quants from a pinned safetensors repo without retraining; overwrite only in explicit replace mode.
 
     Uploads are sequential and guarded by parent commit. The private calibration and imatrix stay local.
@@ -2893,7 +2904,8 @@ def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, s
             result = make_ggufs(st_dir, scratch / "quants", preset["file"], missing, vision=False, tools=tools,
                                 on_file=on_file, calibration=calibration,
                                 stop_at=deadline - 15 * 60 if deadline else 0, run=run,
-                                require_primary=False, gpu_imatrix=gpu_imatrix, notify=notify, imatrix_from_base=True)
+                                require_primary=False, gpu_imatrix=gpu_imatrix, notify=notify, imatrix_from_base=True,
+                                gpu_device=gpu_device, cpu_threads=cpu_threads)
         finally:
             if pending is not None:
                 pending.result()
