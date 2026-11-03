@@ -108,6 +108,14 @@ Qwen checkpoint for upstream Hub-tree grouping while explicitly identifying the 
 GGUF cards link to the corresponding safetensors fine-tune when available. Custom base overrides are not
 misrepresented as Qwen.
 
+**Repair missing GGUFs without training:** set `editions_to_be_trained = "gguf"`. `GGUF_EDITIONS` defaults
+to the four text editions. The notebook reads each existing safetensors repository at a pinned revision and
+attempts the missing types from the curated 34-format list. It uploads completed files individually without
+overwriting existing GGUFs or model cards; re-run to retry missing formats. Existing GGUFs may be from a different
+revision than the newly generated files. The private dataset is read for local importance-matrix calibration;
+neither the calibration text nor the resulting matrix is uploaded. See `/kaggle/working/gguf-repair-report.json`
+for outcomes. Missing model weights, unsupported formats, failed uploads or the session deadline can leave gaps.
+
 **Allot names without training:** set `editions_to_be_trained = "allot"` and run all notebook cells.
 With the current `UNCENSORED` setting it reserves GGUF and safetensors names for all six editions (12 names)
 using README-only placeholders. Existing repositories are not modified; account identity is checked via the
@@ -173,8 +181,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/ccce411ba796d8ac386d63cb2dc26716826bb3d6/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/ccce411ba796d8ac386d63cb2dc26716826bb3d6/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/8a22478ebb7e7b4761bbe3519d1d250bf27cc499/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8a22478ebb7e7b4761bbe3519d1d250bf27cc499/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -670,7 +678,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/ccce411ba796d8ac386d63cb2dc26716826bb3d6/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/8a22478ebb7e7b4761bbe3519d1d250bf27cc499/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
