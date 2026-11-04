@@ -192,8 +192,8 @@ behaviour prompts are **never** written to the files: examples carry only the be
 1. kaggle.com → **Datasets → New Dataset** → upload the files in `llm_data/` (with `images/`, without `wiki_cache`).
    Or use the CLI: edit the `id` in `dataset-metadata.json`, then `kaggle datasets create -p llm_data -r zip`.
 2. **Code → New Notebook → File → Import Notebook** → paste the link of the latest notebook
-   `https://github.com/codero-sus/PyMC_Bot/raw/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
-   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
+   `https://github.com/codero-sus/PyMC_Bot/raw/8abbc9e0bc729a08eb6475de685113c74f6f706f/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`
+   ([view it on GitHub](https://github.com/codero-sus/PyMC_Bot/blob/8abbc9e0bc729a08eb6475de685113c74f6f706f/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb)), or upload `pynb/PyMC_Minecraft_LLM_Kaggle.ipynb`.
 3. **Add Input** → your dataset. **Settings** → Accelerator **GPU T4 ×2**, Internet **on**.
    No dataset? With Internet on, the notebook downloads the ready-made kit (`pymc-minecraft-llm-kit.zip`)
    from the newest GitHub release. It has no recorded playtime or screenshots; the VL editions then use
@@ -482,9 +482,13 @@ codero-sus*: a general assistant first, glad to help with everyday life, questio
 and advice, who also knows Minecraft inside out. It should be honest, treat the user as an adult, skip
 lectures and unasked-for disclaimers, have a personality, and reply in the user's language. When a message
 asks for a specific format, such as PyMC Bot's JSON action, it replies in that format.
-The prompt is trained in (identity rows, everyday chat, `PERSONA_MIX` of the Minecraft Q&A) and written into the
-`Modelfile` as `SYSTEM`, so `ollama run minecraftism-uncensored` uses it. PyMC Bot sends its own short prompt for
-game turns, so play is unchanged.
+The prompt is context for some training examples and is written into the `Modelfile` as `SYSTEM`, so Ollama can
+use it by default. The loss trains assistant responses, not the prompt as an unchangeable rule. Identity examples
+include both system-prompt and no-system-prompt cases; `SYSTEMLESS_FRACTION = 0.5` also removes the default prompt
+from a sample of ordinary training examples, while game, tool and custom instructions are preserved. Identity rows
+are excluded from teacher distillation. The test report checks identity with and without the prompt and warns on
+failure. These measures encourage identity but cannot guarantee it; a fresh training run is required, and Qwen is
+still the base-model lineage. PyMC Bot sends its own short prompt for game turns.
 
 **Uncensored** (`UNCENSORED = True` / `--uncensored`):
 
@@ -689,7 +693,7 @@ The dataset is **private** by default (`PRIVATE = True`; an existing public repo
 upload), a read-only token is caught before the model download, and the next topic's pages are fetched while the
 LLM checks the current one. `load_dataset("mr-sus/Minecraftism-dataset", "high")` loads only the confirmed rows. Kaggle setup: Accelerator **None**,
 Internet on, secret `HF_TOKEN` (optional `discord_webhook_inform_me1` and `ping_role`).
-Import link: `https://github.com/codero-sus/PyMC_Bot/raw/fdad6afef90ba02485b358376e321cd7cb74a704/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
+Import link: `https://github.com/codero-sus/PyMC_Bot/raw/8abbc9e0bc729a08eb6475de685113c74f6f706f/pynb/Minecraftism_Dataset_Kaggle.ipynb`.
 
 Use it for training: `--minecraft-qa-dataset mr-sus/Minecraftism-dataset` (the trainer reads `question` /
 `answer`). The collector is `pymc_bot/llm_webdata.py`, and the notebook carries it verbatim (`python
