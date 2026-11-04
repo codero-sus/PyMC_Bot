@@ -221,7 +221,7 @@ def test_existing_minecraftism_public_repos_are_selected_and_trainer_is_pinned()
     assert 'HF_REPO = "auto"' in code and 'EXPECTED_HF_USER = "mr-sus"' in code
     assert 'HF_PRIVATE = False' in code and 'GGUF_QUANTS = "all"' in code
     assert '--minecraft-qa-dataset mr-sus/Minecraftism-dataset' in code
-    assert 'TRAINER = "pinned"' in code and '/03399788571d90d5a8a6594fd75a2b9d0ce9cc53/pymc_bot/llm_train.py' in code
+    assert 'TRAINER = "pinned"' in code and '/c6e069b4cfb1d191b0ce6cb39ccb88359a845a69/pymc_bot/llm_train.py' in code
     assert 'actual_user != EXPECTED_HF_USER' in code
     assert 'MINECRAFTISM_DATASET_REVISION' in code and 'dataset_info(dataset).sha' in code
     assert 'STOP_WHEN_LEARNED = False' in code
@@ -660,3 +660,12 @@ def test_gguf_parallel_workers_use_distinct_gpus_and_finish_reports(tmp_path, mo
     assert all(threads >= 1 for _, _, threads in seen) and len(reports) == 2
     assert json.loads((tmp_path / "out/gguf-repair-report.json").read_text()) == reports
     assert not list((tmp_path / "tmp").iterdir())
+
+
+def test_notebook_training_exposes_systemless_setting_and_reports_identity_failure():
+    nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    code = "\n".join("".join(cell["source"]) for cell in nb["cells"] if cell["cell_type"] == "code")
+    assert "SYSTEMLESS_FRACTION = 0.5" in code
+    assert "--systemless-fraction {SYSTEMLESS_FRACTION}" in code
+    assert 'get("identity_ok") is False' in code
+    assert "identity failed" in code
