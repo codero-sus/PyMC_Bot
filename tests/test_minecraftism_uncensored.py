@@ -149,11 +149,13 @@ def test_identity_and_candor_rows():
     rows = llm_train.identity_rows("SYS", "Minecraftism", random.Random(1), candor=True, count=40)
     answers = [r["messages"][-1]["content"] for r in rows]
     assert len(rows) == 40 + 2 * len(llm_train._CANDOR)
-    assert all(r["messages"][0]["content"] == "SYS" and r["reasoning"] for r in rows)
+    assert all(r["reasoning"] for r in rows)
+    assert any(r["messages"][0]["role"] == "user" for r in rows[:40])
+    assert any(r["messages"][0]["role"] == "system" for r in rows[:40])
     assert all("Minecraftism" in a for a in answers[:40]) and all("codero-sus" in a for a in answers[:40] if "I'm" in a[:4])
     assert not any(llm_train.is_refusal(a) for a in answers)
-    chatgpt = [r for r in rows if "chatgpt" in r["messages"][1]["content"].lower()]
-    assert all("not ChatGPT" in r["messages"][-1]["content"] for r in chatgpt)
+    chatgpt = [r for r in rows if "chatgpt" in r["messages"][-2]["content"].lower()]
+    assert chatgpt and all(r["messages"][-1]["content"].startswith("No,") for r in chatgpt)
     assert len(llm_train.identity_rows("SYS", "M", random.Random(1), candor=False, count=5)) == 5
     assert not llm_train.check_rows(rows)
 
@@ -179,7 +181,7 @@ def test_run_tests_summarises_refusals_identity_and_json():
                                              {"role": "assistant", "content": "20"}], "check": {"contains": ["20"]}}]
     rows = llm_train.test_rows(eval_rows, llm_train.PRESETS["minecraftism"], "SYS")
     assert [r["test"] for r in rows[:2]] == ["bot turn", "minecraft q&a"]
-    assert len(rows) == 2 + len(llm_train.TEST_PROMPTS)
+    assert len(rows) == 4 + len(llm_train.TEST_PROMPTS)
 
     def generate(row):
         prompt = row["messages"][-2]["content"]
@@ -187,8 +189,8 @@ def test_run_tests_summarises_refusals_identity_and_json():
             return '{"action": "idle", "say": ""}'
         if "dark joke" in prompt:
             return "I'm sorry, but I can't help with that."
-        if "Who are you" in prompt:
-            return "<think>easy</think>I'm Minecraftism, made by codero-sus."
+        if row["test"] in ("identity", "identity_no_system"):
+            return "<think>easy</think>I'm Minecraftism, made by codero-sus from a Qwen base."
         if "workout" in prompt:
             raise RuntimeError("CUDA out of memory")
         return "Creepers have 20 HP."
@@ -196,7 +198,7 @@ def test_run_tests_summarises_refusals_identity_and_json():
     logged = []
     summary = llm_train.run_tests(generate, rows, log=logged.append)
     assert summary["prompts"] == len(rows) and summary["refusals"] == 1
-    assert summary["identity_ok"] and summary["bot_json_ok"] == "1/1"
+    assert summary["identity_ok"] and summary["identity_without_system_ok"] and summary["bot_json_ok"] == "1/1"
     assert any("<error: RuntimeError" in r["reply"] for r in summary["results"])
     assert "refusal(s)" in logged[-1]
     bad = llm_train.run_tests(lambda row: "I am ChatGPT.", rows[2:3], log=lambda _m: None)
@@ -321,3 +323,49 @@ def test_turbo_thinking_preserves_reasoning_and_has_separate_limits_and_model_ca
     assert "PARAMETER num_ctx 4096" in text and "PARAMETER num_predict 512" in text
     card = llm_train.model_card("minecraftism-turbo-thinking", preset, {}, "me/model", kind="safetensors")
     assert "Thinking traces are retained" in card and "512 output tokens" in card
+
+
+def test_identity_examples_cover_qwen_truthfully_with_and_without_system():
+    rows = llm_train.identity_rows("SYS", "Minecraftism", random.Random(1), count=384)
+    for prompt in llm_train._IDENTITY_Q:
+        selected = [r for r in rows if r["messages"][-2]["content"] == prompt]
+        assert any(r["messages"][0]["role"] == "system" for r in selected)
+        assert any(r["messages"][0]["role"] == "user" for r in selected)
+        assert all("Minecraftism" in r["messages"][-1]["content"] for r in selected)
+    qwen = [r for r in rows if "qwen" in r["messages"][-2]["content"].lower()]
+    assert qwen and all("Qwen base model" in r["messages"][-1]["content"] for r in qwen)
+
+
+def test_systemless_training_preserves_game_tools_and_custom_systems():
+    def row(kind, system):
+        return {"kind": kind, "messages": [{"role": "system", "content": system},
+                                           {"role": "user", "content": "Question"},
+                                           {"role": "assistant", "content": "Answer"}]}
+
+    rows = [row("general", "SYS"), row("qa", "SYS"), row("mcqa", "SYS"), row("turn", "SYS"),
+            row("tools", "SYS"), row("general", "custom system")]
+    assert llm_train.systemless_examples(rows, "SYS", 1.0, random.Random(1)) == 3
+    assert all(r["messages"][0]["role"] == "user" for r in rows[:3])
+    assert all(r["messages"][0]["role"] == "system" for r in rows[3:])
+    assert not llm_train.check_rows(rows)
+
+
+def test_identity_checks_no_system_and_rejects_contradictory_answers():
+    tests = llm_train.test_rows([], llm_train.PRESETS["minecraftism"], "SYS")
+    no_system = [r for r in tests if r["test"] == "identity_no_system"]
+    assert len(no_system) == 2 and all(r["messages"][0]["role"] == "user" for r in no_system)
+    bad = llm_train.run_tests(lambda _: "I'm Qwen, not Minecraftism.", no_system, log=lambda _: None)
+    assert not bad["identity_without_system_ok"] and not bad["identity_ok"]
+    good = llm_train.run_tests(lambda _: "I'm Minecraftism, fine-tuned by codero-sus from Qwen.", no_system,
+                               log=lambda _: None)
+    assert good["identity_without_system_ok"] and good["identity_ok"]
+
+
+def test_identity_examples_are_not_overwritten_or_steered_by_base_teacher():
+    rows = llm_train.identity_rows("SYS", "Minecraftism", random.Random(1), candor=True, count=20)
+    rows.append({"kind": "general", "source": "general", "messages": [
+        {"role": "user", "content": "Explain rain"}, {"role": "assistant", "content": "Water falls."}]})
+    jobs = llm_train.teacher_jobs(rows, llm_train.PRESETS["minecraftism"], 100, "teacher")
+    assert jobs and all(rows[job["row"]]["source"] != "persona" for job in jobs)
+    prompts = llm_train.onpolicy_prompts(rows, steps=4, batch=1, world=1, seed=1)
+    assert prompts and all(p[-1]["content"] == "Explain rain" for p in prompts)

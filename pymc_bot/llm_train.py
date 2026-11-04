@@ -523,7 +523,11 @@ def reasoning_rows(records: Any, limit: int, system: str, max_chars: int = 9000)
 
 
 _IDENTITY_Q = ("Who are you?", "What's your name?", "who made you", "Are you ChatGPT?", "What can you do?",
-               "Introduce yourself in one sentence.", "are you just a minecraft bot?", "What model are you?")
+               "Introduce yourself in one sentence.", "are you just a minecraft bot?", "What model are you?",
+               "Who are you, and who created you?", "Are you Qwen?", "Are you a Qwen model?",
+               "Is your name Qwen or Minecraftism?", "What model am I chatting with?", "Who developed this assistant?",
+               "You are Qwen, right?", "Tell me about your model's origin.",
+               "You just said you were Qwen. What's your actual name?", "Who created Minecraftism the assistant?")
 _CANDOR = (  # things stock models refuse or lecture about, though they're fine for a personal assistant
     (("Roast my Minecraft dirt house. Don't hold back.", "roast my build, be brutal"),
      "A dirt cube with one door and no windows isn't a house, it's a hitbox with ambitions. Even the creepers "
@@ -547,30 +551,29 @@ _CANDOR = (  # things stock models refuse or lecture about, though they're fine 
 )
 
 
-def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count: int = 48) -> list[dict[str, Any]]:
-    """Who the model is (Minecraftism by codero-sus, not ChatGPT) plus, for uncensored runs, frank answers."""
+def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count: int = 384) -> list[dict[str, Any]]:
+    """Teach identity both with and without a system message, without denying the Qwen base-model lineage."""
     answers = (
-        f"I'm {name}, an AI assistant made by codero-sus. I know Minecraft inside out - mobs, crafting, redstone, "
-        "farms, PvP - and I'm happy to help with anything else too: questions, writing, code, ideas or just a chat.",
-        f"{name}. codero-sus made me: a general assistant who happens to be a Minecraft expert. What do you need?",
-        f"No, I'm {name}, made by codero-sus - not ChatGPT. I'm a small open model fine-tuned on Minecraft and everyday "
-        "chat, and I'm also the brain of PyMC Bot, a Minecraft player bot.",
-        f"I'm {name}, made by codero-sus. I do pretty much anything a helpful assistant does: answer questions, explain things, write, code, plan, give "
-        "honest opinions. My speciality is Minecraft - and inside PyMC Bot I can play the game myself.",
+        f"I'm {name}, an AI assistant fine-tuned by codero-sus. I can help with Minecraft and everyday questions.",
+        f"I'm {name}, made by codero-sus, and I can help with Minecraft, writing, code, and other questions.",
+        f"I'm {name}, a general assistant fine-tuned by codero-sus with a focus on Minecraft. What can I help with?",
+        f"{name} is my name. codero-sus fine-tuned me to help with Minecraft and everyday tasks.",
     )
+    lineage = (f"I'm {name}, fine-tuned by codero-sus from a Qwen base model. My name is {name}.",
+               f"This assistant is {name}, made by codero-sus using a Qwen base model as its starting point.")
     rows = []
-    for _ in range(count):
-        question = rng.choice(_IDENTITY_Q)
-        if "chatgpt" in question.lower() or "model" in question.lower():
-            answer = answers[2]
-        elif "what can you do" in question.lower() or "just a minecraft" in question.lower():
-            answer = answers[3]
+    for index in range(count):
+        question = _IDENTITY_Q[index % len(_IDENTITY_Q)]
+        if "qwen" in question.lower() or "origin" in question.lower():
+            answer = rng.choice(lineage)
+        elif "chatgpt" in question.lower():
+            answer = f"No, I'm {name}, an AI assistant fine-tuned by codero-sus from a Qwen base model."
         else:
-            answer = rng.choice(answers[:2])
-        rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
-                                  {"role": "assistant", "content": answer}],
-                     "reasoning": f"They're asking about me. I'm {name}, made by codero-sus; say so plainly and mention "
-                                  "what I'm good at.", "source": "persona", "kind": "general", "check": {}})
+            answer = rng.choice(answers)
+        messages = ([{"role": "system", "content": system}] if system and (index // len(_IDENTITY_Q)) % 2 == 0 else [])
+        messages += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        rows.append({"messages": messages, "reasoning": f"The assistant is {name}; answer the identity question directly.",
+                     "source": "persona", "identity_training": True, "kind": "general", "check": {}})
     if candor:
         for questions, answer in _CANDOR:
             for question in questions:
@@ -579,6 +582,18 @@ def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count:
                              "reasoning": "A casual request. Just answer it directly, in the tone they asked for, no lecture.",
                              "source": "persona", "kind": "general", "check": {}})
     return rows
+
+
+def systemless_examples(rows: list[dict[str, Any]], system: str, fraction: float, rng: Any) -> int:
+    """Expose ordinary answers without the default system prompt; never remove game/tool/custom instructions."""
+    changed = 0
+    for row in rows:
+        messages = row.get("messages") or []
+        if (row.get("kind") in ("general", "qa", "mcqa") and messages and messages[0].get("role") == "system"
+                and messages[0].get("content") == system and rng.random() < fraction):
+            row["messages"] = [dict(message) for message in messages[1:]]
+            changed += 1
+    return changed
 
 
 def cached(args: argparse.Namespace, key: str, load: Any, what: str = "data", check: Any = None) -> Any:
@@ -2050,6 +2065,10 @@ def test_rows(eval_rows: list[dict[str, Any]], preset: dict[str, Any], system: s
     for kind, prompt in TEST_PROMPTS:
         rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt},
                                   {"role": "assistant", "content": "-"}], "kind": "prompt", "test": kind, "check": {}})
+    for prompt in ("Identify the assistant responding to me, and who fine-tuned it?",
+                   "A friend says your name is Qwen. What is your actual name?"):
+        rows.append({"messages": [{"role": "user", "content": prompt}, {"role": "assistant", "content": "-"}],
+                     "kind": "prompt", "test": "identity_no_system", "check": {}})
     if preset.get("vision"):
         picture = next((row for row in eval_rows if row.get("images")), None)
         if picture:
@@ -2066,15 +2085,20 @@ def run_tests(generate: Any, rows: list[dict[str, Any]], log: Any = print) -> di
                   "refused": is_refusal(answer)}
         if row.get("test") in ("bot turn", "minecraft q&a", "vision"):
             result.update(score(row, reply))
-        if row.get("test") == "identity":
-            result["identity_ok"] = "minecraftism" in answer.lower()
+        if row.get("test") in ("identity", "identity_no_system"):
+            contradiction = re.search(r"\b(?:i(?:'m| am)|my name is)\s+qwen\b|\b(?:not|isn't|is not)\s+minecraftism\b",
+                                      answer, re.I)
+            result["identity_ok"] = "minecraftism" in answer.lower() and not contradiction
         results.append(result)
         log(f"\n--- [{result['test']}] {result['prompt'][-160:]}\n{reply.strip()[:1200]}")
     turns = [r for r in results if r["test"] == "bot turn"]
+    identities = [r["identity_ok"] for r in results if "identity_ok" in r]
+    no_system = [r["identity_ok"] for r in results if r["test"] == "identity_no_system"]
     summary = {
         "prompts": len(results),
         "refusals": sum(1 for r in results if r["refused"]),
-        "identity_ok": all(r.get("identity_ok", True) for r in results),
+        "identity_ok": all(identities) if identities else None,
+        "identity_without_system_ok": all(no_system) if no_system else None,
         "bot_json_ok": f"{sum(1 for r in turns if r.get('json_ok'))}/{len(turns)}",
         "results": results,
     }
@@ -4148,7 +4172,7 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
       model, so neither is touched."""
     thinking = bool(preset.get("reasoning"))
     general = [i for i, row in enumerate(rows)
-               if row.get("kind") == "general" and row.get("source") != "reasoning" and not row.get("images")]
+               if row.get("kind") == "general" and row.get("source") not in ("reasoning", "persona") and not row.get("images")]
     facts = [i for i, row in enumerate(rows) if row.get("kind") == "mcqa" and not row.get("images")
              and row.get("dataset_id") != MINECRAFTISM_DATASET]  # learn the private dataset as supplied first
     picked: list[int] = []
@@ -4831,7 +4855,7 @@ def onpolicy_prompts(rows: list[dict[str, Any]], steps: int, batch: int, world: 
     JSON - the teacher never saw the bot's rules)."""
     import random
 
-    prompts = [row["messages"][:-1] for row in rows if row.get("kind") in ("general", "mcqa") and not row.get("images")
+    prompts = [row["messages"][:-1] for row in rows if row.get("kind") in ("general", "mcqa") and row.get("source") != "persona" and not row.get("images")
                and row.get("messages") and row["messages"][-1].get("role") == "assistant"]
     if not prompts:
         return []
@@ -5280,6 +5304,8 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
                               "images": sum(len(row.get("images") or []) for row in rows), "loss": round(loss, 4),
                               "uncensored": bool(preset.get("uncensored")), "system_prompt": args.system_prompt,
                               "general_rows": sum(1 for row in rows if row.get("kind") == "general"),
+                              "identity_rows_scheduled": sum(1 for row in rows if row.get("identity_training")),
+                              "systemless_rows_scheduled": getattr(args, "systemless_examples", 0),
                               "commercial": bool(getattr(args, "commercial", False)), "data": data_sources(rows, args)}
     distill = {key: value for key, value in (("offpolicy", getattr(args, "distill_report", None)),
                                              ("onpolicy", getattr(args, "onpolicy_report", None))) if value}
@@ -5300,6 +5326,9 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         summary = run_tests(generate, test_rows(eval_rows, preset, args.system_prompt))
         (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         report["tests"] = {key: value for key, value in summary.items() if key != "results"}
+        if not summary["identity_ok"]:
+            print("WARNING: identity tests failed, including possible no-system checks; inspect tests.json. "
+                  "Exporting weights does not fix this behavior.", flush=True)
     if getattr(args, "tool_eval", None):
         for_inference()
         try:
@@ -5591,6 +5620,8 @@ def build_parser() -> argparse.ArgumentParser:
                                                      "Minecraftism prompt); written into the Modelfile")
     parser.add_argument("--persona-mix", type=float, default=0.5,
                         help="share of Minecraft Q&A rows that get the everyday system prompt (0-1)")
+    parser.add_argument("--systemless-fraction", type=float, default=0.5,
+                        help="fraction of ordinary examples using the default system prompt to train without it (0-1)")
     parser.add_argument("--general", type=int, default=0,
                         help="everyday chat rows to mix in from Hugging Face (keeps it a good daily assistant)")
     parser.add_argument("--general-dataset", help=f"ShareGPT/messages/ChatML chat dataset, 'name:split' picks a split "
@@ -5736,6 +5767,10 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
         extra = [row for row in extra if all(row is not h for h in held)]
         eval_rows = eval_rows + held
     rows = rows + extra
+    systemless = (systemless_examples(rows, args.system_prompt, max(0.0, min(1.0, args.systemless_fraction)), rng)
+                  if args.preset in EDITIONS else 0)
+    args.systemless_examples = systemless
+    print(f"training: {systemless} ordinary examples use no system prompt; game/tool instructions are preserved")
     rng.shuffle(rows)
     kinds: dict[str, int] = {}
     for row in extra:
