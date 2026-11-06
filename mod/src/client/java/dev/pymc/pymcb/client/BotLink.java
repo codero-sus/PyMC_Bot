@@ -39,6 +39,19 @@ public final class BotLink {
         return thread;
     });
 
+    // Keep long-running skills from occupying the workers used by status and stop requests.
+    // This prevents client-side starvation; it does not cancel an already-running backend skill.
+    private static final ExecutorService SKILL_POOL = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable, "pymcbot-botlink-skill");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final ExecutorService STOP_POOL = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "pymcbot-botlink-stop");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     private BotLink() {
     }
 
@@ -65,14 +78,24 @@ public final class BotLink {
         send("POST", path, body, describe);
     }
 
+    /** Stop requests get their own worker, even if skills and ordinary requests are busy. */
+    public static void postPriority(String path, String body, Function<Object, String> describe) {
+        send(STOP_POOL, "POST", path, body, describe);
+    }
+
     public static void put(String path, String body, Function<Object, String> describe) {
         send("PUT", path, body, describe);
     }
 
     static void send(String method, String path, String body, Function<Object, String> describe) {
+        send("/api/bot/skill".equals(path) ? SKILL_POOL : POOL, method, path, body, describe);
+    }
+
+    private static void send(ExecutorService pool, String method, String path, String body,
+                             Function<Object, String> describe) {
         String base = panel();
         String token = token();
-        POOL.execute(() -> {
+        pool.execute(() -> {
             String message;
             try {
                 message = describe.apply(request(base, method, path, body, token));
@@ -93,7 +116,7 @@ public final class BotLink {
         HttpURLConnection connection = (HttpURLConnection) URI.create(base + path).toURL().openConnection();
         connection.setRequestMethod(method);
         connection.setConnectTimeout(3000);
-        connection.setReadTimeout(180_000); // skills such as chop_tree or fish take a while
+        connection.setReadTimeout("/api/bot/skill".equals(path) ? 180_000 : 15_000); // skills can take a while
         connection.setInstanceFollowRedirects(false); // never carry the token to another address
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("User-Agent", "PyMC-Bot-mod");
@@ -110,6 +133,11 @@ public final class BotLink {
             }
         }
         int code = connection.getResponseCode();
+        if (code >= 300 && code < 400) {
+            // Do not follow or print Location: it could expose credentials or point elsewhere.
+            connection.disconnect();
+            throw new IOException("HTTP " + code + " redirect - check the PyMC Bot panel address and proxy");
+        }
         InputStream stream = code >= 400 ? connection.getErrorStream() : connection.getInputStream();
         String text = "";
         if (stream != null) {

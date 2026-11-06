@@ -277,7 +277,7 @@ public final class PymcCommands {
                     return 1;
                 }))
                 .then(guarded("stop").executes(ctx -> {
-                    BotLink.post("/api/ai/stop", "{}", doc -> "AI stopped");
+                    BotLink.postPriority("/api/ai/stop", "{}", doc -> "AI stopped");
                     return 1;
                 }));
 
@@ -348,7 +348,11 @@ public final class PymcCommands {
     }
 
     private static int action(String body, String what) {
-        BotLink.post("/api/bot/action", body, BotLink.describeResult(what));
+        if ("stop".equals(what)) {
+            BotLink.postPriority("/api/bot/action", body, BotLink.describeResult(what));
+        } else {
+            BotLink.post("/api/bot/action", body, BotLink.describeResult(what));
+        }
         return 1;
     }
 

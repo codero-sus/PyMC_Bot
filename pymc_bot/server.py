@@ -52,6 +52,7 @@ from pymc_bot.train import TrainConfig, TrainingService, default_run_name, list_
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 OLLAMA_HEALTH_TTL = 15.0
+WEBSOCKET_STATUS_INTERVAL = 1.5
 
 BRIDGE_COMMANDS = [
     "connect", "say", "command", "control", "look", "stop_motion", "pathfind_to",
@@ -1440,12 +1441,19 @@ def create_app(
         sub_id, queue = event_log.subscribe(loop)
         try:
             await websocket.send_json({"type": "hello", "data": {"version": __version__, "config": str(store.path)}})
-            await websocket.send_json({"type": "status", "data": status_payload()})
+            # The status includes synchronous network health probes and filesystem operations.
+            # Run them off the event loop so one slow model server cannot freeze every client.
+            await websocket.send_json({"type": "status", "data": await asyncio.to_thread(status_payload)})
+            next_status = loop.time() + WEBSOCKET_STATUS_INTERVAL
             while True:
+                remaining = next_status - loop.time()
+                if remaining <= 0:
+                    await websocket.send_json({"type": "status", "data": await asyncio.to_thread(status_payload)})
+                    next_status = loop.time() + WEBSOCKET_STATUS_INTERVAL
+                    continue
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=1.5)
+                    event = await asyncio.wait_for(queue.get(), timeout=remaining)
                 except asyncio.TimeoutError:
-                    await websocket.send_json({"type": "status", "data": status_payload()})
                     continue
                 await websocket.send_json({"type": "event", "data": event.to_dict()})
         except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):

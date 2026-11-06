@@ -177,3 +177,69 @@ def test_websocket_sends_hello_status_and_events(client: TestClient):
                 break
         assert frame is not None
         assert frame["data"]["message"] == "socket test event"
+
+
+def test_slow_health_probe_does_not_block_the_websocket_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    from pymc_bot import server
+
+    entered, release, handled = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_ping(_self):
+        entered.set()
+        assert release.wait(timeout=4)
+        return True, "ok"
+
+    monkeypatch.setattr(server.OllamaClient, "ping", slow_ping)
+    app = create_app(config_path=tmp_path / "cfg.json")
+    with TestClient(app) as client, client.websocket_connect("/ws") as socket:
+        assert socket.receive_json()["type"] == "hello"
+        assert entered.wait(2)
+
+        def get_health():
+            if client.get("/healthz").status_code == 200:
+                handled.set()
+
+        thread = threading.Thread(target=get_health, daemon=True)
+        thread.start()
+        try:
+            assert handled.wait(2), "a slow model health check blocked the event loop"
+        finally:
+            release.set()
+            thread.join(timeout=3)
+        assert socket.receive_json()["type"] == "status"
+
+
+def test_status_is_refreshed_during_a_continuous_event_stream(tmp_path, monkeypatch):
+    import threading
+
+    from pymc_bot import server
+    from pymc_bot.events import EventLog
+
+    monkeypatch.setattr(server, "WEBSOCKET_STATUS_INTERVAL", 0.05)
+    monkeypatch.setattr(server.OllamaClient, "ping", lambda _self: (True, "ok"))
+    log = EventLog()
+    app = create_app(config_path=tmp_path / "cfg.json", log=log)
+    with TestClient(app) as client, client.websocket_connect("/ws") as socket:
+        assert socket.receive_json()["type"] == "hello"
+        assert socket.receive_json()["type"] == "status"
+        done = threading.Event()
+
+        def flood():
+            deadline = time.monotonic() + 0.7
+            while time.monotonic() < deadline:
+                log.add("busy")
+                time.sleep(0.005)
+            done.set()
+
+        producer = threading.Thread(target=flood, daemon=True)
+        producer.start()
+        try:
+            while True:
+                frame = socket.receive_json()
+                if frame["type"] == "status":
+                    assert not done.is_set(), "status was starved until events stopped"
+                    break
+        finally:
+            producer.join(timeout=2)

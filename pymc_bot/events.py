@@ -62,11 +62,24 @@ class EventLog:
                 pass
         for loop, queue in subscribers:
             try:
-                loop.call_soon_threadsafe(queue.put_nowait, event)
+                loop.call_soon_threadsafe(self._offer_latest, queue, event)
             except RuntimeError:
                 # Loop closed (browser/thread went away) - ignore.
                 pass
         return event
+
+    @staticmethod
+    def _offer_latest(queue: asyncio.Queue, event: Event) -> None:
+        """Drop the oldest pending event for a slow subscriber instead of raising in its event loop."""
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:  # pragma: no cover - defensive for custom queues
+                pass
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:  # pragma: no cover - defensive for custom queues
+            pass
 
     # ----------------------------------------------------------------- read
     def tail(self, limit: int = 200) -> list[dict[str, Any]]:

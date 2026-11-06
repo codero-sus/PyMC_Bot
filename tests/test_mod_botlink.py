@@ -23,8 +23,8 @@ BOTLINK = (CLIENT / "BotLink.java").read_text(encoding="utf-8")
 
 
 def mod_calls() -> set[tuple[str, str]]:
-    calls = re.findall(r'BotLink\.(get|post|put)\("(/api/[^"]+)"', COMMANDS)
-    return {(method.upper(), path) for method, path in calls}
+    calls = re.findall(r'BotLink\.(get|post|postPriority|put)\("(/api/[^"]+)"', COMMANDS)
+    return {("POST" if method == "postPriority" else method.upper(), path) for method, path in calls}
 
 
 def test_the_mod_only_calls_endpoints_the_panel_has(tmp_path: Path):
@@ -106,3 +106,13 @@ def test_the_fields_the_mod_reads_are_there(client: TestClient):
     assert {"enabled", "actions", "idle_job", "next"} <= set(auto)
     assert auto["next"] is None or auto["next"]["rule"] in autopilot.RULES
     assert {"rule", "reason"} <= set(auto["next"] or {"rule": 1, "reason": 1})
+
+
+def test_mod_isolates_skills_and_stop_and_rejects_redirects():
+    # Source-level regression checks: running Minecraft / compiling Java needs the mod toolchain.
+    assert '"/api/bot/skill".equals(path) ? SKILL_POOL : POOL' in BOTLINK
+    assert 'send(STOP_POOL, "POST", path, body, describe)' in BOTLINK
+    assert 'BotLink.postPriority("/api/ai/stop"' in COMMANDS
+    assert 'BotLink.postPriority("/api/bot/action"' in COMMANDS
+    assert 'code >= 300 && code < 400' in BOTLINK
+    assert 'setInstanceFollowRedirects(false)' in BOTLINK
