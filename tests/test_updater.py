@@ -284,12 +284,12 @@ def test_main_reinstalls_deps_only_when_requirements_change(monkeypatch, tmp_pat
     seen = []
     monkeypatch.setattr(updater, "update_dependencies", lambda root, before, force, check: seen.append(
         [n for n in updater.DEPENDENCY_FILES if before.get(n) != updater.file_hashes(root).get(n)]))
-    assert updater.main(["--no-deps"], root=tmp_path) == 0
+    assert updater.main(["--branch", "main", "--no-deps"], root=tmp_path) == 0
     assert seen == []
-    assert updater.main([], root=tmp_path) == 0
+    assert updater.main(["--branch", "main"], root=tmp_path) == 0
     assert seen == []  # nothing new, nothing installed
     hub.publish({"requirements.txt": "fastapi\nhttpx\n", "app.py": "v = 1\n"})
-    assert updater.main([], root=tmp_path) == 0
+    assert updater.main(["--branch", "main"], root=tmp_path) == 0
     assert seen == [["requirements.txt"]]
 
 
@@ -561,3 +561,76 @@ def test_an_empty_release_list_is_asked_again(monkeypatch):
     monkeypatch.setattr(updater, "http_json", lambda url: asked.append(url) or [{"tag_name": "other-v1", "assets": []}])
     assert updater.newest_mod_release("me/repo", allow_pre=True) is None and len(asked) == 1, \
         "a real list without mod releases is not asked again"
+
+
+def _source_release(monkeypatch, files, version="0.12.0"):
+    archive = make_zip(files)
+    asset = {"name": "PyMC_Bot-source.zip", "size": len(archive),
+             "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+             "browser_download_url": "https://github.com/codero-sus/PyMC_Bot/releases/download/v/source.zip"}
+    release_data = {"tag_name": f"pymcbot-v{version}", "draft": False, "prerelease": False, "assets": [asset]}
+    monkeypatch.setattr(updater, "newest_mod_release", lambda repo, allow_pre: release_data)
+    monkeypatch.setattr(updater, "http_get", lambda *args, **kwargs: archive)
+    return asset
+
+
+def test_source_updates_only_from_verified_release(monkeypatch, tmp_path):
+    _source_release(monkeypatch, {"updater.py": "new", "pymc_bot/__main__.py": "new",
+                                  "bot-memory/private.json": "overwrite", "pymc_bot_config.json": "overwrite"})
+    (tmp_path / "bot-memory").mkdir()
+    (tmp_path / "bot-memory/private.json").write_text("private")
+    (tmp_path / "pymc_bot_config.json").write_text("config")
+    assert not updater.update_release(tmp_path, updater.REPO, check=True)
+    assert not (tmp_path / "updater.py").exists()
+    assert updater.update_release(tmp_path, updater.REPO, check=False)
+    assert (tmp_path / "pymc_bot/__main__.py").read_text() == "new"
+    assert (tmp_path / "bot-memory/private.json").read_text() == "private"
+    assert (tmp_path / "pymc_bot_config.json").read_text() == "config"
+    assert not updater.update_release(tmp_path, updater.REPO, check=False)
+
+
+def test_release_rejects_corruption_and_unsafe_paths_before_writing(monkeypatch, tmp_path):
+    asset = _source_release(monkeypatch, {"updater.py": "new", "pymc_bot/__main__.py": "new", "../escape": "x"})
+    with pytest.raises(updater.UpdateError, match="unsafe"):
+        updater.update_release(tmp_path, updater.REPO, check=False)
+    assert not (tmp_path / "updater.py").exists()
+    asset["digest"] = "sha256:" + "0" * 64
+    with pytest.raises(updater.UpdateError, match="verification"):
+        updater.update_release(tmp_path, updater.REPO, check=False)
+    assert not (tmp_path / "updater.py").exists()
+
+
+def test_release_will_not_downgrade_newer_installed_version(monkeypatch, tmp_path):
+    _source_release(monkeypatch, {"updater.py": "new", "pymc_bot/__main__.py": "new"}, version="0.11.0")
+    (tmp_path / "mod").mkdir()
+    (tmp_path / "mod/gradle.properties").write_text("mod_version=0.12.0\n")
+    assert not updater.update_release(tmp_path, updater.REPO, check=False)
+    assert not (tmp_path / "updater.py").exists()
+
+
+def test_auto_skips_git_checkouts(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(updater, "AUTO_MODE", False)
+    monkeypatch.setattr(updater, "RETRY_DELAYS", updater.RETRY_DELAYS)
+    monkeypatch.setattr(updater, "update_release", lambda *a, **k: pytest.fail("must not update a checkout"))
+    assert updater.main(["--auto"], root=tmp_path) == 0
+
+
+def test_release_failure_restores_original_files(monkeypatch, tmp_path):
+    _source_release(monkeypatch, {"updater.py": "new updater", "pymc_bot/__main__.py": "new main"})
+    (tmp_path / "updater.py").write_text("old updater")
+    (tmp_path / "pymc_bot").mkdir()
+    (tmp_path / "pymc_bot/__main__.py").write_text("old main")
+    original = updater._write_file
+
+    def fail_state(path, data):
+        if path.name == updater.STATE_FILE:
+            raise OSError("disk full")
+        return original(path, data)
+
+    monkeypatch.setattr(updater, "_write_file", fail_state)
+    with pytest.raises(OSError, match="disk full"):
+        updater.update_release(tmp_path, updater.REPO, check=False)
+    assert (tmp_path / "updater.py").read_text() == "old updater"
+    assert (tmp_path / "pymc_bot/__main__.py").read_text() == "old main"
+    assert not (tmp_path / updater.STATE_FILE).exists()

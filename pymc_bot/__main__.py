@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -926,7 +928,38 @@ DISPATCH = {
 }
 
 
+def _prepare_startup() -> None:
+    if os.environ.get("PYMC_BOT_UPDATE_RESTARTED") or (len(sys.argv) > 1 and sys.argv[1] not in ("serve", "run")):
+        return
+    root = Path(__file__).resolve().parent.parent
+    updater = root / "updater.py"
+    if not updater.is_file() or not (root / "pyproject.toml").is_file() or (root / ".git").exists():
+        return
+    lock = root / ".pymc_update.lock"
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return
+    try:
+        os.close(fd)
+        result = subprocess.run([sys.executable, str(updater), "--auto"], cwd=root,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                check=False)
+    except OSError:
+        return
+    finally:
+        try:
+            lock.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if result.returncode == 10:
+        os.environ["PYMC_BOT_UPDATE_RESTARTED"] = "1"
+        os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        _prepare_startup()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.command:

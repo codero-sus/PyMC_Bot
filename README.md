@@ -224,22 +224,18 @@ python updater.py         # anywhere
 
 | Command | What it does |
 | --- | --- |
-| `updater --check` | shows the new commits / mod release, changes nothing |
+| `updater --check` | shows the source / mod release, changes nothing |
 | `updater` | updates PyMC_Bot; reinstalls Python packages / mineflayer (npm-free, `python -m pymc_bot setup`) **only if** `requirements*.txt` / `package.json` changed |
 | `updater --mod` | also updates the recorder mod in your `.minecraft/mods` folder |
 | `updater --mod-only` | only the mod |
 | `updater --mod-only --mc 1.21.4` | installs the mod for 1.21.4 when it is not there yet |
 | `updater --help` | all options (`--mods-dir`, `--pre`, `--reinstall`, `--deps`, `--no-deps`, `--branch`) |
 
-* **PyMC_Bot itself – always a `.zip`, never git:** the updater asks GitHub for the newest commit
-  of the `main` branch (`--branch NAME` for another one), downloads exactly that commit as a source `.zip`, checks it
-  (complete archive, commit id inside the zip matches) and extracts it over the folder.
-  `pymc_bot_config.json`, `.venv`, `models/`, recordings, `.git` and every other file of yours are
-  left alone; project files you changed are backed up to `.pymc_backup/<time>/` first, and files the
-  project deleted are removed on later updates – unless you edited them. Works the same for a
-  downloaded ZIP and a git clone (git is never run; a clone just shows the new files in `git status`).
-  The channel is built into `updater.py` and never printed; `--branch NAME` follows another branch
-  instead. Out of GitHub API calls? The updater downloads the zip and reads the commit id from it.
+* **PyMC_Bot itself – always a `.zip`, never git:** the updater downloads the source archive from
+  the newest eligible GitHub release and verifies its SHA-256 and archive paths before installing it.
+  Your configuration, models, recordings, bot memory and `.git` are preserved; changed project files
+  are backed up to `.pymc_backup/`. It will not replace a newer installed version with an older release.
+  `--branch NAME` remains available for an explicit manual branch snapshot.
 * **Mod:** finds `pymcbot-<version>+<mc>.jar` (or a pre-0.6 `pymcplaytime-*.jar`, which it replaces) in the mods folder (`%APPDATA%\.minecraft\mods`,
   `~/Library/Application Support/minecraft/mods`, `~/.minecraft/mods`, or `--mods-dir`),
   downloads the jar for the same Minecraft version from the newest

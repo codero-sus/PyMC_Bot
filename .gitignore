@@ -22,6 +22,7 @@ pymc_bot_auth.json
 .pymc_profiles/
 .pymc_backup/
 .pymc_update.json
+.pymc_update.lock
 *.log
 
 # Editors / OS
