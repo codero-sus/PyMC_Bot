@@ -23,7 +23,7 @@ BOTLINK = (CLIENT / "BotLink.java").read_text(encoding="utf-8")
 
 
 def mod_calls() -> set[tuple[str, str]]:
-    calls = re.findall(r'BotLink\.(get|post|postPriority|put)\("(/api/[^"]+)"', COMMANDS)
+    calls = re.findall(r'BotLink\.(get|post|postPriority|put|delete)\("(/api/[^"]+)"', COMMANDS)
     return {("POST" if method == "postPriority" else method.upper(), path) for method, path in calls}
 
 

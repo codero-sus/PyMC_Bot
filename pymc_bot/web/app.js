@@ -538,6 +538,7 @@ function fillForm(cfg) {
   check('cfg-human-chat', ag.human_chat ?? true);
   set('cfg-chat-cooldown', ag.chat_cooldown ?? 6);
   set('cfg-memory-turns', ag.memory_turns ?? 8);
+  check('cfg-persistent-memory', ag.persistent_memory ?? true);
   check('cfg-compact-prompt', ag.compact_prompt ?? false);
   check('cfg-record-turns', ag.record_turns ?? false);
   check('cfg-vision', ag.vision ?? false);
@@ -654,6 +655,7 @@ function collectForm() {
       human_chat: $('cfg-human-chat').checked,
       chat_cooldown: Math.max(0, Number($('cfg-chat-cooldown').value) || 0),
       memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
+      persistent_memory: $('cfg-persistent-memory').checked,
       compact_prompt: $('cfg-compact-prompt').checked,
       record_turns: $('cfg-record-turns').checked,
       vision: $('cfg-vision').checked,
@@ -1185,6 +1187,13 @@ function wire() {
   $('btn-ai-start').addEventListener('click', async () => {
     try { await saveConfig(true); await api('/api/ai/start', { method: 'POST' }); }
     catch (err) { reportError(err); }
+  });
+  $('btn-clear-memory').addEventListener('click', async () => {
+    if (!confirm('Clear the selected bot’s saved experience for this server?')) return;
+    try {
+      await api('/api/ai/memory', { method: 'DELETE' });
+      ui.toast('Saved bot memory cleared.');
+    } catch (error) { reportError(error); }
   });
   $('btn-ai-stop').addEventListener('click', () => api('/api/ai/stop', { method: 'POST' }).catch(reportError));
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));

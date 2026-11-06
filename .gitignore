@@ -33,6 +33,9 @@ pymc_bot_auth.json
 /pymcbot/
 /pymc-playtime/
 
+# Private local bot experience (chat snippets and action outcomes)
+bot-memory/
+
 # web lookup cache of the AI (pymc_bot.knowledge)
 knowledge_cache.json
 

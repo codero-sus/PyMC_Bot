@@ -279,7 +279,14 @@ public final class PymcCommands {
                 .then(guarded("stop").executes(ctx -> {
                     BotLink.postPriority("/api/ai/stop", "{}", doc -> "AI stopped");
                     return 1;
-                }));
+                }))
+                .then(literal("memory")
+                        .then(guarded("on").executes(ctx -> memoryEnabled(true)))
+                        .then(guarded("off").executes(ctx -> memoryEnabled(false)))
+                        .then(guarded("clear").executes(ctx -> {
+                            BotLink.delete("/api/ai/memory", doc -> "persistent memory cleared for the selected bot and server");
+                            return 1;
+                        })));
 
         LiteralArgumentBuilder<FabricClientCommandSource> panel = literal("panel")
                 .executes(ctx -> feedback(ctx.getSource(), "talking to the PyMC Bot panel at " + BotLink.panel()
@@ -356,6 +363,12 @@ public final class PymcCommands {
         return 1;
     }
 
+    private static int memoryEnabled(boolean on) {
+        BotLink.put("/api/config", "{\"agent\":{\"persistent_memory\":" + on + "}}",
+                doc -> on ? "persistent bot memory ON" : "persistent bot memory OFF (stored memory is not deleted)");
+        return 1;
+    }
+
     private static int autopilot(boolean on) {
         BotLink.put("/api/config", "{\"autopilot\":{\"enabled\":" + on + "}}",
                 doc -> on ? "autopilot ON - the bots eat, sleep at night, fight back, swim up, place torches... on their own"
@@ -390,7 +403,7 @@ public final class PymcCommands {
                 + "/pymcbot bot do <skill> [key=value ...]   e.g. do chop_tree count=12, do mine_ore iron\n"
                 + "/pymcbot bot come | follow | stop | home   /pymcbot bot say <text>\n"
                 + "/pymcbot bot auto on|off   (auto-sleep at night, eat, fight back, torches...)\n"
-                + "/pymcbot bot ai start|stop   /pymcbot bot panel [url]   /pymcbot bot token <token>";
+                + "/pymcbot bot ai start|stop|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
     }
 
     /** Shown by {@code /pymcbot} on its own. */

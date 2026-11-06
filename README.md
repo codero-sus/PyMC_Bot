@@ -378,7 +378,19 @@ that makes it act like a real player at a keyboard, not an assistant:
   "Food 5/20 (hungry - eat soon)", "Waiting for your answer: <Steve> wanna mine together?" – with the exact
   JSON appended for coordinates.
 * **Remembers** – its goal, the last `agent.memory_turns` actions with whether they worked (so it stops
-  retrying a failing path), its last thoughts and what it already said.
+  retrying a failing path), its last thoughts and what it already said. A small local experience memory
+  also carries recent addressed messages and action outcomes into later sessions, helping the LLM adapt
+  its next decision; it does **not** train or modify the model.
+  Experience memory is on by default and stored under `bot-memory/` next to the config, separately for
+  each bot and server. It keeps at most 8 players × 3 short addressed messages, plus 8 action outcomes
+  and short thoughts. Only relevant players and the latest 4 outcomes enter a prompt. Entries older than
+  7 days are ignored on access and removed on the next write, not by a background deletion timer. This
+  is personal data: obvious secret words and slash commands are filtered, but filtering is not foolproof;
+  stored context may be sent to your configured LLM provider. Disable with `agent.persistent_memory`, the
+  panel, or `/pymcbot bot ai memory off` (disabling does not delete existing files). Use the panel's clear
+  button or `/pymcbot bot ai memory clear` to delete the selected bot's current-server file. Other bot/server
+  files can be removed from `bot-memory/`. Clearing persistent memory does not erase current-session chat,
+  logs or optional recorded training turns.
 * **Chats like a person** – short casual lines in the other player's language, no markdown, no "as an AI"
   speeches, never the same line twice; a typing pause before sending and a `chat_cooldown` for messages
   nobody asked for (replies skip it). If someone sincerely asks whether it is a bot, it says so.
@@ -819,6 +831,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "human_chat": true,                // typing pauses, no repeats, cooldown for unprompted chat
     "chat_cooldown": 6.0,              // seconds between messages nobody asked for
     "memory_turns": 8,                 // recent actions the LLM remembers
+    "persistent_memory": true,        // small local per-bot/server experience memory
     "compact_prompt": false,           // short system prompt for a Minecraft-trained model (docs/MINECRAFT_LLM.md)
     "record_turns": false,             // save LLM turns as training data ...
     "turns_file": "llm_turns.jsonl",   // ... in this file next to the config

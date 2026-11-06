@@ -84,6 +84,7 @@ class MinecraftBot:
         self._cancel = threading.Event()
         self._stop_requested = False
         self._configured_username: str | None = None
+        self._connected_server: tuple[str, int] | None = None
         self._monitor: threading.Thread | None = None
         self._reconnects = 0
         self._history: deque[dict[str, Any]] = deque(maxlen=100)
@@ -209,6 +210,12 @@ class MinecraftBot:
             return data
 
     @property
+    def memory_server(self) -> tuple[str, int]:
+        """Server actually used by this connection, even if configuration was edited meanwhile."""
+        with self._lock:
+            return self._connected_server or (self.store.settings.minecraft.host, self.store.settings.minecraft.port)
+
+    @property
     def chat_history(self) -> list[dict[str, Any]]:
         return list(self._history)
 
@@ -326,6 +333,10 @@ class MinecraftBot:
 
     def _connect(self, settings: AppSettings) -> None:
         with self._lock:
+            server = (settings.minecraft.host.lower(), settings.minecraft.port)
+            if self._connected_server is not None and self._connected_server != server:
+                self._history.clear()  # do not carry one server's conversation into another
+            self._connected_server = server
             if self._backend is None:
                 self._backend = create_backend(settings, self.log)
             elif not self._injected_backend:

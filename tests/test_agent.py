@@ -212,3 +212,19 @@ def test_trained_use_is_gated_by_mining(
     monkeypatch.setattr(agent, "policy", lambda settings=None: StubPolicy())
     ok, detail = agent.execute(Decision(action="use", params={}, source="trained:policy"))
     assert ok is False and "mining is disabled" in detail
+
+
+def test_heuristic_only_replies_to_new_other_player_messages():
+    policy = HeuristicPolicy(seed=4)
+    state = {"username": "Bot", "health": 20, "food": 20, "players": []}
+    chat = ["<Steve> Bot hello"]
+    assert policy.decide(state, chat).action == "say"
+    assert policy.decide(state, chat).action != "say"
+    assert policy.decide(state, chat + ["<Bot> Bot hello"]).action != "say"
+    assert policy.decide(state, chat + ["<Bot> Bot hello", "<Steve> Bot hello"]).action == "say"
+
+
+def test_heuristic_recognizes_zero_food_and_health():
+    policy = HeuristicPolicy(seed=4)
+    assert policy.decide({"health": 20, "food": 0}, []).action == "eat"
+    assert policy.decide({"health": 0, "food": 20}, []).action == "eat"

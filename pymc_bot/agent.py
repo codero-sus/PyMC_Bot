@@ -25,6 +25,7 @@ from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
+from pymc_bot.experience import Experience
 from pymc_bot.inventory import HOTBAR_SIZE, Inventory, short
 from pymc_bot.knowledge import KnowledgeBase, LookupResult, shared_knowledge
 from pymc_bot.mind import (
@@ -173,13 +174,14 @@ class HeuristicPolicy:
         self._rng = random.Random(seed)
         self._step = 0
         self._greeted: set[str] = set()
+        self._chat_tail: list[str] = []
 
     def decide(self, state: dict[str, Any], chat: list[str], allowed: dict[str, bool] | None = None) -> Decision:
         self._step += 1
         can = {"movement": True, "chat": True, "mining": True, "inventory": True, "building": False, "fighting": True}
         can.update(allowed or {})
-        health = float(state.get("health") or 20)
-        food = float(state.get("food") or 20)
+        health = float(state["health"]) if state.get("health") is not None else 20.0
+        food = float(state["food"]) if state.get("food") is not None else 20.0
         players = state.get("players") or []
         bot_name = str(state.get("username") or state.get("server", {}).get("username") or "PyMC_Bot")
         knows_items = bool(state.get("slots") or state.get("inventory"))
@@ -207,7 +209,18 @@ class HeuristicPolicy:
                 return Decision("fight", {"mob": threat_kind}, "heuristic")
 
         # 2. people
-        mentioned = [line for line in chat if bot_name.lower() in line.lower()]
+        # Respond once to new messages, not to our own echo or the same chat history every turn.
+        from pymc_bot.mind import mentions
+
+        overlap = max((n for n in range(min(len(chat), len(self._chat_tail)), 0, -1)
+                       if self._chat_tail[-n:] == chat[:n]), default=0)
+        fresh_chat = chat[overlap:]
+        self._chat_tail = list(chat)
+        mentioned = []
+        for line in fresh_chat:
+            speaker_match = re.match(r"\s*<([^>]+)>\s*(.*)", line)
+            if speaker_match and speaker_match.group(1).lower() != bot_name.lower() and mentions(speaker_match.group(2), bot_name):
+                mentioned.append(line)
         if mentioned:
             line = mentioned[-1]
             speaker_match = re.match(r"\s*<([^>]+)>", line)
@@ -324,7 +337,23 @@ class AgentLoop:
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
         self.mind = Mind(store.settings.agent.memory_turns)
+        self._experience_lock = threading.RLock()
+        self._experience_key = ""
+        self._experience: Experience | None = None
         self._rng = random.Random()
+
+    def experience(self) -> Experience:
+        """Separate memories by server and in-game bot name (not Microsoft account email)."""
+        host, port = self.bot.memory_server
+        key = f"{host}:{port}/{self.bot.username}"
+        with self._experience_lock:
+            if self._experience is None or self._experience_key != key:
+                self._experience = Experience(self.store.path.parent, key)
+                self._experience_key = key
+            return self._experience
+
+    def clear_experience(self) -> None:
+        self.experience().clear()
 
     # ------------------------------------------------------------- lifecycle
     @property
@@ -442,10 +471,10 @@ class AgentLoop:
         if brain == "trained":
             policy = self.policy(settings)
             if policy is None:
-                return self._heuristic.decide(state, self.bot.recent_chat())
+                return self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             return policy.decide(state, allowed=self.allowed_trained_actions(settings))
         if brain == "heuristic":
-            return self._heuristic.decide(state, self.bot.recent_chat())
+            return self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
         if brain == "ollama":
             return self._ask_ollama(settings, state)
         if brain == "cortex":
@@ -456,7 +485,7 @@ class AgentLoop:
             return self._ask_ollama(settings, state)
         if resolved == "cortex":
             return self._ask_cortex(settings, state)
-        return self._heuristic.decide(state, self.bot.recent_chat())
+        return self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
 
     def uses_llm(self, settings: AppSettings | None = None) -> bool:
         return self.resolved_brain(settings) in ("ollama", "cortex")
@@ -728,8 +757,19 @@ class AgentLoop:
             if kind and kind not in kinds and not entity.get("player") and float(entity.get("dist") or 99) <= 24:
                 kinds.append(kind)
         facts = self.knowledge.facts_for(kinds[:6], server_version=settings.minecraft.version)
-        return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings),
-                                 knowledge=facts)
+        history = self.bot.chat_history
+        memories: tuple[list[str], list[str]] = ([], [])
+        if settings.agent.persistent_memory:
+            try:
+                experience = self.experience()
+                experience.observe(history, self.bot.username)
+                relevant = [str(p.get("name", "")) for p in state.get("players") or []]
+                relevant += [str(e.get("username", "")) for e in history[-8:]]
+                memories = experience.context(relevant)
+            except OSError as exc:
+                self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
+        return build_turn_prompt(state, self.bot.username, self.mind, history, self.allowed(settings),
+                                 knowledge=facts, experience=memories)
 
     # -------------------------------------------------------------- executor
     def execute(self, decision: Decision, enforce_permissions: bool = True) -> tuple[bool, str]:
@@ -1069,6 +1109,16 @@ class AgentLoop:
         self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
         ok, detail = self.execute(decision)
         self.mind.note_result(decision, ok, detail)
+        if self._settings().agent.persistent_memory:
+            try:
+                experience = self.experience()
+                experience.observe(self.bot.chat_history, self.bot.username)
+                # The low-level trained policy may run several times per second; its button
+                # bursts are not useful lessons and would cause unnecessary disk writes.
+                if decision.source != "trained":
+                    experience.outcome(decision.action, ok, detail, decision.thought)
+            except OSError as exc:
+                self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
         self._record_turn(decision, ok, detail)
         self.log.add(f"{'✓' if ok else '✗'} {detail}", "info" if ok else "warn", "agent")
         return ok, detail

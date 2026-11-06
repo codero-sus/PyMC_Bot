@@ -83,6 +83,10 @@ public final class BotLink {
         send(STOP_POOL, "POST", path, body, describe);
     }
 
+    public static void delete(String path, Function<Object, String> describe) {
+        send("DELETE", path, null, describe);
+    }
+
     public static void put(String path, String body, Function<Object, String> describe) {
         send("PUT", path, body, describe);
     }

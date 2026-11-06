@@ -1430,6 +1430,12 @@ def create_app(
             results.append({"username": bot.username, "ok": ok, "detail": detail, "plan": plan.to_dict()})
         return {"ok": any(r["ok"] for r in results), "results": results}
 
+    @app.delete("/api/ai/memory")
+    def clear_ai_memory() -> dict[str, Any]:
+        """Erase the selected bot's persistent experience on the current server."""
+        selected_agent().clear_experience()
+        return {"ok": True, "detail": "Persistent bot memory cleared for this server."}
+
     # --------------------------------------------------------------- websocket
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

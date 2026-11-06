@@ -234,6 +234,8 @@ class AgentSettings(BaseModel):
     human_chat: bool = True
     chat_cooldown: float = Field(default=6.0, ge=0.0, le=120.0)
     memory_turns: int = Field(default=8, ge=1, le=30)
+    # A small local, seven-day memory per bot/server. Disable to stop reading and writing it.
+    persistent_memory: bool = True
 
     @field_validator("persona")
     @classmethod
