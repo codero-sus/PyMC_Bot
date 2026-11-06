@@ -12,6 +12,7 @@ heuristic policy instead, so the bot always keeps playing.
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 import threading
@@ -43,6 +44,7 @@ ACTIONS: dict[str, str] = {
     "goto": 'walk: {"action": "goto", "x": 10, "y": 64, "z": -20}',
     "follow": 'follow a player: {"action": "follow", "player": "Steve"}',
     "wander": 'explore: {"action": "wander"}',
+    "move_controls": 'brief player-like movement: {"action": "move_controls", "controls": ["forward", "left"], "seconds": 0.6}',
     "mine": 'dig: {"action": "mine", "block": "oak_log"}',
     "attack": 'hit a player: {"action": "attack", "player": "Steve"}',
     "jump": 'hop: {"action": "jump"}',
@@ -825,6 +827,25 @@ class AgentLoop:
             params["message"] = message
             return (True, f"said: {message}") if self.bot.say(message) else (False, "could not send chat")
 
+        if action == "move_controls":
+            if blocked("movement", agent.allow_movement):
+                return False, "movement is disabled in settings"
+            controls = params.get("controls")
+            allowed_controls = {"forward", "back", "left", "right", "jump", "sneak", "sprint"}
+            if not isinstance(controls, list) or not controls or any(not isinstance(c, str) or c not in allowed_controls for c in controls):
+                return False, "controls must be a nonempty list of forward, back, left, right, jump, sneak or sprint"
+            pressed = set(controls)
+            if {"forward", "back"} <= pressed or {"left", "right"} <= pressed:
+                return False, "opposing movement controls cannot be held together"
+            try:
+                seconds = float(params.get("seconds", 0.6))
+                if not math.isfinite(seconds) or not 0.1 <= seconds <= 2.0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return False, "movement duration must be between 0.1 and 2 seconds"
+            ok = self.bot.controlled_move({c: True for c in pressed}, seconds)
+            return ok, "moved" if ok else "movement unavailable, busy or cancelled"
+
         if action in ("goto", "walk", "move"):
             if blocked("movement", agent.allow_movement):
                 return False, "movement is disabled in settings"
@@ -1040,7 +1061,7 @@ class AgentLoop:
         if flag is not None and blocked(flag, skills.allowed(skill, agent)):
             return False, f"{skill.name} needs {flag} to be allowed in settings"
         target = short(str(params.get("mob") or params.get("animal") or params.get("target") or ""))
-        if skill.name in ("shoot", "hunt") and target in AVOID_MOBS and not params.get("force"):
+        if skill.name in ("shoot", "hunt", "critical_hit") and target in AVOID_MOBS and not params.get("force"):
             return False, f"not picking a fight with a {target}"
         return self.bot.skill(skill.name, params)
 

@@ -253,6 +253,8 @@ function buildState() {
     position: { x: Number(pos.x.toFixed(2)), y: Number(pos.y.toFixed(2)), z: Number(pos.z.toFixed(2)) },
     yaw: Number(bot.entity.yaw.toFixed(4)),
     pitch: Number(bot.entity.pitch.toFixed(4)),
+    on_ground: typeof bot.entity.onGround === 'boolean' ? bot.entity.onGround : null,
+    vertical_velocity: bot.entity.velocity && Number.isFinite(bot.entity.velocity.y) ? Number(bot.entity.velocity.y.toFixed(3)) : null,
     health: bot.health === undefined ? 20 : Number(bot.health),
     food: bot.food === undefined ? 20 : Number(bot.food),
     dimension: bot.game && bot.game.dimension ? bot.game.dimension : 'overworld',
@@ -1738,10 +1740,49 @@ async function cmdDismount() {
   return { message: 'got off' };
 }
 
+async function cmdCriticalHit(params) {
+  need();
+  const wanted = cleanName(params.mob);
+  const target = entitiesNear((e) => {
+    if (e.type === 'player' || e.username || e.name === 'item') return false;
+    return wanted ? mobName(e) === wanted : HOSTILE_ENTITIES.has(mobName(e));
+  }, 3)[0];
+  if (!target) throw new Error('no matching mob in melee reach');
+  if (!bot.entity.onGround) throw new Error('must be on the ground to start the jump');
+  stopPath();
+  const until = Date.now() + 1400;
+  const releaseAt = Date.now() + 150;
+  let attacked = false;
+  try {
+    bot.setControlState('jump', true);
+    while (Date.now() < until) {
+      if (Date.now() >= releaseAt) bot.setControlState('jump', false);
+      if (!bot.entities[target.id] || target.isValid === false || bot.entity.position.distanceTo(target.position) > 3) {
+        throw new Error('target moved out of melee reach');
+      }
+      const velocity = bot.entity.velocity;
+      if (!bot.entity.onGround && velocity && velocity.y < -0.04) {
+        await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7, 0), true);
+        bot.attack(target);
+        attacked = true;
+        break;
+      }
+      await sleep(25);
+    }
+  } finally {
+    bot.setControlState('jump', false);
+  }
+  if (!attacked) throw new Error('could not time the falling hit');
+  // The server decides whether the hit is actually critical (cooldown, effects, etc.).
+  return { target: mobName(target), message: `attempted a falling hit on ${mobName(target)} (critical not confirmed)` };
+}
+
 async function cmdShoot(params) {
   need();
-  const bow = findItem((it) => it.name === 'bow' || it.name === 'crossbow');
-  if (!bow) throw new Error('I need a bow');
+  const weapon = cleanName(params.weapon);
+  if (weapon && weapon !== 'bow' && weapon !== 'crossbow') throw new Error('weapon must be bow or crossbow');
+  const bow = findItem((it) => weapon ? it.name === weapon : it.name === 'bow' || it.name === 'crossbow');
+  if (!bow) throw new Error(weapon ? `I need a ${weapon}` : 'I need a bow or crossbow');
   if (!findItem((it) => it.name.endsWith('arrow'))) throw new Error('I have no arrows');
   const wanted = cleanName(params.mob);
   const range = Math.max(4, Math.min(48, Number(params.range || 24)));
@@ -1760,9 +1801,18 @@ async function cmdShoot(params) {
     const drop = 0.0025 * distance * distance; // arrows fall: aim a little higher further away
     await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
     bot.activateItem();
-    await sleep(bow.name === 'crossbow' ? 1300 : 1050);
-    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
-    bot.deactivateItem();
+    try {
+      await sleep(bow.name === 'crossbow' ? 1300 : 1050);
+      if (!bot.entities[target.id] || target.isValid === false) break;
+      await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
+    } finally {
+      bot.deactivateItem();
+    }
+    // A bow fires on release; a crossbow must be used a second time after loading.
+    if (bow.name === 'crossbow') {
+      bot.activateItem();
+      bot.deactivateItem();
+    }
     fired += 1;
     await sleep(350);
   }
@@ -1896,6 +1946,7 @@ const COMMANDS = {
   ride: cmdRide,
   dismount: cmdDismount,
   shoot: cmdShoot,
+  critical_hit: cmdCriticalHit,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),

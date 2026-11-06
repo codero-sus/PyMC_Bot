@@ -114,3 +114,20 @@ def test_skills_api(tmp_path):
         assert client.post("/api/bot/skill", json={"name": "nope"}).status_code == 404
         status = client.get("/api/status").json()
         assert "autopilot" in status and "bridge_setup" in status
+
+
+def test_shield_preserves_totem_at_low_health(live_bot):
+    from pymc_bot.inventory import Inventory, Stack
+    from pymc_bot.skills import get, run_skill
+
+    inv = Inventory()
+    inv.offhand = Stack("totem_of_undying", 1)
+    inv.slots[0] = Stack("shield", 1)
+    live_bot.inventory = lambda: inv
+    live_bot.snapshot = lambda: {"health": 5}
+    calls = []
+    live_bot._perform = lambda command, params, **kwargs: (calls.append((command, params)) or True, {})
+    ok, detail = run_skill(live_bot, get("shield"), {})
+    assert not ok and "keeping the totem" in detail and not calls
+    assert run_skill(live_bot, get("shield"), {"force": True})[0]
+    assert [call[0] for call in calls] == ["equip", "use_item"]

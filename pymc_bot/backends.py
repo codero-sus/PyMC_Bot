@@ -1006,8 +1006,26 @@ class SimulatedBackend(BaseBackend):
         self._riding = ""
         return {"message": "got off"}
 
+    def _do_critical_hit(self, params: dict[str, Any]) -> dict[str, Any]:
+        wanted = short(params.get("mob") or "")
+        x, _, z = self._position
+        candidates = [mob for mob in self._mobs if math.dist((x, z), (mob["x"], mob["z"])) <= 3
+                      and (short(mob["type"]) == wanted if wanted else mob["hostile"])]
+        if not candidates:
+            raise InventoryError("no matching mob in melee reach")
+        target = min(candidates, key=lambda mob: math.dist((x, z), (mob["x"], mob["z"])))
+        target["health"] -= 1
+        if target["health"] <= 0:
+            self._mobs.remove(target)
+            self._respawns.append((time.monotonic() + 60.0, target))
+        return {"target": short(target["type"]), "message": "simulated a falling hit (critical not confirmed)"}
+
     def _do_shoot(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._need("bow", "a bow")
+        weapon = short(params.get("weapon") or "")
+        if weapon and weapon not in ("bow", "crossbow"):
+            raise InventoryError("weapon must be bow or crossbow")
+        if not (self._inv.count(weapon) if weapon else self._inv.count("bow") or self._inv.count("crossbow")):
+            raise InventoryError(f"I need a {weapon}" if weapon else "I need a bow or crossbow")
         if not self._inv.count("arrow"):
             raise InventoryError("I have no arrows")
         shots = min(int(params.get("shots") or 3), self._inv.count("arrow"))

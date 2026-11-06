@@ -116,3 +116,19 @@ def test_mod_isolates_skills_and_stop_and_rejects_redirects():
     assert 'BotLink.postPriority("/api/bot/action"' in COMMANDS
     assert 'code >= 300 && code < 400' in BOTLINK
     assert 'setInstanceFollowRedirects(false)' in BOTLINK
+
+
+def test_mod_exposes_movement_and_installed_model_selection():
+    assert 'guarded("move")' in COMMANDS and '"move_controls"' in COMMANDS.replace('\\"', '"')
+    assert 'guarded("model")' in COMMANDS and 'BotLink.quote(name)' in COMMANDS
+    assert '"resolved_brain"' in BOTLINK and '"model"' in BOTLINK
+
+
+def test_mod_movement_and_model_configuration_contract(client: TestClient):
+    response = client.post("/api/bot/action", json={"action": "move_controls", "controls": ["left"], "seconds": 0.1})
+    assert response.status_code == 200 and response.json()["ok"], response.json()
+    response = client.put("/api/config", json={"agent": {"mode": "ollama"},
+                                               "ollama": {"enabled": True, "model": "minecraftism"}})
+    assert response.status_code == 200
+    assert response.json()["config"]["ollama"]["model"] == "minecraftism"
+    assert client.get("/api/status").json()["ollama"]["settings"]["model"] == "minecraftism"

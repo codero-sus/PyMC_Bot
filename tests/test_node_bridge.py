@@ -278,3 +278,11 @@ def test_mineflayer_versions_reads_the_installed_package(tmp_path: Path, monkeyp
     assert mineflayer_versions() == {"oldest": "1.8.8", "latest": "26.1", "tested": ["1.8.8", "1.21.11", "26.1"]}
     monkeypatch.chdir(tmp_path / "node_modules")
     assert mineflayer_versions() is None
+
+
+def test_actual_bridge_combat_handlers_with_fake_mineflayer():
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    subprocess.run([NODE, str(root / "tests/fixtures/combat_bridge_harness.js"),
+                    str(root / "pymc_bot/node/minecraft_bridge.js")], check=True, timeout=10)

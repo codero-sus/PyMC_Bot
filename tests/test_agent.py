@@ -228,3 +228,30 @@ def test_heuristic_recognizes_zero_food_and_health():
     policy = HeuristicPolicy(seed=4)
     assert policy.decide({"health": 20, "food": 0}, []).action == "eat"
     assert policy.decide({"health": 0, "food": 20}, []).action == "eat"
+
+
+def test_free_movement_validation_and_permissions(live_bot, store, log):
+    agent = AgentLoop(live_bot, store, log)
+    calls = []
+    live_bot.controlled_move = lambda controls, seconds: calls.append((controls, seconds)) or True
+    assert agent.execute(Decision("move_controls", {"controls": ["forward", "left"], "seconds": 0.5}))[0]
+    assert calls == [({"forward": True, "left": True}, 0.5)]
+    for controls, seconds in [(["left", "right"], 1), (["attack"], 1), (["forward"], float("nan")), (["forward"], 10)]:
+        assert not agent.execute(Decision("move_controls", {"controls": controls, "seconds": seconds}))[0]
+    store.update({"agent": {"allow_movement": False}})
+    assert not agent.execute(Decision("move_controls", {"controls": ["forward"]}))[0]
+
+
+def test_controls_are_released_if_press_fails(live_bot):
+    from pymc_bot.backends import BackendError
+
+    calls = []
+
+    def control(name, pressed):
+        calls.append((name, pressed))
+        if name == "left" and pressed:
+            raise BackendError("simulated failure")
+
+    live_bot.backend.set_control = control
+    assert not live_bot.controlled_move({"forward": True, "left": True}, 0.1)
+    assert ("forward", False) in calls and ("left", False) in calls

@@ -2,6 +2,7 @@ package dev.pymc.pymcb.client;
 
 import java.util.Locale;
 
+import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -280,6 +281,8 @@ public final class PymcCommands {
                     BotLink.postPriority("/api/ai/stop", "{}", doc -> "AI stopped");
                     return 1;
                 }))
+                .then(guarded("model").then(Mc.argument("name", StringArgumentType.greedyString())
+                        .executes(ctx -> useOllamaModel(StringArgumentType.getString(ctx, "name")))))
                 .then(literal("memory")
                         .then(guarded("on").executes(ctx -> memoryEnabled(true)))
                         .then(guarded("off").executes(ctx -> memoryEnabled(false)))
@@ -336,6 +339,11 @@ public final class PymcCommands {
                 .then(guarded("come").executes(ctx -> skill("come", "{\"player\":" + BotLink.quote(me()) + "}")))
                 .then(guarded("home").executes(ctx -> skill("go_home", "{}")))
                 .then(guarded("follow").executes(ctx -> action("{\"action\":\"follow\",\"player\":" + BotLink.quote(me()) + "}", "follow")))
+                .then(guarded("move").then(Mc.argument("direction", StringArgumentType.word())
+                        .executes(ctx -> move(StringArgumentType.getString(ctx, "direction"), 0.6f))
+                        .then(Mc.argument("seconds", FloatArgumentType.floatArg(0.1f, 2.0f))
+                                .executes(ctx -> move(StringArgumentType.getString(ctx, "direction"),
+                                        FloatArgumentType.getFloat(ctx, "seconds"))))))
                 .then(guarded("stop").executes(ctx -> action("{\"action\":\"stop\"}", "stop")))
                 .then(guarded("say").then(Mc.argument("text", StringArgumentType.greedyString())
                         .executes(ctx -> {
@@ -354,12 +362,33 @@ public final class PymcCommands {
         return 1;
     }
 
+    private static int move(String direction, float seconds) {
+        String normalized = direction.toLowerCase(Locale.ROOT);
+        if (!java.util.Set.of("forward", "back", "left", "right", "jump", "sneak", "sprint").contains(normalized)) {
+            BotLink.tell("direction: forward, back, left, right, jump, sneak or sprint");
+            return 0;
+        }
+        return action("{\"action\":\"move_controls\",\"controls\":[" + BotLink.quote(normalized)
+                + "],\"seconds\":" + seconds + "}", "move");
+    }
+
     private static int action(String body, String what) {
         if ("stop".equals(what)) {
             BotLink.postPriority("/api/bot/action", body, BotLink.describeResult(what));
         } else {
             BotLink.post("/api/bot/action", body, BotLink.describeResult(what));
         }
+        return 1;
+    }
+
+    private static int useOllamaModel(String raw) {
+        String name = raw.trim();
+        if (name.isEmpty() || name.length() > 200) {
+            BotLink.tell("provide an installed Ollama model name, for example minecraftism");
+            return 0;
+        }
+        BotLink.put("/api/config", "{\"agent\":{\"mode\":\"ollama\"},\"ollama\":{\"enabled\":true,\"model\":"
+                + BotLink.quote(name) + "}}", doc -> "Ollama model selected: " + name + " (must be installed; fleet brain overrides still apply)");
         return 1;
     }
 
@@ -401,9 +430,9 @@ public final class PymcCommands {
         return "control the PyMC Bot panel's bots (" + BotLink.panel() + "):\n"
                 + "/pymcbot bot status | list | skills\n"
                 + "/pymcbot bot do <skill> [key=value ...]   e.g. do chop_tree count=12, do mine_ore iron\n"
-                + "/pymcbot bot come | follow | stop | home   /pymcbot bot say <text>\n"
+                + "/pymcbot bot come | follow | stop | home | move <direction> [seconds]   /pymcbot bot say <text>\n"
                 + "/pymcbot bot auto on|off   (auto-sleep at night, eat, fight back, torches...)\n"
-                + "/pymcbot bot ai start|stop|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
+                + "/pymcbot bot ai start|stop|model <installed-name>|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
     }
 
     /** Shown by {@code /pymcbot} on its own. */

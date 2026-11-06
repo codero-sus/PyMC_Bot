@@ -300,3 +300,12 @@ def test_behaviours_endpoint_lists_choices_without_prompts(tmp_path):
         assert client.get("/api/ai/prompt").status_code in (404, 405)
         client.put("/api/config", json={"agent": {"persona": "companion"}})
         assert client.get("/api/ai/behaviours").json()["selected"] == "companion"
+
+
+def test_body_awareness_mentions_immediate_dangers():
+    state = {**STATE, "on_ground": False, "vertical_velocity": -0.4, "in_water": True, "oxygen": 4, "on_fire": True}
+    prompt = build_turn_prompt(state, "Alex", Mind(), [], ALL_ON)
+    assert "BODY AWARENESS" in prompt
+    assert "falling" in prompt and "low air (4/20)" in prompt and "on fire" in prompt
+    exact = json.loads(prompt.split("EXACT DATA (JSON):", 1)[1].split("\n", 1)[0])
+    assert exact["on_ground"] is False and exact["vertical_velocity"] == -0.4

@@ -92,7 +92,7 @@ SKILLS: tuple[Skill, ...] = (
           params={"block": _p("str", "stone")}, moves=False, aliases=("best_tool",)),
     Skill("totem", "survival", "put a totem of undying in the off-hand", {}, "inventory", moves=False),
     Skill("shield", "survival", "shield to the off-hand and block for a moment", {"seconds": 2}, "fighting",
-          params={"seconds": _p("float", 2.0, 0.5, 5.0)}, moves=False, aliases=("block_attack",)),
+          params={"seconds": _p("float", 2.0, 0.5, 5.0), "force": _p("bool", False)}, moves=False, aliases=("block_attack",)),
     Skill("drink", "survival", "drink a potion or milk", {"item": "potion"}, "inventory", "drink",
           {"item": _p("str", "")}, moves=False, timeout=12.0),
     Skill("surface", "survival", "swim up for air when under water", {}, "movement", "surface", timeout=15.0,
@@ -178,8 +178,12 @@ SKILLS: tuple[Skill, ...] = (
           timeout=620.0, aliases=("protect",)),
     Skill("hunt", "combat", "hunt an animal for food and pick up the drops", {"animal": "cow"}, "fighting",
           params={"animal": _p("str", "")}, timeout=60.0),
-    Skill("shoot", "combat", "shoot a mob with a bow", {"mob": "skeleton"}, "fighting", "shoot",
-          {"mob": _p("str", ""), "range": _p("int", 24, 4, 48), "shots": _p("int", 3, 1, 10)}, timeout=40.0,
+    Skill("critical_hit", "combat", "attempt a falling melee hit on a nearby mob (not guaranteed critical)",
+          {"mob": "zombie"}, "fighting", "critical_hit", {"mob": _p("str", "")}, timeout=5.0,
+          aliases=("crit",)),
+    Skill("shoot", "combat", "shoot a mob with a bow or crossbow", {"mob": "skeleton"}, "fighting", "shoot",
+          {"mob": _p("str", ""), "range": _p("int", 24, 4, 48), "shots": _p("int", 3, 1, 10),
+           "weapon": _p("str", "")}, timeout=40.0,
           aliases=("bow",)),
     # ------------------------------------------------------------------ social
     Skill("report", "social", "say your health, food, position and inventory in chat", {}, "chat", moves=False,
@@ -444,6 +448,10 @@ def _skill_totem(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
 
 def _skill_shield(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
     inv = bot.inventory()
+    if inv.offhand and inv.offhand.name == "totem_of_undying" and not params.get("force"):
+        health = bot.snapshot().get("health")
+        if health is None or float(health) <= bot.store.settings.autopilot.totem_health:
+            return False, "keeping the totem equipped while health is low or unknown (force=true to override)"
     if not (inv.offhand and inv.offhand.name == "shield"):
         index = inv.find("shield")
         if index is None:

@@ -1025,3 +1025,24 @@ Third-party parts keep their own licenses: the compile-only Mod Menu API stubs i
 template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies.
 
 <p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://codero.is-a.dev">codero.is-a.dev</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>
+
+### Movement, combat and Minecraftism from the mod
+
+With the panel running, `/pymcbot bot move left 0.6` sends a short movement burst
+(`forward`, `back`, `left`, `right`, `jump`, `sneak`, or `sprint`; 0.1–2 seconds).
+The AI can combine controls using the `move_controls` action. These are short key holds,
+not a promise of smooth pathfinding or anti-cheat compatibility.
+
+`/pymcbot bot do shoot mob=skeleton weapon=bow` also accepts `weapon=crossbow`.
+`/pymcbot bot do critical_hit mob=zombie` attempts one falling melee hit against a
+nearby mob; only the server determines whether it was a critical hit. The `shield`
+skill preserves an equipped totem when health is low or unknown unless `force=true`.
+The existing `totem` and `pillar_up` skills remain available. These controls require
+items and a compatible Minecraft/bridge version; damage, range and line of sight are
+server-dependent. They have not been validated as automated mace/wind-charge, spear,
+trident or projectile-dodging combos.
+
+`/pymcbot bot ai model minecraftism` selects an **already installed** Ollama model
+name and sets the main AI mode to Ollama; replace `minecraftism` with your actual
+imported name. It does not download, train or verify a model, and fleet brain overrides
+still apply. `/pymcbot bot status` shows the resolved brain and configured model.

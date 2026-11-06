@@ -249,6 +249,13 @@ public final class BotLink {
         Object agent = Json.get(doc, "agent");
         sb.append("\nAI ").append(Boolean.TRUE.equals(Json.get(agent, "running")) ? "running" : "off")
                 .append(" · autopilot ").append(Boolean.TRUE.equals(Json.get(doc, "autopilot", "enabled")) ? "on" : "off");
+        String brain = Json.text(Json.get(agent, "resolved_brain"), "?");
+        sb.append(" · brain ").append(brain);
+        if ("ollama".equals(brain)) {
+            sb.append(" (").append(Json.text(Json.get(doc, "ollama", "settings", "model"), "?")).append(')');
+        } else if ("cortex".equals(brain)) {
+            sb.append(" (").append(Json.text(Json.get(doc, "cortex", "settings", "model"), "default")).append(')');
+        }
         Object lastRule = Json.get(doc, "autopilot", "bot", "last_rule");
         if (lastRule != null && !Json.text(lastRule, "").isEmpty()) {
             sb.append(" (last: ").append(Json.text(lastRule, "")).append(" - ")

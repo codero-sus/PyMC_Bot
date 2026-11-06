@@ -757,6 +757,15 @@ class MinecraftBot:
         self.touch_activity()
         return True
 
+    def controlled_move(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
+        """Short manual movement without interfering with another movement job."""
+        if not self._motion_lock.acquire(blocking=False):
+            return False
+        try:
+            return self.control_burst(controls, seconds)
+        finally:
+            self._motion_lock.release()
+
     def control_burst(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
         """Hold a set of controls for a short burst, then release them.
 
@@ -771,28 +780,33 @@ class MinecraftBot:
         pressed = {name: bool(state) for name, state in controls.items() if state}
         if not pressed:
             return True
-        with self.activity("trained"), self._lock:
-            try:
-                for name, state in pressed.items():
-                    backend.set_control(name, state)
-            except BackendError:
-                return False
-            self._stats["actions"] += 1
+        if self.cancelled:
+            return False
+        started: list[str] = []
         try:
-            deadline = time.monotonic() + max(0.05, min(10.0, seconds))
-            while time.monotonic() < deadline:
-                if self.cancelled:
-                    break
-                time.sleep(0.05)
+            with self.activity("controls"):
+                with self._lock:
+                    for name, state in pressed.items():
+                        # Include this control even if the backend raises after sending it.
+                        started.append(name)
+                        backend.set_control(name, state)
+                    self._stats["actions"] += 1
+                deadline = time.monotonic() + max(0.05, min(10.0, seconds))
+                while time.monotonic() < deadline:
+                    if self.cancelled:
+                        break
+                    time.sleep(0.05)
+        except BackendError:
+            return False
         finally:
             with self._lock:
-                for name in pressed:
+                for name in started:
                     try:
                         backend.set_control(name, False)
                     except BackendError:  # pragma: no cover - backend went away mid burst
                         continue
         self.touch_activity()
-        return True
+        return not self.cancelled
 
     def look_at_player(self, player: str) -> bool:
         backend = self.backend
