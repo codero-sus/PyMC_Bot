@@ -741,7 +741,10 @@ The import creates the Ollama model, named after the edition (`minecraftism`, `m
 `minecraftism-uncensored`…; `--name` picks another), with the model's system prompt from its `pymc_model.json`.
 Then it switches the bot to it: `ollama.enabled`, `ollama.model`, `agent.mode = "ollama"` and
 **Minecraft-trained model (short prompt)** (`agent.compact_prompt`). VL editions also turn on
-**let the model see** (`agent.vision`). `--no-activate` only creates the model.
+**let the model see** (`agent.vision`). `--no-activate` only creates the model. A local VL import
+requires the matching `mmproj` file declared by `pymc_model.json` (or an `mmproj` file alongside
+the GGUF if no filename is declared). If creation fails or Ollama is missing, the previous bot model
+is left unchanged. Support for a model's architecture and projector depends on the Ollama version.
 
 Check that it really got better:
 

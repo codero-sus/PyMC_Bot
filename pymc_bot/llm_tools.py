@@ -39,6 +39,8 @@ class ImportResult:
 def find_gguf(path: Path) -> Path:
     path = Path(path).expanduser()
     if path.is_file() and path.suffix.lower() == ".gguf":
+        if "mmproj" in path.name.lower():
+            raise ValueError("the vision projector is not a model; select the model GGUF instead")
         return path.resolve()
     if path.is_dir():
         report = path / "pymc_model.json"  # the main quant when the folder holds several (Q8_0, Q4_K_M, ...)
@@ -47,7 +49,7 @@ def find_gguf(path: Path) -> Path:
                 named = path / str(json.loads(report.read_text(encoding="utf-8")).get("gguf") or "")
             except (OSError, ValueError):
                 named = path
-            if named.is_file() and named.suffix.lower() == ".gguf":
+            if named.is_file() and named.suffix.lower() == ".gguf" and "mmproj" not in named.name.lower():
                 return named.resolve()
         files = sorted(p for p in path.glob("*.gguf") if "mmproj" not in p.name.lower())
         if files:
@@ -77,8 +79,9 @@ def write_modelfile(gguf: Path, info: dict[str, Any] | None = None) -> Path:
 def find_mmproj(gguf: Path, info: dict[str, Any] | None = None) -> Path | None:
     """The vision projector that belongs to ``gguf`` (named in pymc_model.json, else any mmproj*.gguf)."""
     named = (info or {}).get("mmproj")
-    if named and (gguf.parent / str(named)).is_file():
-        return gguf.parent / str(named)
+    if named:
+        candidate = gguf.parent / str(named)
+        return candidate if candidate.is_file() else None
     found = sorted(p for p in gguf.parent.glob("*.gguf") if "mmproj" in p.name.lower())
     return found[0] if found else None
 
@@ -90,8 +93,8 @@ def default_name(info: dict[str, Any]) -> str:
 
 def _activate(store: ConfigStore, name: str, info: dict[str, Any]) -> None:
     agent: dict[str, Any] = {"mode": "ollama", "compact_prompt": bool(info.get("compact_prompt", True))}
-    if info.get("vision"):
-        agent["vision"] = True
+    if "vision" in info:
+        agent["vision"] = bool(info["vision"])
     store.update({"ollama": {"enabled": True, "model": name}, "agent": agent})
 
 
@@ -101,6 +104,11 @@ def import_model(path: Path, store: ConfigStore, name: str | None = None, activa
     info_path = gguf.parent / "pymc_model.json"
     info = json.loads(info_path.read_text(encoding="utf-8")) if info_path.is_file() else {}
     name = name or default_name(info)
+    preset = PRESETS.get(str(info.get("preset") or info.get("edition")), {})
+    if "vision" not in info and "vision" in preset:
+        info["vision"] = bool(preset["vision"])
+    if info.get("vision") and not find_mmproj(gguf, info):
+        raise FileNotFoundError("this VL edition requires its matching mmproj GGUF in the model folder")
     modelfile = write_modelfile(gguf, info)
     created = False
     if which("ollama"):
@@ -112,7 +120,7 @@ def import_model(path: Path, store: ConfigStore, name: str | None = None, activa
         message = (f"Ollama is not on PATH. Install it (https://ollama.com), then run:\n"
                    f"  ollama create {name} -f \"{modelfile}\"")
     activated = False
-    if activate:
+    if activate and created:
         _activate(store, name, info)
         activated = True
     return ImportResult(name, gguf, modelfile, created, activated, message, info)
@@ -198,7 +206,7 @@ def import_model_hf(repo: str, store: ConfigStore, name: str | None = None, quan
         message = (f"Ollama is not on PATH. Install it (https://ollama.com), then run:\n"
                    f"  ollama pull {reference}\n  ollama cp {reference} {name}")
     activated = False
-    if activate and (created or not which("ollama")):
+    if activate and created:
         _activate(store, name, info)
         activated = True
     return ImportResult(name, Path(reference), Path(""), created, activated, message, info)

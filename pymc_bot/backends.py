@@ -1662,7 +1662,7 @@ class NodeBridgeBackend(BaseBackend):
         return bool(response and response.get("ok"))
 
     def view_image(self, width: int = 448) -> dict[str, Any]:
-        response = self._request("snapshot", {"width": int(width)}, timeout=20.0)
+        response = self._request("snapshot", {"width": int(width)}, timeout=30.0)
         if not response.get("ok"):
             raise BackendError(str(response.get("error") or "snapshot failed"))
         result = response.get("result") or {}

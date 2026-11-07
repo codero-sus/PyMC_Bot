@@ -2002,11 +2002,39 @@ function disposeEyes(instance) {
       instance.worldView.removeListenersFromBot(instance.bot);
     }
   } catch (err) { /* renderer already detached */ }
-  try {
-    if (typeof instance.viewer?.resetAll === 'function') instance.viewer.resetAll();
-    for (const worker of instance.viewer?.world?.workers || []) worker.terminate();
-    if (typeof instance.renderer?.dispose === 'function') instance.renderer.dispose();
-  } catch (err) { /* renderer already closed */ }
+  try { if (typeof instance.viewer?.resetAll === 'function') instance.viewer.resetAll(); } catch (err) { /* continue cleanup */ }
+  for (const worker of instance.viewer?.world?.workers || []) {
+    try { worker.terminate(); } catch (err) { /* continue cleanup */ }
+  }
+  try { if (typeof instance.renderer?.dispose === 'function') instance.renderer.dispose(); } catch (err) { /* continue cleanup */ }
+  try { instance.canvas?.getContext('webgl')?.getExtension('STACKGL_destroy_context')?.destroy(); } catch (err) { /* optional native extension */ }
+}
+
+// Track native worker errors so a broken renderer is reported and can be recreated.
+// prismarine-viewer itself forwards Node's message event to its onmessage handler.
+function viewerWorkerClass(NodeWorker) {
+  return class ViewerWorker extends NodeWorker {
+    constructor(...args) {
+      super(...args);
+      this.visionError = null;
+      this.on('error', err => { this.visionError = err; });
+      this.on('exit', code => { if (code !== 0 && !this.visionClosing) this.visionError = new Error(`vision worker exited (${code})`); });
+    }
+    terminate() {
+      this.visionClosing = true;
+      return super.terminate();
+    }
+  };
+}
+
+function checkVisionWorkers(instance) {
+  for (const worker of instance.viewer?.world?.workers || []) {
+    if (worker.visionError) {
+      const message = worker.visionError.message;
+      closeEyes();
+      throw new Error(`vision worker failed: ${message}`);
+    }
+  }
 }
 
 function closeEyes() {
@@ -2026,13 +2054,14 @@ async function openEyes(width, height, viewDistance) {
   } catch (err) {
     throw new Error(`vision is not installed (${err.message.split('\n')[0]}). Run: ${VISION_PACKAGES}`);
   }
-  if (typeof global.Worker === 'undefined') global.Worker = require('worker_threads').Worker;
-  const canvas = createCanvas(width, height);
-  const renderer = new THREE.WebGLRenderer({ canvas });
-  const viewer = new viewerLib.Viewer(renderer);
+  // Requiring prismarine-viewer also loads its headless entry point, which resets global.Worker.
+  global.Worker = viewerWorkerClass(require('worker_threads').Worker);
   const owner = bot;
-  let worldView = null;
+  let canvas, renderer, viewer, worldView = null;
   try {
+    canvas = createCanvas(width, height);
+    renderer = new THREE.WebGLRenderer({ canvas });
+    viewer = new viewerLib.Viewer(renderer);
     let supported;
     try { supported = viewer.setVersion(bot.version); } catch (err) {
       throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}: ${err.message}`);
@@ -2047,7 +2076,7 @@ async function openEyes(width, height, viewDistance) {
     if (bot !== owner) throw new Error('bot disconnected while starting vision');
     return { bot: owner, viewer, worldView, renderer, canvas, width, height, viewerLib };
   } catch (err) {
-    disposeEyes({ bot: owner, viewer, worldView, renderer });
+    disposeEyes({ bot: owner, viewer, worldView, renderer, canvas });
     throw err;
   }
 }
@@ -2071,21 +2100,38 @@ async function renderSnapshot(params) {
   await withTimeout(active.worldView.updatePosition(bot.entity.position), 10000, 'updating the vision world');
   checkAction();
   if (eyes !== active || bot !== active.bot) throw new Error('bot disconnected while rendering');
+  checkVisionWorkers(active);
   active.viewer.setFirstPersonCamera(bot.entity.position, bot.entity.yaw, bot.entity.pitch);
-  // chunks are meshed in worker threads; give them a moment (the first picture can be sky only)
-  const settle = Math.max(0, Math.min(5000, Number(params.settle_ms ?? 600)));
-  if (eyes.viewer.world && typeof eyes.viewer.world.waitForChunksToRender === 'function') {
-    await Promise.race([eyes.viewer.world.waitForChunksToRender(), sleep(settle)]);
+  // Wait briefly for worker meshes. Never describe an unfinished sky-only frame as a complete view.
+  const settle = Math.max(0, Math.min(5000, Number(params.settle_ms ?? 3500)));
+  const world = active.viewer.world;
+  if (world?.sectionsOutstanding && world.renderUpdateEmitter) {
+    let onUpdate;
+    try {
+      const ready = new Promise(resolve => {
+        onUpdate = () => { if (!world.sectionsOutstanding.size) resolve(); };
+        world.renderUpdateEmitter.on('update', onUpdate);
+        onUpdate();
+      });
+      await Promise.race([ready, sleep(settle)]);
+    } finally {
+      if (onUpdate) world.renderUpdateEmitter.removeListener('update', onUpdate);
+    }
   } else {
     await sleep(settle);
   }
   checkAction();
   if (eyes !== active || bot !== active.bot) throw new Error('bot disconnected while rendering');
+  checkVisionWorkers(active);
+  if (world?.sectionsOutstanding?.size) throw new Error('vision chunks are still rendering; retrying next frame');
   if (typeof active.viewer.update === 'function') active.viewer.update();
   active.renderer.render(active.viewer.scene, active.viewer.camera);
   const quality = Math.max(0.3, Math.min(0.95, Number(params.quality || 0.8)));
-  const buffer = await active.viewerLib.getBufferFromStream(active.canvas.createJPEGStream({ quality }));
+  const buffer = await withTimeout(active.viewerLib.getBufferFromStream(active.canvas.createJPEGStream({ quality })),
+    5000, 'encoding the vision frame');
   checkAction();
+  if (eyes !== active || bot !== active.bot || !bot.entity) throw new Error('bot disconnected while encoding vision');
+  checkVisionWorkers(active);
   return {
     mime: 'image/jpeg',
     width,

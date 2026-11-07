@@ -831,7 +831,7 @@ def cmd_llm(args: argparse.Namespace) -> int:
         print(result.message)
         if not args.hf:
             print(f"Modelfile: {result.modelfile}")
-        if result.info.get("vision"):
+        if result.info.get("vision") and result.activated:
             print("Vision edition: the bot will attach its view every few turns (agent.vision; needs the optional "
                   "bridge packages - see docs/MINECRAFT_LLM.md).")
         if result.activated:

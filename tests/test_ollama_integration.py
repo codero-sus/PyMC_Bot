@@ -122,3 +122,8 @@ def test_stub_decision_is_always_executable(store: ConfigStore, log: EventLog, s
         client.close()
         agent.stop()
         bot.stop()
+
+
+def test_ollama_rejects_images_without_user_message():
+    with pytest.raises(OllamaError, match="without a user message"):
+        OllamaClient().chat([{"role": "assistant", "content": "hello"}], images=["/9j/AA=="])

@@ -465,3 +465,59 @@ def test_minecraftism_vl_turn_sends_bot_frame_to_selected_model(store, provider)
     assert sent[0]["model"] == "minecraftism-vl"
     assert decision.action == "idle" and loop.status["vision"]["status"] == "sent"
     http.close()
+
+
+def test_vl_import_requires_projector_and_does_not_activate_failure(tmp_path, store):
+    folder = tmp_path / "vl"
+    folder.mkdir()
+    model = folder / "model.gguf"
+    model.write_bytes(b"GGUF")
+    (folder / "pymc_model.json").write_text(json.dumps({"edition": "minecraftism-vl", "vision": True}))
+    previous = store.settings.ollama.model
+    with pytest.raises(FileNotFoundError, match="mmproj"):
+        import_model(folder, store, which=lambda _name: "/bin/ollama")
+    assert store.settings.ollama.model == previous
+    projector = folder / "mmproj.gguf"
+    projector.write_bytes(b"GGUF")
+    with pytest.raises(ValueError, match="not a model"):
+        import_model(projector, store)
+
+    class Failed:
+        returncode, stdout, stderr = 1, "", "unsupported model architecture"
+
+    result = import_model(folder, store, run=lambda *_a, **_k: Failed(), which=lambda _name: "/bin/ollama")
+    assert not result.created and not result.activated and "unsupported" in result.message
+    assert store.settings.ollama.model == previous
+
+
+def test_missing_ollama_does_not_activate_model(tmp_path, store):
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF")
+    before = store.settings.ollama.model
+    local = import_model(model, store, which=lambda _name: None)
+    remote = import_model_hf("me/Minecraftism-VL-4B-GGUF", store, which=lambda _name: None, fetch=lambda _ref: {})
+    assert not local.activated and not remote.activated
+    assert store.settings.ollama.model == before
+
+
+def test_importing_known_text_edition_disables_stale_vision(tmp_path, store):
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF")
+    (tmp_path / "pymc_model.json").write_text(json.dumps({"edition": "minecraftism", "vision": False}))
+    store.update({"agent": {"vision": True}})
+
+    class Done:
+        returncode, stdout, stderr = 0, "ok", ""
+
+    result = import_model(model, store, run=lambda *_a, **_k: Done(), which=lambda _name: "ollama")
+    assert result.created and result.activated and not store.settings.agent.vision
+
+
+def test_vl_import_missing_named_projector_does_not_use_another(tmp_path, store):
+    (tmp_path / "model.gguf").write_bytes(b"GGUF")
+    (tmp_path / "mmproj-unrelated.gguf").write_bytes(b"GGUF")
+    (tmp_path / "pymc_model.json").write_text(json.dumps({
+        "edition": "minecraftism-vl", "vision": True, "mmproj": "mmproj-matching.gguf",
+    }))
+    with pytest.raises(FileNotFoundError, match="matching mmproj"):
+        import_model(tmp_path, store)

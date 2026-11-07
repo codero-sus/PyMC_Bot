@@ -261,6 +261,8 @@ class CortexClient:
                         *({"type": "image_url", "image_url": {"url": image_data_uri(image)}} for image in images),
                     ]
                     break
+            else:
+                raise CortexError("cannot attach images without a user message")
         if system:
             chat_messages = [{"role": "system", "content": system}, *chat_messages]
         payload: dict[str, Any] = {

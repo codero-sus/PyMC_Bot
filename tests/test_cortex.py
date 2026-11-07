@@ -383,3 +383,9 @@ def test_fleet_accepts_cortex_and_trained_brains(api: TestClient):
         assert response.status_code == 200, response.text
     roster = {bot["configured_username"]: bot["ai"] for bot in api.get("/api/fleet/status").json()["bots"]}
     assert roster["CortexBuddy"] == "cortex" and roster["TrainedBuddy"] == "trained"
+
+
+def test_cortex_rejects_images_without_user_message():
+    client = CortexClient()
+    with pytest.raises(CortexError, match="without a user message"):
+        client.chat([{"role": "assistant", "content": "hello"}], images=["/9j/AA=="])

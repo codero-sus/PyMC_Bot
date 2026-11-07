@@ -90,6 +90,8 @@ class OllamaClient:
                 if message.get("role") == "user":
                     message["images"] = list(images)
                     break
+            else:
+                raise OllamaError("cannot attach images without a user message")
         payload: dict[str, Any] = {
             "model": model or self.model,
             "messages": chat_messages,
