@@ -283,6 +283,9 @@ public final class PymcCommands {
                 }))
                 .then(guarded("model").then(Mc.argument("name", StringArgumentType.greedyString())
                         .executes(ctx -> useOllamaModel(StringArgumentType.getString(ctx, "name")))))
+                .then(literal("vision")
+                        .then(guarded("on").executes(ctx -> visionEnabled(true)))
+                        .then(guarded("off").executes(ctx -> visionEnabled(false))))
                 .then(literal("memory")
                         .then(guarded("on").executes(ctx -> memoryEnabled(true)))
                         .then(guarded("off").executes(ctx -> memoryEnabled(false)))
@@ -392,6 +395,13 @@ public final class PymcCommands {
         return 1;
     }
 
+    private static int visionEnabled(boolean on) {
+        BotLink.put("/api/config", "{\"agent\":{\"vision\":" + on + "}}",
+                doc -> on ? "Vision ON: use an installed VL model and a compatible bot renderer; check /pymcbot bot status"
+                        : "Vision OFF");
+        return 1;
+    }
+
     private static int memoryEnabled(boolean on) {
         BotLink.put("/api/config", "{\"agent\":{\"persistent_memory\":" + on + "}}",
                 doc -> on ? "persistent bot memory ON" : "persistent bot memory OFF (stored memory is not deleted)");
@@ -432,7 +442,7 @@ public final class PymcCommands {
                 + "/pymcbot bot do <skill> [key=value ...]   e.g. do chop_tree count=12, do mine_ore iron\n"
                 + "/pymcbot bot come | follow | stop | home | move <direction> [seconds]   /pymcbot bot say <text>\n"
                 + "/pymcbot bot auto on|off   (auto-sleep at night, eat, fight back, torches...)\n"
-                + "/pymcbot bot ai start|stop|model <installed-name>|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
+                + "/pymcbot bot ai start|stop|model <installed-name>|vision on|off|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
     }
 
     /** Shown by {@code /pymcbot} on its own. */

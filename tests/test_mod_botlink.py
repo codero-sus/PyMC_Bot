@@ -133,3 +133,13 @@ def test_mod_movement_and_model_configuration_contract(client: TestClient):
     assert response.status_code == 200
     assert response.json()["config"]["ollama"]["model"] == "minecraftism"
     assert client.get("/api/status").json()["ollama"]["settings"]["model"] == "minecraftism"
+
+
+def test_mod_vision_configuration_and_status_contract(client: TestClient):
+    assert 'literal("vision")' in COMMANDS
+    assert '\\"vision\\"' in COMMANDS
+    assert 'Json.get(agent, "vision")' in BOTLINK
+    response = client.put("/api/config", json={"agent": {"vision": True, "vision_width": 640}})
+    assert response.json()["config"]["agent"]["vision"] is True
+    status = client.get("/api/status").json()["agent"]["vision"]
+    assert status["enabled"] and status["status"] in {"waiting", "unavailable", "captured", "sent", "model_error"}

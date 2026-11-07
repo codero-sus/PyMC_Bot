@@ -11,6 +11,8 @@ heuristic policy instead, so the bot always keeps playing.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import random
@@ -339,6 +341,8 @@ class AgentLoop:
         self._last_exchange: tuple[str, str] | None = None
         self._vision_turn = 0
         self._vision_error = ""
+        self._vision_status = "waiting"
+        self._vision_last_sent: float | None = None
         self._errors = 0
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
@@ -522,6 +526,9 @@ class AgentLoop:
             "trained": trained.describe() if trained is not None else None,
             "persona": self._settings().agent.persona,
             "memory": self.mind.snapshot(),
+            "vision": {"enabled": self._settings().agent.vision,
+                       "status": self._vision_status if self._settings().agent.vision else "disabled",
+                       "last_error": self._vision_error or None, "last_sent_at": self._vision_last_sent},
         }
 
     # ------------------------------------------------------------ main logic
@@ -630,19 +637,40 @@ class AgentLoop:
         if (self._vision_turn - 1) % agent.vision_every:
             return None
         backend = self.bot.backend
-        if backend is None:
-            return None
         try:
+            if backend is None:
+                raise RuntimeError("bot has no connected vision backend")
             frame = backend.view_image(agent.vision_width)
-        except Exception as exc:  # noqa: BLE001 - any renderer problem means "no picture"
-            message = str(exc)
+            image = frame.get("image")
+            if not isinstance(image, str) or not image or len(image) > 7_000_000:
+                raise ValueError("vision frame is empty or too large")
+            raw = base64.b64decode(image, validate=True)
+            if not (raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG\r\n\x1a\n")):
+                raise ValueError("vision frame is not a JPEG or PNG")
+        except Exception as exc:  # noqa: BLE001  # any renderer or invalid-frame error means no picture this turn
+            message = "invalid base64 vision frame" if isinstance(exc, binascii.Error) else str(exc)[:300]
             if message != self._vision_error:
                 self._vision_error = message
                 self.log.add(f"👁 no picture this turn: {message}", "warn", "agent")
+            self._vision_status = "unavailable"
             return None
         self._vision_error = ""
-        image = str(frame.get("image") or "")
-        return [image] if image else None
+        self._vision_status = "captured"
+        return [image]
+
+    def _vision_request(self, images: list[str] | None, ask: Any) -> str:
+        try:
+            result = ask()
+        except Exception:
+            if images:
+                self._vision_status = "model_error"
+                self._vision_error = "Model request with an image failed; check the configured vision model and runtime."
+            raise
+        if images:
+            self._vision_status = "sent"
+            self._vision_error = ""
+            self._vision_last_sent = time.time()
+        return result
 
     def _ask_ollama(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         client = self._ollama_client(settings)
@@ -651,7 +679,8 @@ class AgentLoop:
 
         def ask(prompt: str) -> str:
             if images:
-                return client.chat([{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images)
+                return self._vision_request(images, lambda: client.chat(
+                    [{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images))
             try:
                 return client.chat([{"role": "user", "content": prompt}], system=system)
             except OllamaError:
@@ -667,7 +696,8 @@ class AgentLoop:
         images = self.vision_frame(settings)
         return self._research_and_decide(
             settings, state,
-            lambda prompt: client.decide(prompt + VISION_NOTE if images else prompt, system=system, images=images),
+            lambda prompt: self._vision_request(
+                images, lambda: client.decide(prompt + VISION_NOTE if images else prompt, system=system, images=images)),
             lambda: f"cortex:{client.last_model or settings.cortex.model or 'default'}",
         )
 

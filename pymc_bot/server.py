@@ -50,6 +50,12 @@ from pymc_bot.playtime import (
 )
 from pymc_bot.train import TrainConfig, TrainingService, default_run_name, list_models, read_card
 
+
+def _model_order(name: str) -> tuple[bool, str]:
+    """Feature installed Minecraftism models without inventing unavailable models."""
+    return ("minecraftism" not in name.casefold(), name.casefold())
+
+
 WEB_DIR = Path(__file__).resolve().parent / "web"
 OLLAMA_HEALTH_TTL = 15.0
 WEBSOCKET_STATUS_INTERVAL = 1.5
@@ -1067,6 +1073,7 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         finally:
             client.close()
+        models = sorted(models, key=lambda entry: _model_order(str(entry.get("id") or "")))
         return {
             "models": [str(entry.get("id")) for entry in models],
             "details": [
@@ -1095,7 +1102,8 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         finally:
             client.close()
-        return {"models": [m.get("name") for m in models]}
+        names = [m.get("name") for m in models if isinstance(m.get("name"), str)]
+        return {"models": sorted(names, key=_model_order)}
 
     @app.post("/api/ollama/pull")
     def ollama_pull(request: ModelRequest) -> dict[str, Any]:

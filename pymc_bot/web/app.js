@@ -277,6 +277,9 @@ function renderStatus(status) {
     ? `running · ${agent.decisions} decisions` + (last ? ` · last: ${last.action} ${JSON.stringify(last.params || {})}${last.source ? ` (${last.source})` : ''}` : '')
       + (last && last.thought ? ` · thinks: “${last.thought}”` : '') + (agent.memory && agent.memory.goal ? ` · goal: ${agent.memory.goal}` : '')
     : `idle · ${agent.decisions} decisions` + (agent.last_error ? ` · last error: ${agent.last_error}` : ''));
+  if (agent.vision && agent.vision.enabled) {
+    $('ai-status').textContent += ` · vision: ${agent.vision.status}` + (agent.vision.last_error ? ` (${agent.vision.last_error})` : '');
+  }
   $('btn-ai-start').disabled = agent.running || state !== 'connected';
   $('btn-ai-stop').disabled = !agent.running;
   $('btn-ai-step').disabled = state !== 'connected';
@@ -544,6 +547,7 @@ function fillForm(cfg) {
   check('cfg-record-turns', ag.record_turns ?? false);
   check('cfg-vision', ag.vision ?? false);
   $('cfg-vision-every').value = ag.vision_every ?? 2;
+  $('cfg-vision-width').value = ag.vision_width ?? 448;
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
@@ -662,6 +666,7 @@ function collectForm() {
       record_turns: $('cfg-record-turns').checked,
       vision: $('cfg-vision').checked,
       vision_every: Number($('cfg-vision-every').value) || 2,
+      vision_width: Number($('cfg-vision-width').value) || 448,
     },
     antiafk: {
       enabled: $('antiafk-enabled').checked,

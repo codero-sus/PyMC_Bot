@@ -347,7 +347,7 @@ def test_agent_attaches_a_picture_every_n_turns(store):
 
         def view_image(self, width):
             Eyes.calls += 1
-            return {"image": base64.b64encode(b"jpeg").decode(), "mime": "image/jpeg"}
+            return {"image": base64.b64encode(b"\xff\xd8\xffjpeg").decode(), "mime": "image/jpeg"}
 
     loop.bot._backend = Eyes()
     frames = [loop.vision_frame(store.settings) for _ in range(4)]
@@ -377,3 +377,91 @@ def test_panel_has_the_vision_switch():
     app = (ROOT / "pymc_bot" / "web" / "app.js").read_text(encoding="utf-8")
     assert 'id="cfg-vision"' in html and 'id="cfg-vision-every"' in html
     assert re.search(r"vision: \$\('cfg-vision'\)\.checked", app) and "vision_every" in app
+
+
+def test_vision_never_falls_back_to_text_completion_on_chat_error():
+    from pymc_bot.cortex import CortexError
+
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(404, json={"error": {"message": "vision chat unavailable"}})
+
+    client = CortexClient("http://cortex", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(CortexError):
+        client.decide("look", images=["/9j/AAAA"])
+    assert paths == ["/v1/chat/completions"]
+
+
+def test_vision_status_and_invalid_frame_are_visible_without_saving_images(store):
+    from pymc_bot.bot import MinecraftBot
+    from pymc_bot.events import EventLog
+
+    store.update({"agent": {"vision": True, "vision_every": 1}})
+    loop = AgentLoop(MinecraftBot(store, EventLog()), store)
+
+    class Eyes:
+        def view_image(self, width):
+            return {"image": base64.b64encode(b"not a picture").decode()}
+
+    loop.bot._backend = Eyes()
+    assert loop.vision_frame(store.settings) is None
+    assert loop.status["vision"]["status"] == "unavailable"
+    assert "JPEG or PNG" in loop.status["vision"]["last_error"]
+    frame = base64.b64encode(b"\xff\xd8\xffexample").decode()
+    loop.bot._backend.view_image = lambda _width: {"image": frame}
+    assert loop.vision_frame(store.settings) == [frame]
+    assert loop._vision_request([frame], lambda: "ok") == "ok"
+    status = loop.status["vision"]
+    assert status["status"] == "sent" and status["last_sent_at"]
+    assert frame not in json.dumps(status)
+    with pytest.raises(RuntimeError):
+        loop._vision_request([frame], lambda: (_ for _ in ()).throw(RuntimeError("model unavailable")))
+    assert loop.status["vision"]["status"] == "model_error"
+
+
+def test_vision_bridge_renderer_contract():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node unavailable")
+    subprocess.run([node, str(ROOT / "tests/fixtures/vision_bridge_harness.js"),
+                    str(ROOT / "pymc_bot/node/minecraft_bridge.js")], check=True, timeout=5)
+
+
+@pytest.mark.parametrize("provider", ["ollama", "cortex"])
+def test_minecraftism_vl_turn_sends_bot_frame_to_selected_model(store, provider):
+    from pymc_bot.bot import MinecraftBot
+    from pymc_bot.events import EventLog
+
+    store.update({"agent": {"vision": True, "vision_every": 1, "allow_web_search": False},
+                  "ollama": {"model": "minecraftism-vl"}, "cortex": {"model": "minecraftism-vl"}})
+    sent = []
+    frame = base64.b64encode(b"\xff\xd8\xffsample").decode()
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        if provider == "ollama":
+            return httpx.Response(200, json={"message": {"content": '{"action":"idle"}'}})
+        return httpx.Response(200, json={"model": "minecraftism-vl", "choices": [{"message": {"content": '{"action":"idle"}'}}]})
+
+    loop = AgentLoop(MinecraftBot(store, EventLog()), store)
+    loop.bot._backend = type("Eyes", (), {"view_image": lambda _self, width: {"image": frame},
+                                       "snapshot": lambda _self: {"username": "Bot"}})()
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    if provider == "ollama":
+        loop._ollama = OllamaClient("http://ollama", "minecraftism-vl", client=http)
+        decision = loop._ask_ollama(store.settings, {"username": "Bot"})
+        content = sent[0]["messages"][-1]
+        assert content["images"] == [frame] and VISION_NOTE.strip() in content["content"]
+    else:
+        loop._cortex = CortexClient("http://cortex", model="minecraftism-vl", client=http)
+        decision = loop._ask_cortex(store.settings, {"username": "Bot"})
+        content = sent[0]["messages"][-1]["content"]
+        assert content[-1]["image_url"]["url"] == f"data:image/jpeg;base64,{frame}"
+    assert sent[0]["model"] == "minecraftism-vl"
+    assert decision.action == "idle" and loop.status["vision"]["status"] == "sent"
+    http.close()

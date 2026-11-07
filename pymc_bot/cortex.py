@@ -325,7 +325,7 @@ class CortexClient:
         try:
             return self.chat([{"role": "user", "content": prompt}], system=system, images=images)
         except CortexError as exc:
-            if exc.status not in _FALLBACK_STATUSES:
+            if images or exc.status not in _FALLBACK_STATUSES:
                 raise
             return self.complete(prompt, system=system)
 

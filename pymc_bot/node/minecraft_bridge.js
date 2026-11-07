@@ -346,6 +346,7 @@ function stopPath() {
 
 /* ------------------------------------------------------------------ commands */
 async function cmdConnect(params) {
+  closeEyes();
   if (bot) {
     try {
       bot.quit('reconnecting');
@@ -614,6 +615,7 @@ function cmdJump() {
 }
 
 async function cmdDisconnect() {
+  closeEyes();
   stopStateLoop();
   if (bot) {
     try {
@@ -1991,8 +1993,29 @@ async function cmdShoot(params) {
  */
 const VISION_PACKAGES = 'npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.128.0';
 let eyes = null; // { bot, viewer, worldView, renderer, canvas, width, height }
+let visionQueue = Promise.resolve();
 
-function openEyes(width, height, viewDistance) {
+function disposeEyes(instance) {
+  if (!instance) return;
+  try {
+    if (instance.worldView && typeof instance.worldView.removeListenersFromBot === 'function') {
+      instance.worldView.removeListenersFromBot(instance.bot);
+    }
+  } catch (err) { /* renderer already detached */ }
+  try {
+    if (typeof instance.viewer?.resetAll === 'function') instance.viewer.resetAll();
+    for (const worker of instance.viewer?.world?.workers || []) worker.terminate();
+    if (typeof instance.renderer?.dispose === 'function') instance.renderer.dispose();
+  } catch (err) { /* renderer already closed */ }
+}
+
+function closeEyes() {
+  const previous = eyes;
+  eyes = null;
+  disposeEyes(previous);
+}
+
+async function openEyes(width, height, viewDistance) {
   let viewerLib;
   let createCanvas;
   let THREE;
@@ -2007,26 +2030,48 @@ function openEyes(width, height, viewDistance) {
   const canvas = createCanvas(width, height);
   const renderer = new THREE.WebGLRenderer({ canvas });
   const viewer = new viewerLib.Viewer(renderer);
-  if (viewer.setVersion(bot.version) === false) {
-    throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}`);
+  const owner = bot;
+  let worldView = null;
+  try {
+    let supported;
+    try { supported = viewer.setVersion(bot.version); } catch (err) {
+      throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}: ${err.message}`);
+    }
+    if (!supported) throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}`);
+    const center = bot.entity.position;
+    worldView = new viewerLib.WorldView(bot.world, viewDistance, center);
+    viewer.listen(worldView);
+    worldView.listenToBot(bot);
+    await withTimeout(worldView.init(center), 10000, 'loading the vision world');
+    checkAction();
+    if (bot !== owner) throw new Error('bot disconnected while starting vision');
+    return { bot: owner, viewer, worldView, renderer, canvas, width, height, viewerLib };
+  } catch (err) {
+    disposeEyes({ bot: owner, viewer, worldView, renderer });
+    throw err;
   }
-  const center = bot.entity.position;
-  const worldView = new viewerLib.WorldView(bot.world, viewDistance, center);
-  viewer.listen(worldView);
-  worldView.init(center);
-  return { bot, viewer, worldView, renderer, canvas, width, height };
 }
 
-async function cmdSnapshot(params) {
+function cmdSnapshot(params) {
+  const job = visionQueue.then(() => renderSnapshot(params));
+  visionQueue = job.catch(() => {});
+  return job;
+}
+
+async function renderSnapshot(params) {
+  checkAction();
   if (!bot || !bot.entity) throw new Error('not connected');
   const width = Math.max(64, Math.min(1024, Number(params.width || 448)));
   const height = Math.max(64, Math.min(1024, Number(params.height || Math.round(width * 9 / 16))));
   if (!eyes || eyes.bot !== bot || eyes.width !== width || eyes.height !== height) {
-    eyes = openEyes(width, height, Math.max(2, Math.min(8, Number(params.view_distance || 4))));
+    closeEyes();
+    eyes = await openEyes(width, height, Math.max(2, Math.min(8, Number(params.view_distance || 4))));
   }
-  const eye = bot.entity.position.offset(0, bot.entity.height || 1.62, 0);
-  eyes.worldView.updatePosition(bot.entity.position);
-  eyes.viewer.setFirstPersonCamera(eye, bot.entity.yaw, bot.entity.pitch);
+  const active = eyes;
+  await withTimeout(active.worldView.updatePosition(bot.entity.position), 10000, 'updating the vision world');
+  checkAction();
+  if (eyes !== active || bot !== active.bot) throw new Error('bot disconnected while rendering');
+  active.viewer.setFirstPersonCamera(bot.entity.position, bot.entity.yaw, bot.entity.pitch);
   // chunks are meshed in worker threads; give them a moment (the first picture can be sky only)
   const settle = Math.max(0, Math.min(5000, Number(params.settle_ms ?? 600)));
   if (eyes.viewer.world && typeof eyes.viewer.world.waitForChunksToRender === 'function') {
@@ -2034,10 +2079,13 @@ async function cmdSnapshot(params) {
   } else {
     await sleep(settle);
   }
-  if (typeof eyes.viewer.update === 'function') eyes.viewer.update();
-  eyes.renderer.render(eyes.viewer.scene, eyes.viewer.camera);
+  checkAction();
+  if (eyes !== active || bot !== active.bot) throw new Error('bot disconnected while rendering');
+  if (typeof active.viewer.update === 'function') active.viewer.update();
+  active.renderer.render(active.viewer.scene, active.viewer.camera);
   const quality = Math.max(0.3, Math.min(0.95, Number(params.quality || 0.8)));
-  const buffer = eyes.canvas.toBuffer('image/jpeg', { quality });
+  const buffer = await active.viewerLib.getBufferFromStream(active.canvas.createJPEGStream({ quality }));
+  checkAction();
   return {
     mime: 'image/jpeg',
     width,

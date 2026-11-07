@@ -291,6 +291,12 @@ public final class BotLink {
         } else if ("cortex".equals(brain)) {
             sb.append(" (").append(Json.text(Json.get(doc, "cortex", "settings", "model"), "default")).append(')');
         }
+        Object vision = Json.get(agent, "vision");
+        if (Boolean.TRUE.equals(Json.get(vision, "enabled"))) {
+            sb.append(" · vision ").append(Json.text(Json.get(vision, "status"), "waiting"));
+            String visionError = Json.text(Json.get(vision, "last_error"), "");
+            if (!visionError.isEmpty()) sb.append(" (").append(visionError).append(')');
+        }
         Object lastRule = Json.get(doc, "autopilot", "bot", "last_rule");
         if (lastRule != null && !Json.text(lastRule, "").isEmpty()) {
             sb.append(" (last: ").append(Json.text(lastRule, "")).append(" - ")

@@ -271,6 +271,9 @@
         <span>Let Ollama decide the bot's actions (brain = auto)</span>
       </label>
       <p class="note">When disabled (or unreachable) the bot runs a small built-in heuristic policy, so it always keeps playing.</p>
+      <p class="note"><strong>Minecraftism</strong> — codero-sus's Minecraft-focused model family, including VL vision editions.
+        Select an installed model below; Minecraftism models appear first in the list.
+        <a href="https://huggingface.co/mr-sus" target="_blank" rel="noopener noreferrer">Explore Minecraftism models</a>.</p>
       <div class="fields two">
         <label>Ollama URL <input id="cfg-ollama-url" type="text" placeholder="http://127.0.0.1:11434" /></label>
         <label>Model
@@ -365,6 +368,7 @@
           <label class="check" title="Saves every LLM turn (situation, reply, did it work) to llm_turns.jsonl next to the config - more training data for your own model"><input id="cfg-record-turns" type="checkbox" /> record LLM turns for training</label>
           <label class="check" title="For vision models (Minecraftism VL or any Ollama/Cortex model that reads images): the bot sends a picture of what it sees. Needs the optional vision packages for the bridge (docs/MINECRAFT_LLM.md)"><input id="cfg-vision" type="checkbox" /> let the model see (vision)</label>
           <label>Picture every N turns <input id="cfg-vision-every" type="number" min="1" max="20" step="1" /></label>
+          <label>Picture width (px) <input id="cfg-vision-width" type="number" min="64" max="1024" step="1" /></label>
         </div>
         <p class="note">Local memory keeps short addressed chat snippets, action outcomes and thoughts per bot/server.
           These may be sent to the configured AI provider. Turning it off does not delete saved memory.</p>

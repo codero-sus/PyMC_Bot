@@ -761,10 +761,19 @@ They compile native WebGL code, so they're an optional install:
 npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.128.0
 ```
 
-On a Linux server without a screen, run the bot under `xvfb-run` if WebGL can't start. Without these
-packages the bot logs one "no picture this turn" line and keeps playing on text alone. The rendered view
-is simpler than the real game (no entity models, basic lighting), but it shows terrain, water, lava and
-caves. Any other Ollama vision model (`qwen3-vl`, `gemma3`…) can use it too.
+Select an **installed vision-capable model** in the panel, then enable **let the model see**.
+In the mod, use `/pymcbot bot ai model <installed-name>` and `/pymcbot bot ai vision on`;
+`/pymcbot bot status` reports whether a frame was captured, sent, unavailable, or the image request
+failed. The panel exposes image cadence and width. “Sent” means the image request succeeded, not
+that the runtime interpreted the image correctly. Fleet brain overrides still apply.
+
+On a Linux server without a screen, run the bot under `xvfb-run` if WebGL can't start. Without the
+packages, a supported Minecraft version, or a working renderer, status reports vision unavailable
+and the bot uses text context only. The simplified renderer is not the player's actual game view and
+can omit or misrender details; its result depends on the installed viewer version. Images are sent to
+the configured model service; enable vision only if that is acceptable. Any other compatible Ollama
+or OpenAI-style vision model (`qwen3-vl`, `gemma3`…) can use it too. The screenshot controls used
+for recording training data are separate from this live bot renderer.
 
 Ollama runs Qwen3-VL GGUFs with a separate projector; if a VL edition only answers in text on your Ollama
 version, update Ollama, or run it with llama.cpp: `llama-server -m minecraftism-vl-4b.Q4_K_M.gguf

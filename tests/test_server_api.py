@@ -247,3 +247,22 @@ def test_status_is_refreshed_during_a_continuous_event_stream(tmp_path, monkeypa
                     break
         finally:
             producer.join(timeout=2)
+
+
+def test_ollama_models_prioritize_installed_minecraftism(client, monkeypatch):
+    from pymc_bot import server
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def list_models(self):
+            return [{"name": "other"}, {"name": "minecraftism-vl:latest"}, {"name": "Minecraftism:latest"}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "OllamaClient", Client)
+    models = client.get("/api/ollama/models").json()["models"]
+    assert set(models[:2]) == {"Minecraftism:latest", "minecraftism-vl:latest"}
+    assert models[-1] == "other"
