@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import dev.pymc.pymcb.Json;
@@ -52,6 +53,8 @@ public final class BotLink {
         return thread;
     });
 
+    private static final AtomicLong SKILL_GENERATION = new AtomicLong();
+
     private BotLink() {
     }
 
@@ -80,6 +83,7 @@ public final class BotLink {
 
     /** Stop requests get their own worker, even if skills and ordinary requests are busy. */
     public static void postPriority(String path, String body, Function<Object, String> describe) {
+        SKILL_GENERATION.incrementAndGet();
         send(STOP_POOL, "POST", path, body, describe);
     }
 
@@ -99,7 +103,13 @@ public final class BotLink {
                              Function<Object, String> describe) {
         String base = panel();
         String token = token();
+        boolean queuedSkill = pool == SKILL_POOL;
+        long generation = SKILL_GENERATION.get();
         pool.execute(() -> {
+            if (queuedSkill && generation != SKILL_GENERATION.get()) {
+                tell("Queued skill cancelled before it was sent.");
+                return;
+            }
             String message;
             try {
                 message = describe.apply(request(base, method, path, body, token));
@@ -111,12 +121,20 @@ public final class BotLink {
             } catch (IOException | RuntimeException exc) {
                 message = "panel: " + exc.getMessage();
             }
+            if (token != null && !token.isEmpty()) {
+                message = message.replace(token, "[redacted]");
+            }
             tell(message);
         });
     }
 
     /** Synchronous request (called on the worker thread). Errors carry the panel's {@code detail}. */
     static Object request(String base, String method, String path, String body, String token) throws IOException {
+        URI panelUri = URI.create(base);
+        if (panelUri.getUserInfo() != null || panelUri.getQuery() != null || panelUri.getFragment() != null
+                || !("http".equalsIgnoreCase(panelUri.getScheme()) || "https".equalsIgnoreCase(panelUri.getScheme()))) {
+            throw new IOException("invalid panel address: use an HTTP(S) URL without credentials, query, or fragment");
+        }
         HttpURLConnection connection = (HttpURLConnection) URI.create(base + path).toURL().openConnection();
         connection.setRequestMethod(method);
         connection.setConnectTimeout(3000);
@@ -164,6 +182,9 @@ public final class BotLink {
         if (code == 401) {
             throw new IOException(token == null || token.isEmpty() ? LOGIN_HINT
                     : "the panel did not accept the API token - make a new one and run /pymcbot bot token <token>");
+        }
+        if (code == 404 && "Not Found".equals(Json.text(Json.get(doc, "detail"), ""))) {
+            throw new IOException("API endpoint not found - check the panel address and that the mod and backend versions match");
         }
         if (code >= 400) {
             Object detail = Json.get(doc, "detail");
@@ -244,6 +265,16 @@ public final class BotLink {
             if (pos != null) {
                 sb.append(" · at ").append(round(Json.get(pos, "x"))).append(' ')
                         .append(round(Json.get(pos, "y"))).append(' ').append(round(Json.get(pos, "z")));
+            }
+        }
+        if (!"connected".equals(state)) {
+            String reason = Json.text(Json.get(bot, "last_error"), "");
+            if (!reason.isEmpty()) {
+                sb.append(" · ").append(reason.substring(0, Math.min(reason.length(), 240)));
+            }
+            Object reconnects = Json.get(doc, "stats", "reconnects");
+            if (reconnects != null) {
+                sb.append(" · reconnect attempts: ").append(Json.text(reconnects, "0"));
             }
         }
         Object agent = Json.get(doc, "agent");

@@ -792,6 +792,10 @@ class AgentLoop:
         actions sent by a human through the web panel pass
         ``enforce_permissions=False`` (attacking stays gated either way).
         """
+        with self.bot.action_scope():
+            return self._execute_scoped(decision, enforce_permissions)
+
+    def _execute_scoped(self, decision: Decision, enforce_permissions: bool) -> tuple[bool, str]:
         settings = self._settings()
         agent = settings.agent
         action = decision.action
@@ -879,7 +883,7 @@ class AgentLoop:
             if not player:
                 return False, "follow needs a player name"
             ok = self.bot.follow(player, seconds=min(30.0, max(6.0, self.decision_interval(settings) * 3)))
-            return ok, f"{'followed' if ok else 'could not follow'} {player}"
+            return ok, f"followed {player}" if ok else (self.bot.last_failure or f"could not follow {player}")
 
         if action in ("wander", "explore"):
             if blocked("movement", agent.allow_movement):
@@ -915,9 +919,12 @@ class AgentLoop:
         if action == "eat":
             return True, "ate" if self.bot.eat() else "had nothing to eat"
 
-        if action in ("stop", "idle"):
+        if action == "stop":
             self.bot.stop_moving()
-            return True, "stopped moving"
+            return True, "movement and task cancellation requested"
+        if action == "idle":
+            self.bot._stop_motion()  # noqa: SLF001 - agent is part of the bot controller
+            return True, "standing still"
 
         if action in SEARCH_ACTIONS:
             if blocked("search", self.can_search(settings)):

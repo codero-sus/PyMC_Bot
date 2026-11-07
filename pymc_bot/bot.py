@@ -11,6 +11,7 @@ Minecraft angle conventions used throughout:
 
 from __future__ import annotations
 
+import contextvars
 import math
 import random
 import threading
@@ -82,6 +83,11 @@ class MinecraftBot:
         self._lock = threading.RLock()
         self._motion_lock = threading.RLock()  # re-entrant: mine() -> wander() -> walk_to()
         self._cancel = threading.Event()
+        self._cancel_lock = threading.RLock()
+        self._cancel_generation = 0
+        self._action_generation: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+            f"action_generation_{id(self)}", default=None
+        )
         self._stop_requested = False
         self._configured_username: str | None = None
         self._connected_server: tuple[str, int] | None = None
@@ -159,21 +165,38 @@ class MinecraftBot:
     # ---------------------------------------------------------- cancellation
     def cancel_actions(self) -> None:
         """Ask any in-flight movement/building action to stop early."""
-        self._cancel.set()
-        backend = self.backend
-        if backend is not None and backend.connected:
-            cancel = getattr(backend, "cancel_actions", None)
-            if callable(cancel):
-                cancel()
-            else:
-                self._stop_motion()
+        with self._cancel_lock:
+            self._cancel_generation += 1
+            self._cancel.set()
+            backend = self.backend
+            if backend is not None and backend.connected:
+                cancel = getattr(backend, "cancel_actions", None)
+                if callable(cancel):
+                    cancel()
+                else:
+                    self._stop_motion()
 
     def clear_cancel(self) -> None:
-        self._cancel.clear()
+        with self._cancel_lock:
+            self._cancel.clear()
+
+    @contextmanager
+    def action_scope(self) -> Iterator[None]:
+        """Keep a cancellation generation for the entire action, including queued work."""
+        if self._action_generation.get() is not None:
+            yield
+            return
+        with self._cancel_lock:
+            token = self._action_generation.set(self._cancel_generation)
+        try:
+            yield
+        finally:
+            self._action_generation.reset(token)
 
     @property
     def cancelled(self) -> bool:
-        return self._cancel.is_set()
+        generation = self._action_generation.get()
+        return self._cancel.is_set() or (generation is not None and generation != self._cancel_generation)
 
     # ------------------------------------------------------------ properties
     @property
@@ -590,6 +613,8 @@ class MinecraftBot:
             self.log.add("Another movement action is already running.", "warn", "bot")
             return False
         try:
+            if self.cancelled:
+                return False
             start = time.monotonic()
             with self.activity("walk"), self._lock:
                 self._stats["actions"] += 1
@@ -704,6 +729,7 @@ class MinecraftBot:
         settings = self.store.settings
         seconds = seconds or settings.agent.action_timeout
         deadline = time.monotonic() + seconds
+        self.last_failure = ""
         self.log.add(f"Following {player}.", "info", "bot")
         return self._run_follow(player, deadline, distance)
 
@@ -712,6 +738,7 @@ class MinecraftBot:
             return self._follow_loop(player, deadline, distance)
 
     def _follow_loop(self, player: str, deadline: float, distance: float) -> bool:
+        failed_paths = 0
         while time.monotonic() < deadline:
             if self.cancelled:
                 break
@@ -720,13 +747,22 @@ class MinecraftBot:
                 self.log.add(f"{player} is not visible any more.", "warn", "bot")
                 return False
             if target["distance"] <= distance:
+                failed_paths = 0
                 self.look_at_player(player)
                 time.sleep(0.5)
                 continue
             remaining = max(1.0, min(6.0, deadline - time.monotonic()))
-            self.walk_to(target["x"], target["z"], target.get("y"), tolerance=distance, timeout=remaining)
+            if self.walk_to(target["x"], target["z"], target.get("y"), tolerance=distance, timeout=remaining):
+                failed_paths = 0
+            elif not self.cancelled:
+                failed_paths += 1
+                if failed_paths >= 2:
+                    self.last_failure = f"cannot reach {player}; the path may be blocked"
+                    self.log.add(self.last_failure, "warn", "bot")
+                    self._stop_motion()
+                    return False
         self._stop_motion()
-        return True
+        return not self.cancelled
 
     def look(self, yaw: float, pitch: float | None = None) -> bool:
         """Turn the head (yaw only when pitch is omitted)."""
@@ -892,9 +928,10 @@ class MinecraftBot:
         return True
 
     def stop_moving(self) -> bool:
-        self._stop_motion()
+        self.cancel_actions()
+        self.clear_cancel()
         self.touch_activity()
-        self.log.add("Stopped moving.", "info", "bot")
+        self.log.add("Movement and task cancellation requested.", "info", "bot")
         return True
 
     # ------------------------------------------------------------ interactions
@@ -943,13 +980,22 @@ class MinecraftBot:
     def _perform(self, cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 10.0,
                  activity: str | None = None, quiet: bool = False) -> tuple[bool, dict[str, Any]]:
         backend = self.backend
+        if self.cancelled:
+            self.last_failure = "action cancelled"
+            return False, {}
         if backend is None or not backend.connected:
             self.last_failure = "not connected"
             return False, {}
         with self.activity(activity or cmd):
-            ok, why, result = backend.perform(cmd, params or {}, timeout=timeout)
+            cancellable = getattr(backend, "perform_cancellable", None)
+            if callable(cancellable):
+                ok, why, result = cancellable(cmd, params or {}, timeout=timeout, cancel_check=lambda: self.cancelled)
+            else:
+                ok, why, result = backend.perform(cmd, params or {}, timeout=timeout)
             with self._lock:
                 self._stats["actions"] += 1
+        if self.cancelled:
+            ok, why = False, "action cancelled; an operation already sent may still complete"
         self.last_failure = "" if ok else why
         if not ok and not quiet:
             self.log.add(f"Could not {cmd.replace('_', ' ')}: {why}", "info", "bot")
@@ -1314,7 +1360,8 @@ class MinecraftBot:
             return False, f"unknown skill {name!r}"
         if not self.connected:
             return False, "not connected"
-        return skills.run_skill(self, skill, params)
+        with self.action_scope():
+            return skills.run_skill(self, skill, params)
 
     def note_skill(self, name: str, result: dict[str, Any]) -> None:
         """Keep the stats in step with what a bridge skill reported."""

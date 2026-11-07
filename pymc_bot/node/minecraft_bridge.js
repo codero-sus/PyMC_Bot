@@ -257,12 +257,12 @@ function buildState() {
     status: 'connected',
     username: bot.username,
     position: { x: Number(pos.x.toFixed(2)), y: Number(pos.y.toFixed(2)), z: Number(pos.z.toFixed(2)) },
-    yaw: Number(bot.entity.yaw.toFixed(4)),
-    pitch: Number(bot.entity.pitch.toFixed(4)),
+    yaw: Number(Math.atan2(Math.sin(Math.PI - bot.entity.yaw), Math.cos(Math.PI - bot.entity.yaw)).toFixed(4)),
+    pitch: Number((-bot.entity.pitch).toFixed(4)),
     on_ground: typeof bot.entity.onGround === 'boolean' ? bot.entity.onGround : null,
     vertical_velocity: bot.entity.velocity && Number.isFinite(bot.entity.velocity.y) ? Number(bot.entity.velocity.y.toFixed(3)) : null,
-    health: bot.health === undefined ? 20 : Number(bot.health),
-    food: bot.food === undefined ? 20 : Number(bot.food),
+    health: Number.isFinite(bot.health) ? bot.health : null,
+    food: Number.isFinite(bot.food) ? bot.food : null,
     dimension: bot.game && bot.game.dimension ? bot.game.dimension : 'overworld',
     time_of_day: timeOfDay < 13000 ? 'day' : 'night',
     players,
@@ -307,6 +307,11 @@ function startStateLoop() {
 function stopStateLoop() {
   if (stateTimer) clearInterval(stateTimer);
   stateTimer = null;
+}
+
+function checkAction() {
+  const signal = actionContext.getStore();
+  if (signal && signal.aborted) throw new Error('action cancelled');
 }
 
 function sleep(ms) {
@@ -474,9 +479,11 @@ function cmdControl(params) {
   return { control: name, state: Boolean(params.state) };
 }
 
-function cmdLook(params) {
+async function cmdLook(params) {
   if (!bot) throw new Error('not connected');
-  bot.look(Number(params.yaw) || 0, Number(params.pitch) || 0, Boolean(params.force));
+  const yaw = Number(params.yaw) || 0;
+  const pitch = Number(params.pitch) || 0;
+  await bot.look(Math.PI - yaw, -pitch, Boolean(params.force));
   return { looked: true };
 }
 
@@ -855,8 +862,10 @@ function countItem(name) {
 }
 
 async function holdItem(item, destination) {
+  checkAction();
   if (!item) return false;
   await withTimeout(bot.equip(item, destination || 'hand'), 5000, 'equipping');
+  checkAction();
   return true;
 }
 
@@ -875,6 +884,7 @@ function nearestBlocks(test, radius, count) {
 
 /** Walk until the block can be reached (looked at) - pathfinder when available. */
 async function reachBlock(pos, budgetMs) {
+  checkAction();
   const eye = bot.entity.position.offset(0, bot.entity.height || 1.62, 0);
   if (eye.distanceTo(pos.offset(0.5, 0.5, 0.5)) <= 4.2) return true;
   if (!pathfinder || !bot.pathfinder) return false;
@@ -882,13 +892,16 @@ async function reachBlock(pos, budgetMs) {
     await withTimeout(bot.pathfinder.goto(new goals.GoalLookAtBlock(pos, bot.world, { reach: 4 })), budgetMs || 20000, 'walking');
   } catch (err) {
     stopPath();
+    checkAction();
     const near = bot.entity.position.offset(0, bot.entity.height || 1.62, 0).distanceTo(pos.offset(0.5, 0.5, 0.5));
     return near <= 4.5;
   }
+  checkAction();
   return true;
 }
 
 async function reachEntity(entity, range, budgetMs) {
+  checkAction();
   if (bot.entity.position.distanceTo(entity.position) <= range) return true;
   if (!pathfinder || !bot.pathfinder) return false;
   try {
@@ -896,6 +909,7 @@ async function reachEntity(entity, range, budgetMs) {
   } catch (err) {
     stopPath();
   }
+  checkAction();
   return bot.entities[entity.id] !== undefined && bot.entity.position.distanceTo(entity.position) <= range + 0.5;
 }
 
@@ -927,6 +941,7 @@ async function digBlock(block) {
   const fresh = bot.blockAt(block.position);
   if (!fresh || fresh.name !== block.name) return false;
   await equipBestTool(fresh);
+  checkAction();
   if (fresh.harvestTools && !(bot.heldItem && fresh.harvestTools[bot.heldItem.type])) {
     throw new Error(`${fresh.name} needs a better tool`);
   }
@@ -964,12 +979,14 @@ async function mineMatching(test, count, radius, budgetMs, label) {
   let mined = 0;
   let lastError = null;
   while (mined < count && Date.now() < deadline) {
+    checkAction();
     const blocks = nearestBlocks(test, radius, 32).filter((b) => !skipped.has(b.position.toString()));
     if (!blocks.length) break;
     const block = blocks[0];
     try {
       if (await digBlock(block)) mined += 1;
     } catch (err) {
+      checkAction();
       lastError = err.message;
       skipped.add(block.position.toString());
       if (skipped.size > 6) break;
@@ -982,6 +999,7 @@ async function mineMatching(test, count, radius, budgetMs, label) {
 
 /** Place `item` so it fills `pos` (needs a solid neighbour to click on). */
 async function placeAt(pos, item) {
+  checkAction();
   const V = Vec3();
   const here = bot.blockAt(pos);
   if (!here || (here.boundingBox !== 'empty' && !['water', 'lava', 'short_grass', 'grass', 'tall_grass', 'snow'].includes(here.name))) return false;
@@ -994,6 +1012,7 @@ async function placeAt(pos, item) {
       await withTimeout(bot.placeBlock(ref, new V(-dx, -dy, -dz)), 4000, 'placing');
       return true;
     } catch (err) {
+      checkAction();
       const now = bot.blockAt(pos);
       if (now && now.boundingBox === 'block') return true; // placed, the server was just slow to confirm
     }
@@ -1148,6 +1167,7 @@ async function cmdChopTree(params) {
     try {
       if (await digBlock(block)) mined += 1;
     } catch (err) {
+      checkAction();
       /* too high to reach - leave the top of the tree */
     }
   }
@@ -1879,7 +1899,7 @@ async function cmdMaceSmash(params) {
     if (params.confirm !== true) throw new Error('dangerous mace setup; set confirm=true');
     const offhand = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
     if (!offhand || offhand.name !== 'totem_of_undying') throw new Error('equip a totem in the off-hand first');
-    if (bot.health === undefined || bot.health < 12) throw new Error('health too low or unknown');
+    if (!Number.isFinite(bot.health) || bot.health < 12) throw new Error('health too low or unknown');
     if (!bot.entity.onGround) throw new Error('start the setup on the ground');
     if (mode === 'tower') {
       await cmdPillarUp({ height: Math.max(1, Math.min(5, Number(params.height || 3))) });

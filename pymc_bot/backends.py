@@ -1551,6 +1551,10 @@ class NodeBridgeBackend(BaseBackend):
     def _apply_state(self, state: dict[str, Any]) -> None:
         snapshot = dict(self._snapshot)
         snapshot.update({key: value for key, value in state.items() if value is not None})
+        # Unknown vitals must not retain a stale healthy value used for safety decisions.
+        for key in ("health", "food"):
+            if key in state and state[key] is None:
+                snapshot[key] = None
         snapshot["backend"] = self.name
         snapshot["server"] = {"host": self._host, "port": self._port, "version": self._version, "username": self._username}
         connected_at = self._snapshot.get("connected_at")
@@ -1558,12 +1562,15 @@ class NodeBridgeBackend(BaseBackend):
         snapshot["uptime"] = round(time.time() - connected_at, 1) if connected_at else 0.0
         self._snapshot = snapshot
 
-    def _request(self, cmd: str, params: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+    def _request(self, cmd: str, params: dict[str, Any], timeout: float = 10.0,
+                 cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
         if not self._proc or self._proc.poll() is not None:
             raise BackendError("Minecraft bridge is not running.")
         assert self._proc.stdin is not None
         waiter: queue.Queue = queue.Queue(maxsize=1)
         with self._request_lock:
+            if cancel_check is not None and cancel_check():
+                raise BackendError("action cancelled before dispatch")
             request_id = self._next_id
             self._next_id += 1
             self._pending[request_id] = waiter
@@ -1662,10 +1669,14 @@ class NodeBridgeBackend(BaseBackend):
         return result
 
     def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
+        return self.perform_cancellable(cmd, params, timeout)
+
+    def perform_cancellable(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0,
+                            cancel_check: Callable[[], bool] | None = None) -> tuple[bool, str, dict[str, Any]]:
         if cmd not in self.LIFE_COMMANDS:
             return False, f"unknown action {cmd!r}", {}
         try:
-            response = self._request(cmd, params or {}, timeout=timeout)
+            response = self._request(cmd, params or {}, timeout=timeout, cancel_check=cancel_check)
         except BackendError as exc:
             return False, str(exc), {}
         if not response.get("ok"):

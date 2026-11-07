@@ -172,3 +172,12 @@ def test_stop_disconnects(live_bot: MinecraftBot):
     assert live_bot.connected is False
     assert live_bot.state == "disconnected"
     assert live_bot.snapshot()["status"] == "disconnected"
+
+
+def test_follow_stops_retrying_when_path_is_blocked(live_bot, monkeypatch):
+    calls = []
+    monkeypatch.setattr(live_bot, "find_player", lambda _name: {"x": 20, "y": 64, "z": 20, "distance": 20})
+    monkeypatch.setattr(live_bot, "walk_to", lambda *_args, **_kwargs: calls.append(1) and False)
+    assert not live_bot.follow("Steve", seconds=5)
+    assert len(calls) == 2
+    assert "path may be blocked" in live_bot.last_failure

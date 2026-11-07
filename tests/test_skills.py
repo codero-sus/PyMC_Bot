@@ -171,3 +171,50 @@ def test_smooth_move_combines_controls_and_cleans_up(live_bot):
     assert ("forward", False) in controls and ("left", False) in controls
     ok, _ = live_bot.skill("smooth_move", {"direction": "forward+back", "yaw": 90})
     assert not ok
+
+
+def test_stop_cancels_running_and_queued_skill_but_allows_new_work(live_bot):
+    import threading
+    from contextlib import contextmanager
+
+    first_started, release, second_queued = threading.Event(), threading.Event(), threading.Event()
+    seen = []
+    original_scope = live_bot.action_scope
+    count = 0
+    count_lock = threading.Lock()
+
+    @contextmanager
+    def scope():
+        nonlocal count
+        with original_scope():
+            with count_lock:
+                count += 1
+                if count == 2:
+                    second_queued.set()
+            yield
+
+    live_bot.action_scope = scope
+
+    def perform(cmd, params, timeout):
+        seen.append(cmd)
+        if len(seen) == 1:
+            first_started.set()
+            release.wait(3)
+        return True, "", {"message": "completed"}
+
+    live_bot.backend.perform = perform
+    results = []
+    first = threading.Thread(target=lambda: results.append(live_bot.skill("chop_tree")))
+    second = threading.Thread(target=lambda: results.append(live_bot.skill("chop_tree")))
+    first.start()
+    assert first_started.wait(2)
+    second.start()
+    assert second_queued.wait(2)
+    assert live_bot.stop_moving()
+    release.set()
+    first.join(3)
+    second.join(3)
+    assert not first.is_alive() and not second.is_alive()
+    assert len(seen) == 1 and len(results) == 2
+    assert all(not ok and "cancelled" in detail for ok, detail in results)
+    assert live_bot.skill("chop_tree")[0]

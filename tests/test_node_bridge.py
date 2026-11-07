@@ -305,3 +305,25 @@ def test_concurrent_bridge_requests_are_not_interleaved(bridge: NodeBridgeBacken
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         assert all(pool.map(request, range(150)))
+
+
+def test_real_bridge_translates_controller_look_conventions():
+    import subprocess
+
+    harness = Path(__file__).parent / "fixtures" / "look_bridge_harness.js"
+    bridge = Path(__file__).parents[1] / "pymc_bot" / "node" / "minecraft_bridge.js"
+    subprocess.run([NODE, str(harness), str(bridge)], check=True, timeout=5)
+
+
+def test_cancelled_command_is_not_dispatched(bridge: NodeBridgeBackend):
+    before = bridge._next_id
+    ok, reason, _ = bridge.perform_cancellable("eat", {}, cancel_check=lambda: True)
+    assert not ok and "cancelled before dispatch" in reason
+    assert bridge._next_id == before
+
+
+def test_unknown_vitals_do_not_retain_stale_health(bridge: NodeBridgeBackend):
+    bridge._apply_state({"health": 20, "food": 20})
+    bridge._apply_state({"health": None, "food": None})
+    assert bridge.snapshot()["health"] is None
+    assert bridge.snapshot()["food"] is None
