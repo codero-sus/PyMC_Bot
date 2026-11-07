@@ -1060,7 +1060,8 @@ unless you also stop it. Already-issued server operations cannot always be undon
 `/pymcbot bot ai model minecraftism` selects an **already installed** Ollama model
 name and sets the main AI mode to Ollama; replace `minecraftism` with your actual
 imported name. It does not download, train or verify a model, and fleet brain overrides
-still apply. `/pymcbot bot ai vision on` enables live vision for an installed VL model;
+still apply. `/pymcbot bot ai vl <installed-name>` selects an installed VL model and enables
+vision; `/pymcbot bot ai vision on` enables live vision for the currently configured model;
 `/pymcbot bot ai vision off` disables it. `/pymcbot bot status` shows the resolved brain,
 model and vision status. Vision requires the optional renderer and compatible model/runtime;
 see the [Minecraftism guide](docs/MINECRAFT_LLM.md#letting-the-bot-see-vl-editions).

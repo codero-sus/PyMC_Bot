@@ -283,6 +283,8 @@ public final class PymcCommands {
                 }))
                 .then(guarded("model").then(Mc.argument("name", StringArgumentType.greedyString())
                         .executes(ctx -> useOllamaModel(StringArgumentType.getString(ctx, "name")))))
+                .then(guarded("vl").then(Mc.argument("name", StringArgumentType.greedyString())
+                        .executes(ctx -> useOllamaVisionModel(StringArgumentType.getString(ctx, "name")))))
                 .then(literal("vision")
                         .then(guarded("on").executes(ctx -> visionEnabled(true)))
                         .then(guarded("off").executes(ctx -> visionEnabled(false))))
@@ -395,6 +397,18 @@ public final class PymcCommands {
         return 1;
     }
 
+    private static int useOllamaVisionModel(String raw) {
+        String name = raw.trim();
+        if (name.isEmpty() || name.length() > 200) {
+            BotLink.tell("provide an installed vision-capable Ollama model name");
+            return 0;
+        }
+        BotLink.put("/api/config", "{\"agent\":{\"mode\":\"ollama\",\"vision\":true},\"ollama\":{\"enabled\":true,\"model\":"
+                + BotLink.quote(name) + "}}", doc -> "VL model selected: " + name
+                + " (requires a compatible installed model and renderer; fleet overrides still apply)");
+        return 1;
+    }
+
     private static int visionEnabled(boolean on) {
         BotLink.put("/api/config", "{\"agent\":{\"vision\":" + on + "}}",
                 doc -> on ? "Vision ON: use an installed VL model and a compatible bot renderer; check /pymcbot bot status"
@@ -442,7 +456,7 @@ public final class PymcCommands {
                 + "/pymcbot bot do <skill> [key=value ...]   e.g. do chop_tree count=12, do mine_ore iron\n"
                 + "/pymcbot bot come | follow | stop | home | move <direction> [seconds]   /pymcbot bot say <text>\n"
                 + "/pymcbot bot auto on|off   (auto-sleep at night, eat, fight back, torches...)\n"
-                + "/pymcbot bot ai start|stop|model <installed-name>|vision on|off|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
+                + "/pymcbot bot ai start|stop|model <installed-name>|vl <installed-name>|vision on|off|memory on|off|clear   /pymcbot bot panel [url]   /pymcbot bot token <token>";
     }
 
     /** Shown by {@code /pymcbot} on its own. */

@@ -136,7 +136,7 @@ def test_mod_movement_and_model_configuration_contract(client: TestClient):
 
 
 def test_mod_vision_configuration_and_status_contract(client: TestClient):
-    assert 'literal("vision")' in COMMANDS
+    assert 'literal("vision")' in COMMANDS and 'guarded("vl")' in COMMANDS
     assert '\\"vision\\"' in COMMANDS
     assert 'Json.get(agent, "vision")' in BOTLINK
     response = client.put("/api/config", json={"agent": {"vision": True, "vision_width": 640}})

@@ -762,7 +762,8 @@ npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.1
 ```
 
 Select an **installed vision-capable model** in the panel, then enable **let the model see**.
-In the mod, use `/pymcbot bot ai model <installed-name>` and `/pymcbot bot ai vision on`;
+In the mod, use `/pymcbot bot ai vl <installed-name>` to select an installed Ollama VL model
+and enable vision, or use `/pymcbot bot ai model <installed-name>` and `/pymcbot bot ai vision on`;
 `/pymcbot bot status` reports whether a frame was captured, sent, unavailable, or the image request
 failed. The panel exposes image cadence and width. “Sent” means the image request succeeded, not
 that the runtime interpreted the image correctly. Fleet brain overrides still apply.
