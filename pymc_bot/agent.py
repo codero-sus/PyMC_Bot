@@ -1060,8 +1060,18 @@ class AgentLoop:
                 "inventory": "inventory", "chat": "chat"}.get(skill.permission)
         if flag is not None and blocked(flag, skills.allowed(skill, agent)):
             return False, f"{skill.name} needs {flag} to be allowed in settings"
+        if (skill.name == "throw_trident" or
+                (skill.name == "mace_smash" and str(params.get("mode") or "fall").lower() in ("tower", "wind_charge"))):
+            if blocked("risky_combat", agent.allow_risky_combat):
+                return False, "risky combat is disabled for AI (tridents may be lost and mace setups can cause fall damage)"
+        if skill.name == "mace_smash":
+            mode = str(params.get("mode") or "fall").lower()
+            if mode in ("tower", "wind_charge") and blocked("movement", agent.allow_movement):
+                return False, "mace setup needs movement to be allowed"
+            if mode == "tower" and blocked("building", agent.allow_building):
+                return False, "towering needs building to be allowed"
         target = short(str(params.get("mob") or params.get("animal") or params.get("target") or ""))
-        if skill.name in ("shoot", "hunt", "critical_hit") and target in AVOID_MOBS and not params.get("force"):
+        if skill.name in ("shoot", "hunt", "critical_hit", "throw_trident", "spear_attack", "throw_projectile", "mace_smash") and target in AVOID_MOBS and not params.get("force"):
             return False, f"not picking a fight with a {target}"
         return self.bot.skill(skill.name, params)
 

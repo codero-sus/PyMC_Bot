@@ -222,6 +222,7 @@ class AgentSettings(BaseModel):
     allow_inventory: bool = True
     allow_building: bool = False
     allow_mob_fighting: bool = True
+    allow_risky_combat: bool = False
     # Let the LLM look Minecraft things up (the "search" action; settings in "search").
     allow_web_search: bool = True
     greet_players: bool = True

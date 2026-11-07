@@ -519,6 +519,7 @@ function fillForm(cfg) {
   check('cfg-allow-inventory', ag.allow_inventory !== false);
   check('cfg-allow-building', Boolean(ag.allow_building));
   check('cfg-allow-mob-fighting', ag.allow_mob_fighting !== false);
+  check('cfg-allow-risky-combat', ag.allow_risky_combat === true);
   const se = cfg.search || {};
   check('cfg-search-enabled', se.enabled !== false && ag.allow_web_search !== false);
   set('cfg-search-provider', se.provider || 'minecraft_wiki');
@@ -648,6 +649,7 @@ function collectForm() {
       allow_inventory: $('cfg-allow-inventory').checked,
       allow_building: $('cfg-allow-building').checked,
       allow_mob_fighting: $('cfg-allow-mob-fighting').checked,
+      allow_risky_combat: $('cfg-allow-risky-combat').checked,
       allow_web_search: $('cfg-search-enabled').checked,
       greet_players: $('cfg-greet').checked,
       persona: selectedBehaviour(),

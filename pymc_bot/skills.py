@@ -160,6 +160,14 @@ SKILLS: tuple[Skill, ...] = (
           "activate", {"block": _p("str", ""), "x": _p("float"), "y": _p("float"), "z": _p("float")}, timeout=25.0,
           aliases=("open_door", "press", "use_block")),
     # ------------------------------------------------------------------ moving
+    Skill("smooth_move", "moving", "move while smoothly turning your view (directions joined with +)",
+          {"direction": "forward+left", "yaw": 90, "pitch": 0, "seconds": 0.8}, "movement",
+          params={"direction": _p("str", "forward"), "yaw": _p("float"), "pitch": _p("float", 0, -90, 90),
+                  "seconds": _p("float", 0.8, 0.1, 2.0)}, moves=False),
+    Skill("smooth_look", "moving", "turn your view smoothly to yaw and pitch in degrees",
+          {"yaw": 90, "pitch": 0, "seconds": 0.4}, "movement",
+          params={"yaw": _p("float"), "pitch": _p("float", 0, -90, 90),
+                  "seconds": _p("float", 0.4, 0.1, 2.0)}, moves=False),
     Skill("set_home", "moving", "remember this spot as home", {}, "none", moves=False, aliases=("sethome",)),
     Skill("go_home", "moving", "walk back home", {}, "movement", aliases=("home",), timeout=120.0),
     Skill("set_waypoint", "moving", "remember this spot under a name", {"name": "mine"}, "none",
@@ -181,6 +189,18 @@ SKILLS: tuple[Skill, ...] = (
     Skill("critical_hit", "combat", "attempt a falling melee hit on a nearby mob (not guaranteed critical)",
           {"mob": "zombie"}, "fighting", "critical_hit", {"mob": _p("str", "")}, timeout=5.0,
           aliases=("crit",)),
+    Skill("throw_trident", "combat", "attempt to throw a trident at a hostile mob (may lose it)",
+          {"mob": "zombie", "confirm": True}, "fighting", "throw_trident",
+          {"mob": _p("str", ""), "confirm": _p("bool", False)}, timeout=8.0),
+    Skill("spear_attack", "combat", "attempt a close-range spear hit on a hostile mob",
+          {"mob": "zombie"}, "fighting", "spear_attack", {"mob": _p("str", "")}, timeout=8.0),
+    Skill("throw_projectile", "combat", "throw a snowball or egg at a hostile mob",
+          {"mob": "zombie", "item": "snowball"}, "fighting", "throw_projectile",
+          {"mob": _p("str", ""), "item": _p("str", "snowball")}, timeout=8.0),
+    Skill("mace_smash", "combat", "attempt a falling mace hit; tower or wind_charge modes are risky",
+          {"mob": "zombie", "mode": "fall"}, "fighting", "mace_smash",
+          {"mob": _p("str", ""), "mode": _p("str", "fall"), "height": _p("int", 3, 1, 5),
+           "confirm": _p("bool", False)}, timeout=25.0),
     Skill("shoot", "combat", "shoot a mob with a bow or crossbow", {"mob": "skeleton"}, "fighting", "shoot",
           {"mob": _p("str", ""), "range": _p("int", 24, 4, 48), "shots": _p("int", 3, 1, 10),
            "weapon": _p("str", "")}, timeout=40.0,
@@ -374,6 +394,27 @@ def _goto_place(bot: MinecraftBot, name: str) -> tuple[bool, str]:
     return ok, f"walked to {name}" if ok else (bot.last_failure or f"could not get to {name}")
 
 
+def _skill_smooth_move(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
+    controls = set(str(params.get("direction") or "").split("+"))
+    allowed_controls = {"forward", "back", "left", "right", "jump", "sneak", "sprint"}
+    yaw, pitch, seconds = params.get("yaw"), params.get("pitch", 0.0), params.get("seconds", 0.8)
+    if not controls or not controls <= allowed_controls or {"left", "right"} <= controls or {"forward", "back"} <= controls:
+        return False, "direction must contain non-opposing movement controls separated by +"
+    if yaw is None or not all(math.isfinite(float(v)) for v in (yaw, pitch, seconds)):
+        return False, "smooth_move needs a finite yaw, pitch and duration"
+    ok = bot.controlled_move({name: True for name in controls}, float(seconds),
+                             look=(math.radians(float(yaw)), math.radians(float(pitch))))
+    return ok, "moved and turned smoothly" if ok else "could not move smoothly"
+
+
+def _skill_smooth_look(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
+    yaw, pitch, seconds = params.get("yaw"), params.get("pitch", 0.0), params.get("seconds", 0.4)
+    if yaw is None or not all(math.isfinite(float(v)) for v in (yaw, pitch, seconds)):
+        return False, "smooth_look needs a finite yaw, pitch and duration"
+    ok = bot.smooth_look(math.radians(float(yaw)), math.radians(float(pitch)), float(seconds))
+    return ok, "looked around smoothly" if ok else "could not turn smoothly"
+
+
 def _skill_set_home(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
     return _set_place(bot, "home")
 
@@ -565,6 +606,8 @@ _PYTHON_SKILLS = {
     "come": _skill_come,
     "equip_weapon": _skill_equip_weapon,
     "equip_tool": _skill_equip_tool,
+    "smooth_move": _skill_smooth_move,
+    "smooth_look": _skill_smooth_look,
     "totem": _skill_totem,
     "shield": _skill_shield,
     "toss_junk": _skill_toss_junk,

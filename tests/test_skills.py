@@ -131,3 +131,43 @@ def test_shield_preserves_totem_at_low_health(live_bot):
     assert not ok and "keeping the totem" in detail and not calls
     assert run_skill(live_bot, get("shield"), {"force": True})[0]
     assert [call[0] for call in calls] == ["equip", "use_item"]
+
+
+def test_weapon_skills_are_exposed_and_fail_honestly_in_simulator(live_bot):
+    for name in ("throw_trident", "spear_attack", "throw_projectile", "mace_smash"):
+        assert skills.get(name) is not None
+        ok, detail = live_bot.skill(name, {"confirm": True})
+        assert not ok and "not simulated" in detail
+
+
+def test_smooth_look_interpolates_and_preserves_pitch_on_yaw_only(live_bot):
+    values = []
+    live_bot.backend.look = lambda yaw, pitch: values.append((yaw, pitch))
+    ok, detail = live_bot.skill("smooth_look", {"yaw": 90, "pitch": 20, "seconds": 0.1})
+    assert ok, detail
+    assert len(values) >= 2
+    assert abs(values[-1][0] - __import__("math").pi / 2) < 0.001
+    assert abs(values[-1][1] - __import__("math").radians(20)) < 0.001
+
+
+def test_risky_ai_combat_requires_opt_in(live_bot, store, log):
+    agent = AgentLoop(live_bot, store, log)
+    for name, params in (("throw_trident", {"confirm": True}), ("mace_smash", {"mode": "wind_charge", "confirm": True})):
+        ok, reason = agent.execute(Decision(name, params, source="ollama"))
+        assert not ok and "risky combat is disabled" in reason
+    store.update({"agent": {"allow_risky_combat": True, "allow_building": False}})
+    ok, reason = agent.execute(Decision("mace_smash", {"mode": "tower", "confirm": True}, source="ollama"))
+    assert not ok and "building" in reason
+
+
+def test_smooth_move_combines_controls_and_cleans_up(live_bot):
+    values, controls = [], []
+    live_bot.backend.look = lambda yaw, pitch: values.append((yaw, pitch))
+    live_bot.backend.set_control = lambda name, state: controls.append((name, state))
+    ok, detail = live_bot.skill("smooth_move", {"direction": "forward+left", "yaw": 90, "seconds": 0.1})
+    assert ok, detail
+    assert len(values) >= 2
+    assert ("forward", True) in controls and ("left", True) in controls
+    assert ("forward", False) in controls and ("left", False) in controls
+    ok, _ = live_bot.skill("smooth_move", {"direction": "forward+back", "yaw": 90})
+    assert not ok

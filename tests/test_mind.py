@@ -309,3 +309,13 @@ def test_body_awareness_mentions_immediate_dangers():
     assert "falling" in prompt and "low air (4/20)" in prompt and "on fire" in prompt
     exact = json.loads(prompt.split("EXACT DATA (JSON):", 1)[1].split("\n", 1)[0])
     assert exact["on_ground"] is False and exact["vertical_velocity"] == -0.4
+
+
+def test_projectile_awareness_requires_approaching_velocity():
+    state = {**STATE, "entities": [
+        {"type": "minecraft:arrow", "dx": 5, "dy": 0, "dz": 0, "dist": 5, "vx": -0.5, "vy": 0, "vz": 0},
+        {"type": "minecraft:fireball", "dx": 5, "dy": 0, "dz": 0, "dist": 5, "vx": 0.5, "vy": 0, "vz": 0},
+    ]}
+    text = build_turn_prompt(state, "Alex", Mind(), [], ALL_ON)
+    assert "POSSIBLE INCOMING PROJECTILES" in text and "arrow 5 m" in text
+    assert "fireball 5 m" not in text

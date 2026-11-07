@@ -204,6 +204,9 @@ function buildState() {
       dx: Number(ex.toFixed(2)),
       dy: Number(ey.toFixed(2)),
       dz: Number(ez.toFixed(2)),
+      vx: entity.velocity && Number.isFinite(entity.velocity.x) ? Number(entity.velocity.x.toFixed(3)) : null,
+      vy: entity.velocity && Number.isFinite(entity.velocity.y) ? Number(entity.velocity.y.toFixed(3)) : null,
+      vz: entity.velocity && Number.isFinite(entity.velocity.z) ? Number(entity.velocity.z.toFixed(3)) : null,
       dist: Number(Math.sqrt(ex * ex + ey * ey + ez * ez).toFixed(2)),
       hostile: !isPlayer && HOSTILE_ENTITIES.has(kind),
       player: isPlayer,
@@ -1777,6 +1780,118 @@ async function cmdCriticalHit(params) {
   return { target: mobName(target), message: `attempted a falling hit on ${mobName(target)} (critical not confirmed)` };
 }
 
+function combatTarget(params, range) {
+  const wanted = cleanName(params.mob);
+  const target = entitiesNear((e) => {
+    if (e.type === 'player' || e.username || e.name === 'item') return false;
+    const name = mobName(e);
+    return HOSTILE_ENTITIES.has(name) && (!wanted || name === wanted);
+  }, range)[0];
+  if (!target) throw new Error('no matching hostile mob in range');
+  return target;
+}
+
+async function aimAtMob(target, compensation = 0) {
+  await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + compensation, 0), true);
+}
+
+async function cmdThrowTrident(params) {
+  need();
+  if (params.confirm !== true) throw new Error('throwing may lose the trident; set confirm=true');
+  if (bot.entity.isInWater !== false || bot.isRaining !== false) {
+    throw new Error('trident throw requires known dry weather and dry ground; Riptide may launch the bot');
+  }
+  const trident = findItem((it) => it.name === 'trident');
+  if (!trident) throw new Error('I need a trident');
+  const target = combatTarget(params, 24);
+  await holdItem(trident);
+  const distance = bot.entity.position.distanceTo(target.position);
+  await aimAtMob(target, 0.0025 * distance * distance);
+  bot.activateItem();
+  try {
+    await sleep(1100);
+    if (!bot.entities[target.id] || target.isValid === false) throw new Error('target no longer visible; trident may still be released');
+    await aimAtMob(target, 0.0025 * distance * distance);
+  } finally {
+    bot.deactivateItem();
+  }
+  return { target: mobName(target), message: 'released the trident; hit and return are not confirmed' };
+}
+
+async function cmdSpearAttack(params) {
+  need();
+  const spear = findItem((it) => it.name === 'spear' || it.name.endsWith('_spear'));
+  if (!spear) throw new Error('I need a spear supported by this Minecraft version');
+  const target = combatTarget(params, 3);
+  await holdItem(spear);
+  await aimAtMob(target);
+  bot.attack(target);
+  return { target: mobName(target), message: 'attempted a spear hit; damage is not confirmed' };
+}
+
+async function cmdThrowProjectile(params) {
+  need();
+  const name = cleanName(params.item) || 'snowball';
+  if (!['snowball', 'egg'].includes(name)) throw new Error('projectile must be snowball or egg');
+  const projectile = findItem((it) => it.name === name);
+  if (!projectile) throw new Error(`I need a ${name}`);
+  const target = combatTarget(params, 20);
+  await holdItem(projectile);
+  await aimAtMob(target, 0.003 * Math.pow(bot.entity.position.distanceTo(target.position), 2));
+  bot.activateItem();
+  bot.deactivateItem();
+  return { target: mobName(target), message: `threw a ${name}; hit is not confirmed` };
+}
+
+async function cmdMaceSmash(params) {
+  need();
+  const mode = cleanName(params.mode) || 'fall';
+  if (!['fall', 'tower', 'wind_charge'].includes(mode)) throw new Error('mode must be fall, tower or wind_charge');
+  const mace = findItem((it) => it.name === 'mace');
+  if (!mace) throw new Error('I need a mace');
+  const target = combatTarget(params, mode === 'fall' ? 4 : 6);
+  if (mode !== 'fall') {
+    if (params.confirm !== true) throw new Error('dangerous mace setup; set confirm=true');
+    const offhand = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+    if (!offhand || offhand.name !== 'totem_of_undying') throw new Error('equip a totem in the off-hand first');
+    if (bot.health === undefined || bot.health < 12) throw new Error('health too low or unknown');
+    if (!bot.entity.onGround) throw new Error('start the setup on the ground');
+    if (mode === 'tower') {
+      await cmdPillarUp({ height: Math.max(1, Math.min(5, Number(params.height || 3))) });
+    } else {
+      const charge = findItem((it) => it.name === 'wind_charge');
+      if (!charge) throw new Error('I need a wind charge');
+      await holdItem(charge);
+      await bot.look(bot.entity.yaw, -Math.PI / 2, true);
+      bot.activateItem();
+      bot.deactivateItem();
+    }
+  }
+  await holdItem(mace);
+  const deadline = Date.now() + 5000;
+  let hit = false;
+  try {
+    while (Date.now() < deadline) {
+      if (!bot.entities[target.id] || target.isValid === false) throw new Error('target no longer visible');
+      const distance = bot.entity.position.distanceTo(target.position);
+      await aimAtMob(target);
+      if (mode === 'tower') bot.setControlState('forward', distance > 2.5);
+      const velocity = bot.entity.velocity;
+      if (!bot.entity.onGround && velocity && velocity.y < -0.08 && distance <= 3) {
+        bot.attack(target);
+        hit = true;
+        break;
+      }
+      if (mode === 'fall' && bot.entity.onGround) break;
+      await sleep(50);
+    }
+  } finally {
+    if (mode === 'tower') bot.setControlState('forward', false);
+  }
+  if (!hit) throw new Error('could not reach the target while falling');
+  return { target: mobName(target), message: 'attempted a falling mace hit; smash damage is not confirmed' };
+}
+
 async function cmdShoot(params) {
   need();
   const weapon = cleanName(params.weapon);
@@ -1947,6 +2062,10 @@ const COMMANDS = {
   dismount: cmdDismount,
   shoot: cmdShoot,
   critical_hit: cmdCriticalHit,
+  throw_trident: cmdThrowTrident,
+  spear_attack: cmdSpearAttack,
+  throw_projectile: cmdThrowProjectile,
+  mace_smash: cmdMaceSmash,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),

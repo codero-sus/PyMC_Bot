@@ -576,6 +576,21 @@ def build_turn_prompt(
         lines.append("Also online (far away): " + ", ".join(_clean(n) for n in elsewhere) + ".")
 
     entities = state.get("entities") or []
+    projectiles = []
+    for entity in entities:
+        kind = str(entity.get("type", "")).removeprefix("minecraft:")
+        if kind not in {"arrow", "spectral_arrow", "trident", "fireball", "small_fireball", "wind_charge", "snowball", "egg"}:
+            continue
+        try:
+            distance = float(entity.get("dist", 99))
+            approach = sum(float(entity.get(axis, 0)) * float(entity[velocity])
+                           for axis, velocity in (("dx", "vx"), ("dy", "vy"), ("dz", "vz")))
+        except (TypeError, ValueError, KeyError):
+            continue
+        if distance <= 16 and approach < -0.01:
+            projectiles.append(f"{kind} {distance:.0f} m")
+    if projectiles:
+        lines.append("POSSIBLE INCOMING PROJECTILES (direction only; impact uncertain): " + ", ".join(projectiles[:4]) + ".")
     hostile = [e for e in entities if e.get("hostile") and float(e.get("dist") or 99) <= 20]
     if hostile:
         threats = ", ".join(

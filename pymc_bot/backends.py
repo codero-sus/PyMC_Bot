@@ -441,6 +441,8 @@ class SimulatedBackend(BaseBackend):
         snap["position"] = {"x": round(self._position[0], 2), "y": round(self._position[1], 2), "z": round(self._position[2], 2)}
         snap["yaw"] = round(self._yaw, 4)
         snap["pitch"] = round(self._pitch, 4)
+        snap["on_ground"] = self._position[1] <= self.GROUND_Y
+        snap["vertical_velocity"] = round(self._velocity_y, 3)
         snap["health"] = round(self._health, 1)
         snap["food"] = round(self._food, 1)
         snap["players"] = self._player_list()
@@ -1019,6 +1021,18 @@ class SimulatedBackend(BaseBackend):
             self._mobs.remove(target)
             self._respawns.append((time.monotonic() + 60.0, target))
         return {"target": short(target["type"]), "message": "simulated a falling hit (critical not confirmed)"}
+
+    def _do_throw_trident(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("trident physics are not simulated; use a compatible real Minecraft server")
+
+    def _do_spear_attack(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("spear mechanics are not simulated; use a compatible real Minecraft server")
+
+    def _do_throw_projectile(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("projectile physics are not simulated; use a compatible real Minecraft server")
+
+    def _do_mace_smash(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("mace and wind-charge physics are not simulated; use a compatible real Minecraft server")
 
     def _do_shoot(self, params: dict[str, Any]) -> dict[str, Any]:
         weapon = short(params.get("weapon") or "")

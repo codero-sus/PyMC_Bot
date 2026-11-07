@@ -728,11 +728,44 @@ class MinecraftBot:
         if backend is None or not backend.connected or pose is None:
             return False
         try:
-            backend.look(yaw, pose[3] if pitch is None else pitch)
+            backend.look(yaw, float(self.snapshot().get("pitch") or 0.0) if pitch is None else pitch)
         except BackendError:
             return False
         self.touch_activity()
         return True
+
+    def smooth_look(self, yaw: float, pitch: float, seconds: float = 0.4) -> bool:
+        """Ease the head to a direction, without blocking the game thread."""
+        if not all(math.isfinite(value) for value in (yaw, pitch, seconds)):
+            return False
+        if not self._motion_lock.acquire(blocking=False):
+            return False
+        try:
+            backend = self.backend
+            if backend is None or not backend.connected or self.cancelled:
+                return False
+            snap = self.snapshot()
+            start_yaw, start_pitch = float(snap.get("yaw") or 0), float(snap.get("pitch") or 0)
+            yaw_delta = wrap_angle(yaw - start_yaw)
+            pitch = max(-math.pi / 2, min(math.pi / 2, pitch))
+            duration = max(0.1, min(2.0, seconds))
+            start = time.monotonic()
+            with self.activity("look"):
+                while True:
+                    if self.cancelled or not backend.connected:
+                        return False
+                    fraction = min(1.0, (time.monotonic() - start) / duration)
+                    eased = fraction * fraction * (3.0 - 2.0 * fraction)
+                    backend.look(start_yaw + yaw_delta * eased, start_pitch + (pitch - start_pitch) * eased)
+                    if fraction >= 1.0:
+                        break
+                    time.sleep(min(0.05, duration * (1.0 - fraction)))
+            self.touch_activity()
+            return True
+        except BackendError:
+            return False
+        finally:
+            self._motion_lock.release()
 
     def swing_arm(self) -> bool:
         """Swing the arm (a very cheap 'I am here' signal)."""
@@ -757,16 +790,18 @@ class MinecraftBot:
         self.touch_activity()
         return True
 
-    def controlled_move(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
+    def controlled_move(self, controls: dict[str, bool], seconds: float = 0.4,
+                        look: tuple[float, float] | None = None) -> bool:
         """Short manual movement without interfering with another movement job."""
         if not self._motion_lock.acquire(blocking=False):
             return False
         try:
-            return self.control_burst(controls, seconds)
+            return self.control_burst(controls, seconds, look=look)
         finally:
             self._motion_lock.release()
 
-    def control_burst(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
+    def control_burst(self, controls: dict[str, bool], seconds: float = 0.4,
+                      look: tuple[float, float] | None = None) -> bool:
         """Hold a set of controls for a short burst, then release them.
 
         Used by the trained playtime policy: the model predicts what the recorded player
@@ -783,6 +818,14 @@ class MinecraftBot:
         if self.cancelled:
             return False
         started: list[str] = []
+        start_yaw = start_pitch = yaw_delta = target_pitch = 0.0
+        if look is not None:
+            if not all(math.isfinite(v) for v in look):
+                return False
+            snap = self.snapshot()
+            start_yaw, start_pitch = float(snap.get("yaw") or 0), float(snap.get("pitch") or 0)
+            yaw_delta = wrap_angle(look[0] - start_yaw)
+            target_pitch = max(-math.pi / 2, min(math.pi / 2, look[1]))
         try:
             with self.activity("controls"):
                 with self._lock:
@@ -791,11 +834,18 @@ class MinecraftBot:
                         started.append(name)
                         backend.set_control(name, state)
                     self._stats["actions"] += 1
-                deadline = time.monotonic() + max(0.05, min(10.0, seconds))
-                while time.monotonic() < deadline:
-                    if self.cancelled:
+                duration = max(0.05, min(10.0, seconds))
+                start = time.monotonic()
+                while True:
+                    if self.cancelled or not backend.connected:
+                        return False
+                    fraction = min(1.0, (time.monotonic() - start) / duration)
+                    if look is not None:
+                        eased = fraction * fraction * (3.0 - 2.0 * fraction)
+                        backend.look(start_yaw + yaw_delta * eased, start_pitch + (target_pitch - start_pitch) * eased)
+                    if fraction >= 1.0:
                         break
-                    time.sleep(0.05)
+                    time.sleep(min(0.05, duration * (1.0 - fraction)))
         except BackendError:
             return False
         finally:

@@ -1026,8 +1026,10 @@ template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies
 
 With the panel running, `/pymcbot bot move left 0.6` sends a short movement burst
 (`forward`, `back`, `left`, `right`, `jump`, `sneak`, or `sprint`; 0.1–2 seconds).
-The AI can combine controls using the `move_controls` action. These are short key holds,
-not a promise of smooth pathfinding or anti-cheat compatibility.
+The AI can combine controls using the `move_controls` action. To move and ease the view
+at the same time, try `/pymcbot bot do smooth_move direction=forward+left yaw=90 pitch=0 seconds=0.8`.
+`smooth_look` turns without moving; yaw and pitch are in degrees. These are short key holds,
+not a promise of obstacle avoidance, smooth pathfinding or anti-cheat compatibility.
 
 `/pymcbot bot do shoot mob=skeleton weapon=bow` also accepts `weapon=crossbow`.
 `/pymcbot bot do critical_hit mob=zombie` attempts one falling melee hit against a
@@ -1035,8 +1037,17 @@ nearby mob; only the server determines whether it was a critical hit. The `shiel
 skill preserves an equipped totem when health is low or unknown unless `force=true`.
 The existing `totem` and `pillar_up` skills remain available. These controls require
 items and a compatible Minecraft/bridge version; damage, range and line of sight are
-server-dependent. They have not been validated as automated mace/wind-charge, spear,
-trident or projectile-dodging combos.
+server-dependent. Experimental attempts are also available as `throw_projectile` (snowball
+or egg), `spear_attack`, `throw_trident` (requires `confirm=true`, and the trident may be
+lost), and `mace_smash` (`mode=fall`, `tower`, or `wind_charge`). Tower and wind-charge
+setups require `confirm=true`, health of at least 12, and a totem already in the off hand;
+tower also needs building blocks. The panel's **allow risky combat for AI** switch is off
+by default and must be enabled for the AI to choose these setups or throw a trident.
+Wind charges can affect the world and nearby entities; a totem is not a guarantee of survival.
+The bot can report apparently approaching projectiles from observed velocity, but does not
+reliably dodge them. These mechanics are attempts, not confirmed hits or successful combos;
+server/version compatibility and live gameplay still need testing. The simulator explicitly
+reports the new projectile and mace mechanics as unsupported rather than faking their results.
 
 `/pymcbot bot ai model minecraftism` selects an **already installed** Ollama model
 name and sets the main AI mode to Ollama; replace `minecraftism` with your actual
