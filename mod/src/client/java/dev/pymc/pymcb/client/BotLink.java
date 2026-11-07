@@ -96,7 +96,11 @@ public final class BotLink {
     }
 
     static void send(String method, String path, String body, Function<Object, String> describe) {
-        send("/api/bot/skill".equals(path) ? SKILL_POOL : POOL, method, path, body, describe);
+        send(longRunning(path) ? SKILL_POOL : POOL, method, path, body, describe);
+    }
+
+    private static boolean longRunning(String path) {
+        return "/api/bot/skill".equals(path) || "/api/bot/action".equals(path);
     }
 
     private static void send(ExecutorService pool, String method, String path, String body,
@@ -117,7 +121,7 @@ public final class BotLink {
                 message = "the PyMC Bot panel is not running at " + base
                         + " - start it with: python -m pymc_bot   (other PC? /pymcbot bot panel <url>)";
             } catch (SocketTimeoutException exc) {
-                message = "the panel at " + base + " did not answer in time";
+                message = "the panel at " + base + " did not answer in time; the task may still be running - check status or stop it";
             } catch (IOException | RuntimeException exc) {
                 message = "panel: " + exc.getMessage();
             }
@@ -138,7 +142,7 @@ public final class BotLink {
         HttpURLConnection connection = (HttpURLConnection) URI.create(base + path).toURL().openConnection();
         connection.setRequestMethod(method);
         connection.setConnectTimeout(3000);
-        connection.setReadTimeout("/api/bot/skill".equals(path) ? 180_000 : 15_000); // skills can take a while
+        connection.setReadTimeout(longRunning(path) ? 180_000 : 15_000); // actions can take a while
         connection.setInstanceFollowRedirects(false); // never carry the token to another address
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("User-Agent", "PyMC-Bot-mod");

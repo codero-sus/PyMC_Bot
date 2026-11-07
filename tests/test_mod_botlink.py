@@ -110,7 +110,8 @@ def test_the_fields_the_mod_reads_are_there(client: TestClient):
 
 def test_mod_isolates_skills_and_stop_and_rejects_redirects():
     # Source-level regression checks: running Minecraft / compiling Java needs the mod toolchain.
-    assert '"/api/bot/skill".equals(path) ? SKILL_POOL : POOL' in BOTLINK
+    assert 'longRunning(path) ? SKILL_POOL : POOL' in BOTLINK
+    assert '"/api/bot/skill".equals(path) || "/api/bot/action".equals(path)' in BOTLINK
     assert 'send(STOP_POOL, "POST", path, body, describe)' in BOTLINK
     assert 'BotLink.postPriority("/api/ai/stop"' in COMMANDS
     assert 'BotLink.postPriority("/api/bot/action"' in COMMANDS

@@ -40,13 +40,14 @@ public class BotLinkHarness {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(Executors.newCachedThreadPool(r -> { Thread t = new Thread(r); t.setDaemon(true); return t; }));
         CountDownLatch started = new CountDownLatch(2), release = new CountDownLatch(1), stopped = new CountDownLatch(1);
-        AtomicInteger skills = new AtomicInteger(), redirects = new AtomicInteger();
+        AtomicInteger skills = new AtomicInteger(), actions = new AtomicInteger(), redirects = new AtomicInteger();
         server.createContext("/api/bot/skill", ex -> {
             skills.incrementAndGet(); started.countDown();
             try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             byte[] body = "{\"ok\":true,\"detail\":\"done\"}".getBytes(StandardCharsets.UTF_8);
             ex.sendResponseHeaders(200, body.length); ex.getResponseBody().write(body); ex.close();
         });
+        server.createContext("/api/bot/action", ex -> { actions.incrementAndGet(); ex.sendResponseHeaders(200, -1); ex.close(); });
         server.createContext("/api/ai/stop", ex -> {
             byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
             ex.sendResponseHeaders(200, body.length); ex.getResponseBody().write(body); ex.close(); stopped.countDown();
@@ -78,12 +79,12 @@ public class BotLinkHarness {
             BotLink.post("/api/bot/skill", "{}", BotLink.describeResult("one"));
             BotLink.post("/api/bot/skill", "{}", BotLink.describeResult("two"));
             check(started.await(3, TimeUnit.SECONDS), "skills did not start");
-            BotLink.post("/api/bot/skill", "{}", BotLink.describeResult("queued"));
+            BotLink.post("/api/bot/action", "{}", BotLink.describeResult("queued"));
             BotLink.postPriority("/api/ai/stop", "{}", doc -> "stop requested");
             check(stopped.await(3, TimeUnit.SECONDS), "stop starved");
             release.countDown();
             Thread.sleep(300);
-            check(skills.get() == 2, "queued skill was sent after stop");
+            check(skills.get() == 2 && actions.get() == 0, "queued action was sent after stop");
             System.out.println("Java BotLink HTTP and queue tests passed");
         } finally {
             release.countDown(); server.stop(0);
