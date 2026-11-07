@@ -572,17 +572,20 @@ def install_jar(mods_dir: Path, data: bytes, name: str, replaces: list[Path]) ->
     target = mods_dir / name
     tmp = mods_dir / (name + ".part")
     tmp.write_bytes(data)
+    moved: list[tuple[Path, Path]] = []
     try:
         for old in replaces:
-            if old.resolve() == target.resolve():
-                continue
             backup = old.with_name(old.name + ".old")
             if backup.exists():
                 backup.unlink()
             old.rename(backup)
+            moved.append((old, backup))
         os.replace(tmp, target)
-    except PermissionError as exc:
+    except OSError as exc:
         tmp.unlink(missing_ok=True)
+        for old, backup in reversed(moved):
+            if backup.exists():
+                os.replace(backup, old)
         raise UpdateError(f"{exc.filename or mods_dir} is in use - close Minecraft and run the updater again") from exc
     return target
 
@@ -619,8 +622,8 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
     changed = False
     for mc, current in sorted(targets.items()):
         best = max((j.version for j in current), key=version_tuple, default=None)
-        if best and version_tuple(best) >= version_tuple(newest) and not reinstall:
-            say(f"Minecraft {mc}: PyMC Bot mod {best} is up to date")
+        if best and version_tuple(best) > version_tuple(newest) and not reinstall:
+            say(f"Minecraft {mc}: PyMC Bot mod {best} is newer")
             continue
         asset = asset_for(release, newest, mc)
         if asset is None:
@@ -628,6 +631,13 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
                                key=version_tuple)
             say(f"Minecraft {mc}: {release['tag_name']} has no jar for it (available: {', '.join(supported)})")
             continue
+        if best and version_tuple(best) == version_tuple(newest) and not reinstall:
+            digest = str(asset.get("digest") or "")
+            unchanged = (len(current) == 1 and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)
+                         and hashlib.sha256(current[0].path.read_bytes()).hexdigest().lower() == digest[7:].lower())
+            if unchanged or (not require_digest and not digest):
+                say(f"Minecraft {mc}: PyMC Bot mod {best} is up to date")
+                continue
         action = f"{best} -> {newest}" if best else f"install {newest}"
         say(f"Minecraft {mc}: {action}  ({asset['name']}, {asset.get('size', '?')} bytes)")
         if check:
@@ -650,7 +660,8 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
 # ---------------------------------------------------------------------------- main
 
 
-def update_release(root: Path, repo: str, check: bool, allow_pre: bool = False) -> bool:
+def update_release(root: Path, repo: str, check: bool, allow_pre: bool = False,
+                   report_available: bool = False) -> bool:
     release = newest_mod_release(repo, allow_pre)
     if release is None:
         raise UpdateError("no published release is available")
@@ -684,7 +695,7 @@ def update_release(root: Path, repo: str, check: bool, allow_pre: bool = False) 
         return False
     say(f"release {version} is available")
     if check:
-        return False
+        return report_available
     archive = http_get(url, accept="application/octet-stream", timeout=300)
     if len(archive) != size or hashlib.sha256(archive).hexdigest().lower() != digest[7:].lower():
         raise UpdateError("release source archive verification failed")
@@ -792,8 +803,15 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     try:
         if not args.mod_only:
             before = file_hashes(root)
-            pulled = (update_zip(root, args.repo, args.branch, args.check) if args.branch
-                      else update_release(root, args.repo, args.check, args.pre))
+            try:
+                pulled = (update_zip(root, args.repo, args.branch, args.check) if args.branch
+                          else update_release(root, args.repo, args.check, args.pre,
+                                              report_available=args.auto and args.check))
+            except UpdateError:
+                if not args.auto:
+                    raise
+            if args.auto and args.check:
+                return 11 if pulled else 0
             if not args.no_deps and (pulled or args.deps):
                 update_dependencies(root, before, args.deps, args.check)
             if pulled:

@@ -634,3 +634,52 @@ def test_release_failure_restores_original_files(monkeypatch, tmp_path):
     assert (tmp_path / "updater.py").read_text() == "old updater"
     assert (tmp_path / "pymc_bot/__main__.py").read_text() == "old main"
     assert not (tmp_path / updater.STATE_FILE).exists()
+
+
+def test_republished_mod_with_same_version_is_replaced_and_backed_up(tmp_path, fake_github):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    old = mods / "pymcbot-0.5.0+26.3.jar"
+    old.write_bytes(b"old revision")
+    assert updater.update_mod(mods, updater.REPO, None, allow_pre=False, check=False, require_digest=True)
+    assert (mods / (old.name + ".old")).read_bytes() == b"old revision"
+    assert old.read_bytes() == mod_jar("26.3")
+    assert not updater.update_mod(mods, updater.REPO, None, allow_pre=False, check=False, require_digest=True)
+
+
+def test_jar_replace_rolls_back_if_final_install_fails(tmp_path, monkeypatch):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    old = mods / "pymcbot-0.5.0+26.3.jar"
+    old.write_bytes(b"old")
+    original = updater.os.replace
+
+    def fail_part(src, dst):
+        if str(src).endswith(".part"):
+            raise PermissionError("locked")
+        return original(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", fail_part)
+    with pytest.raises(updater.UpdateError):
+        updater.install_jar(mods, b"new", old.name, [old])
+    assert old.read_bytes() == b"old"
+    assert sorted(p.name for p in mods.iterdir()) == [old.name]
+
+
+def test_auto_check_reports_available_without_writing(monkeypatch, tmp_path):
+    _source_release(monkeypatch, {"updater.py": "new", "pymc_bot/__main__.py": "new"})
+    monkeypatch.setattr(updater, "AUTO_MODE", False)
+    monkeypatch.setattr(updater, "RETRY_DELAYS", updater.RETRY_DELAYS)
+    assert updater.main(["--auto", "--check"], root=tmp_path) == 11
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_auto_updates_mod_even_if_source_release_is_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater, "AUTO_MODE", False)
+    monkeypatch.setattr(updater, "RETRY_DELAYS", updater.RETRY_DELAYS)
+    monkeypatch.setattr(updater, "update_release", lambda *a, **kw: (_ for _ in ()).throw(updater.UpdateError("no source")))
+    monkeypatch.setattr(updater, "installed_jars", lambda _directory: [object()])
+    seen = []
+    monkeypatch.setattr(updater, "update_mod", lambda *a, **kw: seen.append((a, kw)))
+    assert updater.main(["--auto"], root=tmp_path) == 0
+    assert seen and seen[0][1]["require_digest"]

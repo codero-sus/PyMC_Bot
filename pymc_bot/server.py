@@ -484,6 +484,7 @@ def create_app(
     app.state.bot = bot_fleet.primary
     app.state.agent = local_agent()
     app.state.auth = accounts
+    app.state.training_service = training_service
 
     # ------------------------------------------------------------------- login
     def session_for(cookies: Any, headers: Any) -> panel_auth.Session | None:

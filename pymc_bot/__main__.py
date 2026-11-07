@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -257,7 +258,22 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print(f"login       : {'account ' + repr(accounts.username) if accounts.configured else 'not set up yet'}"
               f"  ({accounts.path})")
     print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://codero.is-a.dev \u00b7 https://the-codero.web.app/")
-    uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
+    root = _source_install_root()
+    if root is None or args.reload:
+        uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
+        return 0
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level=args.log_level))
+    finished = threading.Event()
+    restart = threading.Event()
+    watcher = threading.Thread(target=_watch_release, args=(root, app, server, finished, restart), daemon=True)
+    watcher.start()
+    try:
+        server.run()
+    finally:
+        finished.set()
+        watcher.join(timeout=1)
+    if restart.is_set():
+        os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])
     return 0
 
 
@@ -928,30 +944,61 @@ DISPATCH = {
 }
 
 
-def _prepare_startup() -> None:
-    if os.environ.get("PYMC_BOT_UPDATE_RESTARTED") or (len(sys.argv) > 1 and sys.argv[1] not in ("serve", "run")):
-        return
+def _source_install_root() -> Path | None:
     root = Path(__file__).resolve().parent.parent
-    updater = root / "updater.py"
-    if not updater.is_file() or not (root / "pyproject.toml").is_file() or (root / ".git").exists():
-        return
-    lock = root / ".pymc_update.lock"
-    try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except OSError:
-        return
-    try:
-        os.close(fd)
-        result = subprocess.run([sys.executable, str(updater), "--auto"], cwd=root,
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                check=False)
-    except OSError:
-        return
-    finally:
+    if (root / "updater.py").is_file() and (root / "pyproject.toml").is_file() and not (root / ".git").exists():
+        return root
+    return None
+
+
+def _watch_release(root: Path, app: Any, server: Any, finished: threading.Event,
+                   restart: threading.Event, interval: float = 600.0) -> None:
+    while not finished.wait(interval):
         try:
-            lock.unlink(missing_ok=True)
-        except OSError:
-            pass
+            result = subprocess.run([sys.executable, str(root / "updater.py"), "--auto", "--check"], cwd=root,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    check=False)
+            if result.returncode != 11 or finished.is_set() or server.should_exit:
+                continue
+            fleet = app.state.fleet
+            if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
+                continue
+            if any(fleet.ai_running(bot) for bot in fleet.all_bots()):
+                continue
+            restart.set()
+            server.should_exit = True
+            return
+        except (OSError, RuntimeError):
+            continue
+
+
+def _prepare_startup() -> None:
+    if os.environ.pop("PYMC_BOT_UPDATE_RESTARTED", None) or (len(sys.argv) > 1 and sys.argv[1] not in ("serve", "run")):
+        return
+    root = _source_install_root()
+    if root is None:
+        return
+    updater = root / "updater.py"
+    try:
+        with (root / ".pymc_update.lock").open("a+b") as lock:
+            if os.name == "nt":
+                import msvcrt
+
+                lock.seek(0)
+                if not lock.read(1):
+                    lock.write(b"0")
+                    lock.flush()
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = subprocess.run([sys.executable, str(updater), "--auto"], cwd=root,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    check=False)
+    except OSError:
+        return
     if result.returncode == 10:
         os.environ["PYMC_BOT_UPDATE_RESTARTED"] = "1"
         os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])
