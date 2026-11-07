@@ -1306,6 +1306,7 @@ class NodeBridgeBackend(BaseBackend):
         self._reader: threading.Thread | None = None
         self._pending: dict[int, queue.Queue] = {}
         self._next_id = 1
+        self._request_lock = threading.Lock()
         self._caps: dict[str, Any] = {}
         self._snapshot = empty_snapshot("disconnected", self.name)
         self._connected = False
@@ -1561,17 +1562,18 @@ class NodeBridgeBackend(BaseBackend):
         if not self._proc or self._proc.poll() is not None:
             raise BackendError("Minecraft bridge is not running.")
         assert self._proc.stdin is not None
-        request_id = self._next_id
-        self._next_id += 1
         waiter: queue.Queue = queue.Queue(maxsize=1)
-        self._pending[request_id] = waiter
-        payload = json.dumps({"id": request_id, "cmd": cmd, "params": params})
-        try:
-            self._proc.stdin.write(payload + "\n")
-            self._proc.stdin.flush()
-        except (BrokenPipeError, ValueError) as exc:
-            self._pending.pop(request_id, None)
-            raise BackendError(f"Bridge stdin closed: {exc}") from exc
+        with self._request_lock:
+            request_id = self._next_id
+            self._next_id += 1
+            self._pending[request_id] = waiter
+            payload = json.dumps({"id": request_id, "cmd": cmd, "params": params})
+            try:
+                self._proc.stdin.write(payload + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, ValueError) as exc:
+                self._pending.pop(request_id, None)
+                raise BackendError(f"Bridge stdin closed: {exc}") from exc
         try:
             response = waiter.get(timeout=timeout)
         except queue.Empty as exc:
@@ -1624,6 +1626,9 @@ class NodeBridgeBackend(BaseBackend):
 
     def stop_motion(self) -> None:
         self._fire("stop_motion", {})
+
+    def cancel_actions(self) -> None:
+        self._fire("cancel_actions", {}, timeout=2.0)
 
     def pathfind_to(self, x: float, y: float, z: float, tolerance: float = 1.5) -> bool:
         if not self.supports_pathfinder:

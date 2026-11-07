@@ -199,6 +199,10 @@ class HeuristicPolicy:
         # 1. survive
         if threat and threat_dist <= 8 and health <= 8 and can["movement"]:
             return Decision("flee", {}, "heuristic")
+        if (state.get("health") is not None and health <= 8 and can["inventory"]
+                and (not inv.offhand or inv.offhand.name != "totem_of_undying")
+                and inv.find("totem_of_undying") is not None):
+            return Decision("totem", {}, "heuristic", thought="Health is low; protect myself before continuing.")
         if health <= 8 or food <= 6:
             return Decision("eat", {}, "heuristic")
         if knows_items and food <= 14 and inv.best_food(food, health) is not None:
@@ -380,14 +384,12 @@ class AgentLoop:
                 return False
             self._stop_event.set()
             thread = self._thread
-        # Abort any long movement action (walking, following, mining) so the
-        # loop can exit promptly instead of finishing its 30s action.
-        self.bot.cancel_actions()
-        self.bot.llm_chat = False
+            # Keep start serialized until the bridge has received cancellation.
+            self.bot.cancel_actions()
+            self.bot.llm_chat = False
         if wait and thread is not None:
             thread.join(timeout=10.0)
-        self.bot.clear_cancel()
-        self.log.add("AI agent loop stopped.", "info", "agent")
+        self.log.add("AI stop requested.", "info", "agent")
         return True
 
     # ----------------------------------------------------------------- brain
@@ -568,6 +570,14 @@ class AgentLoop:
         return settings.ollama.decision_interval
 
     def _run(self) -> None:
+        try:
+            self._run_loop()
+        finally:
+            with self._lock:
+                self.bot.clear_cancel()
+            self.log.add("AI agent loop finished.", "debug", "agent")
+
+    def _run_loop(self) -> None:
         failures = 0
         while not self._stop_event.is_set():
             settings = self._settings()
@@ -589,13 +599,14 @@ class AgentLoop:
             if decision is None:
                 decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             failures = 0
+            if self._stop_event.is_set():
+                break
             ok, detail = self._act(decision)
             if self.uses_llm(settings):
                 # people don't act on a metronome: +-25% around the configured interval
                 interval *= self._rng.uniform(0.75, 1.25)
             if self._wait(interval):
                 break
-        self.log.add("AI agent loop finished.", "debug", "agent")
 
     def _wait(self, seconds: float) -> bool:
         """Sleep in small slices. Returns True when a stop was requested."""

@@ -286,3 +286,22 @@ def test_actual_bridge_combat_handlers_with_fake_mineflayer():
     root = Path(__file__).resolve().parents[1]
     subprocess.run([NODE, str(root / "tests/fixtures/combat_bridge_harness.js"),
                     str(root / "pymc_bot/node/minecraft_bridge.js")], check=True, timeout=10)
+
+
+def test_real_bridge_cooperative_cancellation_harness():
+    import subprocess
+
+    harness = Path(__file__).parent / "fixtures" / "cancel_bridge_harness.js"
+    bridge = Path(__file__).parents[1] / "pymc_bot" / "node" / "minecraft_bridge.js"
+    subprocess.run([NODE, str(harness), str(bridge)], check=True, timeout=5)
+
+
+def test_concurrent_bridge_requests_are_not_interleaved(bridge: NodeBridgeBackend):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def request(i):
+        reply = bridge._request("ping", {"n": i})
+        return reply["ok"] and reply["result"]["pong"]
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        assert all(pool.map(request, range(150)))

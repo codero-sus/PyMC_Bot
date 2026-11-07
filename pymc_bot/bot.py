@@ -160,6 +160,13 @@ class MinecraftBot:
     def cancel_actions(self) -> None:
         """Ask any in-flight movement/building action to stop early."""
         self._cancel.set()
+        backend = self.backend
+        if backend is not None and backend.connected:
+            cancel = getattr(backend, "cancel_actions", None)
+            if callable(cancel):
+                cancel()
+            else:
+                self._stop_motion()
 
     def clear_cancel(self) -> None:
         self._cancel.clear()

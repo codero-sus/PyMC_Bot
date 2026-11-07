@@ -20,6 +20,9 @@
 'use strict';
 
 const readline = require('readline');
+const { AsyncLocalStorage } = require('async_hooks');
+const actionContext = new AsyncLocalStorage();
+const activeActions = new Set();
 
 let mineflayer = null;
 let minecraftData = null;     // the version database mineflayer reads (comes with mineflayer)
@@ -307,7 +310,14 @@ function stopStateLoop() {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const signal = actionContext.getStore();
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('action cancelled'));
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
+    function abort() { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(new Error('action cancelled')); }
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 function withTimeout(promise, ms, label) {
@@ -481,6 +491,15 @@ function cmdStopMotion() {
   }
   stopPath();
   return { stopped: true };
+}
+
+function cmdCancelActions() {
+  for (const controller of activeActions) controller.abort();
+  if (bot && typeof bot.stopDigging === 'function') {
+    try { bot.stopDigging(); } catch (err) { /* already stopped */ }
+  }
+  cmdStopMotion();
+  return { cancellation_requested: true };
 }
 
 function cmdPathfindTo(params) {
@@ -705,8 +724,11 @@ async function cmdUseItem(params) {
   if (!bot) throw new Error('not connected');
   const seconds = Math.max(0.1, Math.min(5, Number(params.seconds || 0.3)));
   bot.activateItem(Boolean(params.offhand));
-  await sleep(seconds * 1000);
-  bot.deactivateItem();
+  try {
+    await sleep(seconds * 1000);
+  } finally {
+    bot.deactivateItem();
+  }
   return { used: bot.heldItem ? bot.heldItem.name : 'hand', seconds };
 }
 
@@ -715,9 +737,12 @@ async function walkNear(position, range, budgetMs) {
   if (!pathfinder || !bot.pathfinder) return false;
   bot.pathfinder.setGoal(new goals.GoalNear(position.x, position.y, position.z, range));
   const deadline = Date.now() + budgetMs;
-  while (Date.now() < deadline && bot.entity.position.distanceTo(position) > range + 0.5) await sleep(200);
-  stopPath();
-  return bot.entity.position.distanceTo(position) <= range + 0.5;
+  try {
+    while (Date.now() < deadline && bot.entity.position.distanceTo(position) > range + 0.5) await sleep(200);
+    return bot.entity.position.distanceTo(position) <= range + 0.5;
+  } finally {
+    stopPath();
+  }
 }
 
 async function cmdSleep() {
@@ -2010,6 +2035,7 @@ const COMMANDS = {
   control: cmdControl,
   look: cmdLook,
   stop_motion: cmdStopMotion,
+  cancel_actions: cmdCancelActions,
   pathfind_to: cmdPathfindTo,
   stop_path: cmdStopPath,
   dig: cmdDig,
@@ -2081,11 +2107,19 @@ async function handle(request) {
     send({ id, ok: false, error: `unknown command: ${cmd}` });
     return;
   }
+  const exempt = new Set(['cancel_actions', 'stop_motion', 'stop_path', 'state', 'ping', 'disconnect', 'connect']);
+  const controller = exempt.has(cmd) ? null : new AbortController();
+  if (controller) activeActions.add(controller);
   try {
-    const result = await handler(params);
+    const result = controller
+      ? await actionContext.run(controller.signal, () => handler(params))
+      : await handler(params);
+    if (controller && controller.signal.aborted) throw new Error('action cancelled');
     send({ id, ok: true, result: result === undefined ? {} : result });
   } catch (err) {
     send({ id, ok: false, error: err && err.message ? err.message : String(err) });
+  } finally {
+    if (controller) activeActions.delete(controller);
   }
 }
 

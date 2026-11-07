@@ -1049,6 +1049,14 @@ reliably dodge them. These mechanics are attempts, not confirmed hits or success
 server/version compatibility and live gameplay still need testing. The simulator explicitly
 reports the new projectile and mace mechanics as unsupported rather than faking their results.
 
+`/pymcbot bot ai stop` requests the AI loop to stop and interrupts cooperative bridge
+waits, navigation, held movement keys and active digging. The response is an acknowledgement,
+not proof that every in-flight Minecraft operation has completed: a network or plugin operation
+already sent to the server may still finish, and releasing a charged weapon can fire it. Check
+status before starting another task. `/pymcbot bot stop` requests that movement stop but does
+not stop the AI or cancel every in-flight task; the AI may choose another action unless you also
+stop it.
+
 `/pymcbot bot ai model minecraftism` selects an **already installed** Ollama model
 name and sets the main AI mode to Ollama; replace `minecraftism` with your actual
 imported name. It does not download, train or verify a model, and fleet brain overrides

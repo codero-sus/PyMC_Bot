@@ -148,7 +148,11 @@ def test_ai_loop_endpoints(client: TestClient):
     assert client.get("/api/ai/status").json()["running"] is True
     time.sleep(1.0)
     assert client.post("/api/ai/step").json()["decision"] is not None
-    assert client.post("/api/ai/stop").json()["running"] is False
+    assert client.post("/api/ai/stop").json()["stopped"] is True
+    deadline = time.monotonic() + 3
+    while client.get("/api/ai/status").json()["running"] and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert client.get("/api/ai/status").json()["running"] is False
 
 
 def test_backends_endpoint(client: TestClient):

@@ -278,7 +278,7 @@ public final class PymcCommands {
                     return 1;
                 }))
                 .then(guarded("stop").executes(ctx -> {
-                    BotLink.postPriority("/api/ai/stop", "{}", doc -> "AI stopped");
+                    BotLink.postPriority("/api/ai/stop", "{}", doc -> "AI stop requested");
                     return 1;
                 }))
                 .then(guarded("model").then(Mc.argument("name", StringArgumentType.greedyString())

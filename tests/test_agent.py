@@ -255,3 +255,36 @@ def test_controls_are_released_if_press_fails(live_bot):
     live_bot.backend.set_control = control
     assert not live_bot.controlled_move({"forward": True, "left": True}, 0.1)
     assert ("forward", False) in calls and ("left", False) in calls
+
+
+def test_stop_during_slow_decision_does_not_execute_it(live_bot, store, log):
+    import threading
+
+    agent = AgentLoop(live_bot, store, log)
+    entered, release = threading.Event(), threading.Event()
+    actions = []
+
+    def decide(*_args):
+        entered.set()
+        release.wait(3)
+        return Decision("say", {"message": "too late"}, source="ollama")
+
+    agent._decide = decide
+    agent._act = lambda decision: actions.append(decision)
+    assert agent.start()
+    assert entered.wait(2)
+    assert agent.stop(wait=False)
+    assert live_bot.cancelled
+    release.set()
+    agent._thread.join(timeout=3)
+    assert not agent.running and not actions and not live_bot.cancelled
+
+
+def test_heuristic_uses_totem_when_low_but_flees_immediate_threat():
+    state = {"health": 6, "food": 20, "inventory": [{"name": "totem_of_undying", "count": 1}]}
+    policy = HeuristicPolicy(seed=1)
+    assert policy.decide(state, []).action == "totem"
+    assert policy.decide(state, [], {"inventory": False}).action == "eat"
+    threatened = {**state, "entities": [{"type": "zombie", "hostile": True, "dist": 3}]}
+    assert policy.decide(threatened, []).action == "flee"
+    assert policy.decide({**state, "offhand": "totem_of_undying"}, []).action == "eat"

@@ -997,7 +997,7 @@ def create_app(
     def ai_stop() -> dict[str, Any]:
         controller = selected_bot()
         agent = bot_fleet.agent_for(controller)
-        stopped = agent.stop()
+        stopped = agent.stop(wait=False)
         return {"ok": True, "stopped": stopped, "username": controller.username, **agent.status}
 
     @app.post("/api/ai/step")
