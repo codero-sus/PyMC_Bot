@@ -157,3 +157,28 @@ def test_autopilot_api(tmp_path):
         assert not reply["ok"]
         assert client.post("/api/autopilot/run", json={"rule": "dance"}).status_code == 422
         assert client.post("/api/autopilot/run", json={"paused": True}).json()["results"][0]["paused"] is True
+
+
+def test_concurrent_ticks_do_not_start_duplicate_jobs(live_bot, store, log, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    keeper = ap.Autopilot(lambda: [live_bot], store, log)
+    release, entered = threading.Event(), threading.Event()
+    workers = []
+
+    def slow_run(*_args):
+        workers.append(1)
+        entered.set()
+        release.wait(3)
+        return True, "done"
+
+    monkeypatch.setattr(keeper, "run", slow_run)
+    try:
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(lambda _: keeper.tick(), range(30)))
+        assert entered.wait(1)
+        assert sum(len(result) for result in results) == 1
+        assert len(workers) == 1
+    finally:
+        release.set()

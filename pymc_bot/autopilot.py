@@ -472,14 +472,19 @@ class Autopilot:
             if bot is None or not bot.connected:
                 continue
             memory = self.memory(bot)
-            if memory.in_flight or memory.paused:
-                continue
+            with self._lock:
+                if memory.in_flight or memory.paused:
+                    continue
             situation = self.situation(bot)
             plan = evaluate(settings, situation)
             if plan is None:
                 continue
-            memory.in_flight = True
-            memory.cooldowns[plan.rule] = situation.now + plan.cooldown
+            with self._lock:
+                if (memory.in_flight or memory.paused
+                        or memory.cooldowns.get(plan.rule, 0.0) > time.monotonic()):
+                    continue
+                memory.in_flight = True
+                memory.cooldowns[plan.rule] = time.monotonic() + plan.cooldown
             worker = threading.Thread(target=self._run_worker, args=(bot, plan, memory),
                                       name=f"autopilot-{bot.username}", daemon=True)
             worker.start()
@@ -494,7 +499,8 @@ class Autopilot:
         try:
             self.run(bot, plan, memory)
         finally:
-            memory.in_flight = False
+            with self._lock:
+                memory.in_flight = False
 
     def run(self, bot: MinecraftBot, plan: Plan, memory: BotAutopilot | None = None) -> tuple[bool, str]:
         """Carry one plan out now."""
@@ -506,11 +512,12 @@ class Autopilot:
         if self.settings.verbose or plan.emergency:
             self.log.add(f"[{bot.username}] autopilot: {plan.rule} ({plan.reason})", "info", "autopilot")
         try:
-            if plan.action.startswith("skill:"):
-                ok, message = bot.skill(plan.action.split(":", 1)[1], plan.params)
-            else:
-                ok = bool(getattr(bot, plan.action)(**plan.params))
-                message = "done" if ok else (bot.last_failure or "failed")
+            with bot.action_scope():
+                if plan.action.startswith("skill:"):
+                    ok, message = bot.skill(plan.action.split(":", 1)[1], plan.params)
+                else:
+                    ok = bool(getattr(bot, plan.action)(**plan.params))
+                    message = "done" if ok else (bot.last_failure or "failed")
         except Exception as exc:  # a reflex never takes the bot down
             ok, message = False, str(exc)
         now = time.monotonic()
@@ -527,7 +534,8 @@ class Autopilot:
         return ok, message
 
     def pause(self, bot: MinecraftBot, paused: bool = True) -> None:
-        self.memory(bot).paused = paused
+        with self._lock:
+            self.memory(bot).paused = paused
 
     def status(self, bots: Sequence[MinecraftBot] | None = None) -> dict[str, Any]:
         bots = list(self._bots() if bots is None else bots)
