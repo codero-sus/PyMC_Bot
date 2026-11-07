@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import types
@@ -19,7 +20,12 @@ HOOK = "https://discord.com/api/webhooks/123456789012345678/abc-DEF_123"
 
 def _cells():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
-    return ["".join(cell["source"]) for cell in nb["cells"]]
+    cells = ["".join(cell["source"]) for cell in nb["cells"]]
+    for index in (3, 6, 7):
+        guard = 'if not (globals().get("ALLOT_MODE", False) or globals().get("GGUF_MODE", False)):\n'
+        if cells[index].startswith(guard):
+            cells[index] = textwrap.dedent(cells[index][len(guard):])
+    return cells
 
 
 def _block(cell, start, end):
@@ -266,7 +272,7 @@ def test_every_stage_and_every_upload_pings(monkeypatch):
     assert pinged[:len(stages)] == [(f"minecraftism: {what}", "<@9>") for _text, what in stages]
     assert "content" not in sent[-1]["payload"]  # small progress notes stay silent
     assert "Setup ready - training starts\", \"ok\", ping=True" in _cells()[6]
-    assert 'is ready", "ok", ping=True' in _cells()[7]
+    assert 'training finished", "ok", ping=True' in _cells()[7]
 
 
 def test_no_gpu_stops_early_with_a_clear_reason(monkeypatch):

@@ -239,8 +239,8 @@ def test_the_learned_callback_stops_every_gpu_at_the_same_step(monkeypatch, caps
     assert len(asked) == state.global_step // 10  # one agreement per 10 steps on every rank, not every step
 
 
-def test_the_notebook_turns_early_stopping_on():
+def test_the_notebook_offers_early_stopping_but_defaults_to_full_epoch():
     cells = ["".join(cell["source"]) for cell in json.loads(NOTEBOOK.read_text(encoding="utf-8"))["cells"]]
-    assert "STOP_WHEN_LEARNED = True" in cells[1]
+    assert "STOP_WHEN_LEARNED = False" in cells[1]  # default: aim for the requested full epoch
     assert 'FLAGS += " --stop-when-learned" if STOP_WHEN_LEARNED else ""' in cells[3]
     assert llm_train.build_parser().parse_args(["--stop-when-learned"]).stop_when_learned

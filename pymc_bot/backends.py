@@ -1503,6 +1503,8 @@ class NodeBridgeBackend(BaseBackend):
             self._snapshot["status"] = "connected"
             self._snapshot["connected_at"] = time.time()
             self._snapshot["last_error"] = None
+            self._snapshot["health"] = None
+            self._snapshot["food"] = None
             self._spawned.set()
             self._emit_status()
         elif event in ("end", "kicked"):

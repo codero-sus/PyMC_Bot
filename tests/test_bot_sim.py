@@ -181,3 +181,37 @@ def test_follow_stops_retrying_when_path_is_blocked(live_bot, monkeypatch):
     assert not live_bot.follow("Steve", seconds=5)
     assert len(calls) == 2
     assert "path may be blocked" in live_bot.last_failure
+
+
+def test_monitor_retries_failed_reconnects_and_invalidates_old_work(store, log, monkeypatch):
+    import threading
+
+    from pymc_bot import bot as bot_module
+
+    backend = SimulatedBackend(log, ambient_chat=False)
+    bot = MinecraftBot(store, log, backend=backend, max_reconnects=3)
+    bot._state = bot_module.STATE_CONNECTED
+    attempts = []
+
+    def retry():
+        attempts.append(1)
+        bot._reconnects += 1
+        if len(attempts) < 3:
+            bot._state = bot_module.STATE_ERROR
+        else:
+            bot._stop_requested = True
+
+    monkeypatch.setattr(bot, "_try_reconnect", retry)
+    monkeypatch.setattr(bot_module.time, "sleep", lambda _seconds: None)
+    observed = []
+
+    def old_action():
+        with bot.action_scope():
+            bot._monitor_loop()
+            observed.append(bot.cancelled)
+
+    thread = threading.Thread(target=old_action)
+    thread.start()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert len(attempts) == 3 and observed == [True]

@@ -394,6 +394,8 @@ class MinecraftBot:
             backend = self._backend
             self._state = STATE_DISCONNECTED
             self._wait_deadline = None
+        self.cancel_actions()
+        self.clear_cancel()
         if backend is not None:
             try:
                 backend.stop()
@@ -418,19 +420,22 @@ class MinecraftBot:
             started = self._stats.get("started_at")
             if started is not None and time.time() - started < 3.0:
                 continue  # grace period right after connecting
-            if self._state == STATE_CONNECTED and not backend.connected:
-                self.log.add("Lost the connection to the server.", "warn", "bot")
-                with self._lock:
-                    self._state = STATE_DISCONNECTED
-                unlimited = self.max_reconnects is None
-                if self.auto_reconnect and (unlimited or self._reconnects < self.max_reconnects):
+            if self._state in (STATE_CONNECTED, STATE_DISCONNECTED, STATE_ERROR) and not backend.connected:
+                if self._state == STATE_CONNECTED:
+                    self.log.add("Lost the connection to the server.", "warn", "bot")
+                    with self._lock:
+                        self._state = STATE_DISCONNECTED
+                    self.cancel_actions()
+                    self.clear_cancel()
+                if not self.auto_reconnect:
+                    break
+                if self.max_reconnects is None or self._reconnects < self.max_reconnects:
                     self._try_reconnect()
-                elif self.auto_reconnect:
-                    self.log.add(
-                        f"Gave up after {self._reconnects} reconnect attempts.", "error", "bot"
-                    )
+                else:
+                    self.log.add(f"Gave up after {self._reconnects} reconnect attempts.", "error", "bot")
                     with self._lock:
                         self._state = STATE_ERROR
+                    break
 
     def _try_reconnect(self) -> None:
         self._reconnects += 1

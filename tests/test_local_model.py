@@ -172,7 +172,7 @@ def test_act_releases_controls_even_when_cancelled(trained: Path, live_bot: Mine
     live_bot.cancel_actions()
     # durations are clamped to a sane maximum, so 30s becomes a 3s burst that stops early
     ok, detail = policy.act(live_bot, _decision("forward", seconds=30.0))
-    assert ok and "3.00s" in detail
+    assert not ok and "cancel" in detail.lower()
     assert live_bot.backend._controls["forward"] is False
     live_bot.clear_cancel()
 

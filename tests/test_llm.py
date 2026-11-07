@@ -248,7 +248,7 @@ def test_notebook_is_valid_and_uses_the_script():
     assert nb["nbformat"] == 4 and nb["metadata"]["kaggle"]["accelerator"] == "nvidiaTeslaT4"
     code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
     assert "train_minecraft_llm.py" in code and "pip install unsloth" in code
-    assert re.search(r"^editions_to_be_trained = \{txt\}$", code, flags=re.M), "default: the recommended text edition"
+    assert re.search(r"^editions_to_be_trained = \{txt, txt_think, turbo, turbo_think\}", code, flags=re.M)
     assert all(name in llm_train.PRESETS for name in llm_train.EDITIONS) and llm_train.EDITIONS[0] == "minecraftism"
     assert 'get_secret("HF_TOKEN")' in code and 'os.environ["HF_TOKEN"]' in code
     assert not re.search(r"print\([^)]*(environ|get_secret)", code), "the token must never be printed"

@@ -390,6 +390,8 @@ class TrainedPolicy:
         """Drive ``bot`` with one predicted action. Returns ``(ok, detail)``."""
         if not bot.connected:
             return False, "bot is not connected"
+        if bot.cancelled:
+            return False, "trained action cancelled"
         action = getattr(decision, "action", str(decision))
         params = getattr(decision, "params", {}) or {}
         seconds = max(0.1, min(3.0, float(params.get("seconds") or self.step_seconds)))
@@ -400,7 +402,7 @@ class TrainedPolicy:
         forward = float(params.get("forward") or 0.0)
 
         if action == "none":
-            bot.stop_moving()
+            bot._stop_motion()  # noqa: SLF001 - trained policy is part of the bot controller
             return True, "trained: idle (the recorded player stood still here)"
 
         if action == "look":
@@ -442,9 +444,10 @@ class TrainedPolicy:
             yaw = math.degrees(float(snapshot.get("yaw") or 0.0)) + dyaw
             pitch = _clamp(math.degrees(float(snapshot.get("pitch") or 0.0)) + dpitch, -89.0, 89.0)
             bot.look(math.radians(yaw), math.radians(pitch))
-        ok = bot.control_burst(controls, seconds)
+        ok = bot.controlled_move(controls, seconds)
         pressed = ", ".join(sorted(name for name, state in controls.items() if state))
-        return ok, f"trained: {pressed or action} for {seconds:.2f}s"
+        return ok, (f"trained: {pressed or action} for {seconds:.2f}s" if ok
+                    else "trained movement unavailable, busy or cancelled")
 
     # ----------------------------------------------------------------- status
     def describe(self) -> dict[str, Any]:  # noqa: D401 - short status dict
