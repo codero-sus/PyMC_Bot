@@ -1058,6 +1058,16 @@ not reliably dodge projectiles or guarantee a block. These mechanics are attempt
 server/version compatibility and live gameplay still need testing. The simulator explicitly
 reports the new projectile and mace mechanics as unsupported rather than faking their results.
 
+The autopilot can approach an identified beneficial dropped potion or a nearby low-flying
+beneficial thrown potion when safe, and tries to move away from harmful or unidentified thrown
+potions and lingering effect clouds. It uses the pathfinder and refuses to move if the destination
+isn't known to be safe; both potion reflexes can be switched off in the autopilot panel. A moving
+potion may land before the bot reaches it; receiving an effect or picking an item up is not
+confirmed. The bot won't assume an unknown cloud is helpful. Many modern servers send potion
+contents as numeric registry IDs or omit cloud effects; those are treated as **unknown**, not
+decoded by color or guessed. Classification and movement are best-effort and have not been
+verified on a live server.
+
 `/pymcbot bot ai stop` requests the AI loop to stop and interrupts cooperative bridge
 waits, navigation, held movement keys and active digging. The response is an acknowledgement,
 not proof that every in-flight Minecraft operation has completed: a network or plugin operation

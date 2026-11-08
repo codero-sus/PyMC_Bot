@@ -30,6 +30,7 @@ let minecraftProtocol = null; // used to ping the server for its version before 
 let mineflayerVersions = null; // { testedVersions, latestSupportedVersion, oldestSupportedVersion }
 let pathfinder = null;   // optional, enables real A* pathfinding
 const { probe } = require('./probe');
+const { classifyPotion } = require('./potions');
 let goals = null;
 let bot = null;
 let stateTimer = null;
@@ -166,6 +167,26 @@ function playerPosition(name) {
   return { x: pos.x, y: pos.y, z: pos.z };
 }
 
+function potionObservation(entity) {
+  if (!entity) return null;
+  if (entity.name === 'area_effect_cloud') return {kind: 'unknown', form: 'cloud', effects: []};
+  let item;
+  let form;
+  if (entity.name === 'potion' || entity.name === 'thrown_potion') {
+    form = 'thrown';
+    const def = bot.registry?.entitiesByName?.[entity.name];
+    const index = def?.metadataKeys?.indexOf('item_stack');
+    item = index >= 0 ? entity.metadata?.[index] : null;
+  } else if (entity.name === 'item' && typeof entity.getDroppedItem === 'function') {
+    try { item = entity.getDroppedItem(); } catch (err) { return null; }
+    if (!item || !['potion', 'splash_potion', 'lingering_potion'].includes(item.name)) return null;
+    form = 'dropped';
+  } else {
+    return null;
+  }
+  return { ...classifyPotion(item), form };
+}
+
 function buildState() {
   if (!bot || !bot.entity) {
     return { status: bot ? 'connecting' : 'disconnected' };
@@ -202,7 +223,10 @@ function buildState() {
     const ez = entity.position.z - pos.z;
     const isPlayer = entity.type === 'player' || Boolean(entity.username);
     const kind = isPlayer ? 'player' : String(entity.name || entity.displayName || entity.type || 'unknown');
+    const potion = potionObservation(entity);
     entities.push({
+      id: entity.id,
+      ...(potion ? { potion } : {}),
       type: (isPlayer || kind.includes(':')) ? (isPlayer ? 'minecraft:player' : kind) : `minecraft:${kind}`,
       dx: Number(ex.toFixed(2)),
       dy: Number(ey.toFixed(2)),
@@ -2053,6 +2077,101 @@ async function cmdShoot(params) {
       (targetGone ? ' (target no longer visible)' : '') };
 }
 
+// Potion reactions use pathfinding only: never fall back to blind forward steering.
+async function cmdReactPotion(params) {
+  need();
+  const id = Number(params.entity_id);
+  const mode = String(params.mode || 'avoid');
+  if (!Number.isInteger(id) || id < 0 || !['avoid', 'seek'].includes(mode)) throw new Error('invalid potion target or mode');
+  if (!pathfinder || !goals || !bot.pathfinder || !pathfinder.Movements) throw new Error('potion response requires pathfinder');
+  const owner = bot, entity = owner.entities[id];
+  if (!entity || !entity.position || entity.isValid === false) throw new Error('potion is no longer visible');
+  const observation = potionObservation(entity);
+  if (!observation) throw new Error('target is not a potion');
+  if (mode === 'seek' && (!['dropped', 'thrown'].includes(observation.form) || observation.kind !== 'good')) {
+    throw new Error('only identified beneficial dropped or thrown potions can be approached');
+  }
+  if (mode === 'seek' && observation.form === 'thrown' &&
+      (!Number.isFinite(entity.velocity?.y) || Math.abs(entity.position.y - owner.entity.position.y) > 2 || entity.velocity.y > 0.2)) {
+    throw new Error('beneficial potion is not close enough to approach safely');
+  }
+  if (mode === 'avoid' && (!['thrown', 'cloud'].includes(observation.form) || observation.kind === 'good')) {
+    throw new Error('target is not a harmful or unknown active potion');
+  }
+  const pos = owner.entity.position;
+  const dx = pos.x - entity.position.x, dz = pos.z - entity.position.z;
+  const distance = Math.hypot(dx, dz);
+  if (!Number.isFinite(distance) || distance > 8) throw new Error('potion is outside reaction range');
+  let destination;
+  if (mode === 'avoid') {
+    const nx = distance < 0.01 ? 1 : dx / distance;
+    const nz = distance < 0.01 ? 0 : dz / distance;
+    destination = pos.offset(nx * 6, 0, nz * 6).floored();
+  } else {
+    destination = observation.form === 'thrown'
+      ? pos.offset(entity.position.x - pos.x, 0, entity.position.z - pos.z).floored()
+      : entity.position.floored();
+  }
+  for (const other of Object.values(owner.entities)) {
+    if (!other || other === entity || !other.position) continue;
+    const p = potionObservation(other);
+    if (p && ['thrown', 'cloud'].includes(p.form) && p.kind !== 'good' &&
+        other.position.distanceTo(destination) < 5) throw new Error('destination is near another potion hazard');
+  }
+  const ground = owner.blockAt(destination.offset(0, -1, 0));
+  const feet = owner.blockAt(destination), head = owner.blockAt(destination.offset(0, 1, 0));
+  const dangerous = /lava|water|fire|magma|cactus|campfire|powder_snow|sweet_berry_bush/;
+  if (!ground || !feet || !head || ground.boundingBox !== 'block' || feet.boundingBox !== 'empty' ||
+      head.boundingBox !== 'empty' || [ground, feet, head].some(block => dangerous.test(block.name || ''))) {
+    throw new Error('no known safe potion destination');
+  }
+  const previous = owner.pathfinder.movements;
+  const safe = new pathfinder.Movements(owner);
+  safe.canDig = false; safe.allowParkour = false; safe.allow1by1towers = false; safe.scafoldingBlocks = [];
+  safe.maxDropDown = 1;
+  if (Array.isArray(safe.exclusionAreasStep)) {
+    safe.exclusionAreasStep.push(block => {
+      if (!block || !block.position) return 100;
+      for (const other of Object.values(owner.entities)) {
+        if (!other || other === entity || !other.position) continue;
+        const p = potionObservation(other);
+        if (p && ['thrown', 'cloud'].includes(p.form) && p.kind !== 'good' &&
+            other.position.distanceTo(block.position) < 5) return 100;
+      }
+      return 0;
+    });
+  }
+  let onGone, onMove;
+  try {
+    checkAction();
+    owner.pathfinder.setMovements(safe);
+    const walking = owner.pathfinder.goto(new goals.GoalNear(destination.x, destination.y, destination.z, mode === 'seek' ? 0 : 1));
+    let job = walking;
+    if (mode === 'seek' && observation.form === 'thrown' && typeof owner.on === 'function') {
+      const original = entity.position.clone();
+      const changed = new Promise((resolve, reject) => {
+        onGone = e => { if (e.id === id) reject(new Error('potion landed or disappeared while approaching')); };
+        onMove = e => { if (e.id === id && e.position.distanceTo(original) > 2) reject(new Error('potion moved away')); };
+        owner.on('entityGone', onGone);
+        owner.on('entityMoved', onMove);
+      });
+      job = Promise.race([walking, changed]);
+    }
+    await withTimeout(job, observation.form === 'thrown' && mode === 'seek' ? 2500 : 7000, 'potion response');
+    checkAction();
+    if (bot !== owner) throw new Error('bot disconnected during potion response');
+    const message = mode === 'avoid' ? 'moved away from a possible potion hazard'
+      : observation.form === 'thrown' ? 'approached a beneficial potion; receiving an effect is not confirmed'
+        : 'approached a useful dropped potion; pickup not confirmed';
+    return {message};
+  } finally {
+    if (onGone) owner.removeListener('entityGone', onGone);
+    if (onMove) owner.removeListener('entityMoved', onMove);
+    try { owner.pathfinder.setGoal(null); } catch (err) { /* already stopped */ }
+    if (previous) { try { owner.pathfinder.setMovements(previous); } catch (err) { /* disconnected */ } }
+  }
+}
+
 /* ------------------------------------------------------------------ vision */
 /**
  * The bot's first-person view as a JPEG, for vision models (Minecraftism VL, any Ollama/Cortex VL
@@ -2273,6 +2392,7 @@ const COMMANDS = {
   shoot: cmdShoot,
   critical_hit: cmdCriticalHit,
   block_projectile: cmdBlockProjectile,
+  react_potion: cmdReactPotion,
   throw_trident: cmdThrowTrident,
   spear_attack: cmdSpearAttack,
   throw_projectile: cmdThrowProjectile,

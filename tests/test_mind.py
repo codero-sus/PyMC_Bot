@@ -311,6 +311,16 @@ def test_body_awareness_mentions_immediate_dangers():
     assert exact["on_ground"] is False and exact["vertical_velocity"] == -0.4
 
 
+def test_potion_observations_are_in_the_brain_prompt_without_guessing():
+    state = {**STATE, "entities": [
+        {"id": 7, "type": "minecraft:potion", "dist": 3, "potion": {"form": "thrown", "kind": "bad"}},
+        {"id": 8, "type": "minecraft:area_effect_cloud", "dist": 5, "potion": {"form": "cloud", "kind": "unknown"}},
+    ]}
+    text = build_turn_prompt(state, "Alex", Mind(), [], ALL_ON)
+    assert "POTION OBSERVATIONS" in text and "thrown bad id=7" in text
+    assert "cloud unknown id=8" in text and "unknown effects are not safe to assume" in text
+
+
 def test_projectile_awareness_requires_approaching_velocity():
     state = {**STATE, "entities": [
         {"type": "minecraft:arrow", "dx": 5, "dy": 0, "dz": 0, "dist": 5, "vx": -0.5, "vy": 0, "vz": 0},

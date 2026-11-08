@@ -39,10 +39,12 @@ jobs:
         run: |
           node --check pymc_bot/node/minecraft_bridge.js
           node --check pymc_bot/node/probe.js
+          node --check pymc_bot/node/potions.js
           node --check pymc_bot/web/app.js
           node --check tests/fixtures/fake_bridge.js
           node scripts/check_ui.mjs
           node tests/fixtures/vision_bridge_harness.js pymc_bot/node/minecraft_bridge.js
+          node tests/fixtures/potion_bridge_harness.js pymc_bot/node/minecraft_bridge.js
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

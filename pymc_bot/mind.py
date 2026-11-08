@@ -591,6 +591,21 @@ def build_turn_prompt(
             projectiles.append(f"{kind} {distance:.0f} m")
     if projectiles:
         lines.append("POSSIBLE INCOMING PROJECTILES (direction only; impact uncertain): " + ", ".join(projectiles[:4]) + ".")
+    potions = []
+    for entity in entities:
+        potion = entity.get("potion")
+        if not isinstance(potion, dict) or potion.get("form") not in {"thrown", "cloud", "dropped"}:
+            continue
+        kind = potion.get("kind") if potion.get("kind") in {"good", "bad", "unknown"} else "unknown"
+        try:
+            distance = float(entity.get("dist"))
+            entity_id = int(entity["id"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(distance) and distance <= 16:
+            potions.append(f"{potion['form']} {kind} id={entity_id} {distance:.0f} m")
+    if potions:
+        lines.append("POTION OBSERVATIONS (unknown effects are not safe to assume): " + ", ".join(potions[:4]) + ".")
     hostile = [e for e in entities if e.get("hostile") and float(e.get("dist") or 99) <= 20]
     if hostile:
         threats = ", ".join(
