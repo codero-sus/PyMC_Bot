@@ -137,9 +137,10 @@ def hostiles(snap: dict[str, Any], radius: float) -> list[dict[str, Any]]:
     """Hostile mobs within ``radius`` blocks, nearest first."""
     out = [
         entity for entity in snap.get("entities") or []
-        if entity.get("hostile") and not entity.get("player") and float(entity.get("dist") or 99.0) <= radius
+        if entity.get("hostile") and not entity.get("player")
+        and float(entity.get("dist") if entity.get("dist") is not None else 99.0) <= radius
     ]
-    return sorted(out, key=lambda entity: float(entity.get("dist") or 99.0))
+    return sorted(out, key=lambda entity: float(entity.get("dist") if entity.get("dist") is not None else 99.0))
 
 
 def is_night(snap: dict[str, Any]) -> bool:

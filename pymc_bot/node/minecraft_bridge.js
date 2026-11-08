@@ -1838,6 +1838,27 @@ function combatTarget(params, range) {
   return target;
 }
 
+// Conservative horizontal corridor check: never intentionally shoot through or just past a player.
+// This is not line-of-sight or trajectory prediction; a player can still move after the check.
+function checkProjectileBystanders(target) {
+  const start = bot.entity.position;
+  const end = target.position;
+  const dx = end.x - start.x, dz = end.z - start.z;
+  const length = Math.hypot(dx, dz);
+  if (!Number.isFinite(length) || length < 0.01) throw new Error('cannot determine a safe firing direction');
+  for (const entity of Object.values(bot.entities || {})) {
+    if (!entity || entity === bot.entity || entity.isValid === false || !entity.position ||
+        !(entity.type === 'player' || entity.username)) continue;
+    const px = entity.position.x - start.x, pz = entity.position.z - start.z;
+    if (!Number.isFinite(px) || !Number.isFinite(pz)) throw new Error('cannot determine player position for safe firing');
+    const along = (px * dx + pz * dz) / length;
+    const sideways = Math.abs(px * dz - pz * dx) / length;
+    if (along >= 0 && along <= length + 8 && sideways <= 2) {
+      throw new Error('not firing: a player is near the projectile path');
+    }
+  }
+}
+
 async function aimAtMob(target, compensation = 0) {
   await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + compensation, 0), true);
 }
@@ -1851,6 +1872,7 @@ async function cmdThrowTrident(params) {
   const trident = findItem((it) => it.name === 'trident');
   if (!trident) throw new Error('I need a trident');
   const target = combatTarget(params, 24);
+  checkProjectileBystanders(target);
   await holdItem(trident);
   const distance = bot.entity.position.distanceTo(target.position);
   await aimAtMob(target, 0.0025 * distance * distance);
@@ -1883,6 +1905,7 @@ async function cmdThrowProjectile(params) {
   const projectile = findItem((it) => it.name === name);
   if (!projectile) throw new Error(`I need a ${name}`);
   const target = combatTarget(params, 20);
+  checkProjectileBystanders(target);
   await holdItem(projectile);
   await aimAtMob(target, 0.003 * Math.pow(bot.entity.position.distanceTo(target.position), 2));
   bot.activateItem();
@@ -1959,28 +1982,34 @@ async function cmdShoot(params) {
   let fired = 0;
   for (let i = 0; i < shots && bot.entities[target.id] && target.isValid !== false; i += 1) {
     if (!findItem((it) => it.name.endsWith('arrow'))) break;
+    checkProjectileBystanders(target);
     const distance = bot.entity.position.distanceTo(target.position);
     const drop = 0.0025 * distance * distance; // arrows fall: aim a little higher further away
     await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
     bot.activateItem();
     try {
       await sleep(bow.name === 'crossbow' ? 1300 : 1050);
-      if (!bot.entities[target.id] || target.isValid === false) break;
+      if (!bot.entities[target.id] || target.isValid === false) {
+        throw new Error('target disappeared while drawing; releasing the weapon may still fire or load it');
+      }
       await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
     } finally {
       bot.deactivateItem();
     }
     // A bow fires on release; a crossbow must be used a second time after loading.
     if (bow.name === 'crossbow') {
+      // A player may have moved into the corridor while the crossbow was loading.
+      checkProjectileBystanders(target);
       bot.activateItem();
       bot.deactivateItem();
     }
     fired += 1;
     await sleep(350);
   }
-  const killed = !bot.entities[target.id] || target.isValid === false;
-  return { target: mobName(target), shots: fired, kills: killed ? 1 : 0,
-    message: `shot ${fired} arrow(s) at a ${mobName(target)}` + (killed ? ' and got it' : '') };
+  const targetGone = !bot.entities[target.id] || target.isValid === false;
+  return { target: mobName(target), shots: fired, kills: 0,
+    message: `released ${fired} arrow(s) at a ${mobName(target)}; hit and kill not confirmed` +
+      (targetGone ? ' (target no longer visible)' : '') };
 }
 
 /* ------------------------------------------------------------------ vision */

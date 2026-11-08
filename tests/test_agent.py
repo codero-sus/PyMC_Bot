@@ -288,3 +288,27 @@ def test_heuristic_uses_totem_when_low_but_flees_immediate_threat():
     threatened = {**state, "entities": [{"type": "zombie", "hostile": True, "dist": 3}]}
     assert policy.decide(threatened, []).action == "flee"
     assert policy.decide({**state, "offhand": "totem_of_undying"}, []).action == "eat"
+
+
+def test_heuristic_ranged_defense_reassesses_and_respects_permissions():
+    policy = HeuristicPolicy(seed=1)
+    state = {"health": 20, "food": 20, "inventory": [{"name": "bow", "count": 1}, {"name": "arrow", "count": 5}],
+             "entities": [{"type": "minecraft:skeleton", "hostile": True, "dist": 12}]}
+    decision = policy.decide(state, [])
+    assert decision.action == "shoot" and decision.params == {"mob": "skeleton", "weapon": "bow", "shots": 1}
+    assert policy.decide(state, [], {"fighting": False}).action != "shoot"
+    assert policy.decide(state, [], {"inventory": False}).action != "shoot"
+    assert policy.decide({**state, "inventory": [{"name": "bow", "count": 1}]}, []).action != "shoot"
+    neutral = {**state, "entities": [{"type": "minecraft:spider", "hostile": True, "dist": 12}]}
+    assert policy.decide(neutral, []).action != "shoot"
+    neutral["entities"][0]["dist"] = 3
+    assert policy.decide(neutral, []).action != "fight"
+
+
+def test_heuristic_backs_away_from_close_creeper_and_detects_zero_distance():
+    policy = HeuristicPolicy(seed=1)
+    state = {"health": 20, "food": 20, "entities": [{"type": "minecraft:creeper", "hostile": True, "dist": 0}]}
+    assert policy.decide(state, []).action == "flee"
+    assert policy.decide({**state, "food": 2}, []).action == "flee"
+    state["entities"][0]["type"] = "minecraft:zombie"
+    assert policy.decide(state, []).action == "fight"

@@ -39,6 +39,13 @@ def test_the_mod_only_calls_endpoints_the_panel_has(tmp_path: Path):
     assert not missing, f"the mod calls endpoints the panel does not have: {missing}"
 
 
+def test_mod_move_accepts_combined_controls_and_rejects_opposites():
+    assert 'direction.toLowerCase(Locale.ROOT).split("\\\\+", -1)' in COMMANDS
+    assert 'selected.contains("forward") && selected.contains("back")' in COMMANDS
+    assert 'selected.contains("left") && selected.contains("right")' in COMMANDS
+    assert 'selected.stream().map(BotLink::quote)' in COMMANDS
+
+
 def test_the_mod_stays_portable():
     """HttpURLConnection only: java.net.http and Gson are not safe across 1.21.1 - 26.3."""
     for source in (COMMANDS, BOTLINK):

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from pymc_bot import skills
+from pymc_bot.autopilot import NEUTRAL_MOBS
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
@@ -192,10 +193,10 @@ class HeuristicPolicy:
         inv = Inventory.from_snapshot(state)
         hostiles = sorted(
             (e for e in state.get("entities") or [] if e.get("hostile") and not e.get("player")),
-            key=lambda e: float(e.get("dist") or 99),
+            key=lambda e: float(e.get("dist") if e.get("dist") is not None else 99),
         )
         threat = hostiles[0] if hostiles else None
-        threat_dist = float(threat.get("dist") or 99) if threat else 99.0
+        threat_dist = float(threat.get("dist") if threat.get("dist") is not None else 99) if threat else 99.0
         threat_kind = short(threat.get("type")) if threat else ""
 
         # 1. survive
@@ -205,6 +206,8 @@ class HeuristicPolicy:
                 and (not inv.offhand or inv.offhand.name != "totem_of_undying")
                 and inv.find("totem_of_undying") is not None):
             return Decision("totem", {}, "heuristic", thought="Health is low; protect myself before continuing.")
+        if threat and threat_kind == "creeper" and threat_dist <= 5 and can["movement"]:
+            return Decision("flee", {}, "heuristic", thought="That creeper is too close; back away.")
         if health <= 8 or food <= 6:
             return Decision("eat", {}, "heuristic")
         if knows_items and food <= 14 and inv.best_food(food, health) is not None:
@@ -213,8 +216,15 @@ class HeuristicPolicy:
             if threat_kind in AVOID_MOBS:
                 if can["movement"] and threat_dist <= 5:
                     return Decision("flee", {}, "heuristic")
-            elif can["fighting"] and health > 10:
+            elif threat_kind not in NEUTRAL_MOBS and can["fighting"] and health > 10:
                 return Decision("fight", {"mob": threat_kind}, "heuristic")
+        if (threat and 7 <= threat_dist <= 22 and threat_kind not in AVOID_MOBS
+                and can["fighting"] and can["inventory"] and health > 10):
+            ammo = any(inv.count(name) for name in ("arrow", "spectral_arrow", "tipped_arrow"))
+            weapon = next((name for name in ("bow", "crossbow") if inv.find(name) is not None), None)
+            if threat_kind not in NEUTRAL_MOBS and ammo and weapon:
+                return Decision("shoot", {"mob": threat_kind, "weapon": weapon, "shots": 1}, "heuristic",
+                                thought="Keep some distance and reassess after one shot.")
 
         # 2. people
         # Respond once to new messages, not to our own echo or the same chat history every turn.

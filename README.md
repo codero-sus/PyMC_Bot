@@ -1024,9 +1024,10 @@ template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies
 
 ### Movement, combat and Minecraftism from the mod
 
-With the panel running, `/pymcbot bot move left 0.6` sends a short movement burst
-(`forward`, `back`, `left`, `right`, `jump`, `sneak`, or `sprint`; 0.1–2 seconds).
-The AI can combine controls using the `move_controls` action. To move and ease the view
+With the panel running, `/pymcbot bot move forward+left+sprint 0.6` combines controls in a
+short movement burst (`forward`, `back`, `left`, `right`, `jump`, `sneak`, or `sprint`;
+0.1–2 seconds). Opposite directions and duplicate controls are rejected. The AI can also
+combine controls using the `move_controls` action. To move and ease the view
 at the same time, try `/pymcbot bot do smooth_move direction=forward+left yaw=90 pitch=0 seconds=0.8`.
 `smooth_look` turns without moving; yaw and pitch are in degrees. These are short key holds,
 not a promise of obstacle avoidance, smooth pathfinding or anti-cheat compatibility.
@@ -1037,8 +1038,12 @@ nearby mob; only the server determines whether it was a critical hit. The `shiel
 skill preserves an equipped totem when health is low or unknown unless `force=true`.
 The existing `totem` and `pillar_up` skills remain available. These controls require
 items and a compatible Minecraft/bridge version; damage, range and line of sight are
-server-dependent. Experimental attempts are also available as `throw_projectile` (snowball
-or egg), `spear_attack`, `throw_trident` (requires `confirm=true`, and the trident may be
+server-dependent. The bridge checks for players near the firing corridor before shooting,
+but this is not a guarantee against friendly fire: players can move after the check and
+projectile paths vary. The heuristic brain retreats from nearby creepers and may fire one
+arrow at a time at a distant hostile when equipped, then reassesses. Experimental attempts
+are also available as `throw_projectile` (snowball or egg), `spear_attack`, `throw_trident`
+(requires `confirm=true`, and the trident may be
 lost), and `mace_smash` (`mode=fall`, `tower`, or `wind_charge`). Tower and wind-charge
 setups require `confirm=true`, health of at least 12, and a totem already in the off hand;
 tower also needs building blocks. The panel's **allow risky combat for AI** switch is off

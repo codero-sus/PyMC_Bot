@@ -182,3 +182,8 @@ def test_concurrent_ticks_do_not_start_duplicate_jobs(live_bot, store, log, monk
         assert len(workers) == 1
     finally:
         release.set()
+
+
+def test_zero_distance_hostile_is_not_treated_as_far_away():
+    state = snap(entities=[mob("creeper", 0)])
+    assert plan(state).rule == "flee"

@@ -368,12 +368,22 @@ public final class PymcCommands {
     }
 
     private static int move(String direction, float seconds) {
-        String normalized = direction.toLowerCase(Locale.ROOT);
-        if (!java.util.Set.of("forward", "back", "left", "right", "jump", "sneak", "sprint").contains(normalized)) {
-            BotLink.tell("direction: forward, back, left, right, jump, sneak or sprint");
+        String[] parts = direction.toLowerCase(Locale.ROOT).split("\\+", -1);
+        java.util.Set<String> valid = java.util.Set.of("forward", "back", "left", "right", "jump", "sneak", "sprint");
+        java.util.Set<String> selected = new java.util.LinkedHashSet<>();
+        for (String part : parts) {
+            if (!valid.contains(part) || !selected.add(part)) {
+                BotLink.tell("use controls such as forward+left+sprint (no duplicates)");
+                return 0;
+            }
+        }
+        if ((selected.contains("forward") && selected.contains("back"))
+                || (selected.contains("left") && selected.contains("right"))) {
+            BotLink.tell("opposite directions cannot be held together");
             return 0;
         }
-        return action("{\"action\":\"move_controls\",\"controls\":[" + BotLink.quote(normalized)
+        String controls = selected.stream().map(BotLink::quote).collect(java.util.stream.Collectors.joining(","));
+        return action("{\"action\":\"move_controls\",\"controls\":[" + controls
                 + "],\"seconds\":" + seconds + "}", "move");
     }
 
