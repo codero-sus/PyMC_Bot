@@ -181,6 +181,8 @@ SKILLS: tuple[Skill, ...] = (
           timeout=20.0, aliases=("mount",)),
     Skill("dismount", "moving", "get out / off", {}, "movement", "dismount", moves=False, timeout=8.0),
     # ------------------------------------------------------------------ combat
+    Skill("block_projectile", "combat", "face an incoming projectile and raise an already equipped off-hand shield",
+          {}, "fighting", "block_projectile", timeout=5.0),
     Skill("guard", "combat", "stay here (or near a player) and fight off hostile mobs", {"seconds": 60}, "fighting",
           params={"seconds": _p("int", 60, 10, 600), "player": _p("str", ""), "radius": _p("int", 10, 4, 24)},
           timeout=620.0, aliases=("protect",)),

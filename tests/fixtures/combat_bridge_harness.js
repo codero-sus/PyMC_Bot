@@ -4,7 +4,7 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert');
 const source = fs.readFileSync(process.argv[2], 'utf8');
-const start = source.indexOf('async function cmdCriticalHit(');
+const start = source.indexOf('function projectileApproach(');
 const end = source.indexOf('/* ------------------------------------------------------------------ vision */', start);
 assert(start >= 0 && end > start);
 let clock = 0;
@@ -13,6 +13,7 @@ let inventoryItems = [];
 let towered = false;
 let uses = [];
 let duringSleep = null;
+let activatedOffhand = false;
 const target = { id: 1, name: 'zombie', type: 'mob', height: 1.6, isValid: true,
   position: { x: 2, y: 64, z: 0, offset: () => ({}) } };
 const bot = {
@@ -22,12 +23,12 @@ const bot = {
   entities: { 1: target },
   setControlState: (name, value) => uses.push([name, value]),
   lookAt: async () => {},
-  activateItem: () => uses.push('activate'),
+  activateItem: (offhand) => { activatedOffhand = Boolean(offhand); uses.push('activate'); },
   deactivateItem: () => uses.push('deactivate'),
   attack: () => uses.push('attack'),
 };
 const context = { bot, Date: { now: () => clock }, Math, Number, String, Boolean, Error,
-  need: () => {}, cleanName: (v) => String(v || ''), mobName: (e) => e.name,
+  need: () => {}, checkAction: () => {}, cleanName: (v) => String(v || ''), mobName: (e) => e.name,
   HOSTILE_ENTITIES: new Set(['zombie']), entitiesNear: (predicate) => predicate(target) ? [target] : [], stopPath: () => {},
   cmdPillarUp: async () => { towered = true; },
   findItem: (predicate) => [{name: weapon}, {name: 'arrow'}, ...inventoryItems].find(predicate), holdItem: async () => {},
@@ -93,4 +94,23 @@ vm.runInContext(source.slice(start, end), context);
   await assert.rejects(context.cmdSpearAttack({}), /no matching hostile/);
   target.type = 'mob'; delete target.username;
   await assert.rejects(context.cmdShoot({ weapon: 'trident' }), /weapon must be bow or crossbow/);
+  const arrow = {id: 3, name: 'arrow', isValid: true,
+    position: {x: 5, y: 64.9, z: 0}, velocity: {x: -0.5, y: 0, z: 0}};
+  bot.entities[3] = arrow;
+  assert.strictEqual(context.projectileApproach(arrow), 10);
+  uses = [];
+  bot.inventory.slots[45] = {name: 'shield'};
+  assert((await context.cmdBlockProjectile()).message.includes('not confirmed'));
+  assert(activatedOffhand, 'shield must be raised using the off hand');
+  assert.deepStrictEqual(uses, ['activate', 'deactivate']);
+  uses = [];
+  duringSleep = (ms) => { if (ms === 750) throw Error('cancelled'); };
+  await assert.rejects(context.cmdBlockProjectile(), /cancelled/);
+  assert.deepStrictEqual(uses, ['activate', 'deactivate'], 'cancellation releases the shield');
+  duringSleep = null;
+  arrow.velocity.x = 0.5;
+  await assert.rejects(context.cmdBlockProjectile(), /no projectile/);
+  arrow.velocity.x = -0.5;
+  bot.inventory.slots[45] = {name: 'totem_of_undying'};
+  await assert.rejects(context.cmdBlockProjectile(), /off-hand shield/);
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -1022,6 +1022,9 @@ class SimulatedBackend(BaseBackend):
             self._respawns.append((time.monotonic() + 60.0, target))
         return {"target": short(target["type"]), "message": "simulated a falling hit (critical not confirmed)"}
 
+    def _do_block_projectile(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("projectile physics are not simulated; use a compatible real Minecraft server")
+
     def _do_throw_trident(self, params: dict[str, Any]) -> dict[str, Any]:
         raise InventoryError("trident physics are not simulated; use a compatible real Minecraft server")
 

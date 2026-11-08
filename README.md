@@ -1049,8 +1049,12 @@ setups require `confirm=true`, health of at least 12, and a totem already in the
 tower also needs building blocks. The panel's **allow risky combat for AI** switch is off
 by default and must be enabled for the AI to choose these setups or throw a trident.
 Wind charges can affect the world and nearby entities; a totem is not a guarantee of survival.
-The bot can report apparently approaching projectiles from observed velocity, but does not
-reliably dodge them. These mechanics are attempts, not confirmed hits or successful combos;
+The autopilot also tries to face and block an apparently incoming projectile when a shield is
+already in its off hand; it never swaps out a totem for this reflex. You can also request
+`/pymcbot bot do block_projectile` with a shield equipped. Disable **block projectile**
+in the autopilot panel if unwanted. This uses an approximate straight-line prediction and periodic
+snapshots, so it can miss, react late, interrupt other actions or misjudge the trajectory. It does
+not reliably dodge projectiles or guarantee a block. These mechanics are attempts, not confirmed hits or successful combos;
 server/version compatibility and live gameplay still need testing. The simulator explicitly
 reports the new projectile and mace mechanics as unsupported rather than faking their results.
 

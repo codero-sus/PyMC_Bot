@@ -375,6 +375,7 @@ class AutopilotSettings(BaseModel):
     auto_extinguish: bool = True
     auto_totem: bool = True
     totem_health: float = Field(default=10.0, ge=0.0, le=20.0)
+    auto_block_projectiles: bool = True  # only with a shield already equipped in the off-hand
     auto_flee: bool = True
     flee_health: float = Field(default=6.0, ge=0.0, le=20.0)
     flee_creepers: bool = True  # back off from a creeper closer than 5 blocks

@@ -1790,6 +1790,47 @@ async function cmdDismount() {
   return { message: 'got off' };
 }
 
+// Estimate closest approach in ticks using observed entity velocity (blocks/tick).
+// Gravity, obstacles and bot movement are not modelled, so this is only a warning.
+function projectileApproach(entity) {
+  if (!entity || !entity.position || !entity.velocity || entity.isValid === false) return null;
+  if (!['arrow', 'spectral_arrow', 'trident', 'fireball', 'small_fireball', 'wind_charge'].includes(mobName(entity))) return null;
+  const p = entity.position, b = bot.entity.position, v = entity.velocity;
+  const x = p.x - b.x, y = p.y - b.y - 0.9, z = p.z - b.z;
+  if (![x, y, z, v.x, v.y, v.z].every(Number.isFinite)) return null;
+  const distanceSq = x * x + y * y + z * z;
+  const speedSq = v.x * v.x + v.y * v.y + v.z * v.z;
+  if (distanceSq > 256 || speedSq < 0.0001) return null;
+  const ticks = -(x * v.x + y * v.y + z * v.z) / speedSq;
+  if (!(ticks > 0 && ticks <= 40)) return null;
+  const missSq = (x + ticks * v.x) ** 2 + (y + ticks * v.y) ** 2 + (z + ticks * v.z) ** 2;
+  return missSq <= 1.2 ** 2 ? ticks : null;
+}
+
+async function cmdBlockProjectile() {
+  need();
+  const offhand = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+  if (!offhand || offhand.name !== 'shield') throw new Error('an off-hand shield must already be equipped');
+  const candidates = Object.values(bot.entities || {}).map(entity => ({entity, ticks: projectileApproach(entity)}))
+    .filter(entry => entry.ticks !== null).sort((a, b) => a.ticks - b.ticks);
+  if (!candidates.length) throw new Error('no projectile currently appears headed toward me');
+  const owner = bot;
+  const projectile = candidates[0].entity;
+  await owner.lookAt(projectile.position, true);
+  checkAction();
+  if (bot !== owner || !owner.entities[projectile.id] || projectileApproach(projectile) === null) {
+    throw new Error('projectile is no longer approaching');
+  }
+  if (owner.inventory?.slots?.[45]?.name !== 'shield') throw new Error('off-hand shield is no longer equipped');
+  owner.activateItem(true);
+  try {
+    await sleep(750);
+  } finally {
+    owner.deactivateItem();
+  }
+  return {message: 'raised shield toward a possible incoming projectile; block not confirmed'};
+}
+
 async function cmdCriticalHit(params) {
   need();
   const wanted = cleanName(params.mob);
@@ -2231,6 +2272,7 @@ const COMMANDS = {
   dismount: cmdDismount,
   shoot: cmdShoot,
   critical_hit: cmdCriticalHit,
+  block_projectile: cmdBlockProjectile,
   throw_trident: cmdThrowTrident,
   spear_attack: cmdSpearAttack,
   throw_projectile: cmdThrowProjectile,
