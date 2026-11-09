@@ -1022,6 +1022,15 @@ template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies
 
 <p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://codero.is-a.dev">codero.is-a.dev</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>
 
+### Learning from failed actions
+
+The AI temporarily avoids repeating certain non-emergency jobs (such as mining, walking and
+crafting) after two failures in the same situation. It tries its built-in policy instead, or waits if that would repeat the same
+failure. The bounded cache is in memory only and expires after 45 seconds; moving to another
+area, changing inventory or changing the target can allow another attempt. Survival actions
+and direct manual commands are never blocked by this recovery mechanism. This is local runtime
+adaptation, not model-weight training or a guarantee of human-level behavior.
+
 ### Movement, combat and Minecraftism from the mod
 
 With the panel running, `/pymcbot bot move forward+left+sprint 0.6` combines controls in a

@@ -284,10 +284,10 @@ def test_heuristic_uses_totem_when_low_but_flees_immediate_threat():
     state = {"health": 6, "food": 20, "inventory": [{"name": "totem_of_undying", "count": 1}]}
     policy = HeuristicPolicy(seed=1)
     assert policy.decide(state, []).action == "totem"
-    assert policy.decide(state, [], {"inventory": False}).action == "eat"
+    assert policy.decide(state, [], {"inventory": False}).action == "wander"
     threatened = {**state, "entities": [{"type": "zombie", "hostile": True, "dist": 3}]}
     assert policy.decide(threatened, []).action == "flee"
-    assert policy.decide({**state, "offhand": "totem_of_undying"}, []).action == "eat"
+    assert policy.decide({**state, "offhand": "totem_of_undying"}, []).action == "wander"
 
 
 def test_heuristic_ranged_defense_reassesses_and_respects_permissions():

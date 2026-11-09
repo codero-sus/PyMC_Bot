@@ -40,6 +40,7 @@ from pymc_bot.mind import (
     typing_delay,
 )
 from pymc_bot.ollama import OllamaClient, OllamaError
+from pymc_bot.recovery import RecoveryMemory
 from pymc_bot.train import list_models
 
 ACTIONS: dict[str, str] = {
@@ -189,7 +190,7 @@ class HeuristicPolicy:
         food = float(state["food"]) if state.get("food") is not None else 20.0
         players = state.get("players") or []
         bot_name = str(state.get("username") or state.get("server", {}).get("username") or "PyMC_Bot")
-        knows_items = bool(state.get("slots") or state.get("inventory"))
+        knows_items = isinstance(state.get("slots"), list) or isinstance(state.get("inventory"), list)
         inv = Inventory.from_snapshot(state)
         hostiles = sorted(
             (e for e in state.get("entities") or [] if e.get("hostile") and not e.get("player")),
@@ -209,7 +210,19 @@ class HeuristicPolicy:
         if threat and threat_kind == "creeper" and threat_dist <= 5 and can["movement"]:
             return Decision("flee", {}, "heuristic", thought="That creeper is too close; back away.")
         if health <= 8 or food <= 6:
-            return Decision("eat", {}, "heuristic")
+            if not knows_items or inv.best_food(food, health) is not None:
+                return Decision("eat", {}, "heuristic")
+            # Do not repeatedly try to eat an empty inventory. At low health, do not
+            # initiate a hunt; searching for food is safer than fighting for it.
+            if health > 10 and can["fighting"] and can["movement"] and (not threat or threat_dist > 12):
+                animals = {"cow", "pig", "sheep", "chicken", "rabbit", "mooshroom"}
+                for entity in state.get("entities") or []:
+                    kind = short(entity.get("type"))
+                    if kind in animals and float(entity.get("dist") if entity.get("dist") is not None else 99) <= 12:
+                        return Decision("hunt", {"animal": kind}, "heuristic", thought="I need food and can see an animal.")
+            if can["movement"]:
+                return Decision("wander", {}, "heuristic", thought="I have no food; look for a safer source.")
+            return Decision("wait", {}, "heuristic", thought="I need food but cannot move to find it.")
         if knows_items and food <= 14 and inv.best_food(food, health) is not None:
             return Decision("eat", {}, "heuristic")
         if threat and threat_dist <= 6:
@@ -264,7 +277,7 @@ class HeuristicPolicy:
         drops = [d for d in state.get("ground_items") or [] if float(d.get("dist") or 99) <= 8]
         if drops and can["movement"] and self._step % 2 == 0:
             return Decision("collect", {}, "heuristic")
-        if state.get("time_of_day") == "night" and not state.get("sleeping") and self._step % 6 == 0:
+        if can["movement"] and state.get("time_of_day") == "night" and not state.get("sleeping") and self._step % 6 == 0:
             return Decision("sleep", {}, "heuristic")
 
         # 4. friends
@@ -274,15 +287,15 @@ class HeuristicPolicy:
             if name and nearest.get("distance", 99) < 6 and name not in self._greeted:
                 self._greeted.add(name)
                 return Decision("emote", {"kind": self._rng.choice(["wave", "crouch"])}, "heuristic")
-            if nearest.get("distance", 99) < 12 and self._step % 3 == 0:
+            if can["movement"] and nearest.get("distance", 99) < 12 and self._step % 3 == 0:
                 return Decision("follow", {"player": nearest["name"]}, "heuristic")
 
         # 5. play
-        if self._step % 5 == 0:
+        if can["mining"] and self._step % 5 == 0:
             return Decision("mine", {"block": self._rng.choice(MINING_TARGETS)}, "heuristic")
-        if self._step % 7 == 0:
+        if can["chat"] and self._step % 7 == 0:
             return Decision("say", {"message": self._rng.choice(["just exploring", "nice server", "anyone need wood?"])}, "heuristic")
-        if state.get("time_of_day") == "night" and self._step % 4 == 0:
+        if can["mining"] and state.get("time_of_day") == "night" and self._step % 4 == 0:
             return Decision("mine", {"block": "coal_ore"}, "heuristic")
         roll = self._rng.random()
         if roll < 0.12:
@@ -291,7 +304,7 @@ class HeuristicPolicy:
             filled = [i for i in range(HOTBAR_SIZE) if inv.slots[i] and i != inv.selected]
             if filled:  # players scroll through the hotbar while they think
                 return Decision("select_slot", {"slot": self._rng.choice(filled) + 1}, "heuristic")
-        return Decision("wander", {}, "heuristic")
+        return Decision("wander", {}, "heuristic") if can["movement"] else Decision("wait", {}, "heuristic")
 
     @staticmethod
     def _requested_item(line: str, inv: Inventory) -> str | None:
@@ -357,6 +370,7 @@ class AgentLoop:
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
         self.mind = Mind(store.settings.agent.memory_turns)
+        self.recovery = RecoveryMemory()
         self._experience_lock = threading.RLock()
         self._experience_key = ""
         self._experience: Experience | None = None
@@ -536,6 +550,7 @@ class AgentLoop:
             "trained": trained.describe() if trained is not None else None,
             "persona": self._settings().agent.persona,
             "memory": self.mind.snapshot(),
+            "recovery": self.recovery.snapshot(),
             "vision": {"enabled": self._settings().agent.vision,
                        "status": self._vision_status if self._settings().agent.vision else "disabled",
                        "last_error": self._vision_error or None, "last_sent_at": self._vision_last_sent},
@@ -911,6 +926,8 @@ class AgentLoop:
                 return False, "goto needs numeric x/z"
             y = params.get("y")
             y = float(y) if isinstance(y, (int, float)) else None
+            if not math.isfinite(x) or not math.isfinite(z) or (y is not None and not math.isfinite(y)):
+                return False, "goto coordinates must be finite"
             x = max(-30000.0, min(30000.0, x))
             z = max(-30000.0, min(30000.0, z))
             ok = self.bot.walk_to(x, z, y)
@@ -957,7 +974,8 @@ class AgentLoop:
             return ok, "jumped" if ok else "could not jump"
 
         if action == "eat":
-            return True, "ate" if self.bot.eat() else "had nothing to eat"
+            ok = self.bot.eat()
+            return ok, "ate" if ok else (self.bot.last_failure or "had nothing to eat")
 
         if action == "stop":
             self.bot.stop_moving()
@@ -1171,7 +1189,8 @@ class AgentLoop:
         exchange = getattr(self, "_last_exchange", None)
         self._last_exchange = None
         settings = self._settings()
-        if not settings.agent.record_turns or exchange is None or decision.source in ("heuristic", "trained"):
+        if (not settings.agent.record_turns or exchange is None or decision.source == "heuristic"
+                or str(decision.source).startswith("trained")):
             return
         agent = settings.agent
         row = {
@@ -1189,6 +1208,18 @@ class AgentLoop:
 
     def _act(self, decision: Decision) -> tuple[bool, str]:
         """Bookkeeping + memory around :meth:`execute` for one decision of the loop."""
+        try:
+            state = self.bot.snapshot()
+        except Exception:  # noqa: BLE001  # recovery is optional if a snapshot is unavailable
+            state = None
+        if isinstance(state, dict) and self.recovery.should_defer(decision, state):
+            self.recovery.note_skip()
+            self.log.add(f"Temporarily avoiding repeated failed action: {decision.action}; reassessing.", "info", "agent")
+            self.mind.note_result(decision, False, "deferred after repeated failures here; try a different approach")
+            self._last_exchange = None  # the model reply did not produce the fallback action
+            alternative = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(self._settings()))
+            decision = (Decision("wait", {}, "heuristic", thought="That approach failed twice; pause and reassess.")
+                        if self.recovery.should_defer(alternative, state) else alternative)
         self._decisions += 1
         self._last_decision = {**decision.to_dict(), "ts": time.time()}
         self.mind.resize(self._settings().agent.memory_turns)
@@ -1197,6 +1228,8 @@ class AgentLoop:
             self.log.add(f"💭 {decision.thought}" + (f"  [goal: {decision.goal}]" if decision.goal else ""), "ai", "agent")
         self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
         ok, detail = self.execute(decision)
+        if isinstance(state, dict):
+            self.recovery.record(decision, state, ok, detail)
         self.mind.note_result(decision, ok, detail)
         if self._settings().agent.persistent_memory:
             try:
@@ -1204,7 +1237,7 @@ class AgentLoop:
                 experience.observe(self.bot.chat_history, self.bot.username)
                 # The low-level trained policy may run several times per second; its button
                 # bursts are not useful lessons and would cause unnecessary disk writes.
-                if decision.source != "trained":
+                if not str(decision.source).startswith("trained"):
                     experience.outcome(decision.action, ok, detail, decision.thought)
             except OSError as exc:
                 self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
