@@ -280,6 +280,10 @@ function renderStatus(status) {
   if (agent.vision && agent.vision.enabled) {
     $('ai-status').textContent += ` · vision: ${agent.vision.status}` + (agent.vision.last_error ? ` (${agent.vision.last_error})` : '');
   }
+  const task = agent.task;
+  $('goal-status').textContent = task
+    ? `${task.status}: ${task.item} ${task.observed ?? '?'} / ${task.count} · ${task.detail}`
+    : 'No gathering goal.';
   $('btn-ai-start').disabled = agent.running || state !== 'connected';
   $('btn-ai-stop').disabled = !agent.running;
   $('btn-ai-step').disabled = state !== 'connected';
@@ -1203,6 +1207,13 @@ function wire() {
     } catch (error) { reportError(error); }
   });
   $('btn-ai-stop').addEventListener('click', () => api('/api/ai/stop', { method: 'POST' }).catch(reportError));
+  $('btn-goal-start').addEventListener('click', async () => {
+    try {
+      await api('/api/ai/goal', { method: 'PUT', body: JSON.stringify({ item: $('goal-item').value, count: Number($('goal-count').value) }) });
+      ui.toast('Gathering goal set. Start AI or use Step once to advance it.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-goal-cancel').addEventListener('click', () => api('/api/ai/goal', { method: 'DELETE' }).catch(reportError));
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));
   $('btn-refresh-models').addEventListener('click', () => refreshModels());
   $('btn-train-start').addEventListener('click', () => startTraining());

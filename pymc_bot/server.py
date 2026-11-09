@@ -107,6 +107,11 @@ class SkillRequest(BaseModel):
     bot: str | None = None
 
 
+class GatherGoalRequest(BaseModel):
+    item: str = Field(min_length=1, max_length=64)
+    count: int = Field(ge=1, le=64, strict=True)
+
+
 class AutopilotRunRequest(BaseModel):
     bot: str | None = None
     rule: str | None = None  # run this rule's plan only (default: the most urgent one)
@@ -1005,6 +1010,29 @@ def create_app(
         agent = bot_fleet.agent_for(controller)
         stopped = agent.stop(wait=False)
         return {"ok": True, "stopped": stopped, "username": controller.username, **agent.status}
+
+    @app.put("/api/ai/goal")
+    def ai_goal_start(request: GatherGoalRequest) -> dict[str, Any]:
+        controller = selected_bot()
+        if not controller.connected:
+            raise HTTPException(status_code=409, detail="Connect the bot to a server first.")
+        try:
+            task = bot_fleet.agent_for(controller).start_gather_goal(request.item, request.count)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.get("/api/ai/goal")
+    def ai_goal_status() -> dict[str, Any]:
+        return {"task": selected_agent().goal.snapshot()}
+
+    @app.delete("/api/ai/goal")
+    def ai_goal_cancel() -> dict[str, Any]:
+        agent = selected_agent()
+        cancelled = agent.cancel_goal()
+        return {"ok": True, "cancelled": cancelled, "task": agent.goal.snapshot()}
 
     @app.post("/api/ai/step")
     def ai_step() -> dict[str, Any]:

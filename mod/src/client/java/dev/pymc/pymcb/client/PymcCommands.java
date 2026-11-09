@@ -257,6 +257,23 @@ public final class PymcCommands {
         });
     }
 
+    private static int gatherGoal(String item, int count) {
+        BotLink.put("/api/ai/goal", "{\"item\":\"" + Json.escape(item) + "\",\"count\":" + count + "}",
+                doc -> "gathering goal set; start AI or step to advance it");
+        return 1;
+    }
+
+    private static int goalStatus() {
+        BotLink.get("/api/ai/goal", doc -> {
+            Object task = Json.get(doc, "task");
+            if (task == null) return "no gathering goal";
+            return "goal " + Json.text(Json.get(task, "status"), "unknown") + ": "
+                    + Json.text(Json.get(task, "item"), "unknown") + " " + Json.text(Json.get(task, "observed"), "?")
+                    + "/" + Json.text(Json.get(task, "count"), "?") + " - " + Json.text(Json.get(task, "detail"), "");
+        });
+        return 1;
+    }
+
     /** {@code /pymcbot bot ...}: drive the PyMC Bot panel's bots from inside the game (see {@link BotLink}). */
     private static LiteralArgumentBuilder<FabricClientCommandSource> botCommands() {
         LiteralArgumentBuilder<FabricClientCommandSource> doSkill = guarded("do")
@@ -281,6 +298,17 @@ public final class PymcCommands {
                     BotLink.postPriority("/api/ai/stop", "{}", doc -> "AI stop requested");
                     return 1;
                 }))
+                .then(guarded("gather").then(Mc.argument("item", StringArgumentType.word())
+                        .then(Mc.argument("count", IntegerArgumentType.integer(1, 64))
+                                .executes(ctx -> gatherGoal(StringArgumentType.getString(ctx, "item"),
+                                        IntegerArgumentType.getInteger(ctx, "count")))))
+                .then(literal("goal")
+                        .executes(ctx -> goalStatus())
+                        .then(literal("status").executes(ctx -> goalStatus()))
+                        .then(guarded("cancel").executes(ctx -> {
+                            BotLink.delete("/api/ai/goal", doc -> "gathering goal cancellation requested");
+                            return 1;
+                        })))
                 .then(guarded("model").then(Mc.argument("name", StringArgumentType.greedyString())
                         .executes(ctx -> useOllamaModel(StringArgumentType.getString(ctx, "name")))))
                 .then(guarded("vl").then(Mc.argument("name", StringArgumentType.greedyString())

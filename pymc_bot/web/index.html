@@ -291,6 +291,21 @@
         <button id="btn-pull" class="btn ghost">Pull model</button>
       </div>
 
+      <details>
+        <summary>Gathering goal <span class="hint">— work toward a verified inventory target</span></summary>
+        <p class="note">The selected bot gathers in short steps while the AI runs. It pauses when unsafe or permissions are off, and stops after repeated failure. Progress means items currently in inventory.</p>
+        <div class="fields two">
+          <label>Item <select id="goal-item">
+            <option>oak_log</option><option>spruce_log</option><option>birch_log</option><option>jungle_log</option>
+            <option>acacia_log</option><option>dark_oak_log</option><option>mangrove_log</option><option>cherry_log</option>
+            <option>cobblestone</option><option>cobbled_deepslate</option><option>coal</option><option>raw_iron</option>
+          </select></label>
+          <label>Target count <input id="goal-count" type="number" min="1" max="64" value="4" /></label>
+        </div>
+        <div class="actions"><button id="btn-goal-start" class="btn">Set goal</button><button id="btn-goal-cancel" class="btn ghost">Cancel goal</button></div>
+        <p id="goal-status" class="note">No gathering goal.</p>
+      </details>
+
       <details id="cortex-box">
         <summary>Cortex LLMHoster <span class="hint" id="cortex-summary">— local OpenAI-compatible model host</span></summary>
         <label class="switch">

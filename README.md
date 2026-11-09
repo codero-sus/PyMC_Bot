@@ -1077,6 +1077,22 @@ contents as numeric registry IDs or omit cloud effects; those are treated as **u
 decoded by color or guessed. Classification and movement are best-effort and have not been
 verified on a live server.
 
+### Bounded gathering goals
+
+In the AI panel, choose an item and target count under **Gathering goal**, then start AI or
+use **Step once**. Alternatively, use `/pymcbot bot ai gather oak_log 8`,
+`/pymcbot bot ai goal status` and `/pymcbot bot ai goal cancel`. This deterministic goal
+supports the listed logs, cobblestone, cobbled deepslate, coal and raw iron, with target counts
+from 1 to 64. The target is the **total currently in inventory**, not an additional quantity.
+It mines one block or approaches a nearby matching drop per turn and only marks completion
+when a later inventory snapshot confirms the count. It pauses for unsafe observations or disabled
+AI movement/mining permissions and gives up after bounded repeated failures or no progress.
+It does not craft tools, find other ore variants, infer recipes, or guarantee safe navigation or
+item drops. The regular survival autopilot remains independent and may interrupt or act while a
+goal is paused. Goals are in-memory, tied to the bot/server, and stopping AI cancels them.
+Cancel requests cannot undo actions already sent to the server. This has not been verified in
+live Minecraft gameplay.
+
 `/pymcbot bot ai stop` requests the AI loop to stop and interrupts cooperative bridge
 waits, navigation, held movement keys and active digging. The response is an acknowledgement,
 not proof that every in-flight Minecraft operation has completed: a network or plugin operation

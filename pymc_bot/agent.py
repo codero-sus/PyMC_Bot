@@ -30,6 +30,7 @@ from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.experience import Experience
+from pymc_bot.goals import GatherGoal
 from pymc_bot.inventory import HOTBAR_SIZE, Inventory, short
 from pymc_bot.knowledge import KnowledgeBase, LookupResult, shared_knowledge
 from pymc_bot.mind import (
@@ -371,6 +372,7 @@ class AgentLoop:
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
         self.mind = Mind(store.settings.agent.memory_turns)
         self.recovery = RecoveryMemory()
+        self.goal = GatherGoal()
         self._experience_lock = threading.RLock()
         self._experience_key = ""
         self._experience: Experience | None = None
@@ -408,7 +410,11 @@ class AgentLoop:
 
     def stop(self, wait: bool = True) -> bool:
         with self._lock:
+            task = self.goal.snapshot()
+            self.goal.cancel()
             if not self.running:
+                if task and task.get("in_flight"):
+                    self.bot.stop_moving()
                 return False
             self._stop_event.set()
             thread = self._thread
@@ -551,6 +557,7 @@ class AgentLoop:
             "persona": self._settings().agent.persona,
             "memory": self.mind.snapshot(),
             "recovery": self.recovery.snapshot(),
+            "task": self.goal.snapshot(),
             "vision": {"enabled": self._settings().agent.vision,
                        "status": self._vision_status if self._settings().agent.vision else "disabled",
                        "last_error": self._vision_error or None, "last_sent_at": self._vision_last_sent},
@@ -609,6 +616,47 @@ class AgentLoop:
                 self.bot.clear_cancel()
             self.log.add("AI agent loop finished.", "debug", "agent")
 
+    def _goal_identity(self) -> tuple[Any, ...]:
+        return (*self.bot.memory_server, self.bot.username.lower())
+
+    def start_gather_goal(self, item: str, count: int) -> dict[str, Any]:
+        return self.goal.start(item, count, self._goal_identity())
+
+    def cancel_goal(self) -> bool:
+        snapshot = self.goal.snapshot()
+        cancelled = self.goal.cancel()
+        if cancelled and snapshot and snapshot.get("in_flight"):
+            self.bot.stop_moving()
+        return cancelled
+
+    def _goal_turn(self, settings: AppSettings, state: dict[str, Any]) -> tuple[bool, str] | None:
+        # Capture cancellation before claiming the step, including the gap before execution.
+        with self.bot.action_scope():
+            return self._goal_turn_scoped(settings, state)
+
+    def _goal_turn_scoped(self, settings: AppSettings, state: dict[str, Any]) -> tuple[bool, str] | None:
+        identity = self._goal_identity()
+        kind, step = self.goal.next(state, identity, mining=settings.agent.allow_mining,
+                                    movement=settings.agent.allow_movement)
+        if kind == "none":
+            return None
+        if kind == "wait":
+            task = self.goal.snapshot() or {}
+            return True, str(task.get("detail") or "goal waiting")
+        decision = Decision(step["action"], step["params"], source="goal:gather",
+                            goal=f"gather {(self.goal.snapshot() or {}).get('item', '')}")
+        ok, detail = False, "goal step interrupted"
+        try:
+            self._last_exchange = None
+            ok, detail = self._act(decision)
+            return ok, detail
+        finally:
+            try:
+                observation = self.bot.snapshot() if self._goal_identity() == identity else None
+            except Exception:  # noqa: BLE001  # a failed observation cannot verify a goal
+                observation = None
+            self.goal.finish(step["token"], ok, detail, observation)
+
     def _run_loop(self) -> None:
         failures = 0
         while not self._stop_event.is_set():
@@ -619,6 +667,13 @@ class AgentLoop:
                     break
                 continue
             state = self.bot.snapshot()
+            if self._stop_event.is_set():
+                break
+            result = self._goal_turn(settings, state)
+            if result is not None:
+                if self._wait(interval):
+                    break
+                continue
             decision: Decision | None = None
             try:
                 decision = self._decide(settings, state)
@@ -633,6 +688,9 @@ class AgentLoop:
             failures = 0
             if self._stop_event.is_set():
                 break
+            task = self.goal.snapshot()
+            if task and task["status"] in {"active", "paused"}:
+                continue  # a goal was set while the model was thinking
             ok, detail = self._act(decision)
             if self.uses_llm(settings):
                 # people don't act on a metronome: +-25% around the configured interval
@@ -1169,6 +1227,9 @@ class AgentLoop:
         """Decide and execute a single action (used by ``POST /api/step``)."""
         settings = self._settings()
         state = self.bot.snapshot()
+        result = self._goal_turn(settings, state)
+        if result is not None:
+            return result
         try:
             decision = self._decide(settings, state)
         except Exception as exc:
@@ -1177,6 +1238,9 @@ class AgentLoop:
             self._last_error = str(exc)
             self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
             decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
+        task = self.goal.snapshot()
+        if task and task["status"] in {"active", "paused"}:
+            return True, "goal set while deciding; step again to advance it"
         return self._act(decision)
 
     def turns_path(self, settings: AppSettings | None = None) -> Path:

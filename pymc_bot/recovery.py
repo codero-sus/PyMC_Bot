@@ -48,7 +48,7 @@ def _context(state: dict[str, Any]) -> tuple[Any, ...]:
 
 def _key(decision: Any, state: dict[str, Any]) -> tuple[Any, ...] | None:
     action = str(getattr(decision, "action", "") or "").lower()
-    if action not in RECOVERABLE or str(getattr(decision, "source", "")).startswith("trained"):
+    if action not in RECOVERABLE or str(getattr(decision, "source", "")).startswith(("trained", "goal:")):
         return None
     params = getattr(decision, "params", None) or {}
     if not isinstance(params, dict):
