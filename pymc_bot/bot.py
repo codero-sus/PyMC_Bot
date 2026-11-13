@@ -1250,10 +1250,13 @@ class MinecraftBot:
         ok, _ = self._perform("wake", {}, activity="wake")
         return ok
 
-    def collect_items(self, radius: float = 12.0) -> bool:
-        """Walk over dropped items nearby to pick them up."""
+    def collect_items(self, radius: float = 12.0, item: str = "") -> bool:
+        """Walk over nearby drops, optionally targeting one known item name."""
+        params: dict[str, Any] = {"radius": radius, "seconds": 15}
+        if item:
+            params["item"] = short(item)
         with self._motion_lock:
-            ok, result = self._perform("collect", {"radius": radius, "seconds": 15}, timeout=20.0, activity="collect")
+            ok, result = self._perform("collect", params, timeout=20.0, activity="collect")
         if ok:
             self.log.add(f"Picked up {result.get('picked', 1)} dropped item(s).", "info", "bot")
         return ok

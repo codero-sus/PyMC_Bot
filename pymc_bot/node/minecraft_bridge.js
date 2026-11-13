@@ -798,11 +798,17 @@ async function cmdCollect(params) {
   if (!bot) throw new Error('not connected');
   const radius = Math.max(1, Math.min(32, Number(params.radius || 12)));
   const deadline = Date.now() + Math.max(2000, Number(params.seconds || 15) * 1000);
+  const wanted = String(params.item || '').trim().toLowerCase().replace(/^minecraft:/, '');
   let picked = 0;
   while (Date.now() < deadline) {
-    const drops = Object.values(bot.entities).filter(
-      (e) => e && e.name === 'item' && e.position && bot.entity.position.distanceTo(e.position) <= radius
-    );
+    const drops = Object.values(bot.entities).filter((e) => {
+      if (!e || e.name !== 'item' || !e.position || bot.entity.position.distanceTo(e.position) > radius) return false;
+      if (!wanted) return true;
+      try {
+        const stack = typeof e.getDroppedItem === 'function' ? e.getDroppedItem() : null;
+        return Boolean(stack && typeof stack.name === 'string' && stack.name.toLowerCase().replace(/^minecraft:/, '') === wanted);
+      } catch (_) { return false; }
+    });
     if (!drops.length) break;
     drops.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
     const target = drops[0];

@@ -12,6 +12,8 @@ GATHERABLE = {
     **{f"{wood}_log": f"{wood}_log" for wood in ("oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry")},
     "cobblestone": "stone", "cobbled_deepslate": "deepslate", "coal": "coal_ore", "raw_iron": "iron_ore",
 }
+# The bridge searches for each named block; these variants may not exist on older servers.
+ALTERNATES = {"coal": ("coal_ore", "deepslate_coal_ore"), "raw_iron": ("iron_ore", "deepslate_iron_ore")}
 
 
 class GatherGoal:
@@ -34,7 +36,8 @@ class GatherGoal:
                 raise RuntimeError("a goal action is still running; wait for it to finish")
             self._generation += 1
             self._goal = {"item": item, "count": count, "observed": None, "status": "active", "detail": "waiting for a fresh observation",
-                          "attempts": 0, "failures": 0, "no_progress": 0, "identity": identity}
+                          "attempts": 0, "failures": 0, "no_progress": 0, "variant": 0,
+                          "last_action": "", "identity": identity}
             return self.snapshot()
 
     def cancel(self) -> bool:
@@ -97,9 +100,11 @@ class GatherGoal:
             drops = state.get("ground_items") or []
             matching_drop = any(isinstance(d, dict) and short(d.get("item")) == g["item"] and _near(d.get("dist"), 8) for d in drops)
             action = "collect" if matching_drop else "mine"
-            params = {} if matching_drop else {"block": GATHERABLE[g["item"]]}
+            variants = ALTERNATES.get(g["item"], (GATHERABLE[g["item"]],))
+            params = {"item": g["item"]} if matching_drop else {"block": variants[g["variant"] % len(variants)]}
             self._inflight = True
-            g.update(status="active", detail=f"{action} in progress", attempts=g["attempts"] + 1)
+            g.update(status="active", detail=f"{action} {params.get('item') or params.get('block')} in progress",
+                     last_action=action, attempts=g["attempts"] + 1)
             return "action", {"token": self._generation, "action": action, "params": params}
 
     def finish(self, token: int, ok: bool, detail: str, state: dict[str, Any] | None) -> None:
@@ -109,6 +114,8 @@ class GatherGoal:
             if not g or token != self._generation or g["status"] == "cancelled":
                 return
             if not ok:
+                if g["last_action"] == "mine":
+                    g["variant"] += 1
                 g["failures"] += 1
                 if g["failures"] >= 2:
                     g.update(status="failed", detail=f"two actions failed: {str(detail)[:160]}")
@@ -122,6 +129,8 @@ class GatherGoal:
                 return
             previous = g["observed"]
             g["no_progress"] = 0 if previous is None or count > previous else g["no_progress"] + 1
+            if g["last_action"] == "mine" and previous is not None and count <= previous:
+                g["variant"] += 1
             g["observed"] = count
             if count >= g["count"]:
                 g.update(status="completed", detail="target verified in inventory")

@@ -1169,7 +1169,8 @@ class AgentLoop:
             ok = bot.wake_up()
             return ok, "got up" if ok else why("could not get up")
         if action in ("collect", "pickup", "pick_up"):
-            ok = bot.collect_items()
+            item = item_of("item")
+            ok = bot.collect_items(item=item) if item else bot.collect_items()
             return ok, "picked up items" if ok else why("nothing to pick up")
         if action in ("fight", "attack_mob", "kill"):
             mob = item_of("mob", "target", "type") or None

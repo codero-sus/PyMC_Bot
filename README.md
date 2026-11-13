@@ -1097,10 +1097,12 @@ use **Step once**. Alternatively, use `/pymcbot bot ai gather oak_log 8`,
 supports the listed logs, cobblestone, cobbled deepslate, coal and raw iron, with target counts
 from 1 to 64. The target is the **total currently in inventory**, not an additional quantity.
 It mines one block or approaches a nearby matching drop per turn and only marks completion
-when a later inventory snapshot confirms the count. It pauses for unsafe observations or disabled
-AI movement/mining permissions and gives up after bounded repeated failures or no progress.
-It does not craft tools, find other ore variants, infer recipes, or guarantee safe navigation or
-item drops. The regular survival autopilot remains independent and may interrupt or act while a
+when a later inventory snapshot confirms the count. For coal and raw iron it can try the deepslate
+ore variant after a failed or unproductive attempt; each variant is searched by the Mineflayer
+bridge, not predicted from a full map. Targeted collection ignores drops whose item type is unknown.
+It pauses for unsafe observations or disabled AI movement/mining permissions and gives up after
+bounded repeated failures or no progress. It does not craft tools, infer recipes, or guarantee safe
+navigation or item drops. The regular survival autopilot remains independent and may interrupt or act while a
 goal is paused. Goals are in-memory, tied to the bot/server, and stopping AI cancels them.
 Cancel requests cannot undo actions already sent to the server. This has not been verified in
 live Minecraft gameplay.

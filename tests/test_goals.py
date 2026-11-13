@@ -1,7 +1,10 @@
 """Observation-driven gathering and its selected-bot API."""
 from __future__ import annotations
 
+import shutil
+import subprocess
 import threading
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,6 +35,7 @@ def test_gather_verifies_inventory_and_selects_drop():
     kind, action = step(goal, state({"name": "oak_log", "count": 2},
                                     ground_items=[{"item": "minecraft:oak_log", "dist": 2}]))
     assert kind == "action" and action["action"] == "collect"
+    assert action["params"] == {"item": "oak_log"}
     goal.finish(action["token"], True, "collected", state({"name": "oak_log", "count": 3}))
     assert goal.snapshot()["status"] == "completed"
 
@@ -75,6 +79,42 @@ def test_failure_bounds_and_no_progress():
     assert goal.snapshot()["status"] == "failed"
 
 
+@pytest.mark.parametrize("item,first,second", [
+    ("coal", "coal_ore", "deepslate_coal_ore"),
+    ("raw_iron", "iron_ore", "deepslate_iron_ore"),
+])
+def test_alternate_ore_after_failure_or_no_progress(item, first, second):
+    for success in (False, True):
+        goal = GatherGoal()
+        goal.start(item, 1, IDENTITY)
+        _, action = step(goal, state())
+        assert action["params"]["block"] == first
+        goal.finish(action["token"], success, "attempted", state())
+        _, action = step(goal, state())
+        assert action["params"]["block"] == second
+        goal.finish(action["token"], True, "mined", state({"name": item, "count": 1}))
+        assert goal.snapshot()["status"] == "completed"
+
+
+def test_targeted_collection_bridge():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js not installed")
+    root = Path(__file__).resolve().parents[1]
+    subprocess.run([node, str(root / "tests/fixtures/gather_bridge_harness.js"),
+                    str(root / "pymc_bot/node/minecraft_bridge.js")], check=True, timeout=10)
+
+
+def test_targeted_collection_simulation(live_bot):
+    backend = live_bot.backend
+    backend._ground = [
+        {"name": "dirt", "count": 1, "x": 1, "z": 0, "at": 0},
+        {"name": "oak_log", "count": 1, "x": 2, "z": 0, "at": 0},
+    ]
+    assert live_bot.collect_items(item="minecraft:oak_log")
+    assert [drop["name"] for drop in backend._ground] == ["dirt"]
+
+
 def test_inflight_claim_and_cancel_are_generation_safe():
     goal = GatherGoal()
     goal.start("oak_log", 1, IDENTITY)
@@ -98,6 +138,23 @@ def test_agent_runs_goal_not_model_and_respects_recovery(live_bot, store, log, m
         agent.recovery.record(previous, live_bot.snapshot(), False, "failed")
     assert agent.run_once()[0]
     assert agent.run_once()[0]
+    assert agent.goal.snapshot()["status"] == "completed"
+
+
+def test_agent_replans_after_mining_failure(live_bot, store, log, monkeypatch):
+    agent = AgentLoop(live_bot, store, log)
+    agent.start_gather_goal("raw_iron", 1)
+    calls = []
+    def mine(block):
+        calls.append(block)
+        if block == "deepslate_iron_ore":
+            live_bot.backend._inv.add("raw_iron", 1)
+            return True
+        return False
+    monkeypatch.setattr(live_bot, "mine", mine)
+    assert not agent.run_once()[0]
+    assert agent.run_once()[0]
+    assert calls == ["iron_ore", "deepslate_iron_ore"]
     assert agent.goal.snapshot()["status"] == "completed"
 
 

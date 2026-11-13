@@ -597,7 +597,9 @@ class SimulatedBackend(BaseBackend):
         radius = float(params.get("radius") or 12)
         x, _, z = self._position
         now = time.monotonic()
-        near = [d for d in self._ground if math.dist((x, z), (d["x"], d["z"])) <= radius and now - d["at"] > 2.0]
+        wanted = short(params.get("item") or "")
+        near = [d for d in self._ground if math.dist((x, z), (d["x"], d["z"])) <= radius
+                and now - d["at"] > 2.0 and (not wanted or short(d["name"]) == wanted)]
         if not near:
             raise InventoryError(f"nothing to pick up within {radius:g} blocks")
         picked = 0
