@@ -1077,6 +1077,22 @@ contents as numeric registry IDs or omit cloud effects; those are treated as **u
 decoded by color or guessed. Classification and movement are best-effort and have not been
 verified on a live server.
 
+### Optional model routing and a read-only benchmark
+
+The Ollama panel can optionally route between two **already installed** models: a routine model
+and a complex model. It uses simple rules for danger, nearby hostiles and planning-related goal/chat
+words. The last selection and reason appear in status. It is off by default, does not install models,
+and does not replace survival autopilot or guarantee speed or better decisions. A missing/unsupported
+model can fail and trigger the usual heuristic fallback. Switching models may incur load time and memory
+costs. When VL is enabled all turns stay on the main configured VL model, even on turns without an image.
+
+`python -m pymc_bot bench --model <installed-ollama-name> --repeats 2 --output report.json` runs
+three fixed synthetic, **read-only** action-choice prompts and reports parse/strict-JSON/known-action/
+expected-action rates and response latency. `--json-mode` requests JSON output. It does not execute
+actions, spawn worlds, measure survival, parkour or wood-to-iron, or prove overall gameplay skill;
+fixed expected actions are narrow checks, not the only valid choices. The report contains no player
+recordings or notebooks. Run it yourself against a model; it does not train or upload anything.
+
 ### More reliable decisions and saved places
 
 Ollama's optional **JSON-object output** switch asks the runtime for JSON on action decisions,

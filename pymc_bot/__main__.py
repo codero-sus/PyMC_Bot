@@ -151,6 +151,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     node_setup.add_arguments(setup)
 
+    bench = sub.add_parser("bench", help="read-only synthetic Ollama action-choice and latency checks")
+    bench.add_argument("--model", required=True, help="installed Ollama model name")
+    bench.add_argument("--url", default="http://127.0.0.1:11434", help="Ollama server URL")
+    bench.add_argument("--repeats", type=int, choices=range(1, 11), default=1, help="repeat each case (1-10)")
+    bench.add_argument("--json-mode", action="store_true", help="request Ollama JSON-object output")
+    bench.add_argument("--output", default=None, help="optional JSON report file")
+
     doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, cortex, config)")
     _add_config_arg(doctor)
 
@@ -925,7 +932,20 @@ def cmd_stub(args: argparse.Namespace) -> int:
     return stub_main(argv)
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    from pymc_bot.bench import benchmark
+
+    with OllamaClient(base_url=args.url, model=args.model) as client:
+        report = benchmark(client, repeats=args.repeats, json_mode=args.json_mode)
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return 1 if all(row["error"] for row in report["results"]) else 0
+
+
 DISPATCH = {
+    "bench": cmd_bench,
     "serve": cmd_serve,
     "run": cmd_run,
     "train": cmd_train,

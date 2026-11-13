@@ -286,6 +286,14 @@
       <label class="toggle"><input id="cfg-ollama-json-mode" type="checkbox" />
         <span>Request JSON-object output from Ollama (optional; model/runtime support required)</span>
       </label>
+      <label class="toggle"><input id="cfg-ollama-routing" type="checkbox" />
+        <span>Route text decisions between two installed models (experimental)</span>
+      </label>
+      <div class="fields two">
+        <label>Routine model <input id="cfg-ollama-routine-model" type="text" list="models" placeholder="installed Turbo model name" /></label>
+        <label>Complex model <input id="cfg-ollama-complex-model" type="text" list="models" placeholder="installed Thinking model name" /></label>
+      </div>
+      <p class="note">Routing uses simple state/goal heuristics; it is not a reflex or a guarantee of speed. Vision uses the main configured VL model.</p>
       <div class="actions">
         <button id="btn-ai-start" class="btn primary">Start AI</button>
         <button id="btn-ai-stop" class="btn">Stop AI</button>

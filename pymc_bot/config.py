@@ -132,6 +132,9 @@ class OllamaSettings(BaseModel):
     decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
     request_timeout: float = Field(default=60.0, gt=0, le=600)
     json_mode: bool = False  # optional Ollama JSON-object sampling for action decisions
+    adaptive_routing: bool = False
+    routine_model: str = Field(default="", max_length=200)
+    complex_model: str = Field(default="", max_length=200)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @field_validator("system_prompt")

@@ -280,6 +280,9 @@ function renderStatus(status) {
   if (agent.vision && agent.vision.enabled) {
     $('ai-status').textContent += ` · vision: ${agent.vision.status}` + (agent.vision.last_error ? ` (${agent.vision.last_error})` : '');
   }
+  if (agent.model_route && agent.resolved_brain === 'ollama') {
+    $('ai-status').textContent += ` · last model: ${agent.model_route.model} (${agent.model_route.reason})`;
+  }
   const task = agent.task;
   $('goal-status').textContent = task
     ? `${task.status}: ${task.item} ${task.observed ?? '?'} / ${task.count} · ${task.detail}`
@@ -504,6 +507,9 @@ function fillForm(cfg) {
 
   check('cfg-ollama-enabled', ol.enabled);
   check('cfg-ollama-json-mode', ol.json_mode);
+  check('cfg-ollama-routing', ol.adaptive_routing);
+  set('cfg-ollama-routine-model', ol.routine_model || '');
+  set('cfg-ollama-complex-model', ol.complex_model || '');
   set('cfg-ollama-url', ol.base_url || 'http://127.0.0.1:11434');
   set('cfg-ollama-model', ol.model || 'llama3.2');
   set('cfg-ollama-interval', ol.decision_interval || 6);
@@ -624,6 +630,9 @@ function collectForm() {
     ollama: {
       enabled: $('cfg-ollama-enabled').checked,
       json_mode: $('cfg-ollama-json-mode').checked,
+      adaptive_routing: $('cfg-ollama-routing').checked,
+      routine_model: $('cfg-ollama-routine-model').value.trim(),
+      complex_model: $('cfg-ollama-complex-model').value.trim(),
       base_url: $('cfg-ollama-url').value.trim(),
       model: $('cfg-ollama-model').value.trim() || 'llama3.2',
       decision_interval: Number($('cfg-ollama-interval').value) || 6,

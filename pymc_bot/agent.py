@@ -42,6 +42,7 @@ from pymc_bot.mind import (
 )
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.recovery import RecoveryMemory
+from pymc_bot.routing import select_ollama_model
 from pymc_bot.train import list_models
 
 ACTIONS: dict[str, str] = {
@@ -367,6 +368,7 @@ class AgentLoop:
         self._vision_error = ""
         self._vision_status = "waiting"
         self._vision_last_sent: float | None = None
+        self._last_route: dict[str, str] | None = None
         self._errors = 0
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
@@ -558,6 +560,7 @@ class AgentLoop:
             "memory": self.mind.snapshot(),
             "recovery": self.recovery.snapshot(),
             "task": self.goal.snapshot(),
+            "model_route": self._last_route,
             "vision": {"enabled": self._settings().agent.vision,
                        "status": self._vision_status if self._settings().agent.vision else "disabled",
                        "last_error": self._vision_error or None, "last_sent_at": self._vision_last_sent},
@@ -759,9 +762,14 @@ class AgentLoop:
         client = self._ollama_client(settings)
         system = self.system_prompt(settings, settings.ollama.system_prompt)
         images = self.vision_frame(settings)
+        model, reason = select_ollama_model(settings.ollama, settings.agent.vision, state,
+                                            self.mind.goal, self.bot.recent_chat())
+        self._last_route = {"model": model, "reason": reason}
 
         def ask(prompt: str) -> str:
-            options = {"json_mode": True} if settings.ollama.json_mode else {}
+            options: dict[str, Any] = {"json_mode": True} if settings.ollama.json_mode else {}
+            if model != settings.ollama.model:
+                options["model"] = model
             if images:
                 return self._vision_request(images, lambda: client.chat(
                     [{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images, **options))
@@ -771,7 +779,7 @@ class AgentLoop:
                 # Some models/servers only implement /api/generate.
                 return client.generate(prompt, system=system, **options)
 
-        return self._research_and_decide(settings, state, ask, lambda: f"ollama:{settings.ollama.model}")
+        return self._research_and_decide(settings, state, ask, lambda: f"ollama:{model}")
 
     def _ask_cortex(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         """One decision from the model hosted by Cortex LLMHoster."""
