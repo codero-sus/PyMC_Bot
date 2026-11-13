@@ -640,7 +640,7 @@ class AgentLoop:
     def _goal_turn_scoped(self, settings: AppSettings, state: dict[str, Any]) -> tuple[bool, str] | None:
         identity = self._goal_identity()
         kind, step = self.goal.next(state, identity, mining=settings.agent.allow_mining,
-                                    movement=settings.agent.allow_movement)
+                                    movement=settings.agent.allow_movement, inventory=settings.agent.allow_inventory)
         if kind == "none":
             return None
         if kind == "wait":
@@ -1204,6 +1204,9 @@ class AgentLoop:
                 "inventory": "inventory", "chat": "chat"}.get(skill.permission)
         if flag is not None and blocked(flag, skills.allowed(skill, agent)):
             return False, f"{skill.name} needs {flag} to be allowed in settings"
+        if skill.name == "craft" and (blocked("building", agent.allow_building) or blocked("movement", agent.allow_movement)):
+            # The bridge's station helper can both place and walk to a table.
+            params = {**params, "no_station": True}
         if (skill.name == "throw_trident" or
                 (skill.name == "mace_smash" and str(params.get("mode") or "fall").lower() in ("tower", "wind_charge"))):
             if blocked("risky_combat", agent.allow_risky_combat):

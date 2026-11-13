@@ -1484,6 +1484,7 @@ async function cmdCraft(params) {
   const count = Math.max(1, Math.min(64, Number(params.count || 1)));
   let recipe = bot.recipesFor(info.id, null, 1, null)[0];
   let table = null;
+  if (!recipe && params.no_station) throw new Error(`no inventory-only recipe for ${name} with available ingredients`);
   if (!recipe) {
     table = await ensureStation(['crafting_table'], 'crafting_table', 'crafting table');
     if (!table && countItem('crafting_table') === 0) {

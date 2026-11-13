@@ -138,7 +138,8 @@ SKILLS: tuple[Skill, ...] = (
           {"animal": _p("str", ""), "radius": _p("int", 16, 2, 32)}, timeout=60.0),
     # ---------------------------------------------------------------- crafting
     Skill("craft", "crafting", "craft an item (uses or places a crafting table)", {"item": "stone_pickaxe", "count": 1},
-          "inventory", "craft", {"item": _p("str", ""), "count": _p("int", 1, 1, 64)}, timeout=40.0),
+          "inventory", "craft", {"item": _p("str", ""), "count": _p("int", 1, 1, 64),
+                                  "no_station": _p("bool", False)}, timeout=40.0),
     Skill("smelt", "crafting", "smelt or cook in a furnace (raw iron, beef, sand...)", {"item": "raw_iron", "count": 8},
           "inventory", "smelt", {"item": _p("str", ""), "count": _p("int", 8, 1, 64),
                                  "seconds": _p("int", 90, 10, 600)}, timeout=620.0, aliases=("cook",)),

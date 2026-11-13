@@ -303,13 +303,13 @@
       </div>
 
       <details>
-        <summary>Gathering goal <span class="hint">— work toward a verified inventory target</span></summary>
-        <p class="note">The selected bot gathers in short steps while the AI runs. It pauses when unsafe or permissions are off, and stops after repeated failure. Progress means items currently in inventory.</p>
+        <summary>Inventory goal <span class="hint">— gather or craft toward a verified target</span></summary>
+        <p class="note">The selected bot works in short steps while AI runs. Torch goals gather wood and coal and craft prerequisites without placing a station. It pauses when unsafe or permissions are off. Progress means items currently in inventory.</p>
         <div class="fields two">
           <label>Item <select id="goal-item">
             <option>oak_log</option><option>spruce_log</option><option>birch_log</option><option>jungle_log</option>
             <option>acacia_log</option><option>dark_oak_log</option><option>mangrove_log</option><option>cherry_log</option>
-            <option>cobblestone</option><option>cobbled_deepslate</option><option>coal</option><option>raw_iron</option>
+            <option>cobblestone</option><option>cobbled_deepslate</option><option>coal</option><option>raw_iron</option><option>torch</option>
           </select></label>
           <label>Target count <input id="goal-count" type="number" min="1" max="64" value="4" /></label>
         </div>

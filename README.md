@@ -1110,15 +1110,19 @@ writes are synchronized among bots in one Python process; separate processes are
 In the AI panel, choose an item and target count under **Gathering goal**, then start AI or
 use **Step once**. Alternatively, use `/pymcbot bot ai gather oak_log 8`,
 `/pymcbot bot ai goal status` and `/pymcbot bot ai goal cancel`. This deterministic goal
-supports the listed logs, cobblestone, cobbled deepslate, coal and raw iron, with target counts
+supports the listed logs, cobblestone, cobbled deepslate, coal, raw iron and torches, with target counts
 from 1 to 64. The target is the **total currently in inventory**, not an additional quantity.
 It mines one block or approaches a nearby matching drop per turn and only marks completion
 when a later inventory snapshot confirms the count. For coal and raw iron it can try the deepslate
 ore variant after a failed or unproductive attempt; each variant is searched by the Mineflayer
 bridge, not predicted from a full map. Targeted collection ignores drops whose item type is unknown.
 It pauses for unsafe observations or disabled AI movement/mining permissions and gives up after
-bounded repeated failures or no progress. It does not craft tools, infer recipes, or guarantee safe
-navigation or item drops. The regular survival autopilot remains independent and may interrupt or act while a
+bounded repeated failures or no progress. Torch goals use a small fixed dependency plan: gather logs,
+craft planks and sticks, obtain coal or use existing charcoal, then craft torches in the inventory.
+They require inventory, movement and mining permissions, and pause if coal must be mined without a
+pickaxe. Each step is reassessed against inventory; the torch plan never places or travels to a crafting
+table. AI crafting also avoids stations if AI building or movement is disabled. It does not craft tools,
+infer arbitrary recipes, or guarantee safe navigation or item drops. The regular survival autopilot remains independent and may interrupt or act while a
 goal is paused. Goals are in-memory, tied to the bot/server, and stopping AI cancels them.
 Cancel requests cannot undo actions already sent to the server. This has not been verified in
 live Minecraft gameplay.
