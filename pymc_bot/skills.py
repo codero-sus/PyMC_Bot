@@ -303,12 +303,19 @@ def clean_params(skill: Skill, params: dict[str, Any] | None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------- places (homes, waypoints)
+# Different bots construct separate Places objects for the same file. Share the lock so
+# read-modify-write updates cannot overwrite another bot's waypoint in this process.
+_PLACES_LOCKS: dict[Path, threading.RLock] = {}
+_PLACES_LOCKS_GUARD = threading.Lock()
+
+
 class Places:
     """Homes and named waypoints per server and bot, kept in ``pymc_bot_places.json`` next to the config."""
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self._lock = threading.RLock()
+        self.path = Path(path).resolve()
+        with _PLACES_LOCKS_GUARD:
+            self._lock = _PLACES_LOCKS.setdefault(self.path, threading.RLock())
 
     def _load(self) -> dict[str, Any]:
         try:
@@ -342,8 +349,8 @@ def places_for(bot: MinecraftBot) -> Places:
 
 
 def _server_key(bot: MinecraftBot) -> str:
-    minecraft = bot.store.settings.minecraft
-    return f"{minecraft.host}:{minecraft.port}".lower()
+    host, port = bot.memory_server
+    return f"{host}:{port}".lower()
 
 
 # ---------------------------------------------------------------------------- running a skill
@@ -376,10 +383,16 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
 def _here(bot: MinecraftBot) -> dict[str, Any] | None:
     snap = bot.snapshot()
     pos = snap.get("position")
-    if not pos:
+    dimension = snap.get("dimension")
+    if not isinstance(pos, dict) or not dimension or not bot.connected:
         return None
-    return {"x": round(float(pos["x"]), 1), "y": round(float(pos["y"]), 1), "z": round(float(pos["z"]), 1),
-            "dimension": snap.get("dimension") or "overworld"}
+    try:
+        x, y, z = (float(pos[key]) for key in ("x", "y", "z"))
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1), "dimension": dimension}
 
 
 def _set_place(bot: MinecraftBot, name: str) -> tuple[bool, str]:
@@ -395,7 +408,20 @@ def _goto_place(bot: MinecraftBot, name: str) -> tuple[bool, str]:
     spot = places_for(bot).get(_server_key(bot), bot.username, name)
     if spot is None:
         return False, f"I have no {name} yet" + (" - use set_home first" if name == "home" else "")
-    ok = bot.walk_to(float(spot["x"]), float(spot["z"]), float(spot["y"]), tolerance=2.0, timeout=90)
+    state = bot.snapshot()
+    current = str(state.get("dimension") or "").removeprefix("minecraft:")
+    target = str(spot.get("dimension") or "").removeprefix("minecraft:")
+    if not bot.connected or not current or not target:
+        return False, "cannot travel to a saved place without a connected bot and known dimensions"
+    if current != target:
+        return False, f"{name} is in {target}, not {current}; travel to that dimension first"
+    try:
+        x, y, z = (float(spot[key]) for key in ("x", "y", "z"))
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            raise ValueError("non-finite coordinate")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False, f"saved coordinates for {name} are invalid"
+    ok = bot.walk_to(x, z, y, tolerance=2.0, timeout=90)
     return ok, f"walked to {name}" if ok else (bot.last_failure or f"could not get to {name}")
 
 

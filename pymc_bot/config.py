@@ -131,6 +131,7 @@ class OllamaSettings(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
     request_timeout: float = Field(default=60.0, gt=0, le=600)
+    json_mode: bool = False  # optional Ollama JSON-object sampling for action decisions
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @field_validator("system_prompt")

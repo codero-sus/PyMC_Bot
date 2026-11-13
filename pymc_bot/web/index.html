@@ -283,6 +283,9 @@
         <label>Decision interval (s) <input id="cfg-ollama-interval" type="number" min="0.5" max="300" step="0.5" /></label>
         <label>Temperature <input id="cfg-ollama-temp" type="number" min="0" max="2" step="0.05" /></label>
       </div>
+      <label class="toggle"><input id="cfg-ollama-json-mode" type="checkbox" />
+        <span>Request JSON-object output from Ollama (optional; model/runtime support required)</span>
+      </label>
       <div class="actions">
         <button id="btn-ai-start" class="btn primary">Start AI</button>
         <button id="btn-ai-stop" class="btn">Stop AI</button>

@@ -1077,6 +1077,18 @@ contents as numeric registry IDs or omit cloud effects; those are treated as **u
 decoded by color or guessed. Classification and movement are best-effort and have not been
 verified on a live server.
 
+### More reliable decisions and saved places
+
+Ollama's optional **JSON-object output** switch asks the runtime for JSON on action decisions,
+including VL requests. It is off by default for compatibility. It does not enforce a complete
+per-action schema, guarantee valid or safe actions, or make a model more capable; normal parsing
+and permission checks still apply. If the runtime does not support it, disable the switch.
+
+Homes and waypoints are stored per bot and connected server. Travel to a saved place now refuses
+cross-dimension navigation and invalid coordinates instead of walking to the same coordinates in
+another dimension. These are saved waypoints, not an automatic map or portal planner. Waypoint
+writes are synchronized among bots in one Python process; separate processes are not coordinated.
+
 ### Bounded gathering goals
 
 In the AI panel, choose an item and target count under **Gathering goal**, then start AI or

@@ -761,14 +761,15 @@ class AgentLoop:
         images = self.vision_frame(settings)
 
         def ask(prompt: str) -> str:
+            options = {"json_mode": True} if settings.ollama.json_mode else {}
             if images:
                 return self._vision_request(images, lambda: client.chat(
-                    [{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images))
+                    [{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images, **options))
             try:
-                return client.chat([{"role": "user", "content": prompt}], system=system)
+                return client.chat([{"role": "user", "content": prompt}], system=system, **options)
             except OllamaError:
                 # Some models/servers only implement /api/generate.
-                return client.generate(prompt, system=system)
+                return client.generate(prompt, system=system, **options)
 
         return self._research_and_decide(settings, state, ask, lambda: f"ollama:{settings.ollama.model}")
 

@@ -503,6 +503,7 @@ function fillForm(cfg) {
   set('cfg-alone-min', mc.alone_minutes || 5);
 
   check('cfg-ollama-enabled', ol.enabled);
+  check('cfg-ollama-json-mode', ol.json_mode);
   set('cfg-ollama-url', ol.base_url || 'http://127.0.0.1:11434');
   set('cfg-ollama-model', ol.model || 'llama3.2');
   set('cfg-ollama-interval', ol.decision_interval || 6);
@@ -622,6 +623,7 @@ function collectForm() {
     },
     ollama: {
       enabled: $('cfg-ollama-enabled').checked,
+      json_mode: $('cfg-ollama-json-mode').checked,
       base_url: $('cfg-ollama-url').value.trim(),
       model: $('cfg-ollama-model').value.trim() || 'llama3.2',
       decision_interval: Number($('cfg-ollama-interval').value) || 6,
