@@ -31,6 +31,7 @@ def test_offline_kit_has_every_file(tmp_path):
         assert (out / name).read_bytes() == (ROOT / name).read_bytes()
     with zipfile.ZipFile(out / "PyMC_Bot-source.zip") as source:
         assert {"PyMC_Bot/pymc_bot/__main__.py", "PyMC_Bot/updater.py", "PyMC_Bot/requirements.txt"} <= set(source.namelist())
+        assert not any(name.lower().endswith(".ipynb") for name in source.namelist())
     with zipfile.ZipFile(out / "pymc-minecraft-llm-kit.zip") as kit:
         listed = set(kit.namelist())
         assert {"llm_data/train.jsonl", "llm_data/eval.jsonl", "llm_data/train_minecraft_llm.py", "README.txt"} <= listed

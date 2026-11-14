@@ -47,6 +47,7 @@ jobs:
           node tests/fixtures/potion_bridge_harness.js pymc_bot/node/minecraft_bridge.js
           node tests/fixtures/gather_bridge_harness.js pymc_bot/node/minecraft_bridge.js
           node tests/fixtures/craft_goal_bridge_harness.js pymc_bot/node/minecraft_bridge.js
+          node tests/fixtures/container_memory_bridge_harness.js pymc_bot/node/minecraft_bridge.js
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -444,8 +445,10 @@ jobs:
   # replace a stable one. Bump mod_version in mod/gradle.properties for a new release.
   release:
     name: mod (GitHub release)
-    needs: [mod-bundle, release-kit]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [mod-bundle, release-kit, lint, javascript, test]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && !contains(github.event.head_commit.message, '[no-release]'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -488,7 +491,7 @@ jobs:
           echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
 
-  # Syncs Modrinth after the stable GitHub release for main, on every push to main: the project's
+  # Syncs Modrinth after the builds and checks on pushes to main or explicitly requested branches: the project's
   # title, summary, description (mod/MODRINTH.md), links and licence (mod/modrinth.json), and every
   # version - missing ones are created, existing ones get fresh details, and their jar is replaced when
   # the code changed. Needs the repository secret MODRINTH_TOKEN and the variable MODRINTH_PROJECT
@@ -496,7 +499,7 @@ jobs:
   # [modrinth] in the commit message.
   modrinth:
     name: mod (Modrinth)
-    needs: release
+    needs: [mod-bundle, lint, javascript, test]
     # main always publishes; any other branch only when the pushed commit message contains [modrinth].
     if: >-
       github.event_name == 'push' && vars.MODRINTH_PROJECT != '' &&
@@ -524,7 +527,8 @@ jobs:
             python3 scripts/modrinth_publish.py --jars mod/dist --update-project --dry-run
             exit 0
           fi
-          args="--jars mod/dist --channel release --update-project"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then channel=release; else channel=beta; fi
+          args="--jars mod/dist --channel $channel --update-project"
           set +e
           python3 scripts/modrinth_publish.py $args 2>&1 | tee modrinth.txt
           status=${PIPESTATUS[0]}

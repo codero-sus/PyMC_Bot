@@ -1467,11 +1467,17 @@ def create_app(
             results.append({"username": bot.username, "ok": ok, "detail": detail, "plan": plan.to_dict()})
         return {"ok": any(r["ok"] for r in results), "results": results}
 
+    @app.get("/api/ai/world-memory")
+    def ai_world_memory() -> dict[str, Any]:
+        agent = selected_agent()
+        return {"enabled": agent.store.settings.agent.spatial_memory,
+                "chests": agent.world_memory().chests()}
+
     @app.delete("/api/ai/memory")
     def clear_ai_memory() -> dict[str, Any]:
-        """Erase the selected bot's persistent experience on the current server."""
+        """Erase the selected bot's persistent experience and container observations for this server."""
         selected_agent().clear_experience()
-        return {"ok": True, "detail": "Persistent bot memory cleared for this server."}
+        return {"ok": True, "detail": "Persistent bot memory and container observations cleared for this server."}
 
     # --------------------------------------------------------------- websocket
     @app.websocket("/ws")

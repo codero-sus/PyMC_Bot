@@ -1569,14 +1569,15 @@ async function openNearestChest() {
   const block = bot.findBlock({ matching: ids, maxDistance: 32 });
   if (!block) throw new Error('no chest within 32 blocks');
   if (!(await reachBlock(block.position, 20000))) throw new Error('cannot reach the chest');
-  return withTimeout(bot.openContainer(block), 8000, 'opening the chest');
+  const container = await withTimeout(bot.openContainer(block), 8000, 'opening the chest');
+  return { container, block };
 }
 
 async function cmdDeposit(params) {
   need();
   const wanted = cleanName(params.item);
   const foods = registry().foodsByName || {};
-  const chest = await openNearestChest();
+  const { container: chest } = await openNearestChest();
   let stored = 0;
   try {
     for (const item of invItems()) {
@@ -1599,7 +1600,7 @@ async function cmdDeposit(params) {
 async function cmdWithdraw(params) {
   need();
   const wanted = cleanName(params.item);
-  const chest = await openNearestChest();
+  const { container: chest } = await openNearestChest();
   try {
     const items = chest.containerItems();
     const item = items.find((it) => it.name === wanted) || items.find((it) => wanted && it.name.includes(wanted));
@@ -1615,13 +1616,16 @@ async function cmdWithdraw(params) {
 
 async function cmdChestContents() {
   need();
-  const chest = await openNearestChest();
+  const { container: chest, block } = await openNearestChest();
   try {
     const totals = {};
     for (const it of chest.containerItems()) totals[it.name] = (totals[it.name] || 0) + it.count;
     const items = Object.entries(totals).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
     const summary = items.slice(0, 8).map((i) => `${i.count} ${i.name}`).join(', ') || 'nothing';
-    return { items, message: `the chest has ${summary}${items.length > 8 ? ' ...' : ''}` };
+    const position = block.position;
+    const dimension = bot.game && bot.game.dimension ? String(bot.game.dimension) : null;
+    return { items, position: {x: position.x, y: position.y, z: position.z}, dimension,
+      message: `the chest has ${summary}${items.length > 8 ? ' ...' : ''}` };
   } finally {
     chest.close();
   }

@@ -241,6 +241,7 @@ class AgentSettings(BaseModel):
     memory_turns: int = Field(default=8, ge=1, le=30)
     # A small local, seven-day memory per bot/server. Disable to stop reading and writing it.
     persistent_memory: bool = True
+    spatial_memory: bool = False  # opt-in historical container observations, per bot/server
 
     @field_validator("persona")
     @classmethod

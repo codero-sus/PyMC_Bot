@@ -80,7 +80,14 @@ def updater_files(out: Path) -> list[Path]:
 
 def source_zip(out: Path, ref: str = "HEAD") -> Path:
     target = out / "PyMC_Bot-source.zip"
-    run(["git", "archive", "--format=zip", "--prefix=PyMC_Bot/", "-o", str(target), ref])
+    # Notebooks are excluded from the downloadable source kit, including nested notebooks.
+    run(["git", "archive", "--format=zip", "--prefix=PyMC_Bot/", "-o", str(target), ref,
+         "--", ".", ":(exclude,glob)**/*.ipynb", ":(exclude,glob)*.ipynb"])
+    with zipfile.ZipFile(target) as archive:
+        has_notebooks = any(name.lower().endswith(".ipynb") for name in archive.namelist())
+    if has_notebooks:
+        target.unlink(missing_ok=True)
+        raise RuntimeError("source archive contains a notebook")
     return target
 
 

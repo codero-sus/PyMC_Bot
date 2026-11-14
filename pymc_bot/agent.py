@@ -390,8 +390,13 @@ class AgentLoop:
                 self._experience_key = key
             return self._experience
 
+    def world_memory(self):
+        from pymc_bot.world_memory import WorldMemory
+        return WorldMemory(self.store.path.parent, self._goal_identity())
+
     def clear_experience(self) -> None:
         self.experience().clear()
+        self.world_memory().clear()
 
     # ------------------------------------------------------------- lifecycle
     @property
@@ -903,8 +908,16 @@ class AgentLoop:
                 memories = experience.context(relevant)
             except OSError as exc:
                 self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
-        return build_turn_prompt(state, self.bot.username, self.mind, history, self.allowed(settings),
-                                 knowledge=facts, experience=memories)
+        prompt = build_turn_prompt(state, self.bot.username, self.mind, history, self.allowed(settings),
+                                   knowledge=facts, experience=memories)
+        if settings.agent.spatial_memory:
+            try:
+                containers = self.world_memory().prompt(state.get("dimension"))
+                if containers:
+                    prompt = containers + "\n\n" + prompt
+            except Exception as exc:  # noqa: BLE001 - optional memory must not block decisions
+                self.log.add(f"Could not read container memory: {type(exc).__name__}", "warn", "agent")
+        return prompt
 
     # -------------------------------------------------------------- executor
     def execute(self, decision: Decision, enforce_permissions: bool = True) -> tuple[bool, str]:

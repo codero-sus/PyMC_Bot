@@ -1105,6 +1105,19 @@ cross-dimension navigation and invalid coordinates instead of walking to the sam
 another dimension. These are saved waypoints, not an automatic map or portal planner. Waypoint
 writes are synchronized among bots in one Python process; separate processes are not coordinated.
 
+### Optional container observations
+
+Enable **remember inspected container locations and contents** in the panel to store up to 64
+successful `chest_contents` observations per bot/server in a local SQLite file under `world-memory`.
+Only real bridge responses with known block coordinates and dimension are saved; the simulated
+backend does not invent chest locations. Observations expire after 30 days, and may become stale
+immediately when anyone changes a chest. They are not a shared live inventory, map, portal finder,
+or permission to open a container. Up to four observations in the current dimension may be included
+in model prompts; they can therefore be sent to the configured AI provider. The panel and
+`GET /api/ai/world-memory` can display the selected bot/server's saved observations. Disabling the
+setting stops recording and prompting but does not erase existing files; clearing bot memory also
+clears these observations for that bot/server. In-flight inspections may save again after a clear.
+
 ### Bounded gathering goals
 
 In the AI panel, choose an item and target count under **Gathering goal**, then start AI or

@@ -554,6 +554,7 @@ function fillForm(cfg) {
   set('cfg-chat-cooldown', ag.chat_cooldown ?? 6);
   set('cfg-memory-turns', ag.memory_turns ?? 8);
   check('cfg-persistent-memory', ag.persistent_memory ?? true);
+  check('cfg-spatial-memory', ag.spatial_memory ?? false);
   check('cfg-compact-prompt', ag.compact_prompt ?? false);
   check('cfg-record-turns', ag.record_turns ?? false);
   check('cfg-vision', ag.vision ?? false);
@@ -677,6 +678,7 @@ function collectForm() {
       chat_cooldown: Math.max(0, Number($('cfg-chat-cooldown').value) || 0),
       memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
       persistent_memory: $('cfg-persistent-memory').checked,
+      spatial_memory: $('cfg-spatial-memory').checked,
       compact_prompt: $('cfg-compact-prompt').checked,
       record_turns: $('cfg-record-turns').checked,
       vision: $('cfg-vision').checked,
@@ -1211,10 +1213,19 @@ function wire() {
     catch (err) { reportError(err); }
   });
   $('btn-clear-memory').addEventListener('click', async () => {
-    if (!confirm('Clear the selected bot’s saved experience for this server?')) return;
+    if (!confirm('Clear the selected bot’s saved experience and container observations for this server?')) return;
     try {
       await api('/api/ai/memory', { method: 'DELETE' });
+      $('world-memory-list').textContent = 'Container memory cleared.';
       ui.toast('Saved bot memory cleared.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-world-memory').addEventListener('click', async () => {
+    try {
+      const data = await api('/api/ai/world-memory');
+      $('world-memory-list').textContent = data.chests.length
+        ? data.chests.map(c => `${c.dimension} ${c.position.x} ${c.position.y} ${c.position.z} (observed ${new Date(c.observed_at * 1000).toLocaleString()}): ${c.items.map(i => `${i.name} x${i.count}`).join(', ') || 'empty'}`).join('\n')
+        : 'No remembered containers for this bot/server.';
     } catch (error) { reportError(error); }
   });
   $('btn-ai-stop').addEventListener('click', () => api('/api/ai/stop', { method: 'POST' }).catch(reportError));

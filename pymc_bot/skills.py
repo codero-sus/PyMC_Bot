@@ -366,6 +366,7 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
             return False, f"{skill.name} failed: {exc}"
     if skill.bridge is None:  # pragma: no cover - every skill has one or the other
         return False, f"{skill.name} is not available"
+    identity = (*bot.memory_server, bot.username.lower()) if skill.name == "chest_contents" else None
     if skill.moves:
         with bot._motion_lock:  # noqa: SLF001 - skills are part of the bot
             ok, result = bot._perform(skill.bridge, params, timeout=skill.timeout, activity=skill.name, quiet=True)  # noqa: SLF001
@@ -375,6 +376,15 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
         message = str(result.get("message") or f"did {skill.name.replace('_', ' ')}")
         bot.log.add(message[:1].upper() + message[1:] + ("" if message.endswith((".", "!")) else "."), "info", "bot")
         bot.note_skill(skill.name, result)
+        if identity is not None and bot.store.settings.agent.spatial_memory and bot.connected:
+            try:
+                if identity == (*bot.memory_server, bot.username.lower()):
+                    from pymc_bot.world_memory import WorldMemory
+                    WorldMemory(bot.store.path.parent, identity).remember_chest(result)
+            except (OSError, ValueError, TypeError) as exc:
+                bot.log.add(f"Could not remember container observation: {exc}", "warn", "bot")
+            except Exception as exc:  # noqa: BLE001 - memory must never turn a successful skill into a failure
+                bot.log.add(f"Could not remember container observation: {type(exc).__name__}", "warn", "bot")
         return True, message
     reason = bot.last_failure or f"could not {skill.name.replace('_', ' ')}"
     bot.log.add(f"Could not {skill.name.replace('_', ' ')}: {reason}", "info", "bot")

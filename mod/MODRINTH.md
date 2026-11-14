@@ -36,8 +36,8 @@ a player model on it, and that model can then play a bot on your server the way 
    then drop the PyMC Bot jar for your Minecraft version into `mods/`.
 2. Assign the hotkeys under *Options → Controls → Key Binds → PyMC Bot* (they start unbound so they
    never clash with other mods).
-3. Press **Start / stop recording** (or `/pymcbot record start`) and play normally – 10 minutes is
-   enough to see the bot copy your habits, an hour makes it clearly better.
+3. Press **Start / stop recording** (or `/pymcbot record start`) and play normally. Recording and
+   training results vary with the amount and quality of playtime; copying your habits is not guaranteed.
 4. `/pymcbot export`, then train with the PyMC Bot app:
 
    ```
@@ -51,8 +51,8 @@ The free Python app that goes with this mod runs bots on offline-mode, premium (
 (Aternos & co.) servers, from a web control panel:
 
 - 🤖 **Plays like you** – the model trained on your recordings drives the bot.
-- 🧠 **Or thinks like a human** – with a local LLM (Ollama) it keeps goals, remembers what worked and chats
-  casually. Pick how it behaves: 😊 Friendly helper, 😎 Chill survivor, 💬 Social butterfly,
+- 🧠 **Optional local LLM** – Ollama can choose actions and chat; it is not guaranteed to behave like
+  a human or complete every task. Pick how it behaves: 😊 Friendly helper, 😎 Chill survivor, 💬 Social butterfly,
   🤝 Loyal companion, 🏗️ Builder, 🧭 Explorer, ⛏️ Miner, 🐣 New player, 🏆 Experienced pro or 🤫 Quiet player.
 - 👥 **Many bots** to fill a server, with anti-AFK movement so none get kicked.
 - 🛠️ **44 skills** – chop trees, mine ores, farm, fish, breed, craft, smelt, use chests, build a

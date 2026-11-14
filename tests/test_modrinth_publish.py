@@ -371,7 +371,8 @@ def test_client_errors_are_not_retried(monkeypatch):
 def test_ci_publishes_to_modrinth_from_main_or_on_request():
     text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     job = text.split("\n  modrinth:\n", 1)[1]
-    assert "needs: release" in job
+    assert "needs: [mod-bundle, lint, javascript, test]" in job
+    assert "channel=release; else channel=beta" in job
     assert "github.ref == 'refs/heads/main'" in job and "vars.MODRINTH_PROJECT != ''" in job
     assert "contains(github.event.head_commit.message, '[modrinth]')" in job  # opt-in for other branches
     assert "github.event_name == 'push'" in job  # never from pull requests
