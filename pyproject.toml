@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "A Python-controlled Minecraft player bot (cracked / offline-mode servers) with a Uvicorn config page and an optional Ollama brain."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "PolyForm-Noncommercial-1.0.0" }
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
 authors = [{ name = "codero-sus" }]
 maintainers = [{ name = "codero-sus" }]
 keywords = ["minecraft", "bot", "mineflayer", "ollama", "fastapi", "uvicorn", "fabric", "imitation-learning"]

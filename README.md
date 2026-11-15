@@ -71,6 +71,16 @@ Minecraft versions), and it is driven purely by JSON from Python.
 
 ## Quickstart
 
+### PyPI (after publication)
+
+Once a release has been published to PyPI, install it with `python -m pip install pymc-bot`,
+then run `pymc-bot setup` for the Mineflayer/Node.js bridge and `pymc-bot serve` for the panel.
+Python 3.10 or newer is required. Node.js and Mineflayer are separate runtime dependencies;
+the setup command helps install them for real Minecraft servers. The package also has a simulator.
+The package is licensed under PolyForm Noncommercial 1.0.0, not MIT. For publishing instructions,
+see [Python package publishing](docs/PYPI.md). Until the first upload succeeds, use the GitHub
+release or source instructions below.
+
 **No git?** Every [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) has all the downloads:
 `PyMC_Bot-source.zip` (the bot), `updater.py` / `updater.cmd` / `updater.sh`, the mod jar for each Minecraft
 version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + trainer; the notebook is linked, pinned to the release commit) and

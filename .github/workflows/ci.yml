@@ -16,6 +16,24 @@ permissions:
   checks: write
 
 jobs:
+  python-distribution:
+    name: Python distribution safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build && python -m twine check dist/* && python scripts/check_distribution.py dist
+      - name: Test installed wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/pymc-wheel"
+          "$RUNNER_TEMP/pymc-wheel/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/pymc-wheel/bin/pymc-bot" --help
+          "$RUNNER_TEMP/pymc-wheel/bin/python" -m pymc_bot bench --suite sim-tech
+
   lint:
     name: lint (ruff)
     runs-on: ubuntu-latest
