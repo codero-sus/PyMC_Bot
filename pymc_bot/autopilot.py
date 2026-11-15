@@ -12,7 +12,7 @@ through the bot's normal actions and skills.
 
 Rules, most urgent first::
 
-    respawn  surface  extinguish  totem  flee  eat          <- emergencies, run even when busy
+    respawn  surface  extinguish  totem  block_projectile  flee  eat  <- emergencies, even when busy
     armor  weapon  defend  sleep  shelter  torch  collect  tidy  home  idle_job
 
 Set ``PYMC_BOT_NO_AUTOPILOT=1`` to keep the background loop from starting (the tests do).
@@ -37,16 +37,19 @@ if TYPE_CHECKING:  # pragma: no cover
 
 #: Rules in the order they are checked (the panel lists them like this too).
 RULES: tuple[str, ...] = (
-    "respawn", "surface", "extinguish", "totem", "flee", "eat",
-    "armor", "weapon", "defend", "sleep", "shelter", "torch", "collect", "tidy", "home", "idle_job",
+    "respawn", "surface", "extinguish", "totem", "avoid_potions", "block_projectile", "flee", "eat",
+    "armor", "weapon", "defend", "sleep", "shelter", "torch", "seek_potions", "collect", "tidy", "home", "idle_job",
 )
-EMERGENCY_RULES = frozenset({"respawn", "surface", "extinguish", "totem", "flee", "eat"})
+EMERGENCY_RULES = frozenset({"respawn", "surface", "extinguish", "totem", "avoid_potions", "block_projectile", "flee", "eat"})
 
 RULE_INFO: dict[str, str] = {
     "respawn": "Click respawn after dying.",
     "surface": "Swim up when the air bar runs low.",
     "extinguish": "Put out fire (water bucket, or jump into water).",
     "totem": "Totem of undying into the off-hand when health is low.",
+    "avoid_potions": "Move away from harmful or unknown thrown potions and effect clouds.",
+    "seek_potions": "Approach a known beneficial potion when safe.",
+    "block_projectile": "Try facing an incoming projectile with an already equipped off-hand shield.",
     "flee": "Run from mobs at low health, and back off from creepers.",
     "eat": "Eat when hungry (best food for the moment).",
     "armor": "Put on better armour as soon as it is in the backpack.",
@@ -137,9 +140,40 @@ def hostiles(snap: dict[str, Any], radius: float) -> list[dict[str, Any]]:
     """Hostile mobs within ``radius`` blocks, nearest first."""
     out = [
         entity for entity in snap.get("entities") or []
-        if entity.get("hostile") and not entity.get("player") and float(entity.get("dist") or 99.0) <= radius
+        if entity.get("hostile") and not entity.get("player")
+        and float(entity.get("dist") if entity.get("dist") is not None else 99.0) <= radius
     ]
-    return sorted(out, key=lambda entity: float(entity.get("dist") or 99.0))
+    return sorted(out, key=lambda entity: float(entity.get("dist") if entity.get("dist") is not None else 99.0))
+
+
+PROJECTILE_TYPES = frozenset({"arrow", "spectral_arrow", "trident", "fireball", "small_fireball", "wind_charge"})
+
+
+def incoming_projectile(entity: dict[str, Any]) -> float | None:
+    """Estimated ticks to closest approach to the bot's torso, or None if unlikely to hit.
+
+    Mineflayer reports velocity in blocks per tick. This straight-line estimate deliberately
+    ignores gravity, obstacles and the bot's own motion; it is a warning, not a hit prediction.
+    """
+    if mob_kind(entity) not in PROJECTILE_TYPES:
+        return None
+    try:
+        x, y, z = (float(entity[k]) for k in ("dx", "dy", "dz"))
+        vx, vy, vz = (float(entity[k]) for k in ("vx", "vy", "vz"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x, y, z, vx, vy, vz)):
+        return None
+    y -= 0.9
+    distance_sq = x * x + y * y + z * z
+    speed_sq = vx * vx + vy * vy + vz * vz
+    if distance_sq > 16 * 16 or speed_sq < 0.0001:
+        return None
+    ticks = -(x * vx + y * vy + z * vz) / speed_sq
+    if not 0 < ticks <= 40:
+        return None
+    miss_sq = sum((r + ticks * v) ** 2 for r, v in ((x, vx), (y, vy), (z, vz)))
+    return ticks if miss_sq <= 1.2 ** 2 else None
 
 
 def is_night(snap: dict[str, Any]) -> bool:
@@ -207,6 +241,75 @@ def _rule_totem(settings: AutopilotSettings, s: Situation) -> Plan | None:
     if inv.find("totem_of_undying") is None:
         return None
     return Plan("totem", "skill:totem", reason=f"health {_num(s.snap, 'health', 20.0):.0f}", cooldown=10.0)
+
+
+def _potion_entities(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    for entity in snap.get("entities") or []:
+        if not isinstance(entity, dict) or not isinstance(entity.get("potion"), dict):
+            continue
+        if not isinstance(entity.get("id"), int) or isinstance(entity.get("id"), bool):
+            continue
+        try:
+            distance = float(entity.get("dist"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(distance) and 0 <= distance <= 8:
+            result.append(entity)
+    return sorted(result, key=lambda entity: float(entity["dist"]))
+
+
+def _rule_avoid_potions(settings: AutopilotSettings, s: Situation) -> Plan | None:
+    if not settings.auto_avoid_potions or not s.snap.get("pathfinder"):
+        return None
+    for entity in _potion_entities(s.snap):
+        potion = entity["potion"]
+        if potion.get("form") in {"thrown", "cloud"} and potion.get("kind") in {"bad", "unknown"}:
+            return Plan("avoid_potions", "skill:react_potion", {"mode": "avoid", "entity_id": entity["id"]},
+                        reason=f"{potion.get('kind')} {potion.get('form')} potion nearby",
+                        cooldown=4.0, fail_cooldown=4.0, interrupt=True)
+    return None
+
+
+def _rule_seek_potions(settings: AutopilotSettings, s: Situation) -> Plan | None:
+    if not settings.auto_seek_potions or not s.snap.get("pathfinder") or free_slots(s.inv) == 0:
+        return None
+    if hostiles(s.snap, 12) or _num(s.snap, "health", 20) < 12:
+        return None
+    potions = _potion_entities(s.snap)
+    if any(e["potion"].get("form") in {"thrown", "cloud"} and e["potion"].get("kind") != "good" for e in potions):
+        return None
+    for entity in potions:
+        potion = entity["potion"]
+        if potion.get("kind") != "good" or float(entity["dist"]) <= 1.5:
+            continue
+        if potion.get("form") == "dropped":
+            reason = "useful dropped potion"
+        elif potion.get("form") == "thrown":
+            try:
+                dy, vy = float(entity["dy"]), float(entity["vy"])
+                if not math.isfinite(dy) or not math.isfinite(vy) or abs(dy) > 2 or vy > 0.2:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            reason = "nearby beneficial thrown potion"
+        else:
+            continue
+        return Plan("seek_potions", "skill:react_potion", {"mode": "seek", "entity_id": entity["id"]},
+                    reason=reason, cooldown=20.0, fail_cooldown=20.0)
+    return None
+
+
+def _rule_block_projectile(settings: AutopilotSettings, s: Situation) -> Plan | None:
+    if not settings.auto_block_projectiles or not s.inv.offhand or s.inv.offhand.name != "shield":
+        return None
+    candidates = [(ticks, mob_kind(entity)) for entity in s.snap.get("entities") or []
+                  if (ticks := incoming_projectile(entity)) is not None]
+    if not candidates:
+        return None
+    ticks, kind = min(candidates)
+    return Plan("block_projectile", "skill:block_projectile", reason=f"possible incoming {kind} ({ticks:.0f} ticks)",
+                cooldown=2.0, fail_cooldown=2.0, interrupt=True)
 
 
 def _rule_flee(settings: AutopilotSettings, s: Situation) -> Plan | None:
@@ -349,8 +452,9 @@ def _rule_idle_job(settings: AutopilotSettings, s: Situation) -> Plan | None:
 
 RULE_FUNCS: dict[str, Callable[[AutopilotSettings, Situation], Plan | None]] = {
     "respawn": _rule_respawn, "surface": _rule_surface, "extinguish": _rule_extinguish, "totem": _rule_totem,
-    "flee": _rule_flee, "eat": _rule_eat, "armor": _rule_armor, "weapon": _rule_weapon, "defend": _rule_defend,
-    "sleep": _rule_sleep, "shelter": _rule_shelter, "torch": _rule_torch, "collect": _rule_collect,
+    "avoid_potions": _rule_avoid_potions, "block_projectile": _rule_block_projectile, "flee": _rule_flee, "eat": _rule_eat,
+    "armor": _rule_armor, "weapon": _rule_weapon, "defend": _rule_defend,
+    "sleep": _rule_sleep, "shelter": _rule_shelter, "torch": _rule_torch, "seek_potions": _rule_seek_potions, "collect": _rule_collect,
     "tidy": _rule_tidy, "home": _rule_home, "idle_job": _rule_idle_job,
 }
 
@@ -472,14 +576,19 @@ class Autopilot:
             if bot is None or not bot.connected:
                 continue
             memory = self.memory(bot)
-            if memory.in_flight or memory.paused:
-                continue
+            with self._lock:
+                if memory.in_flight or memory.paused:
+                    continue
             situation = self.situation(bot)
             plan = evaluate(settings, situation)
             if plan is None:
                 continue
-            memory.in_flight = True
-            memory.cooldowns[plan.rule] = situation.now + plan.cooldown
+            with self._lock:
+                if (memory.in_flight or memory.paused
+                        or memory.cooldowns.get(plan.rule, 0.0) > time.monotonic()):
+                    continue
+                memory.in_flight = True
+                memory.cooldowns[plan.rule] = time.monotonic() + plan.cooldown
             worker = threading.Thread(target=self._run_worker, args=(bot, plan, memory),
                                       name=f"autopilot-{bot.username}", daemon=True)
             worker.start()
@@ -494,7 +603,8 @@ class Autopilot:
         try:
             self.run(bot, plan, memory)
         finally:
-            memory.in_flight = False
+            with self._lock:
+                memory.in_flight = False
 
     def run(self, bot: MinecraftBot, plan: Plan, memory: BotAutopilot | None = None) -> tuple[bool, str]:
         """Carry one plan out now."""
@@ -506,11 +616,12 @@ class Autopilot:
         if self.settings.verbose or plan.emergency:
             self.log.add(f"[{bot.username}] autopilot: {plan.rule} ({plan.reason})", "info", "autopilot")
         try:
-            if plan.action.startswith("skill:"):
-                ok, message = bot.skill(plan.action.split(":", 1)[1], plan.params)
-            else:
-                ok = bool(getattr(bot, plan.action)(**plan.params))
-                message = "done" if ok else (bot.last_failure or "failed")
+            with bot.action_scope():
+                if plan.action.startswith("skill:"):
+                    ok, message = bot.skill(plan.action.split(":", 1)[1], plan.params)
+                else:
+                    ok = bool(getattr(bot, plan.action)(**plan.params))
+                    message = "done" if ok else (bot.last_failure or "failed")
         except Exception as exc:  # a reflex never takes the bot down
             ok, message = False, str(exc)
         now = time.monotonic()
@@ -527,7 +638,8 @@ class Autopilot:
         return ok, message
 
     def pause(self, bot: MinecraftBot, paused: bool = True) -> None:
-        self.memory(bot).paused = paused
+        with self._lock:
+            self.memory(bot).paused = paused
 
     def status(self, bots: Sequence[MinecraftBot] | None = None) -> dict[str, Any]:
         bots = list(self._bots() if bots is None else bots)
@@ -550,7 +662,8 @@ class Autopilot:
 
 _RULE_FLAGS: dict[str, str] = {
     "respawn": "auto_respawn", "surface": "auto_surface", "extinguish": "auto_extinguish", "totem": "auto_totem",
-    "flee": "auto_flee", "eat": "auto_eat", "armor": "auto_armor", "weapon": "auto_weapon", "defend": "auto_defend",
+    "avoid_potions": "auto_avoid_potions", "seek_potions": "auto_seek_potions",
+    "block_projectile": "auto_block_projectiles", "flee": "auto_flee", "eat": "auto_eat", "armor": "auto_armor", "weapon": "auto_weapon", "defend": "auto_defend",
     "sleep": "auto_sleep", "shelter": "auto_shelter", "torch": "auto_torch", "collect": "auto_collect",
     "tidy": "auto_tidy", "home": "auto_home",
 }

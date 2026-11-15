@@ -20,6 +20,9 @@
 'use strict';
 
 const readline = require('readline');
+const { AsyncLocalStorage } = require('async_hooks');
+const actionContext = new AsyncLocalStorage();
+const activeActions = new Set();
 
 let mineflayer = null;
 let minecraftData = null;     // the version database mineflayer reads (comes with mineflayer)
@@ -27,6 +30,7 @@ let minecraftProtocol = null; // used to ping the server for its version before 
 let mineflayerVersions = null; // { testedVersions, latestSupportedVersion, oldestSupportedVersion }
 let pathfinder = null;   // optional, enables real A* pathfinding
 const { probe } = require('./probe');
+const { classifyPotion } = require('./potions');
 let goals = null;
 let bot = null;
 let stateTimer = null;
@@ -163,6 +167,26 @@ function playerPosition(name) {
   return { x: pos.x, y: pos.y, z: pos.z };
 }
 
+function potionObservation(entity) {
+  if (!entity) return null;
+  if (entity.name === 'area_effect_cloud') return {kind: 'unknown', form: 'cloud', effects: []};
+  let item;
+  let form;
+  if (entity.name === 'potion' || entity.name === 'thrown_potion') {
+    form = 'thrown';
+    const def = bot.registry?.entitiesByName?.[entity.name];
+    const index = def?.metadataKeys?.indexOf('item_stack');
+    item = index >= 0 ? entity.metadata?.[index] : null;
+  } else if (entity.name === 'item' && typeof entity.getDroppedItem === 'function') {
+    try { item = entity.getDroppedItem(); } catch (err) { return null; }
+    if (!item || !['potion', 'splash_potion', 'lingering_potion'].includes(item.name)) return null;
+    form = 'dropped';
+  } else {
+    return null;
+  }
+  return { ...classifyPotion(item), form };
+}
+
 function buildState() {
   if (!bot || !bot.entity) {
     return { status: bot ? 'connecting' : 'disconnected' };
@@ -199,11 +223,17 @@ function buildState() {
     const ez = entity.position.z - pos.z;
     const isPlayer = entity.type === 'player' || Boolean(entity.username);
     const kind = isPlayer ? 'player' : String(entity.name || entity.displayName || entity.type || 'unknown');
+    const potion = potionObservation(entity);
     entities.push({
+      id: entity.id,
+      ...(potion ? { potion } : {}),
       type: (isPlayer || kind.includes(':')) ? (isPlayer ? 'minecraft:player' : kind) : `minecraft:${kind}`,
       dx: Number(ex.toFixed(2)),
       dy: Number(ey.toFixed(2)),
       dz: Number(ez.toFixed(2)),
+      vx: entity.velocity && Number.isFinite(entity.velocity.x) ? Number(entity.velocity.x.toFixed(3)) : null,
+      vy: entity.velocity && Number.isFinite(entity.velocity.y) ? Number(entity.velocity.y.toFixed(3)) : null,
+      vz: entity.velocity && Number.isFinite(entity.velocity.z) ? Number(entity.velocity.z.toFixed(3)) : null,
       dist: Number(Math.sqrt(ex * ex + ey * ey + ez * ez).toFixed(2)),
       hostile: !isPlayer && HOSTILE_ENTITIES.has(kind),
       player: isPlayer,
@@ -251,10 +281,12 @@ function buildState() {
     status: 'connected',
     username: bot.username,
     position: { x: Number(pos.x.toFixed(2)), y: Number(pos.y.toFixed(2)), z: Number(pos.z.toFixed(2)) },
-    yaw: Number(bot.entity.yaw.toFixed(4)),
-    pitch: Number(bot.entity.pitch.toFixed(4)),
-    health: bot.health === undefined ? 20 : Number(bot.health),
-    food: bot.food === undefined ? 20 : Number(bot.food),
+    yaw: Number(Math.atan2(Math.sin(Math.PI - bot.entity.yaw), Math.cos(Math.PI - bot.entity.yaw)).toFixed(4)),
+    pitch: Number((-bot.entity.pitch).toFixed(4)),
+    on_ground: typeof bot.entity.onGround === 'boolean' ? bot.entity.onGround : null,
+    vertical_velocity: bot.entity.velocity && Number.isFinite(bot.entity.velocity.y) ? Number(bot.entity.velocity.y.toFixed(3)) : null,
+    health: Number.isFinite(bot.health) ? bot.health : null,
+    food: Number.isFinite(bot.food) ? bot.food : null,
     dimension: bot.game && bot.game.dimension ? bot.game.dimension : 'overworld',
     time_of_day: timeOfDay < 13000 ? 'day' : 'night',
     players,
@@ -276,6 +308,7 @@ function buildState() {
     sky_light: feet && typeof feet.skyLight === 'number' ? feet.skyLight : null,
     oxygen: typeof bot.oxygenLevel === 'number' ? bot.oxygenLevel : 20,
     in_water: Boolean(bot.entity.isInWater),
+    in_lava: Boolean(bot.entity.isInLava || (feet && feet.name === 'lava')),
     on_fire: typeof meta === 'number' && (meta & 0x01) === 0x01,
     raining: Boolean(bot.isRaining),
     dead: typeof bot.health === 'number' && bot.health <= 0,
@@ -301,8 +334,20 @@ function stopStateLoop() {
   stateTimer = null;
 }
 
+function checkAction() {
+  const signal = actionContext.getStore();
+  if (signal && signal.aborted) throw new Error('action cancelled');
+}
+
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const signal = actionContext.getStore();
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('action cancelled'));
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
+    function abort() { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(new Error('action cancelled')); }
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 function withTimeout(promise, ms, label) {
@@ -326,6 +371,7 @@ function stopPath() {
 
 /* ------------------------------------------------------------------ commands */
 async function cmdConnect(params) {
+  closeEyes();
   if (bot) {
     try {
       bot.quit('reconnecting');
@@ -459,9 +505,11 @@ function cmdControl(params) {
   return { control: name, state: Boolean(params.state) };
 }
 
-function cmdLook(params) {
+async function cmdLook(params) {
   if (!bot) throw new Error('not connected');
-  bot.look(Number(params.yaw) || 0, Number(params.pitch) || 0, Boolean(params.force));
+  const yaw = Number(params.yaw) || 0;
+  const pitch = Number(params.pitch) || 0;
+  await bot.look(Math.PI - yaw, -pitch, Boolean(params.force));
   return { looked: true };
 }
 
@@ -476,6 +524,15 @@ function cmdStopMotion() {
   }
   stopPath();
   return { stopped: true };
+}
+
+function cmdCancelActions() {
+  for (const controller of activeActions) controller.abort();
+  if (bot && typeof bot.stopDigging === 'function') {
+    try { bot.stopDigging(); } catch (err) { /* already stopped */ }
+  }
+  cmdStopMotion();
+  return { cancellation_requested: true };
 }
 
 function cmdPathfindTo(params) {
@@ -583,6 +640,7 @@ function cmdJump() {
 }
 
 async function cmdDisconnect() {
+  closeEyes();
   stopStateLoop();
   if (bot) {
     try {
@@ -700,8 +758,11 @@ async function cmdUseItem(params) {
   if (!bot) throw new Error('not connected');
   const seconds = Math.max(0.1, Math.min(5, Number(params.seconds || 0.3)));
   bot.activateItem(Boolean(params.offhand));
-  await sleep(seconds * 1000);
-  bot.deactivateItem();
+  try {
+    await sleep(seconds * 1000);
+  } finally {
+    bot.deactivateItem();
+  }
   return { used: bot.heldItem ? bot.heldItem.name : 'hand', seconds };
 }
 
@@ -710,9 +771,12 @@ async function walkNear(position, range, budgetMs) {
   if (!pathfinder || !bot.pathfinder) return false;
   bot.pathfinder.setGoal(new goals.GoalNear(position.x, position.y, position.z, range));
   const deadline = Date.now() + budgetMs;
-  while (Date.now() < deadline && bot.entity.position.distanceTo(position) > range + 0.5) await sleep(200);
-  stopPath();
-  return bot.entity.position.distanceTo(position) <= range + 0.5;
+  try {
+    while (Date.now() < deadline && bot.entity.position.distanceTo(position) > range + 0.5) await sleep(200);
+    return bot.entity.position.distanceTo(position) <= range + 0.5;
+  } finally {
+    stopPath();
+  }
 }
 
 async function cmdSleep() {
@@ -735,11 +799,17 @@ async function cmdCollect(params) {
   if (!bot) throw new Error('not connected');
   const radius = Math.max(1, Math.min(32, Number(params.radius || 12)));
   const deadline = Date.now() + Math.max(2000, Number(params.seconds || 15) * 1000);
+  const wanted = String(params.item || '').trim().toLowerCase().replace(/^minecraft:/, '');
   let picked = 0;
   while (Date.now() < deadline) {
-    const drops = Object.values(bot.entities).filter(
-      (e) => e && e.name === 'item' && e.position && bot.entity.position.distanceTo(e.position) <= radius
-    );
+    const drops = Object.values(bot.entities).filter((e) => {
+      if (!e || e.name !== 'item' || !e.position || bot.entity.position.distanceTo(e.position) > radius) return false;
+      if (!wanted) return true;
+      try {
+        const stack = typeof e.getDroppedItem === 'function' ? e.getDroppedItem() : null;
+        return Boolean(stack && typeof stack.name === 'string' && stack.name.toLowerCase().replace(/^minecraft:/, '') === wanted);
+      } catch (_) { return false; }
+    });
     if (!drops.length) break;
     drops.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
     const target = drops[0];
@@ -799,6 +869,63 @@ function need() {
   if (!bot || !bot.entity) throw new Error('not connected');
 }
 
+/** Read-only, paginated view of the registry available to this Mineflayer client. */
+function cmdRegistryLookup(params) {
+  need();
+  const kind = String(params.kind || 'item');
+  if (!['item', 'block'].includes(kind)) throw new Error('kind must be item or block');
+  const query = String(params.query || '').trim().toLowerCase();
+  if (query.length > 64 || !/^[a-z0-9_:./-]*$/.test(query)) throw new Error('invalid registry query');
+  const offset = Number(params.offset || 0);
+  const limit = Number(params.limit || 50);
+  if (!Number.isInteger(offset) || offset < 0 || offset > 50000 ||
+      !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('invalid registry page');
+  const data = registry();
+  const table = kind === 'item' ? data.itemsByName : data.blocksByName;
+  if (!table || typeof table !== 'object') throw new Error(`${kind} registry unavailable`);
+  const entries = Object.entries(table).filter(([key, value]) => value && typeof value === 'object' &&
+    typeof value.name === 'string' && (key.toLowerCase().includes(query) || value.name.toLowerCase().includes(query)));
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  const page = entries.slice(offset, offset + limit).map(([key, value]) => ({
+    key: key.slice(0, 128), name: value.name.slice(0, 128),
+    display_name: String(value.displayName || '').slice(0, 128),
+    id: Number.isSafeInteger(value.id) ? value.id : null,
+    stack_size: Number.isSafeInteger(value.stackSize) ? value.stackSize : null,
+  }));
+  return {kind, query, offset, limit, total: entries.length, entries: page,
+    source: 'mineflayer_registry', version: String(bot.version || ''),
+    note: 'Client registry only; server modded registries and recipes may be incomplete.'};
+}
+
+function cmdRecipeLookup(params) {
+  need();
+  const item = String(params.item || '').trim().toLowerCase().replace(/^minecraft:/, '');
+  const limit = Number(params.limit || 20);
+  if (!item || item.length > 64 || !/^[a-z0-9_:./-]+$/.test(item)) throw new Error('invalid item name');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('invalid recipe limit');
+  const data = registry();
+  const info = data.itemsByName && data.itemsByName[item];
+  if (!info || !Number.isSafeInteger(info.id)) throw new Error(`item ${item} not found in client registry`);
+  if (typeof bot.recipesAll !== 'function') throw new Error('recipe lookup unavailable');
+  const recipes = bot.recipesAll(info.id, null, true);
+  if (!Array.isArray(recipes)) throw new Error('recipe lookup unavailable');
+  const ingredient = (entry) => {
+    if (!entry || !Number.isSafeInteger(entry.id) || entry.id < 0) return null;
+    const found = data.items && data.items[entry.id];
+    return {id: entry.id, name: found && typeof found.name === 'string' ? found.name.slice(0, 128) : null,
+      metadata: Number.isSafeInteger(entry.metadata) ? entry.metadata : null,
+      count: Number.isSafeInteger(entry.count) ? Math.abs(entry.count) : null};
+  };
+  const results = recipes.slice(0, limit).map((recipe) => ({
+    result: ingredient(recipe.result), requires_table: Boolean(recipe.requiresTable),
+    shape: Array.isArray(recipe.inShape) ? recipe.inShape.slice(0, 3).map(row =>
+      Array.isArray(row) ? row.slice(0, 3).map(ingredient) : []) : null,
+    ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients.slice(0, 16).map(ingredient) : null,
+  }));
+  return {item, total: recipes.length, recipes: results, source: 'mineflayer_registry', version: String(bot.version || ''),
+    note: 'Client registry recipes may be incomplete or differ from this server; ingredients are not inventory-checked.'};
+}
+
 function cleanName(value) {
   return String(value || '').toLowerCase().trim().replace(/^minecraft:/, '').replace(/\s+/g, '_');
 }
@@ -825,8 +952,10 @@ function countItem(name) {
 }
 
 async function holdItem(item, destination) {
+  checkAction();
   if (!item) return false;
   await withTimeout(bot.equip(item, destination || 'hand'), 5000, 'equipping');
+  checkAction();
   return true;
 }
 
@@ -845,6 +974,7 @@ function nearestBlocks(test, radius, count) {
 
 /** Walk until the block can be reached (looked at) - pathfinder when available. */
 async function reachBlock(pos, budgetMs) {
+  checkAction();
   const eye = bot.entity.position.offset(0, bot.entity.height || 1.62, 0);
   if (eye.distanceTo(pos.offset(0.5, 0.5, 0.5)) <= 4.2) return true;
   if (!pathfinder || !bot.pathfinder) return false;
@@ -852,13 +982,16 @@ async function reachBlock(pos, budgetMs) {
     await withTimeout(bot.pathfinder.goto(new goals.GoalLookAtBlock(pos, bot.world, { reach: 4 })), budgetMs || 20000, 'walking');
   } catch (err) {
     stopPath();
+    checkAction();
     const near = bot.entity.position.offset(0, bot.entity.height || 1.62, 0).distanceTo(pos.offset(0.5, 0.5, 0.5));
     return near <= 4.5;
   }
+  checkAction();
   return true;
 }
 
 async function reachEntity(entity, range, budgetMs) {
+  checkAction();
   if (bot.entity.position.distanceTo(entity.position) <= range) return true;
   if (!pathfinder || !bot.pathfinder) return false;
   try {
@@ -866,6 +999,7 @@ async function reachEntity(entity, range, budgetMs) {
   } catch (err) {
     stopPath();
   }
+  checkAction();
   return bot.entities[entity.id] !== undefined && bot.entity.position.distanceTo(entity.position) <= range + 0.5;
 }
 
@@ -897,6 +1031,7 @@ async function digBlock(block) {
   const fresh = bot.blockAt(block.position);
   if (!fresh || fresh.name !== block.name) return false;
   await equipBestTool(fresh);
+  checkAction();
   if (fresh.harvestTools && !(bot.heldItem && fresh.harvestTools[bot.heldItem.type])) {
     throw new Error(`${fresh.name} needs a better tool`);
   }
@@ -934,12 +1069,14 @@ async function mineMatching(test, count, radius, budgetMs, label) {
   let mined = 0;
   let lastError = null;
   while (mined < count && Date.now() < deadline) {
+    checkAction();
     const blocks = nearestBlocks(test, radius, 32).filter((b) => !skipped.has(b.position.toString()));
     if (!blocks.length) break;
     const block = blocks[0];
     try {
       if (await digBlock(block)) mined += 1;
     } catch (err) {
+      checkAction();
       lastError = err.message;
       skipped.add(block.position.toString());
       if (skipped.size > 6) break;
@@ -952,6 +1089,7 @@ async function mineMatching(test, count, radius, budgetMs, label) {
 
 /** Place `item` so it fills `pos` (needs a solid neighbour to click on). */
 async function placeAt(pos, item) {
+  checkAction();
   const V = Vec3();
   const here = bot.blockAt(pos);
   if (!here || (here.boundingBox !== 'empty' && !['water', 'lava', 'short_grass', 'grass', 'tall_grass', 'snow'].includes(here.name))) return false;
@@ -964,6 +1102,7 @@ async function placeAt(pos, item) {
       await withTimeout(bot.placeBlock(ref, new V(-dx, -dy, -dz)), 4000, 'placing');
       return true;
     } catch (err) {
+      checkAction();
       const now = bot.blockAt(pos);
       if (now && now.boundingBox === 'block') return true; // placed, the server was just slow to confirm
     }
@@ -1118,6 +1257,7 @@ async function cmdChopTree(params) {
     try {
       if (await digBlock(block)) mined += 1;
     } catch (err) {
+      checkAction();
       /* too high to reach - leave the top of the tree */
     }
   }
@@ -1402,6 +1542,7 @@ async function cmdCraft(params) {
   const count = Math.max(1, Math.min(64, Number(params.count || 1)));
   let recipe = bot.recipesFor(info.id, null, 1, null)[0];
   let table = null;
+  if (!recipe && params.no_station) throw new Error(`no inventory-only recipe for ${name} with available ingredients`);
   if (!recipe) {
     table = await ensureStation(['crafting_table'], 'crafting_table', 'crafting table');
     if (!table && countItem('crafting_table') === 0) {
@@ -1486,14 +1627,15 @@ async function openNearestChest() {
   const block = bot.findBlock({ matching: ids, maxDistance: 32 });
   if (!block) throw new Error('no chest within 32 blocks');
   if (!(await reachBlock(block.position, 20000))) throw new Error('cannot reach the chest');
-  return withTimeout(bot.openContainer(block), 8000, 'opening the chest');
+  const container = await withTimeout(bot.openContainer(block), 8000, 'opening the chest');
+  return { container, block };
 }
 
 async function cmdDeposit(params) {
   need();
   const wanted = cleanName(params.item);
   const foods = registry().foodsByName || {};
-  const chest = await openNearestChest();
+  const { container: chest } = await openNearestChest();
   let stored = 0;
   try {
     for (const item of invItems()) {
@@ -1516,7 +1658,7 @@ async function cmdDeposit(params) {
 async function cmdWithdraw(params) {
   need();
   const wanted = cleanName(params.item);
-  const chest = await openNearestChest();
+  const { container: chest } = await openNearestChest();
   try {
     const items = chest.containerItems();
     const item = items.find((it) => it.name === wanted) || items.find((it) => wanted && it.name.includes(wanted));
@@ -1532,13 +1674,16 @@ async function cmdWithdraw(params) {
 
 async function cmdChestContents() {
   need();
-  const chest = await openNearestChest();
+  const { container: chest, block } = await openNearestChest();
   try {
     const totals = {};
     for (const it of chest.containerItems()) totals[it.name] = (totals[it.name] || 0) + it.count;
     const items = Object.entries(totals).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
     const summary = items.slice(0, 8).map((i) => `${i.count} ${i.name}`).join(', ') || 'nothing';
-    return { items, message: `the chest has ${summary}${items.length > 8 ? ' ...' : ''}` };
+    const position = block.position;
+    const dimension = bot.game && bot.game.dimension ? String(bot.game.dimension) : null;
+    return { items, position: {x: position.x, y: position.y, z: position.z}, dimension,
+      message: `the chest has ${summary}${items.length > 8 ? ' ...' : ''}` };
   } finally {
     chest.close();
   }
@@ -1738,10 +1883,225 @@ async function cmdDismount() {
   return { message: 'got off' };
 }
 
+// Estimate closest approach in ticks using observed entity velocity (blocks/tick).
+// Gravity, obstacles and bot movement are not modelled, so this is only a warning.
+function projectileApproach(entity) {
+  if (!entity || !entity.position || !entity.velocity || entity.isValid === false) return null;
+  if (!['arrow', 'spectral_arrow', 'trident', 'fireball', 'small_fireball', 'wind_charge'].includes(mobName(entity))) return null;
+  const p = entity.position, b = bot.entity.position, v = entity.velocity;
+  const x = p.x - b.x, y = p.y - b.y - 0.9, z = p.z - b.z;
+  if (![x, y, z, v.x, v.y, v.z].every(Number.isFinite)) return null;
+  const distanceSq = x * x + y * y + z * z;
+  const speedSq = v.x * v.x + v.y * v.y + v.z * v.z;
+  if (distanceSq > 256 || speedSq < 0.0001) return null;
+  const ticks = -(x * v.x + y * v.y + z * v.z) / speedSq;
+  if (!(ticks > 0 && ticks <= 40)) return null;
+  const missSq = (x + ticks * v.x) ** 2 + (y + ticks * v.y) ** 2 + (z + ticks * v.z) ** 2;
+  return missSq <= 1.2 ** 2 ? ticks : null;
+}
+
+async function cmdBlockProjectile() {
+  need();
+  const offhand = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+  if (!offhand || offhand.name !== 'shield') throw new Error('an off-hand shield must already be equipped');
+  const candidates = Object.values(bot.entities || {}).map(entity => ({entity, ticks: projectileApproach(entity)}))
+    .filter(entry => entry.ticks !== null).sort((a, b) => a.ticks - b.ticks);
+  if (!candidates.length) throw new Error('no projectile currently appears headed toward me');
+  const owner = bot;
+  const projectile = candidates[0].entity;
+  await owner.lookAt(projectile.position, true);
+  checkAction();
+  if (bot !== owner || !owner.entities[projectile.id] || projectileApproach(projectile) === null) {
+    throw new Error('projectile is no longer approaching');
+  }
+  if (owner.inventory?.slots?.[45]?.name !== 'shield') throw new Error('off-hand shield is no longer equipped');
+  owner.activateItem(true);
+  try {
+    await sleep(750);
+  } finally {
+    owner.deactivateItem();
+  }
+  return {message: 'raised shield toward a possible incoming projectile; block not confirmed'};
+}
+
+async function cmdCriticalHit(params) {
+  need();
+  const wanted = cleanName(params.mob);
+  const target = entitiesNear((e) => {
+    if (e.type === 'player' || e.username || e.name === 'item') return false;
+    return wanted ? mobName(e) === wanted : HOSTILE_ENTITIES.has(mobName(e));
+  }, 3)[0];
+  if (!target) throw new Error('no matching mob in melee reach');
+  if (!bot.entity.onGround) throw new Error('must be on the ground to start the jump');
+  stopPath();
+  const until = Date.now() + 1400;
+  const releaseAt = Date.now() + 150;
+  let attacked = false;
+  try {
+    bot.setControlState('jump', true);
+    while (Date.now() < until) {
+      if (Date.now() >= releaseAt) bot.setControlState('jump', false);
+      if (!bot.entities[target.id] || target.isValid === false || bot.entity.position.distanceTo(target.position) > 3) {
+        throw new Error('target moved out of melee reach');
+      }
+      const velocity = bot.entity.velocity;
+      if (!bot.entity.onGround && velocity && velocity.y < -0.04) {
+        await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7, 0), true);
+        bot.attack(target);
+        attacked = true;
+        break;
+      }
+      await sleep(25);
+    }
+  } finally {
+    bot.setControlState('jump', false);
+  }
+  if (!attacked) throw new Error('could not time the falling hit');
+  // The server decides whether the hit is actually critical (cooldown, effects, etc.).
+  return { target: mobName(target), message: `attempted a falling hit on ${mobName(target)} (critical not confirmed)` };
+}
+
+function combatTarget(params, range) {
+  const wanted = cleanName(params.mob);
+  const target = entitiesNear((e) => {
+    if (e.type === 'player' || e.username || e.name === 'item') return false;
+    const name = mobName(e);
+    return HOSTILE_ENTITIES.has(name) && (!wanted || name === wanted);
+  }, range)[0];
+  if (!target) throw new Error('no matching hostile mob in range');
+  return target;
+}
+
+// Conservative horizontal corridor check: never intentionally shoot through or just past a player.
+// This is not line-of-sight or trajectory prediction; a player can still move after the check.
+function checkProjectileBystanders(target) {
+  const start = bot.entity.position;
+  const end = target.position;
+  const dx = end.x - start.x, dz = end.z - start.z;
+  const length = Math.hypot(dx, dz);
+  if (!Number.isFinite(length) || length < 0.01) throw new Error('cannot determine a safe firing direction');
+  for (const entity of Object.values(bot.entities || {})) {
+    if (!entity || entity === bot.entity || entity.isValid === false || !entity.position ||
+        !(entity.type === 'player' || entity.username)) continue;
+    const px = entity.position.x - start.x, pz = entity.position.z - start.z;
+    if (!Number.isFinite(px) || !Number.isFinite(pz)) throw new Error('cannot determine player position for safe firing');
+    const along = (px * dx + pz * dz) / length;
+    const sideways = Math.abs(px * dz - pz * dx) / length;
+    if (along >= 0 && along <= length + 8 && sideways <= 2) {
+      throw new Error('not firing: a player is near the projectile path');
+    }
+  }
+}
+
+async function aimAtMob(target, compensation = 0) {
+  await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + compensation, 0), true);
+}
+
+async function cmdThrowTrident(params) {
+  need();
+  if (params.confirm !== true) throw new Error('throwing may lose the trident; set confirm=true');
+  if (bot.entity.isInWater !== false || bot.isRaining !== false) {
+    throw new Error('trident throw requires known dry weather and dry ground; Riptide may launch the bot');
+  }
+  const trident = findItem((it) => it.name === 'trident');
+  if (!trident) throw new Error('I need a trident');
+  const target = combatTarget(params, 24);
+  checkProjectileBystanders(target);
+  await holdItem(trident);
+  const distance = bot.entity.position.distanceTo(target.position);
+  await aimAtMob(target, 0.0025 * distance * distance);
+  bot.activateItem();
+  try {
+    await sleep(1100);
+    if (!bot.entities[target.id] || target.isValid === false) throw new Error('target no longer visible; trident may still be released');
+    await aimAtMob(target, 0.0025 * distance * distance);
+  } finally {
+    bot.deactivateItem();
+  }
+  return { target: mobName(target), message: 'released the trident; hit and return are not confirmed' };
+}
+
+async function cmdSpearAttack(params) {
+  need();
+  const spear = findItem((it) => it.name === 'spear' || it.name.endsWith('_spear'));
+  if (!spear) throw new Error('I need a spear supported by this Minecraft version');
+  const target = combatTarget(params, 3);
+  await holdItem(spear);
+  await aimAtMob(target);
+  bot.attack(target);
+  return { target: mobName(target), message: 'attempted a spear hit; damage is not confirmed' };
+}
+
+async function cmdThrowProjectile(params) {
+  need();
+  const name = cleanName(params.item) || 'snowball';
+  if (!['snowball', 'egg'].includes(name)) throw new Error('projectile must be snowball or egg');
+  const projectile = findItem((it) => it.name === name);
+  if (!projectile) throw new Error(`I need a ${name}`);
+  const target = combatTarget(params, 20);
+  checkProjectileBystanders(target);
+  await holdItem(projectile);
+  await aimAtMob(target, 0.003 * Math.pow(bot.entity.position.distanceTo(target.position), 2));
+  bot.activateItem();
+  bot.deactivateItem();
+  return { target: mobName(target), message: `threw a ${name}; hit is not confirmed` };
+}
+
+async function cmdMaceSmash(params) {
+  need();
+  const mode = cleanName(params.mode) || 'fall';
+  if (!['fall', 'tower', 'wind_charge'].includes(mode)) throw new Error('mode must be fall, tower or wind_charge');
+  const mace = findItem((it) => it.name === 'mace');
+  if (!mace) throw new Error('I need a mace');
+  const target = combatTarget(params, mode === 'fall' ? 4 : 6);
+  if (mode !== 'fall') {
+    if (params.confirm !== true) throw new Error('dangerous mace setup; set confirm=true');
+    const offhand = bot.inventory && bot.inventory.slots && bot.inventory.slots[45];
+    if (!offhand || offhand.name !== 'totem_of_undying') throw new Error('equip a totem in the off-hand first');
+    if (!Number.isFinite(bot.health) || bot.health < 12) throw new Error('health too low or unknown');
+    if (!bot.entity.onGround) throw new Error('start the setup on the ground');
+    if (mode === 'tower') {
+      await cmdPillarUp({ height: Math.max(1, Math.min(5, Number(params.height || 3))) });
+    } else {
+      const charge = findItem((it) => it.name === 'wind_charge');
+      if (!charge) throw new Error('I need a wind charge');
+      await holdItem(charge);
+      await bot.look(bot.entity.yaw, -Math.PI / 2, true);
+      bot.activateItem();
+      bot.deactivateItem();
+    }
+  }
+  await holdItem(mace);
+  const deadline = Date.now() + 5000;
+  let hit = false;
+  try {
+    while (Date.now() < deadline) {
+      if (!bot.entities[target.id] || target.isValid === false) throw new Error('target no longer visible');
+      const distance = bot.entity.position.distanceTo(target.position);
+      await aimAtMob(target);
+      if (mode === 'tower') bot.setControlState('forward', distance > 2.5);
+      const velocity = bot.entity.velocity;
+      if (!bot.entity.onGround && velocity && velocity.y < -0.08 && distance <= 3) {
+        bot.attack(target);
+        hit = true;
+        break;
+      }
+      if (mode === 'fall' && bot.entity.onGround) break;
+      await sleep(50);
+    }
+  } finally {
+    if (mode === 'tower') bot.setControlState('forward', false);
+  }
+  if (!hit) throw new Error('could not reach the target while falling');
+  return { target: mobName(target), message: 'attempted a falling mace hit; smash damage is not confirmed' };
+}
+
 async function cmdShoot(params) {
   need();
-  const bow = findItem((it) => it.name === 'bow' || it.name === 'crossbow');
-  if (!bow) throw new Error('I need a bow');
+  const weapon = cleanName(params.weapon);
+  if (weapon && weapon !== 'bow' && weapon !== 'crossbow') throw new Error('weapon must be bow or crossbow');
+  const bow = findItem((it) => weapon ? it.name === weapon : it.name === 'bow' || it.name === 'crossbow');
+  if (!bow) throw new Error(weapon ? `I need a ${weapon}` : 'I need a bow or crossbow');
   if (!findItem((it) => it.name.endsWith('arrow'))) throw new Error('I have no arrows');
   const wanted = cleanName(params.mob);
   const range = Math.max(4, Math.min(48, Number(params.range || 24)));
@@ -1756,19 +2116,129 @@ async function cmdShoot(params) {
   let fired = 0;
   for (let i = 0; i < shots && bot.entities[target.id] && target.isValid !== false; i += 1) {
     if (!findItem((it) => it.name.endsWith('arrow'))) break;
+    checkProjectileBystanders(target);
     const distance = bot.entity.position.distanceTo(target.position);
     const drop = 0.0025 * distance * distance; // arrows fall: aim a little higher further away
     await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
     bot.activateItem();
-    await sleep(bow.name === 'crossbow' ? 1300 : 1050);
-    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
-    bot.deactivateItem();
+    try {
+      await sleep(bow.name === 'crossbow' ? 1300 : 1050);
+      if (!bot.entities[target.id] || target.isValid === false) {
+        throw new Error('target disappeared while drawing; releasing the weapon may still fire or load it');
+      }
+      await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7 + drop, 0), true);
+    } finally {
+      bot.deactivateItem();
+    }
+    // A bow fires on release; a crossbow must be used a second time after loading.
+    if (bow.name === 'crossbow') {
+      // A player may have moved into the corridor while the crossbow was loading.
+      checkProjectileBystanders(target);
+      bot.activateItem();
+      bot.deactivateItem();
+    }
     fired += 1;
     await sleep(350);
   }
-  const killed = !bot.entities[target.id] || target.isValid === false;
-  return { target: mobName(target), shots: fired, kills: killed ? 1 : 0,
-    message: `shot ${fired} arrow(s) at a ${mobName(target)}` + (killed ? ' and got it' : '') };
+  const targetGone = !bot.entities[target.id] || target.isValid === false;
+  return { target: mobName(target), shots: fired, kills: 0,
+    message: `released ${fired} arrow(s) at a ${mobName(target)}; hit and kill not confirmed` +
+      (targetGone ? ' (target no longer visible)' : '') };
+}
+
+// Potion reactions use pathfinding only: never fall back to blind forward steering.
+async function cmdReactPotion(params) {
+  need();
+  const id = Number(params.entity_id);
+  const mode = String(params.mode || 'avoid');
+  if (!Number.isInteger(id) || id < 0 || !['avoid', 'seek'].includes(mode)) throw new Error('invalid potion target or mode');
+  if (!pathfinder || !goals || !bot.pathfinder || !pathfinder.Movements) throw new Error('potion response requires pathfinder');
+  const owner = bot, entity = owner.entities[id];
+  if (!entity || !entity.position || entity.isValid === false) throw new Error('potion is no longer visible');
+  const observation = potionObservation(entity);
+  if (!observation) throw new Error('target is not a potion');
+  if (mode === 'seek' && (!['dropped', 'thrown'].includes(observation.form) || observation.kind !== 'good')) {
+    throw new Error('only identified beneficial dropped or thrown potions can be approached');
+  }
+  if (mode === 'seek' && observation.form === 'thrown' &&
+      (!Number.isFinite(entity.velocity?.y) || Math.abs(entity.position.y - owner.entity.position.y) > 2 || entity.velocity.y > 0.2)) {
+    throw new Error('beneficial potion is not close enough to approach safely');
+  }
+  if (mode === 'avoid' && (!['thrown', 'cloud'].includes(observation.form) || observation.kind === 'good')) {
+    throw new Error('target is not a harmful or unknown active potion');
+  }
+  const pos = owner.entity.position;
+  const dx = pos.x - entity.position.x, dz = pos.z - entity.position.z;
+  const distance = Math.hypot(dx, dz);
+  if (!Number.isFinite(distance) || distance > 8) throw new Error('potion is outside reaction range');
+  let destination;
+  if (mode === 'avoid') {
+    const nx = distance < 0.01 ? 1 : dx / distance;
+    const nz = distance < 0.01 ? 0 : dz / distance;
+    destination = pos.offset(nx * 6, 0, nz * 6).floored();
+  } else {
+    destination = observation.form === 'thrown'
+      ? pos.offset(entity.position.x - pos.x, 0, entity.position.z - pos.z).floored()
+      : entity.position.floored();
+  }
+  for (const other of Object.values(owner.entities)) {
+    if (!other || other === entity || !other.position) continue;
+    const p = potionObservation(other);
+    if (p && ['thrown', 'cloud'].includes(p.form) && p.kind !== 'good' &&
+        other.position.distanceTo(destination) < 5) throw new Error('destination is near another potion hazard');
+  }
+  const ground = owner.blockAt(destination.offset(0, -1, 0));
+  const feet = owner.blockAt(destination), head = owner.blockAt(destination.offset(0, 1, 0));
+  const dangerous = /lava|water|fire|magma|cactus|campfire|powder_snow|sweet_berry_bush/;
+  if (!ground || !feet || !head || ground.boundingBox !== 'block' || feet.boundingBox !== 'empty' ||
+      head.boundingBox !== 'empty' || [ground, feet, head].some(block => dangerous.test(block.name || ''))) {
+    throw new Error('no known safe potion destination');
+  }
+  const previous = owner.pathfinder.movements;
+  const safe = new pathfinder.Movements(owner);
+  safe.canDig = false; safe.allowParkour = false; safe.allow1by1towers = false; safe.scafoldingBlocks = [];
+  safe.maxDropDown = 1;
+  if (Array.isArray(safe.exclusionAreasStep)) {
+    safe.exclusionAreasStep.push(block => {
+      if (!block || !block.position) return 100;
+      for (const other of Object.values(owner.entities)) {
+        if (!other || other === entity || !other.position) continue;
+        const p = potionObservation(other);
+        if (p && ['thrown', 'cloud'].includes(p.form) && p.kind !== 'good' &&
+            other.position.distanceTo(block.position) < 5) return 100;
+      }
+      return 0;
+    });
+  }
+  let onGone, onMove;
+  try {
+    checkAction();
+    owner.pathfinder.setMovements(safe);
+    const walking = owner.pathfinder.goto(new goals.GoalNear(destination.x, destination.y, destination.z, mode === 'seek' ? 0 : 1));
+    let job = walking;
+    if (mode === 'seek' && observation.form === 'thrown' && typeof owner.on === 'function') {
+      const original = entity.position.clone();
+      const changed = new Promise((resolve, reject) => {
+        onGone = e => { if (e.id === id) reject(new Error('potion landed or disappeared while approaching')); };
+        onMove = e => { if (e.id === id && e.position.distanceTo(original) > 2) reject(new Error('potion moved away')); };
+        owner.on('entityGone', onGone);
+        owner.on('entityMoved', onMove);
+      });
+      job = Promise.race([walking, changed]);
+    }
+    await withTimeout(job, observation.form === 'thrown' && mode === 'seek' ? 2500 : 7000, 'potion response');
+    checkAction();
+    if (bot !== owner) throw new Error('bot disconnected during potion response');
+    const message = mode === 'avoid' ? 'moved away from a possible potion hazard'
+      : observation.form === 'thrown' ? 'approached a beneficial potion; receiving an effect is not confirmed'
+        : 'approached a useful dropped potion; pickup not confirmed';
+    return {message};
+  } finally {
+    if (onGone) owner.removeListener('entityGone', onGone);
+    if (onMove) owner.removeListener('entityMoved', onMove);
+    try { owner.pathfinder.setGoal(null); } catch (err) { /* already stopped */ }
+    if (previous) { try { owner.pathfinder.setMovements(previous); } catch (err) { /* disconnected */ } }
+  }
 }
 
 /* ------------------------------------------------------------------ vision */
@@ -1781,8 +2251,57 @@ async function cmdShoot(params) {
  */
 const VISION_PACKAGES = 'npm install --prefix pymc_bot/node prismarine-viewer node-canvas-webgl three@0.128.0';
 let eyes = null; // { bot, viewer, worldView, renderer, canvas, width, height }
+let visionQueue = Promise.resolve();
 
-function openEyes(width, height, viewDistance) {
+function disposeEyes(instance) {
+  if (!instance) return;
+  try {
+    if (instance.worldView && typeof instance.worldView.removeListenersFromBot === 'function') {
+      instance.worldView.removeListenersFromBot(instance.bot);
+    }
+  } catch (err) { /* renderer already detached */ }
+  try { if (typeof instance.viewer?.resetAll === 'function') instance.viewer.resetAll(); } catch (err) { /* continue cleanup */ }
+  for (const worker of instance.viewer?.world?.workers || []) {
+    try { worker.terminate(); } catch (err) { /* continue cleanup */ }
+  }
+  try { if (typeof instance.renderer?.dispose === 'function') instance.renderer.dispose(); } catch (err) { /* continue cleanup */ }
+  try { instance.canvas?.getContext('webgl')?.getExtension('STACKGL_destroy_context')?.destroy(); } catch (err) { /* optional native extension */ }
+}
+
+// Track native worker errors so a broken renderer is reported and can be recreated.
+// prismarine-viewer itself forwards Node's message event to its onmessage handler.
+function viewerWorkerClass(NodeWorker) {
+  return class ViewerWorker extends NodeWorker {
+    constructor(...args) {
+      super(...args);
+      this.visionError = null;
+      this.on('error', err => { this.visionError = err; });
+      this.on('exit', code => { if (code !== 0 && !this.visionClosing) this.visionError = new Error(`vision worker exited (${code})`); });
+    }
+    terminate() {
+      this.visionClosing = true;
+      return super.terminate();
+    }
+  };
+}
+
+function checkVisionWorkers(instance) {
+  for (const worker of instance.viewer?.world?.workers || []) {
+    if (worker.visionError) {
+      const message = worker.visionError.message;
+      closeEyes();
+      throw new Error(`vision worker failed: ${message}`);
+    }
+  }
+}
+
+function closeEyes() {
+  const previous = eyes;
+  eyes = null;
+  disposeEyes(previous);
+}
+
+async function openEyes(width, height, viewDistance) {
   let viewerLib;
   let createCanvas;
   let THREE;
@@ -1793,41 +2312,84 @@ function openEyes(width, height, viewDistance) {
   } catch (err) {
     throw new Error(`vision is not installed (${err.message.split('\n')[0]}). Run: ${VISION_PACKAGES}`);
   }
-  if (typeof global.Worker === 'undefined') global.Worker = require('worker_threads').Worker;
-  const canvas = createCanvas(width, height);
-  const renderer = new THREE.WebGLRenderer({ canvas });
-  const viewer = new viewerLib.Viewer(renderer);
-  if (viewer.setVersion(bot.version) === false) {
-    throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}`);
+  // Requiring prismarine-viewer also loads its headless entry point, which resets global.Worker.
+  global.Worker = viewerWorkerClass(require('worker_threads').Worker);
+  const owner = bot;
+  let canvas, renderer, viewer, worldView = null;
+  try {
+    canvas = createCanvas(width, height);
+    renderer = new THREE.WebGLRenderer({ canvas });
+    viewer = new viewerLib.Viewer(renderer);
+    let supported;
+    try { supported = viewer.setVersion(bot.version); } catch (err) {
+      throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}: ${err.message}`);
+    }
+    if (!supported) throw new Error(`prismarine-viewer cannot render Minecraft ${bot.version}`);
+    const center = bot.entity.position;
+    worldView = new viewerLib.WorldView(bot.world, viewDistance, center);
+    viewer.listen(worldView);
+    worldView.listenToBot(bot);
+    await withTimeout(worldView.init(center), 10000, 'loading the vision world');
+    checkAction();
+    if (bot !== owner) throw new Error('bot disconnected while starting vision');
+    return { bot: owner, viewer, worldView, renderer, canvas, width, height, viewerLib };
+  } catch (err) {
+    disposeEyes({ bot: owner, viewer, worldView, renderer, canvas });
+    throw err;
   }
-  const center = bot.entity.position;
-  const worldView = new viewerLib.WorldView(bot.world, viewDistance, center);
-  viewer.listen(worldView);
-  worldView.init(center);
-  return { bot, viewer, worldView, renderer, canvas, width, height };
 }
 
-async function cmdSnapshot(params) {
+function cmdSnapshot(params) {
+  const job = visionQueue.then(() => renderSnapshot(params));
+  visionQueue = job.catch(() => {});
+  return job;
+}
+
+async function renderSnapshot(params) {
+  checkAction();
   if (!bot || !bot.entity) throw new Error('not connected');
   const width = Math.max(64, Math.min(1024, Number(params.width || 448)));
   const height = Math.max(64, Math.min(1024, Number(params.height || Math.round(width * 9 / 16))));
   if (!eyes || eyes.bot !== bot || eyes.width !== width || eyes.height !== height) {
-    eyes = openEyes(width, height, Math.max(2, Math.min(8, Number(params.view_distance || 4))));
+    closeEyes();
+    eyes = await openEyes(width, height, Math.max(2, Math.min(8, Number(params.view_distance || 4))));
   }
-  const eye = bot.entity.position.offset(0, bot.entity.height || 1.62, 0);
-  eyes.worldView.updatePosition(bot.entity.position);
-  eyes.viewer.setFirstPersonCamera(eye, bot.entity.yaw, bot.entity.pitch);
-  // chunks are meshed in worker threads; give them a moment (the first picture can be sky only)
-  const settle = Math.max(0, Math.min(5000, Number(params.settle_ms ?? 600)));
-  if (eyes.viewer.world && typeof eyes.viewer.world.waitForChunksToRender === 'function') {
-    await Promise.race([eyes.viewer.world.waitForChunksToRender(), sleep(settle)]);
+  const active = eyes;
+  await withTimeout(active.worldView.updatePosition(bot.entity.position), 10000, 'updating the vision world');
+  checkAction();
+  if (eyes !== active || bot !== active.bot) throw new Error('bot disconnected while rendering');
+  checkVisionWorkers(active);
+  active.viewer.setFirstPersonCamera(bot.entity.position, bot.entity.yaw, bot.entity.pitch);
+  // Wait briefly for worker meshes. Never describe an unfinished sky-only frame as a complete view.
+  const settle = Math.max(0, Math.min(5000, Number(params.settle_ms ?? 3500)));
+  const world = active.viewer.world;
+  if (world?.sectionsOutstanding && world.renderUpdateEmitter) {
+    let onUpdate;
+    try {
+      const ready = new Promise(resolve => {
+        onUpdate = () => { if (!world.sectionsOutstanding.size) resolve(); };
+        world.renderUpdateEmitter.on('update', onUpdate);
+        onUpdate();
+      });
+      await Promise.race([ready, sleep(settle)]);
+    } finally {
+      if (onUpdate) world.renderUpdateEmitter.removeListener('update', onUpdate);
+    }
   } else {
     await sleep(settle);
   }
-  if (typeof eyes.viewer.update === 'function') eyes.viewer.update();
-  eyes.renderer.render(eyes.viewer.scene, eyes.viewer.camera);
+  checkAction();
+  if (eyes !== active || bot !== active.bot) throw new Error('bot disconnected while rendering');
+  checkVisionWorkers(active);
+  if (world?.sectionsOutstanding?.size) throw new Error('vision chunks are still rendering; retrying next frame');
+  if (typeof active.viewer.update === 'function') active.viewer.update();
+  active.renderer.render(active.viewer.scene, active.viewer.camera);
   const quality = Math.max(0.3, Math.min(0.95, Number(params.quality || 0.8)));
-  const buffer = eyes.canvas.toBuffer('image/jpeg', { quality });
+  const buffer = await withTimeout(active.viewerLib.getBufferFromStream(active.canvas.createJPEGStream({ quality })),
+    5000, 'encoding the vision frame');
+  checkAction();
+  if (eyes !== active || bot !== active.bot || !bot.entity) throw new Error('bot disconnected while encoding vision');
+  checkVisionWorkers(active);
   return {
     mime: 'image/jpeg',
     width,
@@ -1845,6 +2407,7 @@ const COMMANDS = {
   control: cmdControl,
   look: cmdLook,
   stop_motion: cmdStopMotion,
+  cancel_actions: cmdCancelActions,
   pathfind_to: cmdPathfindTo,
   stop_path: cmdStopPath,
   dig: cmdDig,
@@ -1865,6 +2428,8 @@ const COMMANDS = {
   collect: cmdCollect,
   attack_mob: cmdAttackMob,
   snapshot: cmdSnapshot,
+  registry_lookup: cmdRegistryLookup,
+  recipe_lookup: cmdRecipeLookup,
   // skills (pymc_bot/skills.py)
   drink: cmdDrink,
   surface: cmdSurface,
@@ -1896,6 +2461,13 @@ const COMMANDS = {
   ride: cmdRide,
   dismount: cmdDismount,
   shoot: cmdShoot,
+  critical_hit: cmdCriticalHit,
+  block_projectile: cmdBlockProjectile,
+  react_potion: cmdReactPotion,
+  throw_trident: cmdThrowTrident,
+  spear_attack: cmdSpearAttack,
+  throw_projectile: cmdThrowProjectile,
+  mace_smash: cmdMaceSmash,
   disconnect: cmdDisconnect,
   ping: () => ({ pong: true, connected: Boolean(bot) }),
   state: () => buildState(),
@@ -1911,11 +2483,19 @@ async function handle(request) {
     send({ id, ok: false, error: `unknown command: ${cmd}` });
     return;
   }
+  const exempt = new Set(['cancel_actions', 'stop_motion', 'stop_path', 'state', 'ping', 'disconnect', 'connect']);
+  const controller = exempt.has(cmd) ? null : new AbortController();
+  if (controller) activeActions.add(controller);
   try {
-    const result = await handler(params);
+    const result = controller
+      ? await actionContext.run(controller.signal, () => handler(params))
+      : await handler(params);
+    if (controller && controller.signal.aborted) throw new Error('action cancelled');
     send({ id, ok: true, result: result === undefined ? {} : result });
   } catch (err) {
     send({ id, ok: false, error: err && err.message ? err.message : String(err) });
+  } finally {
+    if (controller) activeActions.delete(controller);
   }
 }
 

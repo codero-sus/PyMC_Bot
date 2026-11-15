@@ -131,6 +131,10 @@ class OllamaSettings(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
     request_timeout: float = Field(default=60.0, gt=0, le=600)
+    json_mode: bool = False  # optional Ollama JSON-object sampling for action decisions
+    adaptive_routing: bool = False
+    routine_model: str = Field(default="", max_length=200)
+    complex_model: str = Field(default="", max_length=200)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @field_validator("system_prompt")
@@ -222,6 +226,7 @@ class AgentSettings(BaseModel):
     allow_inventory: bool = True
     allow_building: bool = False
     allow_mob_fighting: bool = True
+    allow_risky_combat: bool = False
     # Let the LLM look Minecraft things up (the "search" action; settings in "search").
     allow_web_search: bool = True
     greet_players: bool = True
@@ -234,6 +239,9 @@ class AgentSettings(BaseModel):
     human_chat: bool = True
     chat_cooldown: float = Field(default=6.0, ge=0.0, le=120.0)
     memory_turns: int = Field(default=8, ge=1, le=30)
+    # A small local, seven-day memory per bot/server. Disable to stop reading and writing it.
+    persistent_memory: bool = True
+    spatial_memory: bool = False  # opt-in historical container observations, per bot/server
 
     @field_validator("persona")
     @classmethod
@@ -372,6 +380,9 @@ class AutopilotSettings(BaseModel):
     auto_extinguish: bool = True
     auto_totem: bool = True
     totem_health: float = Field(default=10.0, ge=0.0, le=20.0)
+    auto_block_projectiles: bool = True  # only with a shield already equipped in the off-hand
+    auto_avoid_potions: bool = True
+    auto_seek_potions: bool = True
     auto_flee: bool = True
     flee_health: float = Field(default=6.0, ge=0.0, le=20.0)
     flee_creepers: bool = True  # back off from a creeper closer than 5 blocks

@@ -1,0 +1,6 @@
+prune tests
+prune pynb
+prune scripts
+prune mod
+prune docs
+global-exclude *.ipynb

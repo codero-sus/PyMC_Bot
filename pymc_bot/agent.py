@@ -11,7 +11,10 @@ heuristic policy instead, so the bot always keeps playing.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import math
 import random
 import re
 import threading
@@ -21,10 +24,13 @@ from pathlib import Path
 from typing import Any
 
 from pymc_bot import skills
+from pymc_bot.autopilot import NEUTRAL_MOBS
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
+from pymc_bot.experience import Experience
+from pymc_bot.goals import GatherGoal
 from pymc_bot.inventory import HOTBAR_SIZE, Inventory, short
 from pymc_bot.knowledge import KnowledgeBase, LookupResult, shared_knowledge
 from pymc_bot.mind import (
@@ -35,6 +41,8 @@ from pymc_bot.mind import (
     typing_delay,
 )
 from pymc_bot.ollama import OllamaClient, OllamaError
+from pymc_bot.recovery import RecoveryMemory
+from pymc_bot.routing import select_ollama_model
 from pymc_bot.train import list_models
 
 ACTIONS: dict[str, str] = {
@@ -42,6 +50,7 @@ ACTIONS: dict[str, str] = {
     "goto": 'walk: {"action": "goto", "x": 10, "y": 64, "z": -20}',
     "follow": 'follow a player: {"action": "follow", "player": "Steve"}',
     "wander": 'explore: {"action": "wander"}',
+    "move_controls": 'brief player-like movement: {"action": "move_controls", "controls": ["forward", "left"], "seconds": 0.6}',
     "mine": 'dig: {"action": "mine", "block": "oak_log"}',
     "attack": 'hit a player: {"action": "attack", "player": "Steve"}',
     "jump": 'hop: {"action": "jump"}',
@@ -173,41 +182,78 @@ class HeuristicPolicy:
         self._rng = random.Random(seed)
         self._step = 0
         self._greeted: set[str] = set()
+        self._chat_tail: list[str] = []
 
     def decide(self, state: dict[str, Any], chat: list[str], allowed: dict[str, bool] | None = None) -> Decision:
         self._step += 1
         can = {"movement": True, "chat": True, "mining": True, "inventory": True, "building": False, "fighting": True}
         can.update(allowed or {})
-        health = float(state.get("health") or 20)
-        food = float(state.get("food") or 20)
+        health = float(state["health"]) if state.get("health") is not None else 20.0
+        food = float(state["food"]) if state.get("food") is not None else 20.0
         players = state.get("players") or []
         bot_name = str(state.get("username") or state.get("server", {}).get("username") or "PyMC_Bot")
-        knows_items = bool(state.get("slots") or state.get("inventory"))
+        knows_items = isinstance(state.get("slots"), list) or isinstance(state.get("inventory"), list)
         inv = Inventory.from_snapshot(state)
         hostiles = sorted(
             (e for e in state.get("entities") or [] if e.get("hostile") and not e.get("player")),
-            key=lambda e: float(e.get("dist") or 99),
+            key=lambda e: float(e.get("dist") if e.get("dist") is not None else 99),
         )
         threat = hostiles[0] if hostiles else None
-        threat_dist = float(threat.get("dist") or 99) if threat else 99.0
+        threat_dist = float(threat.get("dist") if threat.get("dist") is not None else 99) if threat else 99.0
         threat_kind = short(threat.get("type")) if threat else ""
 
         # 1. survive
         if threat and threat_dist <= 8 and health <= 8 and can["movement"]:
             return Decision("flee", {}, "heuristic")
+        if (state.get("health") is not None and health <= 8 and can["inventory"]
+                and (not inv.offhand or inv.offhand.name != "totem_of_undying")
+                and inv.find("totem_of_undying") is not None):
+            return Decision("totem", {}, "heuristic", thought="Health is low; protect myself before continuing.")
+        if threat and threat_kind == "creeper" and threat_dist <= 5 and can["movement"]:
+            return Decision("flee", {}, "heuristic", thought="That creeper is too close; back away.")
         if health <= 8 or food <= 6:
-            return Decision("eat", {}, "heuristic")
+            if not knows_items or inv.best_food(food, health) is not None:
+                return Decision("eat", {}, "heuristic")
+            # Do not repeatedly try to eat an empty inventory. At low health, do not
+            # initiate a hunt; searching for food is safer than fighting for it.
+            if health > 10 and can["fighting"] and can["movement"] and (not threat or threat_dist > 12):
+                animals = {"cow", "pig", "sheep", "chicken", "rabbit", "mooshroom"}
+                for entity in state.get("entities") or []:
+                    kind = short(entity.get("type"))
+                    if kind in animals and float(entity.get("dist") if entity.get("dist") is not None else 99) <= 12:
+                        return Decision("hunt", {"animal": kind}, "heuristic", thought="I need food and can see an animal.")
+            if can["movement"]:
+                return Decision("wander", {}, "heuristic", thought="I have no food; look for a safer source.")
+            return Decision("wait", {}, "heuristic", thought="I need food but cannot move to find it.")
         if knows_items and food <= 14 and inv.best_food(food, health) is not None:
             return Decision("eat", {}, "heuristic")
         if threat and threat_dist <= 6:
             if threat_kind in AVOID_MOBS:
                 if can["movement"] and threat_dist <= 5:
                     return Decision("flee", {}, "heuristic")
-            elif can["fighting"] and health > 10:
+            elif threat_kind not in NEUTRAL_MOBS and can["fighting"] and health > 10:
                 return Decision("fight", {"mob": threat_kind}, "heuristic")
+        if (threat and 7 <= threat_dist <= 22 and threat_kind not in AVOID_MOBS
+                and can["fighting"] and can["inventory"] and health > 10):
+            ammo = any(inv.count(name) for name in ("arrow", "spectral_arrow", "tipped_arrow"))
+            weapon = next((name for name in ("bow", "crossbow") if inv.find(name) is not None), None)
+            if threat_kind not in NEUTRAL_MOBS and ammo and weapon:
+                return Decision("shoot", {"mob": threat_kind, "weapon": weapon, "shots": 1}, "heuristic",
+                                thought="Keep some distance and reassess after one shot.")
 
         # 2. people
-        mentioned = [line for line in chat if bot_name.lower() in line.lower()]
+        # Respond once to new messages, not to our own echo or the same chat history every turn.
+        from pymc_bot.mind import mentions
+
+        overlap = max((n for n in range(min(len(chat), len(self._chat_tail)), 0, -1)
+                       if self._chat_tail[-n:] == chat[:n]), default=0)
+        fresh_chat = chat[overlap:]
+        self._chat_tail = list(chat)
+        mentioned = []
+        for line in fresh_chat:
+            speaker_match = re.match(r"\s*<([^>]+)>\s*(.*)", line)
+            if speaker_match and speaker_match.group(1).lower() != bot_name.lower() and mentions(speaker_match.group(2), bot_name):
+                mentioned.append(line)
         if mentioned:
             line = mentioned[-1]
             speaker_match = re.match(r"\s*<([^>]+)>", line)
@@ -233,7 +279,7 @@ class HeuristicPolicy:
         drops = [d for d in state.get("ground_items") or [] if float(d.get("dist") or 99) <= 8]
         if drops and can["movement"] and self._step % 2 == 0:
             return Decision("collect", {}, "heuristic")
-        if state.get("time_of_day") == "night" and not state.get("sleeping") and self._step % 6 == 0:
+        if can["movement"] and state.get("time_of_day") == "night" and not state.get("sleeping") and self._step % 6 == 0:
             return Decision("sleep", {}, "heuristic")
 
         # 4. friends
@@ -243,15 +289,15 @@ class HeuristicPolicy:
             if name and nearest.get("distance", 99) < 6 and name not in self._greeted:
                 self._greeted.add(name)
                 return Decision("emote", {"kind": self._rng.choice(["wave", "crouch"])}, "heuristic")
-            if nearest.get("distance", 99) < 12 and self._step % 3 == 0:
+            if can["movement"] and nearest.get("distance", 99) < 12 and self._step % 3 == 0:
                 return Decision("follow", {"player": nearest["name"]}, "heuristic")
 
         # 5. play
-        if self._step % 5 == 0:
+        if can["mining"] and self._step % 5 == 0:
             return Decision("mine", {"block": self._rng.choice(MINING_TARGETS)}, "heuristic")
-        if self._step % 7 == 0:
+        if can["chat"] and self._step % 7 == 0:
             return Decision("say", {"message": self._rng.choice(["just exploring", "nice server", "anyone need wood?"])}, "heuristic")
-        if state.get("time_of_day") == "night" and self._step % 4 == 0:
+        if can["mining"] and state.get("time_of_day") == "night" and self._step % 4 == 0:
             return Decision("mine", {"block": "coal_ore"}, "heuristic")
         roll = self._rng.random()
         if roll < 0.12:
@@ -260,7 +306,7 @@ class HeuristicPolicy:
             filled = [i for i in range(HOTBAR_SIZE) if inv.slots[i] and i != inv.selected]
             if filled:  # players scroll through the hotbar while they think
                 return Decision("select_slot", {"slot": self._rng.choice(filled) + 1}, "heuristic")
-        return Decision("wander", {}, "heuristic")
+        return Decision("wander", {}, "heuristic") if can["movement"] else Decision("wait", {}, "heuristic")
 
     @staticmethod
     def _requested_item(line: str, inv: Inventory) -> str | None:
@@ -320,11 +366,37 @@ class AgentLoop:
         self._last_exchange: tuple[str, str] | None = None
         self._vision_turn = 0
         self._vision_error = ""
+        self._vision_status = "waiting"
+        self._vision_last_sent: float | None = None
+        self._last_route: dict[str, str] | None = None
         self._errors = 0
         self._last_error: str | None = None
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
         self.mind = Mind(store.settings.agent.memory_turns)
+        self.recovery = RecoveryMemory()
+        self.goal = GatherGoal()
+        self._experience_lock = threading.RLock()
+        self._experience_key = ""
+        self._experience: Experience | None = None
         self._rng = random.Random()
+
+    def experience(self) -> Experience:
+        """Separate memories by server and in-game bot name (not Microsoft account email)."""
+        host, port = self.bot.memory_server
+        key = f"{host}:{port}/{self.bot.username}"
+        with self._experience_lock:
+            if self._experience is None or self._experience_key != key:
+                self._experience = Experience(self.store.path.parent, key)
+                self._experience_key = key
+            return self._experience
+
+    def world_memory(self):
+        from pymc_bot.world_memory import WorldMemory
+        return WorldMemory(self.store.path.parent, self._goal_identity())
+
+    def clear_experience(self) -> None:
+        self.experience().clear()
+        self.world_memory().clear()
 
     # ------------------------------------------------------------- lifecycle
     @property
@@ -345,18 +417,20 @@ class AgentLoop:
 
     def stop(self, wait: bool = True) -> bool:
         with self._lock:
+            task = self.goal.snapshot()
+            self.goal.cancel()
             if not self.running:
+                if task and task.get("in_flight"):
+                    self.bot.stop_moving()
                 return False
             self._stop_event.set()
             thread = self._thread
-        # Abort any long movement action (walking, following, mining) so the
-        # loop can exit promptly instead of finishing its 30s action.
-        self.bot.cancel_actions()
-        self.bot.llm_chat = False
+            # Keep start serialized until the bridge has received cancellation.
+            self.bot.cancel_actions()
+            self.bot.llm_chat = False
         if wait and thread is not None:
             thread.join(timeout=10.0)
-        self.bot.clear_cancel()
-        self.log.add("AI agent loop stopped.", "info", "agent")
+        self.log.add("AI stop requested.", "info", "agent")
         return True
 
     # ----------------------------------------------------------------- brain
@@ -442,10 +516,10 @@ class AgentLoop:
         if brain == "trained":
             policy = self.policy(settings)
             if policy is None:
-                return self._heuristic.decide(state, self.bot.recent_chat())
+                return self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             return policy.decide(state, allowed=self.allowed_trained_actions(settings))
         if brain == "heuristic":
-            return self._heuristic.decide(state, self.bot.recent_chat())
+            return self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
         if brain == "ollama":
             return self._ask_ollama(settings, state)
         if brain == "cortex":
@@ -456,7 +530,7 @@ class AgentLoop:
             return self._ask_ollama(settings, state)
         if resolved == "cortex":
             return self._ask_cortex(settings, state)
-        return self._heuristic.decide(state, self.bot.recent_chat())
+        return self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
 
     def uses_llm(self, settings: AppSettings | None = None) -> bool:
         return self.resolved_brain(settings) in ("ollama", "cortex")
@@ -489,6 +563,12 @@ class AgentLoop:
             "trained": trained.describe() if trained is not None else None,
             "persona": self._settings().agent.persona,
             "memory": self.mind.snapshot(),
+            "recovery": self.recovery.snapshot(),
+            "task": self.goal.snapshot(),
+            "model_route": self._last_route,
+            "vision": {"enabled": self._settings().agent.vision,
+                       "status": self._vision_status if self._settings().agent.vision else "disabled",
+                       "last_error": self._vision_error or None, "last_sent_at": self._vision_last_sent},
         }
 
     # ------------------------------------------------------------ main logic
@@ -537,6 +617,61 @@ class AgentLoop:
         return settings.ollama.decision_interval
 
     def _run(self) -> None:
+        try:
+            self._run_loop()
+        finally:
+            with self._lock:
+                self.bot.clear_cancel()
+            self.log.add("AI agent loop finished.", "debug", "agent")
+
+    def _goal_identity(self) -> tuple[Any, ...]:
+        return (*self.bot.memory_server, self.bot.username.lower())
+
+    def start_gather_goal(self, item: str, count: int) -> dict[str, Any]:
+        return self.goal.start(item, count, self._goal_identity())
+
+    def cancel_goal(self) -> bool:
+        snapshot = self.goal.snapshot()
+        cancelled = self.goal.cancel()
+        if cancelled and snapshot and snapshot.get("in_flight"):
+            self.bot.stop_moving()
+        return cancelled
+
+    def _goal_turn(self, settings: AppSettings, state: dict[str, Any]) -> tuple[bool, str] | None:
+        # Capture cancellation before claiming the step, including the gap before execution.
+        with self.bot.action_scope():
+            return self._goal_turn_scoped(settings, state)
+
+    def _goal_turn_scoped(self, settings: AppSettings, state: dict[str, Any]) -> tuple[bool, str] | None:
+        identity = self._goal_identity()
+        kind, step = self.goal.next(state, identity, mining=settings.agent.allow_mining,
+                                    movement=settings.agent.allow_movement, inventory=settings.agent.allow_inventory,
+                                    building=settings.agent.allow_building)
+        if kind == "none":
+            return None
+        if kind == "wait":
+            task = self.goal.snapshot() or {}
+            return True, str(task.get("detail") or "goal waiting")
+        decision = Decision(step["action"], step["params"], source="goal:gather",
+                            goal=f"gather {(self.goal.snapshot() or {}).get('item', '')}")
+        ok, detail = False, "goal step interrupted"
+        try:
+            self._last_exchange = None
+            ok, detail = self._act(decision)
+        except Exception as exc:  # noqa: BLE001 - report and bound a failed goal step without killing the loop
+            self._errors += 1
+            self._last_error = str(exc)
+            detail = f"goal action failed: {type(exc).__name__}: {str(exc)[:160]}"
+            self.log.add(detail, "warn", "agent")
+        finally:
+            try:
+                observation = self.bot.snapshot() if self._goal_identity() == identity else None
+            except Exception:  # noqa: BLE001  # a failed observation cannot verify a goal
+                observation = None
+            self.goal.finish(step["token"], ok, detail, observation)
+        return ok, detail
+
+    def _run_loop(self) -> None:
         failures = 0
         while not self._stop_event.is_set():
             settings = self._settings()
@@ -546,6 +681,13 @@ class AgentLoop:
                     break
                 continue
             state = self.bot.snapshot()
+            if self._stop_event.is_set():
+                break
+            result = self._goal_turn(settings, state)
+            if result is not None:
+                if self._wait(interval):
+                    break
+                continue
             decision: Decision | None = None
             try:
                 decision = self._decide(settings, state)
@@ -558,13 +700,17 @@ class AgentLoop:
             if decision is None:
                 decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             failures = 0
+            if self._stop_event.is_set():
+                break
+            task = self.goal.snapshot()
+            if task and task["status"] in {"active", "paused"}:
+                continue  # a goal was set while the model was thinking
             ok, detail = self._act(decision)
             if self.uses_llm(settings):
                 # people don't act on a metronome: +-25% around the configured interval
                 interval *= self._rng.uniform(0.75, 1.25)
             if self._wait(interval):
                 break
-        self.log.add("AI agent loop finished.", "debug", "agent")
 
     def _wait(self, seconds: float) -> bool:
         """Sleep in small slices. Returns True when a stop was requested."""
@@ -588,35 +734,63 @@ class AgentLoop:
         if (self._vision_turn - 1) % agent.vision_every:
             return None
         backend = self.bot.backend
-        if backend is None:
-            return None
         try:
+            if backend is None:
+                raise RuntimeError("bot has no connected vision backend")
             frame = backend.view_image(agent.vision_width)
-        except Exception as exc:  # noqa: BLE001 - any renderer problem means "no picture"
-            message = str(exc)
+            image = frame.get("image")
+            if not isinstance(image, str) or not image or len(image) > 7_000_000:
+                raise ValueError("vision frame is empty or too large")
+            raw = base64.b64decode(image, validate=True)
+            if not (raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG\r\n\x1a\n")):
+                raise ValueError("vision frame is not a JPEG or PNG")
+        except Exception as exc:  # noqa: BLE001  # any renderer or invalid-frame error means no picture this turn
+            message = "invalid base64 vision frame" if isinstance(exc, binascii.Error) else str(exc)[:300]
             if message != self._vision_error:
                 self._vision_error = message
                 self.log.add(f"👁 no picture this turn: {message}", "warn", "agent")
+            self._vision_status = "unavailable"
             return None
         self._vision_error = ""
-        image = str(frame.get("image") or "")
-        return [image] if image else None
+        self._vision_status = "captured"
+        return [image]
+
+    def _vision_request(self, images: list[str] | None, ask: Any) -> str:
+        try:
+            result = ask()
+        except Exception:
+            if images:
+                self._vision_status = "model_error"
+                self._vision_error = "Model request with an image failed; check the configured vision model and runtime."
+            raise
+        if images:
+            self._vision_status = "sent"
+            self._vision_error = ""
+            self._vision_last_sent = time.time()
+        return result
 
     def _ask_ollama(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         client = self._ollama_client(settings)
         system = self.system_prompt(settings, settings.ollama.system_prompt)
         images = self.vision_frame(settings)
+        model, reason = select_ollama_model(settings.ollama, settings.agent.vision, state,
+                                            self.mind.goal, self.bot.recent_chat())
+        self._last_route = {"model": model, "reason": reason}
 
         def ask(prompt: str) -> str:
+            options: dict[str, Any] = {"json_mode": True} if settings.ollama.json_mode else {}
+            if model != settings.ollama.model:
+                options["model"] = model
             if images:
-                return client.chat([{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images)
+                return self._vision_request(images, lambda: client.chat(
+                    [{"role": "user", "content": prompt + VISION_NOTE}], system=system, images=images, **options))
             try:
-                return client.chat([{"role": "user", "content": prompt}], system=system)
+                return client.chat([{"role": "user", "content": prompt}], system=system, **options)
             except OllamaError:
                 # Some models/servers only implement /api/generate.
-                return client.generate(prompt, system=system)
+                return client.generate(prompt, system=system, **options)
 
-        return self._research_and_decide(settings, state, ask, lambda: f"ollama:{settings.ollama.model}")
+        return self._research_and_decide(settings, state, ask, lambda: f"ollama:{model}")
 
     def _ask_cortex(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         """One decision from the model hosted by Cortex LLMHoster."""
@@ -625,7 +799,8 @@ class AgentLoop:
         images = self.vision_frame(settings)
         return self._research_and_decide(
             settings, state,
-            lambda prompt: client.decide(prompt + VISION_NOTE if images else prompt, system=system, images=images),
+            lambda prompt: self._vision_request(
+                images, lambda: client.decide(prompt + VISION_NOTE if images else prompt, system=system, images=images)),
             lambda: f"cortex:{client.last_model or settings.cortex.model or 'default'}",
         )
 
@@ -728,8 +903,27 @@ class AgentLoop:
             if kind and kind not in kinds and not entity.get("player") and float(entity.get("dist") or 99) <= 24:
                 kinds.append(kind)
         facts = self.knowledge.facts_for(kinds[:6], server_version=settings.minecraft.version)
-        return build_turn_prompt(state, self.bot.username, self.mind, self.bot.chat_history, self.allowed(settings),
-                                 knowledge=facts)
+        history = self.bot.chat_history
+        memories: tuple[list[str], list[str]] = ([], [])
+        if settings.agent.persistent_memory:
+            try:
+                experience = self.experience()
+                experience.observe(history, self.bot.username)
+                relevant = [str(p.get("name", "")) for p in state.get("players") or []]
+                relevant += [str(e.get("username", "")) for e in history[-8:]]
+                memories = experience.context(relevant)
+            except OSError as exc:
+                self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
+        prompt = build_turn_prompt(state, self.bot.username, self.mind, history, self.allowed(settings),
+                                   knowledge=facts, experience=memories)
+        if settings.agent.spatial_memory:
+            try:
+                containers = self.world_memory().prompt(state.get("dimension"))
+                if containers:
+                    prompt = containers + "\n\n" + prompt
+            except Exception as exc:  # noqa: BLE001 - optional memory must not block decisions
+                self.log.add(f"Could not read container memory: {type(exc).__name__}", "warn", "agent")
+        return prompt
 
     # -------------------------------------------------------------- executor
     def execute(self, decision: Decision, enforce_permissions: bool = True) -> tuple[bool, str]:
@@ -739,6 +933,10 @@ class AgentLoop:
         actions sent by a human through the web panel pass
         ``enforce_permissions=False`` (attacking stays gated either way).
         """
+        with self.bot.action_scope():
+            return self._execute_scoped(decision, enforce_permissions)
+
+    def _execute_scoped(self, decision: Decision, enforce_permissions: bool) -> tuple[bool, str]:
         settings = self._settings()
         agent = settings.agent
         action = decision.action
@@ -785,6 +983,25 @@ class AgentLoop:
             params["message"] = message
             return (True, f"said: {message}") if self.bot.say(message) else (False, "could not send chat")
 
+        if action == "move_controls":
+            if blocked("movement", agent.allow_movement):
+                return False, "movement is disabled in settings"
+            controls = params.get("controls")
+            allowed_controls = {"forward", "back", "left", "right", "jump", "sneak", "sprint"}
+            if not isinstance(controls, list) or not controls or any(not isinstance(c, str) or c not in allowed_controls for c in controls):
+                return False, "controls must be a nonempty list of forward, back, left, right, jump, sneak or sprint"
+            pressed = set(controls)
+            if {"forward", "back"} <= pressed or {"left", "right"} <= pressed:
+                return False, "opposing movement controls cannot be held together"
+            try:
+                seconds = float(params.get("seconds", 0.6))
+                if not math.isfinite(seconds) or not 0.1 <= seconds <= 2.0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return False, "movement duration must be between 0.1 and 2 seconds"
+            ok = self.bot.controlled_move({c: True for c in pressed}, seconds)
+            return ok, "moved" if ok else "movement unavailable, busy or cancelled"
+
         if action in ("goto", "walk", "move"):
             if blocked("movement", agent.allow_movement):
                 return False, "movement is disabled in settings"
@@ -795,6 +1012,8 @@ class AgentLoop:
                 return False, "goto needs numeric x/z"
             y = params.get("y")
             y = float(y) if isinstance(y, (int, float)) else None
+            if not math.isfinite(x) or not math.isfinite(z) or (y is not None and not math.isfinite(y)):
+                return False, "goto coordinates must be finite"
             x = max(-30000.0, min(30000.0, x))
             z = max(-30000.0, min(30000.0, z))
             ok = self.bot.walk_to(x, z, y)
@@ -807,7 +1026,7 @@ class AgentLoop:
             if not player:
                 return False, "follow needs a player name"
             ok = self.bot.follow(player, seconds=min(30.0, max(6.0, self.decision_interval(settings) * 3)))
-            return ok, f"{'followed' if ok else 'could not follow'} {player}"
+            return ok, f"followed {player}" if ok else (self.bot.last_failure or f"could not follow {player}")
 
         if action in ("wander", "explore"):
             if blocked("movement", agent.allow_movement):
@@ -841,11 +1060,15 @@ class AgentLoop:
             return ok, "jumped" if ok else "could not jump"
 
         if action == "eat":
-            return True, "ate" if self.bot.eat() else "had nothing to eat"
+            ok = self.bot.eat()
+            return ok, "ate" if ok else (self.bot.last_failure or "had nothing to eat")
 
-        if action in ("stop", "idle"):
+        if action == "stop":
             self.bot.stop_moving()
-            return True, "stopped moving"
+            return True, "movement and task cancellation requested"
+        if action == "idle":
+            self.bot._stop_motion()  # noqa: SLF001 - agent is part of the bot controller
+            return True, "standing still"
 
         if action in SEARCH_ACTIONS:
             if blocked("search", self.can_search(settings)):
@@ -973,7 +1196,8 @@ class AgentLoop:
             ok = bot.wake_up()
             return ok, "got up" if ok else why("could not get up")
         if action in ("collect", "pickup", "pick_up"):
-            ok = bot.collect_items()
+            item = item_of("item")
+            ok = bot.collect_items(item=item) if item else bot.collect_items()
             return ok, "picked up items" if ok else why("nothing to pick up")
         if action in ("fight", "attack_mob", "kill"):
             mob = item_of("mob", "target", "type") or None
@@ -999,8 +1223,21 @@ class AgentLoop:
                 "inventory": "inventory", "chat": "chat"}.get(skill.permission)
         if flag is not None and blocked(flag, skills.allowed(skill, agent)):
             return False, f"{skill.name} needs {flag} to be allowed in settings"
+        if skill.name == "craft" and (blocked("building", agent.allow_building) or blocked("movement", agent.allow_movement)):
+            # The bridge's station helper can both place and walk to a table.
+            params = {**params, "no_station": True}
+        if (skill.name == "throw_trident" or
+                (skill.name == "mace_smash" and str(params.get("mode") or "fall").lower() in ("tower", "wind_charge"))):
+            if blocked("risky_combat", agent.allow_risky_combat):
+                return False, "risky combat is disabled for AI (tridents may be lost and mace setups can cause fall damage)"
+        if skill.name == "mace_smash":
+            mode = str(params.get("mode") or "fall").lower()
+            if mode in ("tower", "wind_charge") and blocked("movement", agent.allow_movement):
+                return False, "mace setup needs movement to be allowed"
+            if mode == "tower" and blocked("building", agent.allow_building):
+                return False, "towering needs building to be allowed"
         target = short(str(params.get("mob") or params.get("animal") or params.get("target") or ""))
-        if skill.name in ("shoot", "hunt") and target in AVOID_MOBS and not params.get("force"):
+        if skill.name in ("shoot", "hunt", "critical_hit", "throw_trident", "spear_attack", "throw_projectile", "mace_smash") and target in AVOID_MOBS and not params.get("force"):
             return False, f"not picking a fight with a {target}"
         return self.bot.skill(skill.name, params)
 
@@ -1022,6 +1259,9 @@ class AgentLoop:
         """Decide and execute a single action (used by ``POST /api/step``)."""
         settings = self._settings()
         state = self.bot.snapshot()
+        result = self._goal_turn(settings, state)
+        if result is not None:
+            return result
         try:
             decision = self._decide(settings, state)
         except Exception as exc:
@@ -1030,6 +1270,9 @@ class AgentLoop:
             self._last_error = str(exc)
             self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
             decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
+        task = self.goal.snapshot()
+        if task and task["status"] in {"active", "paused"}:
+            return True, "goal set while deciding; step again to advance it"
         return self._act(decision)
 
     def turns_path(self, settings: AppSettings | None = None) -> Path:
@@ -1042,7 +1285,8 @@ class AgentLoop:
         exchange = getattr(self, "_last_exchange", None)
         self._last_exchange = None
         settings = self._settings()
-        if not settings.agent.record_turns or exchange is None or decision.source in ("heuristic", "trained"):
+        if (not settings.agent.record_turns or exchange is None or decision.source == "heuristic"
+                or str(decision.source).startswith("trained")):
             return
         agent = settings.agent
         row = {
@@ -1060,6 +1304,18 @@ class AgentLoop:
 
     def _act(self, decision: Decision) -> tuple[bool, str]:
         """Bookkeeping + memory around :meth:`execute` for one decision of the loop."""
+        try:
+            state = self.bot.snapshot()
+        except Exception:  # noqa: BLE001  # recovery is optional if a snapshot is unavailable
+            state = None
+        if isinstance(state, dict) and self.recovery.should_defer(decision, state):
+            self.recovery.note_skip()
+            self.log.add(f"Temporarily avoiding repeated failed action: {decision.action}; reassessing.", "info", "agent")
+            self.mind.note_result(decision, False, "deferred after repeated failures here; try a different approach")
+            self._last_exchange = None  # the model reply did not produce the fallback action
+            alternative = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(self._settings()))
+            decision = (Decision("wait", {}, "heuristic", thought="That approach failed twice; pause and reassess.")
+                        if self.recovery.should_defer(alternative, state) else alternative)
         self._decisions += 1
         self._last_decision = {**decision.to_dict(), "ts": time.time()}
         self.mind.resize(self._settings().agent.memory_turns)
@@ -1068,7 +1324,19 @@ class AgentLoop:
             self.log.add(f"💭 {decision.thought}" + (f"  [goal: {decision.goal}]" if decision.goal else ""), "ai", "agent")
         self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
         ok, detail = self.execute(decision)
+        if isinstance(state, dict):
+            self.recovery.record(decision, state, ok, detail)
         self.mind.note_result(decision, ok, detail)
+        if self._settings().agent.persistent_memory:
+            try:
+                experience = self.experience()
+                experience.observe(self.bot.chat_history, self.bot.username)
+                # The low-level trained policy may run several times per second; its button
+                # bursts are not useful lessons and would cause unnecessary disk writes.
+                if not str(decision.source).startswith("trained"):
+                    experience.outcome(decision.action, ok, detail, decision.thought)
+            except OSError as exc:
+                self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
         self._record_turn(decision, ok, detail)
         self.log.add(f"{'✓' if ok else '✗'} {detail}", "info" if ok else "warn", "agent")
         return ok, detail

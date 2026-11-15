@@ -261,6 +261,8 @@ class CortexClient:
                         *({"type": "image_url", "image_url": {"url": image_data_uri(image)}} for image in images),
                     ]
                     break
+            else:
+                raise CortexError("cannot attach images without a user message")
         if system:
             chat_messages = [{"role": "system", "content": system}, *chat_messages]
         payload: dict[str, Any] = {
@@ -325,7 +327,7 @@ class CortexClient:
         try:
             return self.chat([{"role": "user", "content": prompt}], system=system, images=images)
         except CortexError as exc:
-            if exc.status not in _FALLBACK_STATUSES:
+            if images or exc.status not in _FALLBACK_STATUSES:
                 raise
             return self.complete(prompt, system=system)
 

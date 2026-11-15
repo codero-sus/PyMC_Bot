@@ -196,7 +196,7 @@ class BaseBackend(abc.ABC):
     #: Slots are numbered like a player sees them (0-8 hotbar, 9-35 backpack; pymc_bot.inventory).
     LIFE_COMMANDS: tuple[str, ...] = (
         "select_slot", "move_slot", "equip", "unequip", "swap_hands", "toss", "place", "use_item",
-        "eat", "sleep", "wake", "collect", "attack_mob",
+        "eat", "sleep", "wake", "collect", "attack_mob", "registry_lookup", "recipe_lookup",
         *SKILL_COMMANDS,  # chop_tree, craft, harvest, deposit... (pymc_bot.skills)
     )
 
@@ -422,10 +422,23 @@ class SimulatedBackend(BaseBackend):
         block = (block or "stone").strip().lower().replace(" ", "_")
         time.sleep(0.05)
         with self._lock:
-            if self._inv.add(block, 1):
+            drops = {"stone": "cobblestone", "deepslate": "cobbled_deepslate",
+                     "coal_ore": "coal", "deepslate_coal_ore": "coal",
+                     "iron_ore": "raw_iron", "deepslate_iron_ore": "raw_iron"}
+            held = self._inv.held.name if self._inv.held else ""
+            if block in drops:
+                eligible = held in {"wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "golden_pickaxe",
+                                    "diamond_pickaxe", "netherite_pickaxe"}
+                if block in {"iron_ore", "deepslate_iron_ore"}:
+                    eligible = held in {"stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"}
+                if not eligible:
+                    self.log.add(f"Mined {block} without a suitable tool; nothing dropped.", "info", "sim")
+                    return True
+            drop = drops.get(block, block)
+            if self._inv.add(drop, 1):
                 self.log.add(f"Mined 1 {block}, but the inventory is full - it stays on the ground.", "warn", "sim")
                 x, _, z = self._position
-                self._ground.append({"name": block, "count": 1, "x": x, "z": z, "at": time.monotonic()})
+                self._ground.append({"name": drop, "count": 1, "x": x, "z": z, "at": time.monotonic()})
                 return True
         self.log.add(f"Mined 1 {block}.", "success", "sim")
         return True
@@ -441,6 +454,8 @@ class SimulatedBackend(BaseBackend):
         snap["position"] = {"x": round(self._position[0], 2), "y": round(self._position[1], 2), "z": round(self._position[2], 2)}
         snap["yaw"] = round(self._yaw, 4)
         snap["pitch"] = round(self._pitch, 4)
+        snap["on_ground"] = self._position[1] <= self.GROUND_Y
+        snap["vertical_velocity"] = round(self._velocity_y, 3)
         snap["health"] = round(self._health, 1)
         snap["food"] = round(self._food, 1)
         snap["players"] = self._player_list()
@@ -496,6 +511,12 @@ class SimulatedBackend(BaseBackend):
             return False, str(exc).strip("'\"") or cmd, {}
         time.sleep(0.02)
         return True, "", result
+
+    def _do_registry_lookup(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("client registry lookup is unavailable in the simulated backend")
+
+    def _do_recipe_lookup(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("client recipe lookup is unavailable in the simulated backend")
 
     def _slot(self, params: dict[str, Any], key: str = "slot") -> int:
         index = int(params[key])
@@ -595,7 +616,9 @@ class SimulatedBackend(BaseBackend):
         radius = float(params.get("radius") or 12)
         x, _, z = self._position
         now = time.monotonic()
-        near = [d for d in self._ground if math.dist((x, z), (d["x"], d["z"])) <= radius and now - d["at"] > 2.0]
+        wanted = short(params.get("item") or "")
+        near = [d for d in self._ground if math.dist((x, z), (d["x"], d["z"])) <= radius
+                and now - d["at"] > 2.0 and (not wanted or short(d["name"]) == wanted)]
         if not near:
             raise InventoryError(f"nothing to pick up within {radius:g} blocks")
         picked = 0
@@ -1006,8 +1029,44 @@ class SimulatedBackend(BaseBackend):
         self._riding = ""
         return {"message": "got off"}
 
+    def _do_critical_hit(self, params: dict[str, Any]) -> dict[str, Any]:
+        wanted = short(params.get("mob") or "")
+        x, _, z = self._position
+        candidates = [mob for mob in self._mobs if math.dist((x, z), (mob["x"], mob["z"])) <= 3
+                      and (short(mob["type"]) == wanted if wanted else mob["hostile"])]
+        if not candidates:
+            raise InventoryError("no matching mob in melee reach")
+        target = min(candidates, key=lambda mob: math.dist((x, z), (mob["x"], mob["z"])))
+        target["health"] -= 1
+        if target["health"] <= 0:
+            self._mobs.remove(target)
+            self._respawns.append((time.monotonic() + 60.0, target))
+        return {"target": short(target["type"]), "message": "simulated a falling hit (critical not confirmed)"}
+
+    def _do_react_potion(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("potion entities and effects are not simulated; use a compatible real Minecraft server")
+
+    def _do_block_projectile(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("projectile physics are not simulated; use a compatible real Minecraft server")
+
+    def _do_throw_trident(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("trident physics are not simulated; use a compatible real Minecraft server")
+
+    def _do_spear_attack(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("spear mechanics are not simulated; use a compatible real Minecraft server")
+
+    def _do_throw_projectile(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("projectile physics are not simulated; use a compatible real Minecraft server")
+
+    def _do_mace_smash(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("mace and wind-charge physics are not simulated; use a compatible real Minecraft server")
+
     def _do_shoot(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._need("bow", "a bow")
+        weapon = short(params.get("weapon") or "")
+        if weapon and weapon not in ("bow", "crossbow"):
+            raise InventoryError("weapon must be bow or crossbow")
+        if not (self._inv.count(weapon) if weapon else self._inv.count("bow") or self._inv.count("crossbow")):
+            raise InventoryError(f"I need a {weapon}" if weapon else "I need a bow or crossbow")
         if not self._inv.count("arrow"):
             raise InventoryError("I have no arrows")
         shots = min(int(params.get("shots") or 3), self._inv.count("arrow"))
@@ -1274,6 +1333,7 @@ class NodeBridgeBackend(BaseBackend):
         self._reader: threading.Thread | None = None
         self._pending: dict[int, queue.Queue] = {}
         self._next_id = 1
+        self._request_lock = threading.Lock()
         self._caps: dict[str, Any] = {}
         self._snapshot = empty_snapshot("disconnected", self.name)
         self._connected = False
@@ -1470,6 +1530,8 @@ class NodeBridgeBackend(BaseBackend):
             self._snapshot["status"] = "connected"
             self._snapshot["connected_at"] = time.time()
             self._snapshot["last_error"] = None
+            self._snapshot["health"] = None
+            self._snapshot["food"] = None
             self._spawned.set()
             self._emit_status()
         elif event in ("end", "kicked"):
@@ -1518,6 +1580,10 @@ class NodeBridgeBackend(BaseBackend):
     def _apply_state(self, state: dict[str, Any]) -> None:
         snapshot = dict(self._snapshot)
         snapshot.update({key: value for key, value in state.items() if value is not None})
+        # Unknown vitals must not retain a stale healthy value used for safety decisions.
+        for key in ("health", "food"):
+            if key in state and state[key] is None:
+                snapshot[key] = None
         snapshot["backend"] = self.name
         snapshot["server"] = {"host": self._host, "port": self._port, "version": self._version, "username": self._username}
         connected_at = self._snapshot.get("connected_at")
@@ -1525,21 +1591,25 @@ class NodeBridgeBackend(BaseBackend):
         snapshot["uptime"] = round(time.time() - connected_at, 1) if connected_at else 0.0
         self._snapshot = snapshot
 
-    def _request(self, cmd: str, params: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+    def _request(self, cmd: str, params: dict[str, Any], timeout: float = 10.0,
+                 cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
         if not self._proc or self._proc.poll() is not None:
             raise BackendError("Minecraft bridge is not running.")
         assert self._proc.stdin is not None
-        request_id = self._next_id
-        self._next_id += 1
         waiter: queue.Queue = queue.Queue(maxsize=1)
-        self._pending[request_id] = waiter
-        payload = json.dumps({"id": request_id, "cmd": cmd, "params": params})
-        try:
-            self._proc.stdin.write(payload + "\n")
-            self._proc.stdin.flush()
-        except (BrokenPipeError, ValueError) as exc:
-            self._pending.pop(request_id, None)
-            raise BackendError(f"Bridge stdin closed: {exc}") from exc
+        with self._request_lock:
+            if cancel_check is not None and cancel_check():
+                raise BackendError("action cancelled before dispatch")
+            request_id = self._next_id
+            self._next_id += 1
+            self._pending[request_id] = waiter
+            payload = json.dumps({"id": request_id, "cmd": cmd, "params": params})
+            try:
+                self._proc.stdin.write(payload + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, ValueError) as exc:
+                self._pending.pop(request_id, None)
+                raise BackendError(f"Bridge stdin closed: {exc}") from exc
         try:
             response = waiter.get(timeout=timeout)
         except queue.Empty as exc:
@@ -1593,6 +1663,9 @@ class NodeBridgeBackend(BaseBackend):
     def stop_motion(self) -> None:
         self._fire("stop_motion", {})
 
+    def cancel_actions(self) -> None:
+        self._fire("cancel_actions", {}, timeout=2.0)
+
     def pathfind_to(self, x: float, y: float, z: float, tolerance: float = 1.5) -> bool:
         if not self.supports_pathfinder:
             return False
@@ -1616,7 +1689,7 @@ class NodeBridgeBackend(BaseBackend):
         return bool(response and response.get("ok"))
 
     def view_image(self, width: int = 448) -> dict[str, Any]:
-        response = self._request("snapshot", {"width": int(width)}, timeout=20.0)
+        response = self._request("snapshot", {"width": int(width)}, timeout=30.0)
         if not response.get("ok"):
             raise BackendError(str(response.get("error") or "snapshot failed"))
         result = response.get("result") or {}
@@ -1625,10 +1698,14 @@ class NodeBridgeBackend(BaseBackend):
         return result
 
     def perform(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> tuple[bool, str, dict[str, Any]]:
+        return self.perform_cancellable(cmd, params, timeout)
+
+    def perform_cancellable(self, cmd: str, params: dict[str, Any] | None = None, timeout: float = 10.0,
+                            cancel_check: Callable[[], bool] | None = None) -> tuple[bool, str, dict[str, Any]]:
         if cmd not in self.LIFE_COMMANDS:
             return False, f"unknown action {cmd!r}", {}
         try:
-            response = self._request(cmd, params or {}, timeout=timeout)
+            response = self._request(cmd, params or {}, timeout=timeout, cancel_check=cancel_check)
         except BackendError as exc:
             return False, str(exc), {}
         if not response.get("ok"):

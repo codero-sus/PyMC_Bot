@@ -92,7 +92,10 @@ SKILLS: tuple[Skill, ...] = (
           params={"block": _p("str", "stone")}, moves=False, aliases=("best_tool",)),
     Skill("totem", "survival", "put a totem of undying in the off-hand", {}, "inventory", moves=False),
     Skill("shield", "survival", "shield to the off-hand and block for a moment", {"seconds": 2}, "fighting",
-          params={"seconds": _p("float", 2.0, 0.5, 5.0)}, moves=False, aliases=("block_attack",)),
+          params={"seconds": _p("float", 2.0, 0.5, 5.0), "force": _p("bool", False)}, moves=False, aliases=("block_attack",)),
+    Skill("react_potion", "survival", "approach a known beneficial potion or avoid a risky potion",
+          {"mode": "avoid", "entity_id": 1}, "movement", "react_potion",
+          {"mode": _p("str", "avoid"), "entity_id": _p("int", None, 0, 2147483647)}, timeout=12.0),
     Skill("drink", "survival", "drink a potion or milk", {"item": "potion"}, "inventory", "drink",
           {"item": _p("str", "")}, moves=False, timeout=12.0),
     Skill("surface", "survival", "swim up for air when under water", {}, "movement", "surface", timeout=15.0,
@@ -135,7 +138,8 @@ SKILLS: tuple[Skill, ...] = (
           {"animal": _p("str", ""), "radius": _p("int", 16, 2, 32)}, timeout=60.0),
     # ---------------------------------------------------------------- crafting
     Skill("craft", "crafting", "craft an item (uses or places a crafting table)", {"item": "stone_pickaxe", "count": 1},
-          "inventory", "craft", {"item": _p("str", ""), "count": _p("int", 1, 1, 64)}, timeout=40.0),
+          "inventory", "craft", {"item": _p("str", ""), "count": _p("int", 1, 1, 64),
+                                  "no_station": _p("bool", False)}, timeout=40.0),
     Skill("smelt", "crafting", "smelt or cook in a furnace (raw iron, beef, sand...)", {"item": "raw_iron", "count": 8},
           "inventory", "smelt", {"item": _p("str", ""), "count": _p("int", 8, 1, 64),
                                  "seconds": _p("int", 90, 10, 600)}, timeout=620.0, aliases=("cook",)),
@@ -160,6 +164,14 @@ SKILLS: tuple[Skill, ...] = (
           "activate", {"block": _p("str", ""), "x": _p("float"), "y": _p("float"), "z": _p("float")}, timeout=25.0,
           aliases=("open_door", "press", "use_block")),
     # ------------------------------------------------------------------ moving
+    Skill("smooth_move", "moving", "move while smoothly turning your view (directions joined with +)",
+          {"direction": "forward+left", "yaw": 90, "pitch": 0, "seconds": 0.8}, "movement",
+          params={"direction": _p("str", "forward"), "yaw": _p("float"), "pitch": _p("float", 0, -90, 90),
+                  "seconds": _p("float", 0.8, 0.1, 2.0)}, moves=False),
+    Skill("smooth_look", "moving", "turn your view smoothly to yaw and pitch in degrees",
+          {"yaw": 90, "pitch": 0, "seconds": 0.4}, "movement",
+          params={"yaw": _p("float"), "pitch": _p("float", 0, -90, 90),
+                  "seconds": _p("float", 0.4, 0.1, 2.0)}, moves=False),
     Skill("set_home", "moving", "remember this spot as home", {}, "none", moves=False, aliases=("sethome",)),
     Skill("go_home", "moving", "walk back home", {}, "movement", aliases=("home",), timeout=120.0),
     Skill("set_waypoint", "moving", "remember this spot under a name", {"name": "mine"}, "none",
@@ -173,13 +185,31 @@ SKILLS: tuple[Skill, ...] = (
           timeout=20.0, aliases=("mount",)),
     Skill("dismount", "moving", "get out / off", {}, "movement", "dismount", moves=False, timeout=8.0),
     # ------------------------------------------------------------------ combat
+    Skill("block_projectile", "combat", "face an incoming projectile and raise an already equipped off-hand shield",
+          {}, "fighting", "block_projectile", timeout=5.0),
     Skill("guard", "combat", "stay here (or near a player) and fight off hostile mobs", {"seconds": 60}, "fighting",
           params={"seconds": _p("int", 60, 10, 600), "player": _p("str", ""), "radius": _p("int", 10, 4, 24)},
           timeout=620.0, aliases=("protect",)),
     Skill("hunt", "combat", "hunt an animal for food and pick up the drops", {"animal": "cow"}, "fighting",
           params={"animal": _p("str", "")}, timeout=60.0),
-    Skill("shoot", "combat", "shoot a mob with a bow", {"mob": "skeleton"}, "fighting", "shoot",
-          {"mob": _p("str", ""), "range": _p("int", 24, 4, 48), "shots": _p("int", 3, 1, 10)}, timeout=40.0,
+    Skill("critical_hit", "combat", "attempt a falling melee hit on a nearby mob (not guaranteed critical)",
+          {"mob": "zombie"}, "fighting", "critical_hit", {"mob": _p("str", "")}, timeout=5.0,
+          aliases=("crit",)),
+    Skill("throw_trident", "combat", "attempt to throw a trident at a hostile mob (may lose it)",
+          {"mob": "zombie", "confirm": True}, "fighting", "throw_trident",
+          {"mob": _p("str", ""), "confirm": _p("bool", False)}, timeout=8.0),
+    Skill("spear_attack", "combat", "attempt a close-range spear hit on a hostile mob",
+          {"mob": "zombie"}, "fighting", "spear_attack", {"mob": _p("str", "")}, timeout=8.0),
+    Skill("throw_projectile", "combat", "throw a snowball or egg at a hostile mob",
+          {"mob": "zombie", "item": "snowball"}, "fighting", "throw_projectile",
+          {"mob": _p("str", ""), "item": _p("str", "snowball")}, timeout=8.0),
+    Skill("mace_smash", "combat", "attempt a falling mace hit; tower or wind_charge modes are risky",
+          {"mob": "zombie", "mode": "fall"}, "fighting", "mace_smash",
+          {"mob": _p("str", ""), "mode": _p("str", "fall"), "height": _p("int", 3, 1, 5),
+           "confirm": _p("bool", False)}, timeout=25.0),
+    Skill("shoot", "combat", "shoot a mob with a bow or crossbow", {"mob": "skeleton"}, "fighting", "shoot",
+          {"mob": _p("str", ""), "range": _p("int", 24, 4, 48), "shots": _p("int", 3, 1, 10),
+           "weapon": _p("str", "")}, timeout=40.0,
           aliases=("bow",)),
     # ------------------------------------------------------------------ social
     Skill("report", "social", "say your health, food, position and inventory in chat", {}, "chat", moves=False,
@@ -274,12 +304,19 @@ def clean_params(skill: Skill, params: dict[str, Any] | None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------- places (homes, waypoints)
+# Different bots construct separate Places objects for the same file. Share the lock so
+# read-modify-write updates cannot overwrite another bot's waypoint in this process.
+_PLACES_LOCKS: dict[Path, threading.RLock] = {}
+_PLACES_LOCKS_GUARD = threading.Lock()
+
+
 class Places:
     """Homes and named waypoints per server and bot, kept in ``pymc_bot_places.json`` next to the config."""
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self._lock = threading.RLock()
+        self.path = Path(path).resolve()
+        with _PLACES_LOCKS_GUARD:
+            self._lock = _PLACES_LOCKS.setdefault(self.path, threading.RLock())
 
     def _load(self) -> dict[str, Any]:
         try:
@@ -313,8 +350,8 @@ def places_for(bot: MinecraftBot) -> Places:
 
 
 def _server_key(bot: MinecraftBot) -> str:
-    minecraft = bot.store.settings.minecraft
-    return f"{minecraft.host}:{minecraft.port}".lower()
+    host, port = bot.memory_server
+    return f"{host}:{port}".lower()
 
 
 # ---------------------------------------------------------------------------- running a skill
@@ -329,6 +366,7 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
             return False, f"{skill.name} failed: {exc}"
     if skill.bridge is None:  # pragma: no cover - every skill has one or the other
         return False, f"{skill.name} is not available"
+    identity = (*bot.memory_server, bot.username.lower()) if skill.name == "chest_contents" else None
     if skill.moves:
         with bot._motion_lock:  # noqa: SLF001 - skills are part of the bot
             ok, result = bot._perform(skill.bridge, params, timeout=skill.timeout, activity=skill.name, quiet=True)  # noqa: SLF001
@@ -338,6 +376,15 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
         message = str(result.get("message") or f"did {skill.name.replace('_', ' ')}")
         bot.log.add(message[:1].upper() + message[1:] + ("" if message.endswith((".", "!")) else "."), "info", "bot")
         bot.note_skill(skill.name, result)
+        if identity is not None and bot.store.settings.agent.spatial_memory and bot.connected:
+            try:
+                if identity == (*bot.memory_server, bot.username.lower()):
+                    from pymc_bot.world_memory import WorldMemory
+                    WorldMemory(bot.store.path.parent, identity).remember_chest(result)
+            except (OSError, ValueError, TypeError) as exc:
+                bot.log.add(f"Could not remember container observation: {exc}", "warn", "bot")
+            except Exception as exc:  # noqa: BLE001 - memory must never turn a successful skill into a failure
+                bot.log.add(f"Could not remember container observation: {type(exc).__name__}", "warn", "bot")
         return True, message
     reason = bot.last_failure or f"could not {skill.name.replace('_', ' ')}"
     bot.log.add(f"Could not {skill.name.replace('_', ' ')}: {reason}", "info", "bot")
@@ -347,10 +394,16 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
 def _here(bot: MinecraftBot) -> dict[str, Any] | None:
     snap = bot.snapshot()
     pos = snap.get("position")
-    if not pos:
+    dimension = snap.get("dimension")
+    if not isinstance(pos, dict) or not dimension or not bot.connected:
         return None
-    return {"x": round(float(pos["x"]), 1), "y": round(float(pos["y"]), 1), "z": round(float(pos["z"]), 1),
-            "dimension": snap.get("dimension") or "overworld"}
+    try:
+        x, y, z = (float(pos[key]) for key in ("x", "y", "z"))
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1), "dimension": dimension}
 
 
 def _set_place(bot: MinecraftBot, name: str) -> tuple[bool, str]:
@@ -366,8 +419,42 @@ def _goto_place(bot: MinecraftBot, name: str) -> tuple[bool, str]:
     spot = places_for(bot).get(_server_key(bot), bot.username, name)
     if spot is None:
         return False, f"I have no {name} yet" + (" - use set_home first" if name == "home" else "")
-    ok = bot.walk_to(float(spot["x"]), float(spot["z"]), float(spot["y"]), tolerance=2.0, timeout=90)
+    state = bot.snapshot()
+    current = str(state.get("dimension") or "").removeprefix("minecraft:")
+    target = str(spot.get("dimension") or "").removeprefix("minecraft:")
+    if not bot.connected or not current or not target:
+        return False, "cannot travel to a saved place without a connected bot and known dimensions"
+    if current != target:
+        return False, f"{name} is in {target}, not {current}; travel to that dimension first"
+    try:
+        x, y, z = (float(spot[key]) for key in ("x", "y", "z"))
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            raise ValueError("non-finite coordinate")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False, f"saved coordinates for {name} are invalid"
+    ok = bot.walk_to(x, z, y, tolerance=2.0, timeout=90)
     return ok, f"walked to {name}" if ok else (bot.last_failure or f"could not get to {name}")
+
+
+def _skill_smooth_move(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
+    controls = set(str(params.get("direction") or "").split("+"))
+    allowed_controls = {"forward", "back", "left", "right", "jump", "sneak", "sprint"}
+    yaw, pitch, seconds = params.get("yaw"), params.get("pitch", 0.0), params.get("seconds", 0.8)
+    if not controls or not controls <= allowed_controls or {"left", "right"} <= controls or {"forward", "back"} <= controls:
+        return False, "direction must contain non-opposing movement controls separated by +"
+    if yaw is None or not all(math.isfinite(float(v)) for v in (yaw, pitch, seconds)):
+        return False, "smooth_move needs a finite yaw, pitch and duration"
+    ok = bot.controlled_move({name: True for name in controls}, float(seconds),
+                             look=(math.radians(float(yaw)), math.radians(float(pitch))))
+    return ok, "moved and turned smoothly" if ok else "could not move smoothly"
+
+
+def _skill_smooth_look(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
+    yaw, pitch, seconds = params.get("yaw"), params.get("pitch", 0.0), params.get("seconds", 0.4)
+    if yaw is None or not all(math.isfinite(float(v)) for v in (yaw, pitch, seconds)):
+        return False, "smooth_look needs a finite yaw, pitch and duration"
+    ok = bot.smooth_look(math.radians(float(yaw)), math.radians(float(pitch)), float(seconds))
+    return ok, "looked around smoothly" if ok else "could not turn smoothly"
 
 
 def _skill_set_home(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
@@ -444,6 +531,10 @@ def _skill_totem(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
 
 def _skill_shield(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
     inv = bot.inventory()
+    if inv.offhand and inv.offhand.name == "totem_of_undying" and not params.get("force"):
+        health = bot.snapshot().get("health")
+        if health is None or float(health) <= bot.store.settings.autopilot.totem_health:
+            return False, "keeping the totem equipped while health is low or unknown (force=true to override)"
     if not (inv.offhand and inv.offhand.name == "shield"):
         index = inv.find("shield")
         if index is None:
@@ -557,6 +648,8 @@ _PYTHON_SKILLS = {
     "come": _skill_come,
     "equip_weapon": _skill_equip_weapon,
     "equip_tool": _skill_equip_tool,
+    "smooth_move": _skill_smooth_move,
+    "smooth_look": _skill_smooth_look,
     "totem": _skill_totem,
     "shield": _skill_shield,
     "toss_junk": _skill_toss_junk,

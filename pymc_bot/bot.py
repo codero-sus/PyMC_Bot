@@ -11,6 +11,7 @@ Minecraft angle conventions used throughout:
 
 from __future__ import annotations
 
+import contextvars
 import math
 import random
 import threading
@@ -82,8 +83,14 @@ class MinecraftBot:
         self._lock = threading.RLock()
         self._motion_lock = threading.RLock()  # re-entrant: mine() -> wander() -> walk_to()
         self._cancel = threading.Event()
+        self._cancel_lock = threading.RLock()
+        self._cancel_generation = 0
+        self._action_generation: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+            f"action_generation_{id(self)}", default=None
+        )
         self._stop_requested = False
         self._configured_username: str | None = None
+        self._connected_server: tuple[str, int] | None = None
         self._monitor: threading.Thread | None = None
         self._reconnects = 0
         self._history: deque[dict[str, Any]] = deque(maxlen=100)
@@ -158,14 +165,38 @@ class MinecraftBot:
     # ---------------------------------------------------------- cancellation
     def cancel_actions(self) -> None:
         """Ask any in-flight movement/building action to stop early."""
-        self._cancel.set()
+        with self._cancel_lock:
+            self._cancel_generation += 1
+            self._cancel.set()
+            backend = self.backend
+            if backend is not None and backend.connected:
+                cancel = getattr(backend, "cancel_actions", None)
+                if callable(cancel):
+                    cancel()
+                else:
+                    self._stop_motion()
 
     def clear_cancel(self) -> None:
-        self._cancel.clear()
+        with self._cancel_lock:
+            self._cancel.clear()
+
+    @contextmanager
+    def action_scope(self) -> Iterator[None]:
+        """Keep a cancellation generation for the entire action, including queued work."""
+        if self._action_generation.get() is not None:
+            yield
+            return
+        with self._cancel_lock:
+            token = self._action_generation.set(self._cancel_generation)
+        try:
+            yield
+        finally:
+            self._action_generation.reset(token)
 
     @property
     def cancelled(self) -> bool:
-        return self._cancel.is_set()
+        generation = self._action_generation.get()
+        return self._cancel.is_set() or (generation is not None and generation != self._cancel_generation)
 
     # ------------------------------------------------------------ properties
     @property
@@ -207,6 +238,12 @@ class MinecraftBot:
             data["uptime"] = round(time.time() - started, 1) if started else 0.0
             data["reconnects"] = self._reconnects
             return data
+
+    @property
+    def memory_server(self) -> tuple[str, int]:
+        """Server actually used by this connection, even if configuration was edited meanwhile."""
+        with self._lock:
+            return self._connected_server or (self.store.settings.minecraft.host, self.store.settings.minecraft.port)
 
     @property
     def chat_history(self) -> list[dict[str, Any]]:
@@ -326,6 +363,10 @@ class MinecraftBot:
 
     def _connect(self, settings: AppSettings) -> None:
         with self._lock:
+            server = (settings.minecraft.host.lower(), settings.minecraft.port)
+            if self._connected_server is not None and self._connected_server != server:
+                self._history.clear()  # do not carry one server's conversation into another
+            self._connected_server = server
             if self._backend is None:
                 self._backend = create_backend(settings, self.log)
             elif not self._injected_backend:
@@ -353,6 +394,8 @@ class MinecraftBot:
             backend = self._backend
             self._state = STATE_DISCONNECTED
             self._wait_deadline = None
+        self.cancel_actions()
+        self.clear_cancel()
         if backend is not None:
             try:
                 backend.stop()
@@ -377,19 +420,22 @@ class MinecraftBot:
             started = self._stats.get("started_at")
             if started is not None and time.time() - started < 3.0:
                 continue  # grace period right after connecting
-            if self._state == STATE_CONNECTED and not backend.connected:
-                self.log.add("Lost the connection to the server.", "warn", "bot")
-                with self._lock:
-                    self._state = STATE_DISCONNECTED
-                unlimited = self.max_reconnects is None
-                if self.auto_reconnect and (unlimited or self._reconnects < self.max_reconnects):
+            if self._state in (STATE_CONNECTED, STATE_DISCONNECTED, STATE_ERROR) and not backend.connected:
+                if self._state == STATE_CONNECTED:
+                    self.log.add("Lost the connection to the server.", "warn", "bot")
+                    with self._lock:
+                        self._state = STATE_DISCONNECTED
+                    self.cancel_actions()
+                    self.clear_cancel()
+                if not self.auto_reconnect:
+                    break
+                if self.max_reconnects is None or self._reconnects < self.max_reconnects:
                     self._try_reconnect()
-                elif self.auto_reconnect:
-                    self.log.add(
-                        f"Gave up after {self._reconnects} reconnect attempts.", "error", "bot"
-                    )
+                else:
+                    self.log.add(f"Gave up after {self._reconnects} reconnect attempts.", "error", "bot")
                     with self._lock:
                         self._state = STATE_ERROR
+                    break
 
     def _try_reconnect(self) -> None:
         self._reconnects += 1
@@ -572,6 +618,8 @@ class MinecraftBot:
             self.log.add("Another movement action is already running.", "warn", "bot")
             return False
         try:
+            if self.cancelled:
+                return False
             start = time.monotonic()
             with self.activity("walk"), self._lock:
                 self._stats["actions"] += 1
@@ -686,6 +734,7 @@ class MinecraftBot:
         settings = self.store.settings
         seconds = seconds or settings.agent.action_timeout
         deadline = time.monotonic() + seconds
+        self.last_failure = ""
         self.log.add(f"Following {player}.", "info", "bot")
         return self._run_follow(player, deadline, distance)
 
@@ -694,6 +743,7 @@ class MinecraftBot:
             return self._follow_loop(player, deadline, distance)
 
     def _follow_loop(self, player: str, deadline: float, distance: float) -> bool:
+        failed_paths = 0
         while time.monotonic() < deadline:
             if self.cancelled:
                 break
@@ -702,13 +752,22 @@ class MinecraftBot:
                 self.log.add(f"{player} is not visible any more.", "warn", "bot")
                 return False
             if target["distance"] <= distance:
+                failed_paths = 0
                 self.look_at_player(player)
                 time.sleep(0.5)
                 continue
             remaining = max(1.0, min(6.0, deadline - time.monotonic()))
-            self.walk_to(target["x"], target["z"], target.get("y"), tolerance=distance, timeout=remaining)
+            if self.walk_to(target["x"], target["z"], target.get("y"), tolerance=distance, timeout=remaining):
+                failed_paths = 0
+            elif not self.cancelled:
+                failed_paths += 1
+                if failed_paths >= 2:
+                    self.last_failure = f"cannot reach {player}; the path may be blocked"
+                    self.log.add(self.last_failure, "warn", "bot")
+                    self._stop_motion()
+                    return False
         self._stop_motion()
-        return True
+        return not self.cancelled
 
     def look(self, yaw: float, pitch: float | None = None) -> bool:
         """Turn the head (yaw only when pitch is omitted)."""
@@ -717,11 +776,44 @@ class MinecraftBot:
         if backend is None or not backend.connected or pose is None:
             return False
         try:
-            backend.look(yaw, pose[3] if pitch is None else pitch)
+            backend.look(yaw, float(self.snapshot().get("pitch") or 0.0) if pitch is None else pitch)
         except BackendError:
             return False
         self.touch_activity()
         return True
+
+    def smooth_look(self, yaw: float, pitch: float, seconds: float = 0.4) -> bool:
+        """Ease the head to a direction, without blocking the game thread."""
+        if not all(math.isfinite(value) for value in (yaw, pitch, seconds)):
+            return False
+        if not self._motion_lock.acquire(blocking=False):
+            return False
+        try:
+            backend = self.backend
+            if backend is None or not backend.connected or self.cancelled:
+                return False
+            snap = self.snapshot()
+            start_yaw, start_pitch = float(snap.get("yaw") or 0), float(snap.get("pitch") or 0)
+            yaw_delta = wrap_angle(yaw - start_yaw)
+            pitch = max(-math.pi / 2, min(math.pi / 2, pitch))
+            duration = max(0.1, min(2.0, seconds))
+            start = time.monotonic()
+            with self.activity("look"):
+                while True:
+                    if self.cancelled or not backend.connected:
+                        return False
+                    fraction = min(1.0, (time.monotonic() - start) / duration)
+                    eased = fraction * fraction * (3.0 - 2.0 * fraction)
+                    backend.look(start_yaw + yaw_delta * eased, start_pitch + (pitch - start_pitch) * eased)
+                    if fraction >= 1.0:
+                        break
+                    time.sleep(min(0.05, duration * (1.0 - fraction)))
+            self.touch_activity()
+            return True
+        except BackendError:
+            return False
+        finally:
+            self._motion_lock.release()
 
     def swing_arm(self) -> bool:
         """Swing the arm (a very cheap 'I am here' signal)."""
@@ -746,7 +838,18 @@ class MinecraftBot:
         self.touch_activity()
         return True
 
-    def control_burst(self, controls: dict[str, bool], seconds: float = 0.4) -> bool:
+    def controlled_move(self, controls: dict[str, bool], seconds: float = 0.4,
+                        look: tuple[float, float] | None = None) -> bool:
+        """Short manual movement without interfering with another movement job."""
+        if not self._motion_lock.acquire(blocking=False):
+            return False
+        try:
+            return self.control_burst(controls, seconds, look=look)
+        finally:
+            self._motion_lock.release()
+
+    def control_burst(self, controls: dict[str, bool], seconds: float = 0.4,
+                      look: tuple[float, float] | None = None) -> bool:
         """Hold a set of controls for a short burst, then release them.
 
         Used by the trained playtime policy: the model predicts what the recorded player
@@ -760,28 +863,48 @@ class MinecraftBot:
         pressed = {name: bool(state) for name, state in controls.items() if state}
         if not pressed:
             return True
-        with self.activity("trained"), self._lock:
-            try:
-                for name, state in pressed.items():
-                    backend.set_control(name, state)
-            except BackendError:
+        if self.cancelled:
+            return False
+        started: list[str] = []
+        start_yaw = start_pitch = yaw_delta = target_pitch = 0.0
+        if look is not None:
+            if not all(math.isfinite(v) for v in look):
                 return False
-            self._stats["actions"] += 1
+            snap = self.snapshot()
+            start_yaw, start_pitch = float(snap.get("yaw") or 0), float(snap.get("pitch") or 0)
+            yaw_delta = wrap_angle(look[0] - start_yaw)
+            target_pitch = max(-math.pi / 2, min(math.pi / 2, look[1]))
         try:
-            deadline = time.monotonic() + max(0.05, min(10.0, seconds))
-            while time.monotonic() < deadline:
-                if self.cancelled:
-                    break
-                time.sleep(0.05)
+            with self.activity("controls"):
+                with self._lock:
+                    for name, state in pressed.items():
+                        # Include this control even if the backend raises after sending it.
+                        started.append(name)
+                        backend.set_control(name, state)
+                    self._stats["actions"] += 1
+                duration = max(0.05, min(10.0, seconds))
+                start = time.monotonic()
+                while True:
+                    if self.cancelled or not backend.connected:
+                        return False
+                    fraction = min(1.0, (time.monotonic() - start) / duration)
+                    if look is not None:
+                        eased = fraction * fraction * (3.0 - 2.0 * fraction)
+                        backend.look(start_yaw + yaw_delta * eased, start_pitch + (target_pitch - start_pitch) * eased)
+                    if fraction >= 1.0:
+                        break
+                    time.sleep(min(0.05, duration * (1.0 - fraction)))
+        except BackendError:
+            return False
         finally:
             with self._lock:
-                for name in pressed:
+                for name in started:
                     try:
                         backend.set_control(name, False)
                     except BackendError:  # pragma: no cover - backend went away mid burst
                         continue
         self.touch_activity()
-        return True
+        return not self.cancelled
 
     def look_at_player(self, player: str) -> bool:
         backend = self.backend
@@ -810,9 +933,10 @@ class MinecraftBot:
         return True
 
     def stop_moving(self) -> bool:
-        self._stop_motion()
+        self.cancel_actions()
+        self.clear_cancel()
         self.touch_activity()
-        self.log.add("Stopped moving.", "info", "bot")
+        self.log.add("Movement and task cancellation requested.", "info", "bot")
         return True
 
     # ------------------------------------------------------------ interactions
@@ -861,13 +985,22 @@ class MinecraftBot:
     def _perform(self, cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 10.0,
                  activity: str | None = None, quiet: bool = False) -> tuple[bool, dict[str, Any]]:
         backend = self.backend
+        if self.cancelled:
+            self.last_failure = "action cancelled"
+            return False, {}
         if backend is None or not backend.connected:
             self.last_failure = "not connected"
             return False, {}
         with self.activity(activity or cmd):
-            ok, why, result = backend.perform(cmd, params or {}, timeout=timeout)
+            cancellable = getattr(backend, "perform_cancellable", None)
+            if callable(cancellable):
+                ok, why, result = cancellable(cmd, params or {}, timeout=timeout, cancel_check=lambda: self.cancelled)
+            else:
+                ok, why, result = backend.perform(cmd, params or {}, timeout=timeout)
             with self._lock:
                 self._stats["actions"] += 1
+        if self.cancelled:
+            ok, why = False, "action cancelled; an operation already sent may still complete"
         self.last_failure = "" if ok else why
         if not ok and not quiet:
             self.log.add(f"Could not {cmd.replace('_', ' ')}: {why}", "info", "bot")
@@ -1117,10 +1250,13 @@ class MinecraftBot:
         ok, _ = self._perform("wake", {}, activity="wake")
         return ok
 
-    def collect_items(self, radius: float = 12.0) -> bool:
-        """Walk over dropped items nearby to pick them up."""
+    def collect_items(self, radius: float = 12.0, item: str = "") -> bool:
+        """Walk over nearby drops, optionally targeting one known item name."""
+        params: dict[str, Any] = {"radius": radius, "seconds": 15}
+        if item:
+            params["item"] = short(item)
         with self._motion_lock:
-            ok, result = self._perform("collect", {"radius": radius, "seconds": 15}, timeout=20.0, activity="collect")
+            ok, result = self._perform("collect", params, timeout=20.0, activity="collect")
         if ok:
             self.log.add(f"Picked up {result.get('picked', 1)} dropped item(s).", "info", "bot")
         return ok
@@ -1232,7 +1368,8 @@ class MinecraftBot:
             return False, f"unknown skill {name!r}"
         if not self.connected:
             return False, "not connected"
-        return skills.run_skill(self, skill, params)
+        with self.action_scope():
+            return skills.run_skill(self, skill, params)
 
     def note_skill(self, name: str, result: dict[str, Any]) -> None:
         """Keep the stats in step with what a bridge skill reported."""

@@ -54,6 +54,22 @@ let lastEventTs = 0;
 let pollTimer = null;
 let fleetStatus = null;
 
+// Each challenge is an existing supported inventory goal, not an unimplemented progression route.
+const SPEEDRUNS = [
+  ...['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry']
+    .flatMap(wood => [1, 4, 16].map(count => ({item: `${wood}_log`, count}))),
+  ...[1, 8, 16, 32].map(count => ({item: 'cobblestone', count})),
+  ...['coal', 'raw_iron'].flatMap(item => [1, 4, 8].map(count => ({item, count}))),
+  ...[4, 8, 16].map(count => ({item: 'torch', count})),
+  ...['wooden_pickaxe', 'stone_pickaxe', 'stone_sword', 'furnace'].map(item => ({item, count: 1})),
+];
+
+function speedrunTime(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const minutes = Math.floor(value / 60);
+  return `${minutes}:${(value % 60).toFixed(2).padStart(5, '0')}`;
+}
+
 /* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
   const done = trackBusy();
@@ -64,11 +80,24 @@ async function api(path, options = {}) {
   }
 }
 
+/* Not logged in (any more): go to the login page, then come back here. */
+let loginRedirect = false;
+function toLogin() {
+  if (loginRedirect) return;
+  loginRedirect = true;
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+}
+
 async function request(path, options) {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     ...options,
   });
+  if (response.status === 401 && !path.startsWith('/api/auth/')) {
+    toLogin();
+    throw new Error('Logged out - please log in again.');
+  }
   let data = null;
   const text = await response.text();
   if (text) {
@@ -264,6 +293,19 @@ function renderStatus(status) {
     ? `running · ${agent.decisions} decisions` + (last ? ` · last: ${last.action} ${JSON.stringify(last.params || {})}${last.source ? ` (${last.source})` : ''}` : '')
       + (last && last.thought ? ` · thinks: “${last.thought}”` : '') + (agent.memory && agent.memory.goal ? ` · goal: ${agent.memory.goal}` : '')
     : `idle · ${agent.decisions} decisions` + (agent.last_error ? ` · last error: ${agent.last_error}` : ''));
+  if (agent.vision && agent.vision.enabled) {
+    $('ai-status').textContent += ` · vision: ${agent.vision.status}` + (agent.vision.last_error ? ` (${agent.vision.last_error})` : '');
+  }
+  if (agent.model_route && agent.resolved_brain === 'ollama') {
+    $('ai-status').textContent += ` · last model: ${agent.model_route.model} (${agent.model_route.reason})`;
+  }
+  const task = agent.task;
+  $('goal-status').textContent = task
+    ? `${task.status}: ${task.item} ${task.observed ?? '?'} / ${task.count} · ${task.detail}`
+    : 'No gathering goal.';
+  $('speedrun-status').textContent = task
+    ? `${task.status} · ${task.item.replaceAll('_', ' ')} ${task.observed ?? '?'} / ${task.count} · ${speedrunTime(task.elapsed_seconds)} · ${task.detail}`
+    : 'No goal running. Start AI or use Step to advance a challenge.';
   $('btn-ai-start').disabled = agent.running || state !== 'connected';
   $('btn-ai-stop').disabled = !agent.running;
   $('btn-ai-step').disabled = state !== 'connected';
@@ -483,6 +525,10 @@ function fillForm(cfg) {
   set('cfg-alone-min', mc.alone_minutes || 5);
 
   check('cfg-ollama-enabled', ol.enabled);
+  check('cfg-ollama-json-mode', ol.json_mode);
+  check('cfg-ollama-routing', ol.adaptive_routing);
+  set('cfg-ollama-routine-model', ol.routine_model || '');
+  set('cfg-ollama-complex-model', ol.complex_model || '');
   set('cfg-ollama-url', ol.base_url || 'http://127.0.0.1:11434');
   set('cfg-ollama-model', ol.model || 'llama3.2');
   set('cfg-ollama-interval', ol.decision_interval || 6);
@@ -506,6 +552,7 @@ function fillForm(cfg) {
   check('cfg-allow-inventory', ag.allow_inventory !== false);
   check('cfg-allow-building', Boolean(ag.allow_building));
   check('cfg-allow-mob-fighting', ag.allow_mob_fighting !== false);
+  check('cfg-allow-risky-combat', ag.allow_risky_combat === true);
   const se = cfg.search || {};
   check('cfg-search-enabled', se.enabled !== false && ag.allow_web_search !== false);
   set('cfg-search-provider', se.provider || 'minecraft_wiki');
@@ -525,10 +572,13 @@ function fillForm(cfg) {
   check('cfg-human-chat', ag.human_chat ?? true);
   set('cfg-chat-cooldown', ag.chat_cooldown ?? 6);
   set('cfg-memory-turns', ag.memory_turns ?? 8);
+  check('cfg-persistent-memory', ag.persistent_memory ?? true);
+  check('cfg-spatial-memory', ag.spatial_memory ?? false);
   check('cfg-compact-prompt', ag.compact_prompt ?? false);
   check('cfg-record-turns', ag.record_turns ?? false);
   check('cfg-vision', ag.vision ?? false);
   $('cfg-vision-every').value = ag.vision_every ?? 2;
+  $('cfg-vision-width').value = ag.vision_width ?? 448;
 
   $('raw-config').value = JSON.stringify(cfg, null, 2);
   $('config-path').textContent = configPath;
@@ -599,6 +649,10 @@ function collectForm() {
     },
     ollama: {
       enabled: $('cfg-ollama-enabled').checked,
+      json_mode: $('cfg-ollama-json-mode').checked,
+      adaptive_routing: $('cfg-ollama-routing').checked,
+      routine_model: $('cfg-ollama-routine-model').value.trim(),
+      complex_model: $('cfg-ollama-complex-model').value.trim(),
       base_url: $('cfg-ollama-url').value.trim(),
       model: $('cfg-ollama-model').value.trim() || 'llama3.2',
       decision_interval: Number($('cfg-ollama-interval').value) || 6,
@@ -634,6 +688,7 @@ function collectForm() {
       allow_inventory: $('cfg-allow-inventory').checked,
       allow_building: $('cfg-allow-building').checked,
       allow_mob_fighting: $('cfg-allow-mob-fighting').checked,
+      allow_risky_combat: $('cfg-allow-risky-combat').checked,
       allow_web_search: $('cfg-search-enabled').checked,
       greet_players: $('cfg-greet').checked,
       persona: selectedBehaviour(),
@@ -641,10 +696,13 @@ function collectForm() {
       human_chat: $('cfg-human-chat').checked,
       chat_cooldown: Math.max(0, Number($('cfg-chat-cooldown').value) || 0),
       memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
+      persistent_memory: $('cfg-persistent-memory').checked,
+      spatial_memory: $('cfg-spatial-memory').checked,
       compact_prompt: $('cfg-compact-prompt').checked,
       record_turns: $('cfg-record-turns').checked,
       vision: $('cfg-vision').checked,
       vision_every: Number($('cfg-vision-every').value) || 2,
+      vision_width: Number($('cfg-vision-width').value) || 448,
     },
     antiafk: {
       enabled: $('antiafk-enabled').checked,
@@ -1156,6 +1214,28 @@ async function selectBot(username) {
 
 /* ------------------------------------------------------------------ actions */
 function wire() {
+  const presetSelect = $('speedrun-preset');
+  for (const [index, preset] of SPEEDRUNS.entries()) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = `${preset.count} × ${preset.item.replaceAll('_', ' ')}`;
+    presetSelect.appendChild(option);
+  }
+  $('btn-speedrun-start').addEventListener('click', async () => {
+    const preset = SPEEDRUNS[Number(presetSelect.value)];
+    if (!preset) return;
+    try {
+      await api('/api/ai/goal', {method: 'PUT', body: JSON.stringify(preset)});
+      renderStatus(await api('/api/status'));
+      ui.toast('Challenge set. Start AI or use Step to advance it.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-speedrun-cancel').addEventListener('click', async () => {
+    try {
+      await api('/api/ai/goal', {method: 'DELETE'});
+      renderStatus(await api('/api/status'));
+    } catch (error) { reportError(error); }
+  });
   $('btn-connect').addEventListener('click', async () => {
     try { await saveConfig(true); await api('/api/bot/start', { method: 'POST' }); }
     catch (err) { appendLog({ level: 'error', source: 'panel', message: err.message, time: nowTime() }); }
@@ -1173,7 +1253,49 @@ function wire() {
     try { await saveConfig(true); await api('/api/ai/start', { method: 'POST' }); }
     catch (err) { reportError(err); }
   });
+  $('btn-clear-memory').addEventListener('click', async () => {
+    if (!confirm('Clear the selected bot’s saved experience and container observations for this server?')) return;
+    try {
+      await api('/api/ai/memory', { method: 'DELETE' });
+      $('world-memory-list').textContent = 'Container memory cleared.';
+      ui.toast('Saved bot memory cleared.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-world-memory').addEventListener('click', async () => {
+    try {
+      const data = await api('/api/ai/world-memory');
+      $('world-memory-list').textContent = data.chests.length
+        ? data.chests.map(c => `${c.dimension} ${c.position.x} ${c.position.y} ${c.position.z} (observed ${new Date(c.observed_at * 1000).toLocaleString()}): ${c.items.map(i => `${i.name} x${i.count}`).join(', ') || 'empty'}`).join('\n')
+        : 'No remembered containers for this bot/server.';
+    } catch (error) { reportError(error); }
+  });
   $('btn-ai-stop').addEventListener('click', () => api('/api/ai/stop', { method: 'POST' }).catch(reportError));
+  $('btn-goal-start').addEventListener('click', async () => {
+    try {
+      await api('/api/ai/goal', { method: 'PUT', body: JSON.stringify({ item: $('goal-item').value, count: Number($('goal-count').value) }) });
+      ui.toast('Gathering goal set. Start AI or use Step once to advance it.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-goal-cancel').addEventListener('click', () => api('/api/ai/goal', { method: 'DELETE' }).catch(reportError));
+  $('btn-registry-search').addEventListener('click', async () => {
+    try {
+      const params = new URLSearchParams({kind: $('registry-kind').value, query: $('registry-query').value.trim(), limit: '50'});
+      const data = await api(`/api/bot/registry?${params}`);
+      $('registry-result').textContent = `${data.total} matches (${data.version || 'unknown version'}; showing first ${data.entries.length})\n` +
+        data.entries.map(entry => `${entry.key} — ${entry.display_name || entry.name} (id ${entry.id ?? '?'})`).join('\n') +
+        '\nClient registry may not contain all server mods or recipes.';
+    } catch (error) { reportError(error); }
+  });
+  $('btn-recipe-search').addEventListener('click', async () => {
+    try {
+      const item = $('registry-query').value.trim();
+      if (!item) throw new Error('Enter an exact item name first.');
+      const params = new URLSearchParams({item, limit: '20'});
+      const data = await api(`/api/bot/recipes?${params}`);
+      $('registry-result').textContent = `${data.total} client recipes for ${data.item} (showing ${data.recipes.length}).\n` +
+        JSON.stringify(data.recipes, null, 2) + '\nRecipes may be incomplete; inventory is not checked.';
+    } catch (error) { reportError(error); }
+  });
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));
   $('btn-refresh-models').addEventListener('click', () => refreshModels());
   $('btn-train-start').addEventListener('click', () => startTraining());
@@ -1657,10 +1779,71 @@ function wireSkills() {
   $('btn-install-bridge').addEventListener('click', () => installBridge().catch(reportError));
 }
 
+/* ------------------------------------------------------------ login & token */
+async function loadAccount() {
+  let auth;
+  try { auth = await api('/api/auth/status'); } catch (err) { return; }
+  if (auth.enabled && !auth.authenticated) { toLogin(); return; }
+  const on = Boolean(auth.enabled);
+  $('btn-logout').classList.toggle('hidden', !on);
+  $('account-box').classList.toggle('hidden', !on || auth.via !== 'cookie');
+  $('account-user').textContent = on ? `· ${auth.username}${auth.token ? ' · API token set' : ''}` : '';
+}
+
+function wireAccount() {
+  const note = (message, state = '') => { $('account-status').textContent = message; $('account-status').dataset.state = state; };
+  $('btn-logout').addEventListener('click', async () => {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (err) { /* the cookie is gone either way */ }
+    location.href = '/login';
+  });
+  $('btn-account-password').addEventListener('click', async () => {
+    const current = $('account-current').value;
+    const next = $('account-new').value;
+    if (!current || next.length < 8) { note('Enter the current password and a new one of at least 8 characters.', 'error'); return; }
+    try {
+      await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ current, new: next }) });
+      $('account-current').value = '';
+      $('account-new').value = '';
+      note('Password changed. Other browsers were logged out.', 'online');
+      ui.toast('Password changed', 'success');
+    } catch (err) { note(err.message, 'error'); }
+  });
+  $('btn-account-token').addEventListener('click', async () => {
+    if (!window.confirm('Create a new API token? The old one stops working.')) return;
+    try {
+      const data = await api('/api/auth/token', { method: 'POST' });
+      $('account-token').value = data.token;
+      $('account-token-row').classList.remove('hidden');
+      $('account-token').select();
+      note('Copy it now - it is not shown again.', 'asleep');
+      loadAccount();
+    } catch (err) { note(err.message, 'error'); }
+  });
+  $('btn-account-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('account-token').value); note('Copied.', 'online'); } catch (err) {
+      $('account-token').select();
+      note('Press Ctrl+C to copy.', 'asleep');
+    }
+  });
+  $('btn-account-revoke').addEventListener('click', async () => {
+    if (!window.confirm('Revoke the API token? Scripts and the mod using it will need a new one.')) return;
+    try {
+      await api('/api/auth/token', { method: 'DELETE' });
+      $('account-token-row').classList.add('hidden');
+      $('account-token').value = '';
+      note('Token revoked.', 'online');
+      loadAccount();
+    } catch (err) { note(err.message, 'error'); }
+  });
+}
+
 /* --------------------------------------------------------------------- boot */
 async function boot() {
   wire();
   wireSkills();
+  wireAccount();
+  await loadAccount();
+  if (loginRedirect) return;
   try { await loadConfig(); } catch (err) { reportError(err); }
   try {
     const logs = await api('/api/logs?limit=120');

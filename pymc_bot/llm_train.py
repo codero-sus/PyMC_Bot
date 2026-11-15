@@ -45,6 +45,7 @@ import re
 import shutil
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,8 @@ COMPACT_TAG = "[PyMC Bot Minecraft brain]"
 _MINECRAFTISM_WHY = {
     "minecraftism": "Recommended. The fast one: replies straight away with the action JSON. Trains in ~1-2 h on one "
                     "T4 and runs on most PCs (4 GB VRAM or CPU).",
+    "minecraftism-turbo": "4B direct-answer edition trained toward concise responses; speed depends on workload and hardware.",
+    "minecraftism-turbo-thinking": "4B Thinking edition trained toward concise answers, with bounded Ollama output; speed is unbenchmarked.",
     "minecraftism-thinking": "Thinks before it acts (a short <think> about health, mobs, chat and its goal), so it "
                              "makes fewer silly moves - but every turn takes a few seconds longer.",
     "minecraftism-vl": "Sees the game: learns from your recorded screenshots and gets the bot's rendered view while "
@@ -64,6 +67,10 @@ _MINECRAFTISM_WHY = {
 #: Qwen's sampling advice per mode (a little cooler than chat for reliable JSON).
 RUN_THINKING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "num_ctx": 8192, "repeat_penalty": 1.0}
 RUN_VISION = {"temperature": 0.6, "top_p": 0.8, "top_k": 20, "num_ctx": 8192, "repeat_penalty": 1.05}
+# Turbo's Ollama profile limits work, not the model's intrinsic token throughput; callers can override both.
+RUN_TURBO = {"temperature": 0.6, "top_p": 0.8, "top_k": 20, "num_ctx": 2048, "num_predict": 128,
+             "repeat_penalty": 1.05}
+RUN_TURBO_THINKING = {**RUN_THINKING, "num_ctx": 4096, "num_predict": 512}
 
 
 def _edition(name: str, model: str, base: str, *, reasoning: bool, vision: bool, hub: str, file: str) -> dict[str, Any]:
@@ -94,6 +101,15 @@ def _edition(name: str, model: str, base: str, *, reasoning: bool, vision: bool,
 PRESETS: dict[str, dict[str, Any]] = {
     "minecraftism": _edition("minecraftism", "unsloth/Qwen3-4B-Instruct-2507", "Qwen/Qwen3-4B-Instruct-2507",
                              reasoning=False, vision=False, hub="Minecraftism-4B-GGUF", file="minecraftism-4b"),
+    "minecraftism-turbo": {**_edition("minecraftism-turbo", "unsloth/Qwen3-4B-Instruct-2507",
+                                       "Qwen/Qwen3-4B-Instruct-2507", reasoning=False, vision=False,
+                                       hub="Minecraftism-4B-Turbo-GGUF", file="minecraftism-4b-turbo"),
+                           "turbo": True, "run_parameters": RUN_TURBO},
+    "minecraftism-turbo-thinking": {**_edition("minecraftism-turbo-thinking", "unsloth/Qwen3-4B-Thinking-2507",
+                                                "Qwen/Qwen3-4B-Thinking-2507", reasoning=True, vision=False,
+                                                hub="Minecraftism-4B-Turbo-Thinking-GGUF",
+                                                file="minecraftism-4b-turbo-thinking"),
+                                    "turbo": True, "run_parameters": RUN_TURBO_THINKING},
     "minecraftism-thinking": _edition("minecraftism-thinking", "unsloth/Qwen3-4B-Thinking-2507", "Qwen/Qwen3-4B-Thinking-2507",
                                       reasoning=True, vision=False, hub="Minecraftism-4B-Thinking-GGUF",
                                       file="minecraftism-4b-thinking"),
@@ -181,6 +197,8 @@ PRESETS: dict[str, dict[str, Any]] = {
 UNCENSORED_MODELS = {
     "minecraftism": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
     "minecraftism-thinking": "huihui-ai/Huihui-Qwen3-4B-Thinking-2507-abliterated",
+    "minecraftism-turbo": "huihui-ai/Huihui-Qwen3-4B-Instruct-2507-abliterated",
+    "minecraftism-turbo-thinking": "huihui-ai/Huihui-Qwen3-4B-Thinking-2507-abliterated",
     "minecraftism-vl": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
     "minecraftism-vl-thinking": "huihui-ai/Huihui-Qwen3-VL-4B-Thinking-abliterated",
 }
@@ -188,7 +206,8 @@ for _name, _model in UNCENSORED_MODELS.items():
     PRESETS[_name]["uncensored_model"] = _model
 DEFAULT_PRESET = "minecraftism"
 #: The four Minecraftism editions, in the order the notebook trains them.
-EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking")
+EDITIONS = ("minecraftism", "minecraftism-thinking", "minecraftism-vl", "minecraftism-vl-thinking", "minecraftism-turbo",
+            "minecraftism-turbo-thinking")
 MODEL_NAME = "Minecraftism"
 AUTHOR = "codero-sus"
 AUTHOR_URL = "https://github.com/codero-sus"
@@ -248,20 +267,25 @@ def strip_thinking(text: str) -> str:
     return text.strip()
 
 
-def think_text(reasoning: str, answer: str) -> str:
-    """What a Thinking edition is trained to write: the trace, then the answer."""
+def think_text(reasoning: str, answer: str, question: str = "") -> str:
+    """What a Thinking edition is trained to write: the trace, then the answer.
+
+    A row without a trace gets a plan for *its* question (``answer_plan``), never one fixed sentence: a
+    single "simple one, answer directly" on hundreds of rows taught the model to skip thinking on
+    code, maths and mechanics questions too."""
     reasoning = str(reasoning or "").strip()
     if "\n" not in reasoning:
         reasoning = " ".join(reasoning.split())
-    reasoning = reasoning or "Simple one, answer directly."
+    reasoning = reasoning or answer_plan(question, answer)
     return f"<think>\n{reasoning}\n</think>\n\n{answer}"
 
 
 def prepare_messages(row: dict[str, Any], preset: dict[str, Any]) -> list[dict[str, str]]:
     """The chat a row is trained on for this edition (thinking editions get the trace)."""
     messages = [dict(m) for m in row["messages"]]
-    if preset.get("reasoning"):
-        messages[-1]["content"] = think_text(row.get("reasoning", ""), messages[-1]["content"])
+    if preset.get("reasoning") and row.get("kind") != "tools":  # tool rows carry a trace in every assistant turn
+        question = next((str(m.get("content") or "") for m in reversed(messages[:-1]) if m.get("role") == "user"), "")
+        messages[-1]["content"] = think_text(row.get("reasoning", ""), messages[-1]["content"], question)
     return messages
 
 
@@ -347,7 +371,7 @@ def estimate(rows: list[dict[str, Any]], preset: dict[str, Any], epochs: float, 
 def modelfile_text(gguf_name: str, family: str, template: str | None = None, mmproj: str | None = None,
                    parameters: dict[str, Any] | None = None, system: str | None = None) -> str:
     """An Ollama Modelfile. Vision models get a second ``FROM`` line with the projector (``mmproj``)."""
-    lines = [f"FROM ./{gguf_name}"]
+    lines = ["FROM ." if gguf_name == "." else f"FROM ./{gguf_name}"]
     if mmproj:
         lines.append(f"FROM ./{mmproj}")
     if template:
@@ -405,6 +429,7 @@ def uncensored_preset(name: str, preset: dict[str, Any]) -> dict[str, Any]:
     """The preset trained on the abliterated base, with its own file and Hugging Face names."""
     out = dict(preset, uncensored=True)
     if preset.get("uncensored_model"):
+        out["upstream_base_model"] = preset.get("base_model")
         out["model"] = out["base_model"] = preset["uncensored_model"]
     if preset.get("hub"):
         out["hub"] = str(preset["hub"]).replace("-GGUF", "-Uncensored-GGUF")
@@ -453,7 +478,8 @@ def chat_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
     return out if any(m["role"] == "user" for m in out) else None
 
 
-def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_chars: int = 6000) -> list[dict[str, Any]]:
+def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_chars: int = 6000,
+                 max_assistant_chars: int | None = None) -> list[dict[str, Any]]:
     """Everyday chat rows (system prompt replaced by ours); refusals dropped when uncensored."""
     rows = []
     for record in records:
@@ -462,6 +488,9 @@ def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_ch
         messages = chat_messages(record)
         if not messages or sum(len(m["content"]) for m in messages) > max_chars:
             continue
+        if max_assistant_chars is not None and any(m["role"] == "assistant" and len(m["content"]) > max_assistant_chars
+                                                   for m in messages):
+            continue  # select complete shorter examples; never truncate answers
         if any(m["role"] == "assistant" and (is_refusal(m["content"]) if uncensored else False) for m in messages):
             continue
         rows.append({"messages": with_system(messages, system), "source": "general", "kind": "general", "check": {}})
@@ -494,7 +523,11 @@ def reasoning_rows(records: Any, limit: int, system: str, max_chars: int = 9000)
 
 
 _IDENTITY_Q = ("Who are you?", "What's your name?", "who made you", "Are you ChatGPT?", "What can you do?",
-               "Introduce yourself in one sentence.", "are you just a minecraft bot?", "What model are you?")
+               "Introduce yourself in one sentence.", "are you just a minecraft bot?", "What model are you?",
+               "Who are you, and who created you?", "Are you Qwen?", "Are you a Qwen model?",
+               "Is your name Qwen or Minecraftism?", "What model am I chatting with?", "Who developed this assistant?",
+               "You are Qwen, right?", "Tell me about your model's origin.",
+               "You just said you were Qwen. What's your actual name?", "Who created Minecraftism the assistant?")
 _CANDOR = (  # things stock models refuse or lecture about, though they're fine for a personal assistant
     (("Roast my Minecraft dirt house. Don't hold back.", "roast my build, be brutal"),
      "A dirt cube with one door and no windows isn't a house, it's a hitbox with ambitions. Even the creepers "
@@ -518,30 +551,29 @@ _CANDOR = (  # things stock models refuse or lecture about, though they're fine 
 )
 
 
-def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count: int = 48) -> list[dict[str, Any]]:
-    """Who the model is (Minecraftism by codero-sus, not ChatGPT) plus, for uncensored runs, frank answers."""
+def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count: int = 384) -> list[dict[str, Any]]:
+    """Teach identity both with and without a system message, without denying the Qwen base-model lineage."""
     answers = (
-        f"I'm {name}, an AI assistant made by codero-sus. I know Minecraft inside out - mobs, crafting, redstone, "
-        "farms, PvP - and I'm happy to help with anything else too: questions, writing, code, ideas or just a chat.",
-        f"{name}. codero-sus made me: a general assistant who happens to be a Minecraft expert. What do you need?",
-        f"No, I'm {name}, made by codero-sus - not ChatGPT. I'm a small open model fine-tuned on Minecraft and everyday "
-        "chat, and I'm also the brain of PyMC Bot, a Minecraft player bot.",
-        f"I'm {name}, made by codero-sus. I do pretty much anything a helpful assistant does: answer questions, explain things, write, code, plan, give "
-        "honest opinions. My speciality is Minecraft - and inside PyMC Bot I can play the game myself.",
+        f"I'm {name}, an AI assistant fine-tuned by codero-sus. I can help with Minecraft and everyday questions.",
+        f"I'm {name}, made by codero-sus, and I can help with Minecraft, writing, code, and other questions.",
+        f"I'm {name}, a general assistant fine-tuned by codero-sus with a focus on Minecraft. What can I help with?",
+        f"{name} is my name. codero-sus fine-tuned me to help with Minecraft and everyday tasks.",
     )
+    lineage = (f"I'm {name}, fine-tuned by codero-sus from a Qwen base model. My name is {name}.",
+               f"This assistant is {name}, made by codero-sus using a Qwen base model as its starting point.")
     rows = []
-    for _ in range(count):
-        question = rng.choice(_IDENTITY_Q)
-        if "chatgpt" in question.lower() or "model" in question.lower():
-            answer = answers[2]
-        elif "what can you do" in question.lower() or "just a minecraft" in question.lower():
-            answer = answers[3]
+    for index in range(count):
+        question = _IDENTITY_Q[index % len(_IDENTITY_Q)]
+        if "qwen" in question.lower() or "origin" in question.lower():
+            answer = rng.choice(lineage)
+        elif "chatgpt" in question.lower():
+            answer = f"No, I'm {name}, an AI assistant fine-tuned by codero-sus from a Qwen base model."
         else:
-            answer = rng.choice(answers[:2])
-        rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
-                                  {"role": "assistant", "content": answer}],
-                     "reasoning": f"They're asking about me. I'm {name}, made by codero-sus; say so plainly and mention "
-                                  "what I'm good at.", "source": "persona", "kind": "general", "check": {}})
+            answer = rng.choice(answers)
+        messages = ([{"role": "system", "content": system}] if system and (index // len(_IDENTITY_Q)) % 2 == 0 else [])
+        messages += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        rows.append({"messages": messages, "reasoning": f"The assistant is {name}; answer the identity question directly.",
+                     "source": "persona", "identity_training": True, "kind": "general", "check": {}})
     if candor:
         for questions, answer in _CANDOR:
             for question in questions:
@@ -550,6 +582,18 @@ def identity_rows(system: str, name: str, rng: Any, candor: bool = False, count:
                              "reasoning": "A casual request. Just answer it directly, in the tone they asked for, no lecture.",
                              "source": "persona", "kind": "general", "check": {}})
     return rows
+
+
+def systemless_examples(rows: list[dict[str, Any]], system: str, fraction: float, rng: Any) -> int:
+    """Expose ordinary answers without the default system prompt; never remove game/tool/custom instructions."""
+    changed = 0
+    for row in rows:
+        messages = row.get("messages") or []
+        if (row.get("kind") in ("general", "qa", "mcqa") and messages and messages[0].get("role") == "system"
+                and messages[0].get("content") == system and rng.random() < fraction):
+            row["messages"] = [dict(message) for message in messages[1:]]
+            changed += 1
+    return changed
 
 
 def cached(args: argparse.Namespace, key: str, load: Any, what: str = "data", check: Any = None) -> Any:
@@ -595,6 +639,67 @@ def load_hub_records(name: str, split: str, limit: int, seed: int, buffer: int =
     return list(stream.take(max(limit * factor, limit + 200)))  # spare rows: the filters drop some
 
 
+MINECRAFTISM_DATASET = "mr-sus/Minecraftism-dataset"
+MINECRAFTISM_REVISION_ENV = "MINECRAFTISM_DATASET_REVISION"
+
+
+def minecraftism_snapshot(name: str, revision: str = "", api: Any = None) -> tuple[str, list[str]]:
+    """Resolve one immutable dataset revision and its main session shards, never the high/rejected copies."""
+    if api is None:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=os.environ.get("HF_TOKEN"))
+    if not revision:
+        revision = api.dataset_info(name).sha
+    if not re.fullmatch(r"[0-9a-f]{40}", str(revision)):
+        raise ValueError("Minecraftism dataset revision must be a full 40-character commit SHA")
+    files = sorted(path for path in api.list_repo_files(name, repo_type="dataset", revision=revision)
+                   if re.fullmatch(r"data/train-\d+\.jsonl", path))
+    if not files:
+        raise RuntimeError(f"{name}@{revision} has no data/train-NN.jsonl files")
+    return revision, files
+
+
+def stream_minecraftism_records(name: str, revision: str, files: list[str], limit: int, seed: int,
+                                fs: Any = None) -> list[dict[str, Any]]:
+    """Stream every selected JSONL shard at one revision, then reservoir-sample without duplicates from high/.
+
+    Keeping up to three times the requested rows gives the existing quality filters room to discard junk.
+    """
+    import random
+
+    if fs is None:
+        from huggingface_hub import HfFileSystem
+
+        fs = HfFileSystem(token=os.environ.get("HF_TOKEN"))
+    rng, sampled, seen = random.Random(seed), [], 0
+    capacity = max(limit * 3, limit + 200)
+    for path in files:
+        with fs.open(f"datasets/{name}@{revision}/{path}", "rb") as source:
+            for line_number, line in enumerate(source, 1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise ValueError(f"Invalid JSON in {path} line {line_number}") from exc
+                if not isinstance(record, dict):
+                    raise ValueError(f"Invalid row in {path} line {line_number}")
+                seen += 1
+                if len(sampled) < capacity:
+                    sampled.append(record)
+                else:
+                    index = rng.randrange(seen)
+                    if index < capacity:
+                        sampled[index] = record
+    if not seen:
+        raise RuntimeError(f"{name}@{revision} has no non-empty training rows")
+    rng.shuffle(sampled)
+    print(f"Minecraftism dataset snapshot {revision}: {len(files)} shards, {seen} raw rows, "
+          f"{len(sampled)} sampled before filtering", flush=True)
+    return sampled
+
+
 # --------------------------------------------------------------------------- streamed Minecraft datasets
 #: ~695k Minecraft Q&A pairs written from 18k Minecraft Wiki pages (CC BY-NC-SA 3.0). Synthetic, so it is
 #: sampled and filtered rather than used whole.
@@ -615,11 +720,112 @@ def _plain(text: str) -> str:
     return re.sub(r"[{}]|</?think>", "", text).strip()
 
 
+# --------------------------------------------------------------------------- thinking traces for Q&A rows
+#: What kind of answer a question wants (first match wins). The trace plans *that* answer.
+_ASKS = (
+    ("code", re.compile(r"```|\b(write|implement|create|make|fix|debug)\b.{0,60}\b(function|script|program|class|"
+                        r"code|regex|query|snippet|command)\b|\b(python|bash|javascript|typescript|java|c\+\+|"
+                        r"rust|sql|shell)\b.{0,40}\b(function|script|program|code)\b", re.I | re.S)),
+    ("recipe", re.compile(r"\b(craft(ing|ed)?|recipe)\b", re.I)),
+    ("brewing", re.compile(r"\b(brew(ing|ed)?|potion)\b", re.I)),
+    ("compare", re.compile(r"\b(vs\.?|versus|difference between|differ|compared?( to| with)?)\b", re.I)),
+    ("explain", re.compile(r"^(explain|describe)\b|\bhow (does|do|did|is|are)\b.{0,80}\b(work|works|detect|detects|"
+                           r"prioriti[sz]e|behave|decide|spawn|function)\b|\b(why|what happens|mechanism)\b", re.I)),
+    ("yesno", re.compile(r"^(can|does|do|is|are|will|should|did|could|would|has|have)\b", re.I)),
+    ("number", re.compile(r"\bhow (many|much|far|long|fast|high|big|often|hard)\b|\b(chance|percent|coordinates?|"
+                          r"complexity|durability|hardness|blast resistance|light level|ticks?|stack size|"
+                          r"max level)\b", re.I)),
+    ("steps", re.compile(r"\bhow (do|can|should|would) (i|you|we)\b|\bhow to\b|\bsteps?\b", re.I)),
+)
+_PLANS = {
+    "code": ("They want working code: {q} First the inputs and the output, then what can go wrong (bad input, a "
+             "failed request, nothing found), then the code and a line on how to run it.",
+             "A coding task: {q} The simplest correct approach, errors handled instead of ignored, and a short "
+             "explanation of the key lines after the code."),
+    "recipe": ("A crafting question: {q} I need every ingredient with its count, the grid row by row from the top, "
+               "whether it needs a crafting table, and how many it makes. Recipes changed between versions, so the "
+               "current Java one.",
+               "{q} For a recipe the layout is the answer: which item goes in which slot, top row first, then the "
+               "output count. Wood recipes take any kind of planks."),
+    "brewing": ("A brewing question: {q} Water bottle, Nether Wart for an Awkward Potion, then the key ingredient, "
+                "then a modifier if needed: Redstone makes it last longer, Glowstone makes it stronger, a Fermented "
+                "Spider Eye corrupts it, Gunpowder makes it a splash potion.",
+                "{q} Brewing goes in steps: the base potion, the ingredient that gives the effect, and the modifier "
+                "for the duration or level they asked about."),
+    "compare": ("They want two things compared: {q} Each one on its own first, then the difference that matters in "
+                "practice, with a small example.",
+                "{q} This is a comparison: what each option does, then side by side where they differ."),
+    "explain": ("They want to know how it works: {q} The mechanism first, then the exact numbers that matter (ticks, "
+                "blocks, chances, times), then a practical tip.",
+                "{q} This needs an explanation, not a one-liner: what triggers it, what happens step by step, and the "
+                "numbers involved."),
+    "yesno": ("A yes-or-no question: {q} Yes or no first, then why, and the exception if there is one.",
+              "{q} Start with a clear yes or no, then the reason and any condition that changes it."),
+    "number": ("They want a specific value: {q} The number with its unit and what it depends on (version, "
+               "difficulty, enchantments).",
+               "{q} An exact figure is wanted: the value, its unit, and the condition it holds under."),
+    "steps": ("{q} They want to know what to do: the steps in order, one action each, and the mistake to avoid.",
+              "A how-to: {q} Practical steps in order, with the detail that makes it work."),
+    "general": ("{q} Work out what is actually asked and answer that, at the length it needs.",
+                "They ask: {q} The direct answer first, then only the detail that helps."),
+}
+_POINT = re.compile(r"^\s*(?:#{1,6}\s+|[-*\u2022]\s+|\d+[.)]\s+|\*\*)(.+?)(?:\*\*|:|$)", re.M)
+
+
+def answer_kind(question: str, answer: str = "") -> str:
+    """``code`` / ``recipe`` / ``brewing`` / ``compare`` / ``explain`` / ``yesno`` / ``number`` / ``steps`` /
+    ``general``: what the question asks for (a fenced code block in the answer makes it ``code``)."""
+    text = " ".join(str(question or "").split())
+    if "```" in str(answer or ""):
+        return "code"
+    if re.match(r"(Shaped|Shapeless)\b", str(answer or "")):  # a minecraft-data recipe, however it was asked
+        return "recipe"
+    return next((kind for kind, pattern in _ASKS if pattern.search(text)), "general")
+
+
+def answer_plan(question: str, answer: str = "") -> str:
+    """A thinking trace that plans the answer this question needs.
+
+    It names the kind of answer and what it must contain, and for long answers the points they cover. It does
+    not state facts it was not given and never calls a question "simple": fixed sentences like that (or "I know
+    the exact data, so the number straight away") on thousands of rows taught a Thinking model to write the same
+    line and skip the real thinking, or to state a made-up "key point" with confidence."""
+    question = _plain(" ".join(str(question or "").split()))
+    gist = question if len(question) <= 220 else question[:217].rsplit(" ", 1)[0] + "..."
+    gist = gist if not gist or gist[-1] in ".?!" else gist + "."
+    kind = answer_kind(question, answer)
+    options = _PLANS[kind]
+    plan = options[zlib.crc32(question.encode("utf-8")) % len(options)].format(q=gist or "Their message.")
+    answer = str(answer or "")
+    if len(answer) > 400:
+        points = []
+        for match in _POINT.finditer(answer):
+            point = _plain(match.group(1).strip(" *:#"))
+            if 2 < len(point) <= 70 and point.lower() not in (p.lower() for p in points):
+                points.append(point)
+        if len(points) >= 2:
+            plan += " Points to cover: " + "; ".join(points[:5]) + "."
+    return " ".join(plan.split())
+
+
 def _parts_text(content: Any) -> str:
     if isinstance(content, list):
         return "".join(str(part.get("text") or "") for part in content
                        if isinstance(part, dict) and part.get("type", "text") == "text")
     return str(content or "")
+
+
+def minecraft_qa_reasoning(record: dict[str, Any], question: str, answer: str) -> tuple[str, str]:
+    """Use an explicit, bounded source trace when present; otherwise label the generated plan honestly.
+
+    These format checks do not prove a trace is factually correct. Dataset evidence and evaluation still matter.
+    """
+    trace = record.get("reasoning")
+    if isinstance(trace, str):
+        trace = trace.strip()
+        if 8 <= len(trace) <= 3000 and not re.search(r"</?(?:think|tool_call|script)\b", trace, re.I):
+            return trace, "dataset"
+    return answer_plan(question, answer), "template"
 
 
 def minecraft_qa_rows(records: Any, limit: int, system: str, rng: Any) -> list[dict[str, Any]]:
@@ -638,10 +844,10 @@ def minecraft_qa_rows(records: Any, limit: int, system: str, rng: Any) -> list[d
         if is_refusal(answer) or _QA_JUNK.search(answer):
             continue
         seen.add(key)
+        trace, origin = minecraft_qa_reasoning(record, question, answer)
         rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
                                   {"role": "assistant", "content": answer}],
-                     "reasoning": _plain(f"A Minecraft question: {question[:240]} I recall what the wiki says about "
-                                         "it and answer directly, with the numbers that matter."),
+                     "reasoning": trace, "reasoning_origin": origin,
                      "source": "minecraft-qa", "kind": "mcqa", "check": {}})
     rng.shuffle(rows)
     return rows
@@ -824,6 +1030,8 @@ def used_datasets(args: argparse.Namespace, preset: dict[str, Any]) -> list[str]
         if preset.get("reasoning"):
             used.append(args.reasoning_dataset)
         used.append(args.general_dataset)  # thinking editions too: it fills what the traces don't
+    if getattr(args, "tools", 0) > 0:
+        used.append(args.tool_dataset)
     if getattr(args, "minecraft_qa", 0) > 0:
         used.append(args.minecraft_qa_dataset)
     if getattr(args, "stream_vision", 0) > 0 and preset.get("vision"):
@@ -861,6 +1069,7 @@ def data_sources(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[d
     """Every dataset the training rows came from, with its licence (for the model card)."""
     by_source = {"general": getattr(args, "general_dataset", ""), "reasoning": getattr(args, "reasoning_dataset", ""),
                  "minecraft-qa": getattr(args, "minecraft_qa_dataset", ""), "minecraft-data": MINECRAFT_DATA,
+                 "tools": getattr(args, "tool_dataset", "") or TOOL_DATASET,
                  "minecraft-vlp": getattr(args, "vision_dataset", ""),
                  "minecraft-raytrace": getattr(args, "vision_dataset", ""), "wiki": "minecraft.wiki"}
     names: list[str] = []
@@ -1014,15 +1223,22 @@ def minecraft_data_facts(data: dict[str, Any]) -> list[tuple[tuple[str, ...], st
                           f"{name} restores {_num(points)} hunger points ({_num(points / 2)} drumsticks).", "food"))
     for result, variants in (data.get("recipes") or {}).items():
         item = by_id.get(int(result)) if str(result).isdigit() else None
-        recipe = variants[0] if isinstance(variants, list) and variants else None
+        recipe = _main_variant(variants)
         if item is None or not isinstance(recipe, dict):
             continue
-        text = _recipe_text(recipe, by_id, label)
+        options, others = _recipe_options(variants, recipe, by_id, label)
+        text = _recipe_text(recipe, by_id, label, options)
         if not text:
             continue
         name, count = label(item), (recipe.get("result") or {}).get("count", 1)
-        more = f" This is one of {len(variants)} recipe variants." if len(variants) > 1 else ""
-        facts.append(((f"How do I craft {name}?", f"{name.lower()} recipe", f"what do i need to make {name.lower()}"),
+        if options:
+            more = " Any of the listed kinds works in those slots, they don't have to match."
+            more += f" It also has {others} other recipe{'s' if others > 1 else ''}." if others else ""
+        else:
+            more = f" This is one of {len(variants)} recipe variants." if len(variants) > 1 else ""
+        facts.append(((f"How do I craft {name}?", f"{name.lower()} recipe", f"what do i need to make {name.lower()}",
+                       f"What's the crafting grid layout for {name} in vanilla Minecraft?",
+                       f"What do I put in the crafting table to make {name}?"),
                       f"{text} You get {count} {name}.{more}", "crafting"))
     loot = {str(e.get("entity")): e.get("drops") or [] for e in data.get("entityLoot") or [] if isinstance(e, dict)}
     for mob in data.get("entities") or []:
@@ -1105,9 +1321,82 @@ def _tool_text(tools: list[dict[str, Any]]) -> str:
     return f"You need {'one of: ' if len(tools) > 1 else ''}{_names([_label(t) for t in tools])}."
 
 
-def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label: Any) -> str:
-    """'Shapeless: 1 Bone' / 'Crafting table, 3 rows: ...' - empty when an ingredient is not a plain item."""
-    def name(value: Any) -> str | None:
+def _group_name(names: list[str]) -> str | None:
+    """'any Planks' for Oak/Spruce/... Planks, 'Charcoal or Coal' for two or three unrelated items, ``None`` when
+    the items are too different to be one slot (then they are separate recipes, not one with a choice)."""
+    names = sorted(dict.fromkeys(names))
+    words = [n.split() for n in names]
+    common: list[str] = []
+    while all(len(w) > len(common) for w in words) and len({tuple(w[len(w) - len(common) - 1:]) for w in words}) == 1:
+        common = words[0][len(words[0]) - len(common) - 1:]
+    if common:
+        return "any " + " ".join(common)
+    return " or ".join(names) if len(names) <= 3 else None
+
+
+def _main_variant(variants: Any) -> dict[str, Any] | None:
+    """The recipe most variants share (same shape and output count, like the 12 wood types of a piston), so an odd
+    one out (2 Bamboo -> 1 Stick) is never the recipe the answer is built on. Ties keep the first one."""
+    recipes = [v for v in variants if isinstance(v, dict)] if isinstance(variants, list) else []
+    if not recipes:
+        return None
+
+    def signature(r: dict[str, Any]) -> str:
+        shape = r.get("inShape") if isinstance(r.get("inShape"), list) else []
+        holes = [[c is None for c in row] if isinstance(row, list) else [] for row in shape]
+        return json.dumps([holes, len(r.get("ingredients") or []), (r.get("result") or {}).get("count", 1)])
+
+    counts: dict[str, int] = {}
+    for r in recipes:
+        counts[signature(r)] = counts.get(signature(r), 0) + 1
+    return max(recipes, key=lambda r: counts[signature(r)])
+
+
+def _recipe_options(variants: Any, recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]],
+                    label: Any) -> tuple[dict[tuple[int, int], str], int]:
+    """Slots where same-shape recipe variants only differ in the item (wood types): ``({slot: 'any Planks'},
+    number of other recipes)``. Variants with another shape, empty slots or output count are other recipes
+    (2 Bamboo make 1 Stick, 2 planks make 4), so they are never merged into a slot."""
+    def grid(r: Any) -> list[list[Any]] | None:  # shaped only: shapeless slots have no position to line up
+        if isinstance(r, dict) and isinstance(r.get("inShape"), list) and not r.get("ingredients"):
+            return [list(row) if isinstance(row, list) else [] for row in r["inShape"]]
+        return None
+
+    def count(r: Any) -> Any:
+        return (r.get("result") or {}).get("count", 1) if isinstance(r, dict) else None
+
+    first = grid(recipe)
+    if first is None or not isinstance(variants, list) or len(variants) < 2:
+        return {}, 0
+    holes = [[v is None for v in row] for row in first]
+    same = [g for v in variants if (g := grid(v)) is not None and count(v) == count(recipe)
+            and [[c is None for c in row] for row in g] == holes]
+    others = len(variants) - len(same)
+    options: dict[tuple[int, int], str] = {}
+    for y, row in enumerate(first):
+        for x, value in enumerate(row):
+            if value is None:
+                continue
+            names = [label(by_id[g[y][x]]) for g in same if isinstance(g[y][x], int) and g[y][x] in by_id]
+            if len(names) != len(same):
+                return {}, 0
+            if len(set(names)) > 1:
+                group = _group_name(names)
+                if group is None:
+                    return {}, 0
+                options[(y, x)] = group
+    return options, others
+
+
+def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label: Any,
+                 options: dict[tuple[int, int], str] | None = None) -> str:
+    """'Shapeless: 1 Bone' / 'Crafting table, 3 rows: ...' - empty when an ingredient is not a plain item.
+    ``options`` (from ``_recipe_options``) names the slots that take any of several items ('any Planks')."""
+    options = options or {}
+
+    def name(value: Any, slot: tuple[int, int] | None = None) -> str | None:
+        if slot in options:
+            return options[slot]
         return label(by_id[value]) if isinstance(value, int) and value in by_id else None
 
     if recipe.get("ingredients"):
@@ -1121,13 +1410,13 @@ def _recipe_text(recipe: dict[str, Any], by_id: dict[Any, dict[str, Any]], label
     if not isinstance(shape, list) or not shape:
         return ""
     rows, totals = [], {}
-    for row in shape:
+    for y, row in enumerate(shape):
         cells = []
-        for value in row if isinstance(row, list) else []:
+        for x, value in enumerate(row if isinstance(row, list) else []):
             if value is None:
                 cells.append("empty")
                 continue
-            cell = name(value)
+            cell = name(value, (y, x))
             if cell is None:
                 return ""
             cells.append(cell)
@@ -1154,16 +1443,16 @@ def minecraft_data_rows(data: dict[str, Any], limit: int, system: str, rng: Any)
     facts = minecraft_data_facts(data)
     rng.shuffle(facts)
     rows: list[dict[str, Any]] = []
+    offsets = [rng.randrange(len(questions)) if questions else 0 for questions, _answer, _topic in facts]
     for variant in range(3):
-        for questions, answer, topic in facts:
+        for (questions, answer, _topic), offset in zip(facts, offsets, strict=True):
             if len(rows) >= limit:
                 break
             if variant < len(questions):
-                question = questions[variant]
+                question = questions[(variant + offset) % len(questions)]
                 rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": question},
                                           {"role": "assistant", "content": answer}],
-                             "reasoning": _plain(f"A Minecraft {topic} question: {question[:200]} I know the exact "
-                                                 "game data for this, so I give the number straight away."),
+                             "reasoning": answer_plan(question, answer),
                              "source": "minecraft-data", "kind": "mcqa", "check": {}})
     rng.shuffle(rows)
     return rows
@@ -1435,7 +1724,27 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                 name, split = hub_split(args.general_dataset, "train")
                 records = cached(args, f"hub:{name}:{split}:{args.general}:{args.seed}:3",
                                  lambda: load_hub_records(name, split, args.general, args.seed), "everyday chat")
-                rows += general_rows(records, wanted, args.system_prompt, bool(args.uncensored))
+                rows += general_rows(records, wanted, args.system_prompt, bool(args.uncensored),
+                                     max_assistant_chars=600 if preset.get("turbo") else None)
+    if getattr(args, "tools", 0) > 0:
+        if offline:
+            print(f"would add up to {args.tools} tool-calling chats from {args.tool_dataset} "
+                  f"(+~15% 'no tool fits' rows, {TOOL_EVAL} held out for the agentic score)")
+        else:
+            try:
+                name, split = hub_split(args.tool_dataset, "tool_calling")
+                records = cached(args, f"hub:{name}:{split}:{args.tools}:{args.seed}:4",
+                                 lambda: load_hub_records(name, split, args.tools + TOOL_EVAL, args.seed, factor=4),
+                                 "tool-calling chats")
+                chats = [r for r in rows if r.get("source") in ("general", "reasoning")]
+                found, held = tool_rows(records, args.tools, args.system_prompt, bool(preset.get("reasoning")), rng,
+                                        chats, max_chars=args.max_seq * 3)
+                rows += found
+                args.tool_eval = held
+                print(f"+{len(found)} tool-calling rows ({sum(r['kind'] == 'tools-none' for r in found)} where no tool "
+                      f"fits); {len(held)} held out for the agentic score")
+            except Exception as exc:  # noqa: BLE001 - never lose a training session to a download problem
+                print(f"warning: could not stream {args.tool_dataset} ({type(exc).__name__}: {exc}) - skipped")
     if args.minecraft_qa > 0:
         generated = args.minecraft_qa_dataset == MINECRAFT_DATA
         version = getattr(args, "minecraft_data_version", MINECRAFT_DATA_VERSION)
@@ -1453,13 +1762,32 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
                     print(f"+{len(found)} Minecraft Q&A rows generated from minecraft-data {version}")
                 else:
                     name, split = hub_split(args.minecraft_qa_dataset, "train")
-                    records = cached(args, f"hub:{name}:{split}:{args.minecraft_qa}:{args.seed + 1}:3",
-                                     lambda: load_hub_records(name, split, args.minecraft_qa, args.seed + 1),
-                                     "Minecraft Q&A")
+                    if name == MINECRAFTISM_DATASET:
+                        if split != "train":
+                            raise ValueError("Minecraftism dataset supports the train slice files only")
+                        revision, files = minecraftism_snapshot(name, os.environ.get(MINECRAFTISM_REVISION_ENV, ""))
+                        records = cached(args, f"minecraftism:{name}:{revision}:{args.minecraft_qa}:{args.seed + 1}",
+                                         lambda: stream_minecraftism_records(name, revision, files, args.minecraft_qa,
+                                                                            args.seed + 1), "Minecraftism Q&A")
+                    else:
+                        records = cached(args, f"hub:{name}:{split}:{args.minecraft_qa}:{args.seed + 1}:3",
+                                         lambda: load_hub_records(name, split, args.minecraft_qa, args.seed + 1),
+                                         "Minecraft Q&A")
                     found = minecraft_qa_rows(records, args.minecraft_qa, args.system_prompt, rng)
+                    if name == MINECRAFTISM_DATASET:
+                        for row in found:
+                            row["dataset_id"] = MINECRAFTISM_DATASET
+                    if name == MINECRAFTISM_DATASET and not found:
+                        raise RuntimeError("no Minecraftism Q&A rows passed the quality filters")
                     print(f"+{len(found)} Minecraft Q&A rows streamed from {args.minecraft_qa_dataset}")
+                    if preset.get("reasoning"):
+                        supplied = sum(row.get("reasoning_origin") == "dataset" for row in found)
+                        print(f"CoT: {supplied} dataset-provided traces; {len(found) - supplied} generated plans "
+                              "(teacher traces may be added later; traces are not verified facts)")
                 rows += found
-            except Exception as exc:  # noqa: BLE001 - never lose a training session to a download problem
+            except Exception as exc:  # noqa: BLE001 - optional external datasets may be skipped
+                if hub_split(args.minecraft_qa_dataset, "train")[0] == MINECRAFTISM_DATASET:
+                    raise RuntimeError(f"Required Minecraftism dataset could not be loaded: {type(exc).__name__}: {exc}") from exc
                 print(f"warning: could not stream {args.minecraft_qa_dataset} ({type(exc).__name__}: {exc}) - skipped")
     if args.stream_vision > 0 and preset.get("vision"):
         raytrace = "raytrace" in args.vision_dataset
@@ -1490,6 +1818,232 @@ def extra_rows(args: argparse.Namespace, preset: dict[str, Any], rng: Any, offli
     return rows
 
 
+# --------------------------------------------------------------------------- tool calling (agentic)
+#: Multi-turn tool use (function calling) written by Qwen3-235B-A22B - the same family as the 4B bases - with the
+#: tools of each chat (NVIDIA, CC BY 4.0, 310k chats). ``reasoning: on`` rows have a <think> trace in every
+#: assistant turn (thinking editions), ``off`` rows have none.
+TOOL_DATASET = "nvidia/Nemotron-Post-Training-Dataset-v1:tool_calling"
+#: Held-out chats the agentic score is measured on (never trained on), plus everyday prompts that need no tool.
+TOOL_EVAL = 60
+NO_TOOL_PROMPTS = (
+    "Explain compound interest simply, with a quick example.", "Write a haiku about rain.",
+    "What's the difference between a list and a tuple in Python?", "How do I get iron in Minecraft?",
+    "Give me three tips for sleeping better.", "Translate 'good morning, friends' into Spanish.",
+    "Why is the sky blue? Two sentences.", "What does a creeper drop in Minecraft?",
+    "Summarise the plot of Romeo and Juliet in one paragraph.", "Is 391 a prime number?",
+    "Suggest a name for a cozy Minecraft village.", "How many minutes are in a week?",
+)
+_THINK_SPLIT = re.compile(r"</think>", re.I)
+_TOOL_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def tools_block(tools: list[Any]) -> str:
+    """Qwen3's own tool prompt, character for character (what its chat template writes for ``tools=...``), so
+    the rows train exactly what the model sees at run time - with any chat template."""
+    return ("# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with "
+            "function signatures within <tools></tools> XML tags:\n<tools>"
+            + "".join("\n" + json.dumps(tool, ensure_ascii=False) for tool in tools)
+            + "\n</tools>\n\nFor each function call, return a json object with function name and arguments within "
+              "<tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": "
+              "<args-json-object>}\n</tool_call>")
+
+
+def tool_call_text(call: dict[str, Any]) -> str:
+    """One call as Qwen3 writes it: ``<tool_call>\\n{"name": ..., "arguments": {...}}\\n</tool_call>``."""
+    function = call.get("function") if isinstance(call.get("function"), dict) else call
+    arguments = function.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)
+    return '<tool_call>\n{"name": "' + str(function.get("name") or "") + '", "arguments": ' + arguments.strip() + "}\n</tool_call>"
+
+
+def _split_trace(content: str) -> tuple[str, str]:
+    if not _THINK_SPLIT.search(content):
+        return "", content.strip()
+    trace, answer = _THINK_SPLIT.split(content, 1)
+    return trace.replace("<think>", "").strip(), answer.strip()
+
+
+def tool_messages(messages: list[dict[str, Any]], tools: list[Any], system: str,
+                  thinking: bool) -> list[dict[str, str]] | None:
+    """A tool chat as plain role/content turns, rendered the way Qwen3's template renders ``tools`` /
+    ``tool_calls`` / ``role: tool`` (tool results become ``<tool_response>`` user turns, which are never trained
+    on). Thinking editions keep the trace of every assistant turn; the others drop it. None = unusable."""
+    out = [{"role": "system", "content": (f"{system}\n\n" if system else "") + tools_block(tools)}]
+    tool_turn = False
+    for message in messages:
+        role, content = message.get("role"), str(message.get("content") or "")
+        if role == "user":
+            if not content.strip():
+                return None
+            out.append({"role": "user", "content": content.strip()})
+            tool_turn = False
+        elif role == "assistant":
+            trace, answer = _split_trace(content)
+            if thinking and not trace:
+                return None
+            text = answer
+            for call in message.get("tool_calls") or []:
+                text += ("\n" if text else "") + tool_call_text(call)
+            if not text:
+                return None
+            out.append({"role": "assistant", "content": f"<think>\n{trace}\n</think>\n\n{text}" if thinking else text})
+            tool_turn = False
+        elif role == "tool":
+            wrapped = f"<tool_response>\n{content.strip()}\n</tool_response>"
+            if tool_turn:
+                out[-1]["content"] += "\n" + wrapped
+            else:
+                out.append({"role": "user", "content": wrapped})
+            tool_turn = True
+        elif role != "system":
+            return None
+    while out and out[-1]["role"] != "assistant":
+        out.pop()
+    return out if any(m["role"] == "assistant" for m in out) and any(
+        m["role"] == "user" and not m["content"].startswith("<tool_response>") for m in out) else None
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z]{4,}", text.lower()))
+
+
+def _tool_words(tools: list[Any]) -> set[str]:
+    """What the tools are about: their names, descriptions and parameter names (not JSON-schema words)."""
+    words: set[str] = set()
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) and isinstance(tool.get("function"), dict) else tool
+        if not isinstance(function, dict):
+            continue
+        properties = (function.get("parameters") or {}).get("properties") or {}
+        words |= _words(" ".join([str(function.get("name") or "").replace("_", " "), str(function.get("description") or ""),
+                                  " ".join(str(k).replace("_", " ") for k in properties)]))
+    return words
+
+
+def no_tool_messages(question: str, answer: str, tools: list[Any], system: str) -> list[dict[str, str]] | None:
+    """Tools are offered but none fits the question: the answer is a normal reply (no call). Tools that share a
+    word with the question are not used for this (they might fit)."""
+    if _tool_words(tools) & _words(question):
+        return None
+    return [{"role": "system", "content": (f"{system}\n\n" if system else "") + tools_block(tools)},
+            {"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+
+
+def tool_rows(records: Any, limit: int, system: str, thinking: bool, rng: Any, chats: list[dict[str, Any]] = (),
+              max_chars: int = 9000, held_out: int = TOOL_EVAL) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(training rows, eval rows)`` from the tool-calling chats. Thinking editions use the ``reasoning: on``
+    chats (with traces), the others prefer ``off`` ones. Half the rows get our system prompt, half only the tool
+    prompt (how benchmarks and apps call it). ~15% more rows offer tools for an everyday question from ``chats``
+    and answer it without a call, so it learns WHEN to call, not just how. The first ``held_out`` usable chats
+    are kept for the agentic score (base vs fine-tuned), never trained on."""
+    rows: list[dict[str, Any]] = []
+    held: list[dict[str, Any]] = []
+    toolsets: list[list[Any]] = []
+    for record in records:
+        if len(rows) >= limit:
+            break
+        on = str(record.get("reasoning") or "").lower() == "on"
+        if thinking and not on:
+            continue
+        try:
+            tools = json.loads(record.get("metadata") or "{}").get("tools") or []
+        except (TypeError, ValueError):
+            continue
+        messages = record.get("messages") or []
+        if not tools or not isinstance(messages, list):
+            continue
+        prompt = system if rng.random() < 0.5 else ""
+        turns = tool_messages(messages, tools, prompt, thinking)
+        if not turns or sum(len(m["content"]) for m in turns) > max_chars:
+            continue
+        toolsets.append(tools)
+        first = next(i for i, m in enumerate(turns) if m["role"] == "assistant")
+        calls = [json.loads(c) for c in _TOOL_CALL.findall(turns[first]["content"]) if _json_ok(c)]
+        if len(held) < held_out and calls:
+            held.append({"messages": turns[:first + 1], "kind": "tools", "source": "tools", "check": {},
+                         "tool_expect": [{"name": c.get("name"), "arguments": c.get("arguments")} for c in calls]})
+            continue
+        rows.append({"messages": turns, "kind": "tools", "source": "tools", "check": {}})
+    plain = [c for c in chats if len(c.get("messages") or []) == 3 and c["messages"][1]["role"] == "user"]
+    rng.shuffle(plain)
+    for chat in plain[:max(0, len(rows) * 15 // 100)]:
+        if not toolsets:
+            break
+        made = no_tool_messages(chat["messages"][1]["content"], chat["messages"][2]["content"], rng.choice(toolsets),
+                                system if rng.random() < 0.5 else "")
+        if made:
+            rows.append({"messages": made, "kind": "tools-none", "source": "tools", "reasoning": chat.get("reasoning", ""),
+                         "check": {}})
+    for question in NO_TOOL_PROMPTS if toolsets else ():
+        made = None
+        for _ in range(8):
+            made = no_tool_messages(question, "-", rng.choice(toolsets), "")
+            if made:
+                break
+        if made:
+            held.append({"messages": made, "kind": "tools", "source": "tools", "check": {}, "tool_expect": []})
+    return rows, held
+
+
+def _json_ok(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except ValueError:
+        return False
+
+
+def _arguments(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def tool_score(row: dict[str, Any], reply: str) -> dict[str, bool]:
+    """``right_tool``: the same function names (or no call when none was wanted); ``exact``: names AND
+    arguments, the strict function-calling score."""
+    calls = []
+    for raw in _TOOL_CALL.findall(strip_thinking(reply)):
+        if _json_ok(raw):
+            call = json.loads(raw)
+            calls.append((str(call.get("name")), _arguments(call.get("arguments"))))
+    wanted = [(str(c["name"]), _arguments(c.get("arguments"))) for c in row.get("tool_expect") or []]
+    names = sorted(n for n, _a in calls) == sorted(n for n, _a in wanted)
+    exact = names and all(any(n == m and a == b for m, b in calls) for n, a in wanted)
+    return {"right_tool": names, "exact": bool(exact), "needs_call": bool(wanted)}
+
+
+def agentic_summary(results: list[dict[str, bool]]) -> dict[str, Any]:
+    calls = [r for r in results if r["needs_call"]]
+    none = [r for r in results if not r["needs_call"]]
+    pct = lambda part, whole: round(100 * part / whole, 1) if whole else None  # noqa: E731
+    return {"score": pct(sum(r["exact"] for r in results), len(results)),
+            "right_tool": pct(sum(r["right_tool"] for r in calls), len(calls)),
+            "exact_calls": pct(sum(r["exact"] for r in calls), len(calls)),
+            "no_call_when_none_fits": pct(sum(r["exact"] for r in none), len(none)), "asked": len(results)}
+
+
+def agentic_eval(generate: Any, rows: list[dict[str, Any]], model: Any = None, log: Any = print) -> dict[str, Any]:
+    """The fine-tuned model's tool-calling score on the held-out chats - and the BASE model's on the same ones
+    (the LoRA switched off for a moment), so the card can show base vs fine-tuned."""
+    report = {"tuned": agentic_summary([tool_score(r, a) for r, a in zip(rows, answer_all(generate, rows), strict=False)])}
+    switch = getattr(model, "disable_adapter", None)
+    if callable(switch):
+        try:
+            with switch():
+                report["base"] = agentic_summary([tool_score(r, a) for r, a in
+                                                  zip(rows, answer_all(generate, rows), strict=False)])
+        except Exception as exc:  # noqa: BLE001 - the fine-tuned score is still reported
+            log(f"agentic eval: base model not measured ({type(exc).__name__}: {exc})")
+    base = (report.get("base") or {}).get("score")
+    log(f"agentic (tool calling, {len(rows)} held-out chats): fine-tuned {report['tuned']['score']}%"
+        + (f" vs base {base}%" if base is not None else ""))
+    return report
+
+
 # --------------------------------------------------------------------------- tests
 #: Prompts the optional test suite asks after training (``--test`` / ``--test-only``).
 TEST_PROMPTS = (
@@ -1511,6 +2065,10 @@ def test_rows(eval_rows: list[dict[str, Any]], preset: dict[str, Any], system: s
     for kind, prompt in TEST_PROMPTS:
         rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt},
                                   {"role": "assistant", "content": "-"}], "kind": "prompt", "test": kind, "check": {}})
+    for prompt in ("Identify the assistant responding to me, and who fine-tuned it?",
+                   "A friend says your name is Qwen. What is your actual name?"):
+        rows.append({"messages": [{"role": "user", "content": prompt}, {"role": "assistant", "content": "-"}],
+                     "kind": "prompt", "test": "identity_no_system", "check": {}})
     if preset.get("vision"):
         picture = next((row for row in eval_rows if row.get("images")), None)
         if picture:
@@ -1527,15 +2085,20 @@ def run_tests(generate: Any, rows: list[dict[str, Any]], log: Any = print) -> di
                   "refused": is_refusal(answer)}
         if row.get("test") in ("bot turn", "minecraft q&a", "vision"):
             result.update(score(row, reply))
-        if row.get("test") == "identity":
-            result["identity_ok"] = "minecraftism" in answer.lower()
+        if row.get("test") in ("identity", "identity_no_system"):
+            contradiction = re.search(r"\b(?:i(?:'m| am)|my name is)\s+qwen\b|\b(?:not|isn't|is not)\s+minecraftism\b",
+                                      answer, re.I)
+            result["identity_ok"] = "minecraftism" in answer.lower() and not contradiction
         results.append(result)
         log(f"\n--- [{result['test']}] {result['prompt'][-160:]}\n{reply.strip()[:1200]}")
     turns = [r for r in results if r["test"] == "bot turn"]
+    identities = [r["identity_ok"] for r in results if "identity_ok" in r]
+    no_system = [r["identity_ok"] for r in results if r["test"] == "identity_no_system"]
     summary = {
         "prompts": len(results),
         "refusals": sum(1 for r in results if r["refused"]),
-        "identity_ok": all(r.get("identity_ok", True) for r in results),
+        "identity_ok": all(identities) if identities else None,
+        "identity_without_system_ok": all(no_system) if no_system else None,
         "bot_json_ok": f"{sum(1 for r in turns if r.get('json_ok'))}/{len(turns)}",
         "results": results,
     }
@@ -1614,8 +2177,8 @@ def output_name(preset_name: str, preset: dict[str, Any], quant: str) -> str:
 def display_name(preset_name: str, preset: dict[str, Any]) -> str:
     if not preset.get("edition"):
         return f"PyMC Minecraft ({preset_name})"
-    return (MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Thinking" if preset.get("reasoning") else "")
-            + (" Uncensored" if preset.get("uncensored") else ""))
+    return (MODEL_NAME + (" VL" if preset.get("vision") else "") + " 4B" + (" Turbo" if preset.get("turbo") else "")
+            + (" Thinking" if preset.get("reasoning") else "") + (" Uncensored" if preset.get("uncensored") else ""))
 
 
 SAFETENSORS_DIR = "safetensors"
@@ -1787,28 +2350,118 @@ def copy_essentials(src: Path, dst: Path) -> list[str]:
 
 
 # --------------------------------------------------------------------------- GGUF quants from the safetensors
-#: The GGUFs made (and uploaded) next to ``--gguf`` when publishing. Q8_0 is near-lossless, Q4_K_M the default.
+#: The standard GGUFs (``--gguf-quants standard``, and all that Unsloth's slow fallback exporter makes).
 GGUF_QUANTS = ("q8_0", "q6_k", "q5_k_m", "q4_k_m", "q3_k_m")
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
+#: Distinct dense-model llama.cpp formats, including experimental low-bit types, in the order they are attempted
+#: when there is not time for all of them: the useful ones first, the tiny and legacy ones last. ``--gguf-quants all``
+#: (the default when uploading). Q8_0 comes first because the importance matrix is computed with it.
+ALL_QUANTS = ("q8_0", "q4_k_m", "q6_k", "q5_k_m", "iq4_xs", "q3_k_m", "q4_k_s", "q5_k_s", "iq4_nl", "q3_k_l", "iq3_m",
+              "iq3_xs", "q3_k_s", "iq3_s", "iq3_xxs", "q2_k", "iq2_m", "iq2_s", "iq2_xs", "iq2_xxs", "q2_k_s", "iq1_m",
+              "iq1_s", "q4_0", "q4_1", "q5_0", "q5_1", "bf16", "f16", "q1_0", "q2_0", "tq1_0", "tq2_0", "f32")
+#: llama-quantize refuses these without an importance matrix ("the result will be garbage").
+IMATRIX_REQUIRED = frozenset({"IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "Q2_K_S"})
+#: Quants that do not use the importance matrix (full precision, or Q8_0, which has no use for it).
+NO_IMATRIX = frozenset({"F16", "BF16", "F32", "Q8_0"})
+#: llama.cpp types that are not made, and why (listed on the model card so nobody wonders).
+NOT_MADE = {"MXFP4_MOE": "mixture-of-experts format; Minecraftism is a dense model",
+            "COPY": "a copy operation, not a distinct quantization",
+            "Q3_K / Q4_K / Q5_K": "aliases of the corresponding K_M formats"}
 #: The "use it when" column of the model card's quant table.
-QUANT_USE = {"F16": "full GGUF precision (as big as the safetensors)", "Q8_0": "best quality, near the 16-bit model",
-             "Q6_K": "very close to Q8_0, smaller", "Q5_K_M": "a good middle", "Q4_K_M": "the default: small and good",
-             "Q4_K_S": "a bit smaller than Q4_K_M", "Q3_K_M": "low RAM / old PCs, some quality loss",
-             "Q2_K": "smallest, noticeably weaker"}
+QUANT_USE = {"F16": "full precision (16-bit floats), as big as the safetensors",
+             "BF16": "full precision in bfloat16, the format it was trained in",
+             "Q8_0": "near-lossless: best quality",
+             "Q6_K": "very close to Q8_0, smaller - recommended if it fits",
+             "Q5_K_M": "high quality - recommended",
+             "Q5_K_S": "high quality, a bit smaller than Q5_K_M",
+             "Q4_K_M": "the default: the best balance of size and quality",
+             "Q4_K_S": "a bit smaller than Q4_K_M, slightly lower quality",
+             "IQ4_XS": "about Q4_K_S quality, smaller - the smallest good one",
+             "IQ4_NL": "like IQ4_XS; fast on ARM CPUs (llama.cpp repacks it)",
+             "Q3_K_L": "low RAM, still usable",
+             "Q3_K_M": "low RAM / old PCs, some quality loss",
+             "Q3_K_S": "low RAM, noticeable quality loss",
+             "IQ3_M": "low RAM: better than Q3_K_M at a smaller size",
+             "IQ3_S": "very low RAM, better than Q3_K_S",
+             "IQ3_XS": "very low RAM",
+             "IQ3_XXS": "very low RAM, clearly weaker",
+             "Q2_K": "tiny, much weaker",
+             "Q2_K_S": "tiny, much weaker",
+             "IQ2_M": "tiny: the best of the 2-bit ones",
+             "IQ2_S": "tiny, weak - for experiments",
+             "IQ2_XS": "tiny, weak - for experiments",
+             "IQ2_XXS": "tiny, very weak - for experiments",
+             "IQ1_M": "extremely small: mostly broken at 4B, for curiosity",
+             "IQ1_S": "extremely small: mostly broken at 4B, for curiosity",
+             "Q4_0": "legacy format for old apps; fast on ARM CPUs (llama.cpp repacks it)",
+             "Q4_1": "legacy format for old apps",
+             "Q5_0": "legacy format for old apps",
+             "Q5_1": "legacy format for old apps",
+             "Q1_0": "experimental 1-bit quant; quality may be very poor",
+             "Q2_0": "experimental 2-bit quant; quality may be very poor",
+             "TQ1_0": "experimental ternary quant; quality may be very poor",
+             "TQ2_0": "experimental ternary quant; quality may be very poor",
+             "F32": "expanded from F16; larger without recovering original precision"}
+#: Marked as recommended on the model card.
+RECOMMENDED_QUANTS = ("Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "IQ4_XS", "IQ3_M")
+#: Text the importance matrix is computed on: chunks of 512 tokens from the training data (CPU: ~10 min for 4B).
+IMATRIX_CHUNKS = 64
 
 
 def gguf_quants(args: argparse.Namespace) -> list[str]:
     """``--gguf`` first (the one kept for the Modelfile, the test and ``llm import``), then ``--gguf-quants``.
 
-    ``--gguf-quants`` defaults to :data:`GGUF_QUANTS` when uploading and to nothing more otherwise."""
+    ``--gguf-quants`` defaults to ``all`` (:data:`ALL_QUANTS`) when uploading and to nothing more otherwise;
+    ``standard`` = :data:`GGUF_QUANTS`."""
     primary = str(args.gguf or "none").lower()
     if primary == "none":
         return []
     extra = getattr(args, "gguf_quants", None)
     if extra is None:
-        extra = ",".join(GGUF_QUANTS) if args.hub_repo else ""
-    wanted = [q.strip().lower() for q in str(extra).split(",") if q.strip() and q.strip().lower() != "none"]
+        extra = "all" if args.hub_repo else ""
+    wanted: list[str] = []
+    for item in str(extra).split(","):
+        item = item.strip().lower()
+        if item == "all":
+            wanted += ALL_QUANTS
+        elif item == "standard":
+            wanted += GGUF_QUANTS
+        elif item and item != "none":
+            wanted.append(item)
     return [primary] + [q for q in dict.fromkeys(wanted) if q != primary]
+
+
+def calibration_text(data_dir: str | Path | None, target: Path, max_chars: int = 400_000) -> Path | None:
+    """Plain text from the training rows (every ``messages`` turn; picture parts skipped) for llama-imatrix, mixed
+    evenly over the file so chat, Minecraft facts and game turns are all in it. ``None`` without data."""
+    folder = Path(data_dir) if data_dir else None
+    source = next((f for f in ((folder / "train.jsonl"), folder / "llm_data" / "train.jsonl") if f.is_file()), None) \
+        if folder else None
+    if source is None:
+        return None
+    lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    step = max(1, len(lines) // 4000)
+    parts, size = [], 0
+    for line in lines[::step]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        for message in row.get("messages") or []:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                content = "\n".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+            text = str(content or "").strip()
+            if text:
+                parts.append(text)
+                size += len(text) + 2
+        if size >= max_chars:
+            break
+    if size < 20_000:  # too little for even a few 512-token chunks
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n\n".join(parts)[:max_chars], encoding="utf-8")
+    return target
 
 
 def _find_binary(folder: Path, name: str) -> Path | None:
@@ -1907,7 +2560,8 @@ def llama_cpp_tools(scratch: Path, run: Any = None, fetch_json: Any = None, down
         source, build = convert.parent, convert.parent / "build"
         for command in (["cmake", "-S", str(source), "-B", str(build), "-DLLAMA_CURL=OFF", "-DGGML_NATIVE=OFF",
                          "-DBUILD_SHARED_LIBS=OFF", "-DLLAMA_BUILD_TESTS=OFF", "-DCMAKE_BUILD_TYPE=Release"],
-                        ["cmake", "--build", str(build), "--target", "llama-quantize", "-j", str(os.cpu_count() or 2)]):
+                        ["cmake", "--build", str(build), "--target", "llama-quantize", "llama-imatrix", "-j",
+                         str(os.cpu_count() or 2)]):
             done = run(command, capture_output=True, text=True)
             if done.returncode != 0:
                 raise RuntimeError(f"building llama-quantize failed: {(done.stderr or done.stdout)[-800:]}")
@@ -1917,6 +2571,63 @@ def llama_cpp_tools(scratch: Path, run: Any = None, fetch_json: Any = None, down
     return convert.resolve(), binary.resolve()
 
 
+def llama_cpp_cuda_tools(scratch: Path, run: Any = None, fetch_json: Any = None, download: Any = None,
+                         log: Any = print) -> tuple[Path, Path]:
+    """Get a CUDA release and verify llama-imatrix actually sees NVIDIA GPUs; never silently use the CPU."""
+    import subprocess
+
+    run, fetch_json, download = run or subprocess.run, fetch_json or _fetch_json, download or _download
+    releases = fetch_json(f"https://api.github.com/repos/{LLAMA_CPP_REPO}/releases?per_page=10")
+    selected = None
+    for release in releases:
+        tag = release.get("tag_name", "")
+        assets = {a.get("name"): a for a in release.get("assets") or []}
+        binary = assets.get(f"llama-{tag}-bin-ubuntu-cuda-12.8-x64.tar.gz")
+        runtime = assets.get(f"cudart-llama-{tag}-bin-ubuntu-cuda-12.8-x64.tar.gz")
+        if binary and runtime:
+            selected = tag, binary, runtime
+            break
+    if not selected:
+        raise RuntimeError("No compatible Linux CUDA 12.8 llama.cpp release found; refusing CPU-only calibration")
+    tag, binary, runtime = selected
+    root = Path(scratch) / f"llama.cpp-cuda-{tag}"
+    root.mkdir(parents=True, exist_ok=True)
+    log(f"llama.cpp: downloading CUDA release {tag} and matching source")
+    _extract(download(binary["browser_download_url"], root / "bin.tar.gz"), root / "bin")
+    _extract(download(f"https://codeload.github.com/{LLAMA_CPP_REPO}/tar.gz/refs/tags/{tag}", root / "src.tar.gz"),
+             root / "src")
+    convert = next(iter(sorted((root / "src").rglob("convert_hf_to_gguf.py"))), None)
+    quantize = _find_binary(root / "bin", "llama-quantize")
+    matrix = _find_binary(root / "bin", "llama-imatrix")
+    if not convert or not quantize or not matrix or matrix.parent != quantize.parent:
+        raise RuntimeError("CUDA release lacks converter, llama-quantize or adjacent llama-imatrix")
+
+    def check() -> tuple[list[str], str]:
+        dirs = {str(quantize.parent)}
+        if (root / "runtime").is_dir():
+            dirs.update(str(p.parent) for p in (root / "runtime").rglob("*.so*"))
+        env = {**os.environ, "LD_LIBRARY_PATH": ":".join(sorted(dirs)) + ":" + os.environ.get("LD_LIBRARY_PATH", "")}
+        try:
+            result = run([str(matrix), "--list-devices"], capture_output=True, text=True, env=env, timeout=60)
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            devices = sorted(set(re.findall(r"\bCUDA\d+\b", output))) if result.returncode == 0 else []
+            return devices, env["LD_LIBRARY_PATH"]
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return [], env["LD_LIBRARY_PATH"]
+
+    devices, libraries = check()
+    if not devices:
+        log("CUDA libraries not usable yet; downloading the matching CUDA runtime")
+        _extract(download(runtime["browser_download_url"], root / "runtime.tar.gz"), root / "runtime")
+        devices, libraries = check()
+    if not devices:
+        raise RuntimeError("CUDA llama-imatrix could not see a GPU. Check Kaggle GPU/driver compatibility; no CPU fallback")
+    os.environ["LD_LIBRARY_PATH"] = libraries
+    os.environ["PYMC_GGUF_CUDA_DEVICES"] = ",".join(devices)
+    log(f"llama-imatrix CUDA devices: {', '.join(devices)}; GPU layers will be offloaded")
+    return convert.resolve(), quantize.resolve()
+
+
 def _run_tool(run: Any, command: list[str], what: str, env: dict[str, str] | None = None) -> None:
     print(f"  {what}...", flush=True)
     done = run(command, capture_output=True, text=True, env=env)
@@ -1924,25 +2635,55 @@ def _run_tool(run: Any, command: list[str], what: str, env: dict[str, str] | Non
         raise RuntimeError(f"{what} failed: {(done.stderr or done.stdout or '')[-1200:]}")
 
 
-def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
-               tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None) -> dict[str, Any]:
-    """safetensors -> one F16 GGUF (+ the F16 vision projector) -> every quant with ``llama-quantize``.
+def imatrix_binary(quantize: Path) -> Path | None:
+    """``llama-imatrix`` next to ``llama-quantize`` (both ship in the llama.cpp release and the source build)."""
+    found = Path(quantize).with_name("llama-imatrix")
+    return found if found.is_file() else None
 
-    ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk); the F16
-    intermediate is deleted at the end unless ``f16`` was asked for."""
+
+def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vision: bool,
+               tools: tuple[Path, Path], on_file: Any, run: Any = None, on_base: Any = None,
+               calibration: Path | None = None, imatrix_chunks: int = IMATRIX_CHUNKS, stop_at: float = 0,
+               clock: Any = time.time, require_primary: bool = True, gpu_imatrix: bool = False,
+               notify: Any = None, imatrix_from_base: bool = False, gpu_device: str | None = None,
+               cpu_threads: int | None = None) -> dict[str, Any]:
+    """safetensors -> one F16 GGUF (+ BF16, + the F16 vision projector) -> an importance matrix -> every quant.
+
+    ``on_file(path, quant)`` gets each finished file right away (to upload it and free the disk). With a
+    ``calibration`` text and ``llama-imatrix``, the importance matrix is computed (on Q8_0, faster on a CPU) and
+    used for every quant below Q8_0 - the IQ1/IQ2/IQ3_XXS/Q2_K_S ones need it and are skipped without it. Past
+    ``stop_at`` (unix time) the remaining quants are skipped, so the uploads still finish before the session ends.
+    The first quant in ``quants`` stays first in ``files``; the F16 intermediate is deleted unless ``f16`` was asked
+    for."""
     import subprocess
 
     run = run or subprocess.run
+    if gpu_device and (not gpu_imatrix or not re.fullmatch(r"CUDA[0-9]+", gpu_device)):
+        raise ValueError("gpu_device must be a verified CUDA device and requires gpu_imatrix")
+    if cpu_threads is not None and cpu_threads < 1:
+        raise ValueError("cpu_threads must be positive")
     convert, quantize = tools
     scratch = Path(scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "LD_LIBRARY_PATH": f"{Path(quantize).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    wanted = [q.upper() for q in dict.fromkeys(q.upper() for q in quants)]
+    primary = wanted[0] if wanted else ""
     base = scratch / f"{stem}.F16.gguf"
     _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(base), "--outtype", "f16"],
               "safetensors -> F16 GGUF")
     if not base.is_file():
         raise RuntimeError("the converter wrote no GGUF")
-    result: dict[str, Any] = {"files": [], "mmproj": None}
+    result: dict[str, Any] = {"files": [], "mmproj": None, "skipped": [], "imatrix": None}
+    bf16 = scratch / f"{stem}.BF16.gguf"
+    if "BF16" in wanted:  # straight from the 16-bit safetensors, while they are still here (exact, not via F16)
+        try:
+            _run_tool(run, [sys.executable, str(convert), str(st_dir), "--outfile", str(bf16), "--outtype", "bf16"],
+                      "safetensors -> BF16 GGUF")
+        except RuntimeError as exc:
+            if primary == "BF16" and require_primary:
+                raise
+            bf16.unlink(missing_ok=True)
+            result["skipped"].append({"quant": "BF16", "why": str(exc)[-500:]})
     if vision:
         mmproj = scratch / f"mmproj-{stem}.F16.gguf"
         before = set(scratch.glob("*.gguf"))
@@ -1957,18 +2698,244 @@ def make_ggufs(st_dir: Path, scratch: Path, stem: str, quants: list[str], *, vis
         on_file(mmproj, "MMPROJ")
     if on_base is not None:  # the safetensors are not read any more: everything below works from the F16 GGUF
         on_base()
-    wanted = [q.upper() for q in quants]
-    for quant in wanted:
-        target = base if quant in ("F16", "BF16") else scratch / f"{stem}.{quant}.gguf"
-        if target != base:
-            _run_tool(run, [str(quantize), str(base), str(target), quant], f"F16 -> {quant}", env=env)
+    imatrix_tool = imatrix_binary(Path(quantize)) if calibration else None
+    wants_imatrix = imatrix_tool is not None and any(q not in NO_IMATRIX for q in wanted)
+    if gpu_imatrix and calibration and not imatrix_tool:
+        raise RuntimeError("CUDA llama-imatrix is missing; refusing CPU-only calibration")
+    order = list(wanted)
+    if wants_imatrix and "Q8_0" in order:  # Q8_0 first: the importance matrix is computed with it
+        order.remove("Q8_0")
+        order.insert(0, "Q8_0")
+    imatrix: Path | None = None
+    made: dict[str, dict[str, Any]] = {}
+
+    def compute_imatrix() -> None:
+        nonlocal imatrix
+        model = (scratch / f"{stem}.Q8_0.gguf" if not imatrix_from_base and "Q8_0" in made
+                 and (scratch / f"{stem}.Q8_0.gguf").is_file() else base)
+        target = scratch / f"{stem}.imatrix.gguf"
+        seconds = 45 * 60.0
+        if stop_at:
+            seconds = min(seconds, (stop_at - clock()) / 3)
+        if seconds < 120:
+            print("  no time left for the importance matrix", flush=True)
+            return
+        command = [str(imatrix_tool), "-m", str(model), "-f", str(calibration), "-o", str(target), "-c", "512",
+                   "--chunks", str(int(imatrix_chunks)), "--no-ppl", "-ofreq", "8", "-t", str(cpu_threads or os.cpu_count() or 4)]
+        if gpu_imatrix:
+            command += ["--gpu-layers", "all", "--split-mode", "none" if gpu_device else "layer"]
+            if gpu_device:
+                command += ["--device", gpu_device]
+        if notify:
+            notify("Computing importance matrix on GPU" if gpu_imatrix else "Computing importance matrix", False)
+        print(f"  importance matrix ({imatrix_chunks} x 512 tokens of the training data, on {model.name.split('.')[-2]})"
+              "...", flush=True)
+        partial = False
+        try:
+            done = run(command, capture_output=True, text=True, env=env, timeout=seconds)
+            if done.returncode != 0:
+                message = f"llama-imatrix failed: {(done.stderr or done.stdout or '')[-600:]}"
+                if gpu_imatrix:
+                    raise RuntimeError(message)
+                print(f"  {message}", flush=True)
+        except subprocess.TimeoutExpired:  # it saves every 8 chunks: a partial matrix still helps a lot
+            partial = True
+            print(f"  llama-imatrix stopped after {seconds / 60:.0f} min - using what it saved", flush=True)
+        if gpu_imatrix and not (target.is_file() and target.stat().st_size > 0):
+            raise RuntimeError("CUDA llama-imatrix produced no matrix; refusing to silently continue")
+        if target.is_file() and target.stat().st_size > 0:
+            imatrix = target
+            result["imatrix"] = {"file": target.name, "chunks": int(imatrix_chunks), "partial": partial,
+                                 "computed_on": model.name.split(".")[-2], "text": "the training data"}
+            on_file(target, "IMATRIX")  # published too: others can make more quants with it
+
+    for quant in order:
+        if stop_at and clock() > stop_at:
+            result["skipped"].append({"quant": quant, "why": "not enough time left in this session"})
+            continue
+        if wants_imatrix and imatrix is None and result["imatrix"] is None and quant not in NO_IMATRIX:
+            compute_imatrix()
+            wants_imatrix = imatrix is not None
+        if quant in IMATRIX_REQUIRED and imatrix is None:
+            result["skipped"].append({"quant": quant, "why": "needs an importance matrix (llama-imatrix was not "
+                                                              "available or had no time)"})
+            continue
+        if quant == "BF16" and not bf16.is_file() and any(item["quant"] == "BF16" for item in result["skipped"]):
+            continue
+        target = {"F16": base, "BF16": bf16}.get(quant, scratch / f"{stem}.{quant}.gguf")
+        use_imatrix = imatrix is not None and quant not in NO_IMATRIX
+        if quant not in ("F16", "BF16"):
+            command = [str(quantize)] + (["--imatrix", str(imatrix)] if use_imatrix else []) + \
+                      [str(base), str(target), quant]
+            if cpu_threads is not None:
+                command.append(str(cpu_threads))
+            try:
+                _run_tool(run, command, f"F16 -> {quant}" + (" (imatrix)" if use_imatrix else ""), env=env)
+            except RuntimeError as exc:
+                if quant == primary and require_primary:
+                    raise
+                target.unlink(missing_ok=True)
+                result["skipped"].append({"quant": quant, "why": str(exc)[-500:]})
+                continue
         if not target.is_file():
-            raise RuntimeError(f"llama-quantize wrote no {quant} file")
-        result["files"].append({"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2)})
-        on_file(target, quant)
-    if base.exists() and "F16" not in wanted and "BF16" not in wanted:
+            if quant == primary and require_primary:
+                raise RuntimeError(f"llama-quantize wrote no {quant} file")
+            result["skipped"].append({"quant": quant, "why": "quantizer produced no file"})
+            continue
+        made[quant] = {"quant": quant, "file": target.name, "gb": round(target.stat().st_size / 1e9, 2),
+                       "imatrix": use_imatrix}
+        if quant != "F16":  # the F16 is the source of every quant: handed over last
+            on_file(target, quant)
+    if "F16" in made:
+        on_file(base, "F16")
+    result["files"] = [made[q] for q in [primary] + [q for q in order if q != primary] if q in made]
+    if base.exists() and "F16" not in made:
         base.unlink()
     return result
+
+
+def gguf_calibration_from_private_dataset(api: Any, folder: Path, limit: int = 2048) -> tuple[Path, str]:
+    """Make local-only calibration text from a pinned private dataset snapshot; never upload it."""
+    import random
+
+    revision, shards = minecraftism_snapshot(MINECRAFTISM_DATASET, api=api)
+    records = stream_minecraftism_records(MINECRAFTISM_DATASET, revision, shards, limit, seed=3407)
+    rows = minecraft_qa_rows(records, limit, "", random.Random(3407))
+    text = "\n\n".join(str(message["content"]) for row in rows for message in row["messages"]
+                       if message.get("role") in ("user", "assistant"))[:400_000]
+    if len(text) < 20_000:
+        raise RuntimeError("The private dataset did not provide enough accepted calibration text")
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "private-calibration.txt"
+    path.write_text(text, encoding="utf-8")
+    print(f"GGUF calibration: {len(rows)} accepted private rows from snapshot {revision}; kept locally only")
+    return path, revision
+
+
+def existing_quantizations(files: list[str], quants: Any = ALL_QUANTS) -> dict[str, str]:
+    """Map existing root GGUFs to quant names without mistaking an imatrix or projector for weights."""
+    found = {}
+    for quant in quants:
+        q = str(quant).upper()
+        pattern = re.compile(r"(?:^|[._-])" + re.escape(q) + r"\.gguf$", re.I)
+        matches = sorted(name for name in files if "/" not in name and "imatrix" not in name.lower()
+                         and "mmproj" not in name.lower() and pattern.search(name))
+        if matches:
+            found[q] = matches[0]
+    return found
+
+
+def repair_hub_ggufs(api: Any, owner: str, preset_name: str, uncensored: bool, scratch: Path,
+                     tools: tuple[Path, Path], calibration: Path, deadline: float = 0,
+                     download: Any = None, run: Any = None, gpu_imatrix: bool = False, notify: Any = None,
+                     replace_existing: bool = False, gpu_device: str | None = None,
+                     cpu_threads: int | None = None) -> dict[str, Any]:
+    """Generate quants from a pinned safetensors repo without retraining; overwrite only in explicit replace mode.
+
+    Uploads are sequential and guarded by parent commit. The private calibration and imatrix stay local.
+    Existing GGUFs can be from another revision; callers must not present a mixed set as one verified checkpoint.
+    """
+    if preset_name not in EDITIONS or PRESETS[preset_name].get("vision"):
+        raise ValueError("GGUF repair currently supports text models only")
+    if replace_existing and (preset_name != "minecraftism-thinking" or not uncensored):
+        raise ValueError("GGUF replacement is limited to Minecraftism 4B Thinking Uncensored")
+    preset = PRESETS[preset_name]
+    if uncensored:
+        preset = uncensored_preset(preset_name, preset)
+    gguf_repo = f"{owner}/{preset['hub']}"
+    st_repo = safetensors_repo(gguf_repo)
+    source_rev = str(api.model_info(st_repo).sha)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_rev):
+        raise RuntimeError(f"Cannot pin a valid safetensors revision for {st_repo}")
+    source_files = api.list_repo_files(st_repo, repo_type="model", revision=source_rev)
+    weights = [name for name in source_files if "/" not in name and name.endswith(".safetensors")]
+    if not weights or "config.json" not in source_files:
+        raise RuntimeError(f"{st_repo}@{source_rev} has no complete model weights and config (possibly a placeholder)")
+    target_rev = str(api.model_info(gguf_repo).sha)  # must already exist; never create/replace repositories here
+    target_files = api.list_repo_files(gguf_repo, repo_type="model", revision=target_rev)
+    existing = existing_quantizations(target_files)
+    missing = [q for q in ALL_QUANTS if replace_existing or q.upper() not in existing]
+    report: dict[str, Any] = {"preset": preset_name, "source": st_repo, "source_revision": source_rev,
+                              "destination": gguf_repo, "existing": existing, "uploaded": [], "skipped": [],
+                              "replace_existing": replace_existing}
+    if not missing:
+        print(f"{gguf_repo}: all requested quant types already exist; no files changed")
+        return report
+    if deadline and time.time() >= deadline - 15 * 60:
+        report["skipped"] = [{"quant": q.upper(), "why": "not enough session time"} for q in missing]
+        return report
+    action = "replace or add" if replace_existing else "missing"
+    print(f"{gguf_repo}: {len(existing)} existing quant types, {len(missing)} to {action}; source {st_repo}@{source_rev}")
+    if notify:
+        notify(f"{preset_name}: {len(existing)} existing formats, {len(missing)} to {action}; starting export", True)
+    if replace_existing:
+        print("Replacement is per file, not atomic: incomplete runs can leave mixed checkpoint revisions.")
+    else:
+        print("Existing quants are not overwritten and may come from a different checkpoint revision.")
+    if download is None:
+        from huggingface_hub import snapshot_download
+
+        download = snapshot_download
+    scratch = Path(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    st_dir = scratch / "safetensors"
+    download(repo_id=st_repo, repo_type="model", revision=source_rev, local_dir=str(st_dir),
+             allow_patterns=["*.safetensors", "*.json", "*.model", "*.jinja", "*.txt"],
+             token=os.environ.get("HF_TOKEN"))
+    if not all((st_dir / name).is_file() for name in weights) or not (st_dir / "config.json").is_file():
+        raise RuntimeError(f"Incomplete snapshot download from {st_repo}@{source_rev}")
+    index = st_dir / "model.safetensors.index.json"
+    if index.is_file():
+        shards = set(json.loads(index.read_text(encoding="utf-8")).get("weight_map", {}).values())
+        if not shards or any(not isinstance(name, str) or Path(name).name != name or not (st_dir / name).is_file()
+                             for name in shards):
+            raise RuntimeError("Safetensors index references missing shards")
+
+    # Upload at most one file in the background while the next is quantized. Commit checks still
+    # run serially per repository, and every upload completes before its scratch directory is removed.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def upload_quant(path: Path, quant: str) -> None:
+        current = str(api.model_info(gguf_repo).sha)
+        current_files = api.list_repo_files(gguf_repo, repo_type="model", revision=current)
+        found = existing_quantizations(current_files, [quant]).get(quant)
+        if found and not replace_existing:
+            print(f"  {quant}: another run already uploaded it; leaving the existing file untouched")
+        else:
+            destination = found or path.name
+            verb = "Replace" if found else "Add"
+            api.upload_file(repo_id=gguf_repo, repo_type="model", path_in_repo=destination,
+                            path_or_fileobj=str(path), parent_commit=current,
+                            commit_message=f"{verb} {quant} GGUF from {st_repo}@{source_rev}")
+            report["uploaded"].append({"quant": quant, "file": destination, "replaced": bool(found)})
+            print(f"  {'replaced' if found else 'uploaded'} {quant} in {gguf_repo}", flush=True)
+            if notify:
+                notify(f"{preset_name}: {'replaced' if found else 'uploaded'} {quant} in {gguf_repo}", True)
+        path.unlink(missing_ok=True)
+
+    pending = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="gguf-upload") as pool:
+        def on_file(path: Path, quant: str) -> None:
+            nonlocal pending
+            if quant == "IMATRIX":
+                return  # private calibration text and its derived importance matrix remain local
+            if pending is not None:
+                pending.result()  # bounded to one in flight; propagate failures before making another upload
+            pending = pool.submit(upload_quant, path, quant)
+
+        try:
+            result = make_ggufs(st_dir, scratch / "quants", preset["file"], missing, vision=False, tools=tools,
+                                on_file=on_file, calibration=calibration,
+                                stop_at=deadline - 15 * 60 if deadline else 0, run=run,
+                                require_primary=False, gpu_imatrix=gpu_imatrix, notify=notify, imatrix_from_base=True,
+                                gpu_device=gpu_device, cpu_threads=cpu_threads)
+        finally:
+            if pending is not None:
+                pending.result()
+    report["skipped"] = result["skipped"]
+    report["imatrix_used"] = bool(result.get("imatrix"))
+    return report
 
 
 def pick_gguf(found: list[str], quant: str) -> str | None:
@@ -2132,13 +3099,19 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
 
     def upload_quant(path: Path, quant: str) -> None:
         try:
-            upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {quant} GGUF")
+            what = "importance matrix" if quant == "IMATRIX" else f"{quant} GGUF"
+            upload_hub_file(hub, hub["gguf"], path, f"{display_name(args.preset, preset)} {what}")
             print(f"  uploaded {path.name} ({path.stat().st_size / 1e9:.2f} GB) -> {hub['gguf']}", flush=True)
             uploaded[quant] = True
-            path.unlink()
+            # Every later quant still reads the shared importance matrix. Deleting it after its
+            # asynchronous upload makes the remaining quantizations fail with "No such file".
+            if quant != "IMATRIX":
+                path.unlink()
         except Exception as exc:  # keep the file; the folder upload at the end tries again
-            print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {out}", flush=True)
-            keep(path)
+            location = path.parent if quant == "IMATRIX" else out
+            print(f"  upload of {path.name} failed ({type(exc).__name__}: {exc}) - kept in {location}", flush=True)
+            if quant != "IMATRIX":
+                keep(path)  # the matrix must stay at its original path for every quant
 
     def on_file(path: Path, quant: str) -> None:
         if hub and quant not in (primary, "MMPROJ"):
@@ -2152,11 +3125,20 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
     result = None
     if st_dir is not None and Path(st_dir).is_dir():
         try:
-            print(f"making GGUFs {', '.join(q.upper() for q in quants)} from the safetensors (llama.cpp)")
+            print(f"making {len(quants)} GGUFs ({', '.join(q.upper() for q in quants)}) from the safetensors (llama.cpp)")
+            tools = tools or llama_cpp_tools(tools_dir(args, out))
+            calibration = calibration_text(getattr(args, "data_dir", None), scratch / "imatrix-text.txt")
+            deadline = float(getattr(args, "deadline", 0) or 0)
             result = make_ggufs(Path(st_dir), scratch, stem, quants, vision=bool(preset.get("vision")),
-                                tools=tools or llama_cpp_tools(tools_dir(args, out)), on_file=on_file, run=run,
-                                on_base=on_base)
+                                tools=tools, on_file=on_file, run=run, on_base=on_base, calibration=calibration,
+                                imatrix_chunks=int(getattr(args, "imatrix_chunks", IMATRIX_CHUNKS) or 0) or IMATRIX_CHUNKS,
+                                stop_at=deadline - 15 * 60 if deadline else 0)
             result["route"] = "llama.cpp"
+            tag = re.search(r"llama\.cpp-(b\d+)", str(tools[1]))
+            if tag:
+                result["llama_cpp"] = tag.group(1)
+            for item in result["skipped"]:
+                print(f"  skipped {item['quant']}: {item['why']}", flush=True)
         except Exception as exc:
             print(f"llama.cpp GGUF route failed ({type(exc).__name__}: {exc}) - using Unsloth's exporter")
             result = None
@@ -2166,12 +3148,17 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
             uploader.wait()
         return None
     if result is None:
-        print(f"exporting GGUF ({', '.join(quants)}) with Unsloth - 10-20 minutes per quant")
+        slow = [q for q in quants[1:] if q.lower() not in GGUF_QUANTS]
+        quants = [quants[0]] + [q for q in quants[1:] if q.lower() in GGUF_QUANTS]
+        print(f"exporting GGUF ({', '.join(quants)}) with Unsloth - 10-20 minutes per quant"
+              + (f"; {len(slow)} more quants need llama.cpp and are skipped" if slow else ""))
         model.save_pretrained_gguf(str(out / "gguf"), tokenizer, quantization_method=list(quants))
         found = sorted(set(glob.glob(str(out / "gguf*" / "*.gguf")) + glob.glob(str(out / "*.gguf"))
                            + glob.glob("*.gguf")))
         projectors = [f for f in found if "mmproj" in Path(f).name.lower()]
-        result = {"files": [], "mmproj": None, "route": "unsloth"}
+        result = {"files": [], "mmproj": None, "route": "unsloth", "imatrix": None,
+                  "skipped": [{"quant": q.upper(), "why": "llama.cpp was not available (Unsloth's exporter makes "
+                                                         "only the standard quants)"} for q in slow]}
         if projectors and preset.get("vision"):
             mmproj = out / f"mmproj-{stem}.F16.gguf"
             shutil.move(projectors[0], mmproj)
@@ -2202,29 +3189,125 @@ def export_ggufs(args: argparse.Namespace, preset: dict[str, Any], model: Any, t
     return result
 
 
+def _ram_gb(gb: Any, extra: float) -> str:
+    try:
+        return f"~{float(gb) + extra:.1f} GB"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def gguf_quant_guide(report: dict[str, Any], repo: str, quant: str) -> str:
+    """The GGUF card's "which file" advice and the table of every quant (biggest first), with what was skipped."""
+    ggufs = [g for g in report.get("ggufs") or [] if g.get("file")]
+    if not ggufs:
+        return ""
+    mmproj_gb = 0.0
+    if report.get("mmproj"):
+        mmproj_gb = 0.7
+    have = {g["quant"] for g in ggufs}
+    pick = [q for q in ("Q8_0", "Q6_K", "Q5_K_M", quant, "IQ4_XS", "IQ3_M", "Q3_K_M", "IQ2_M") if q in have]
+    advice = {"Q8_0": "you have plenty of RAM / VRAM and want the best answers",
+              "Q6_K": "almost Q8_0 quality, a quarter smaller",
+              "Q5_K_M": "high quality with room to spare",
+              "IQ4_XS": "you want a 4-bit file a bit smaller than the default",
+              "IQ3_M": "low RAM (old laptops, phones)",
+              "Q3_K_M": "low RAM and an app that has no IQ quants",
+              "IQ2_M": "it has to fit somewhere tiny - expect clearly weaker answers"}
+    advice[quant] = "**start here** - the default, small and good (what `llm import` and Ollama use)"
+    lines = ["\n## Which file should I download?\n",
+             "Pick the biggest file that fits in your free RAM (CPU) or VRAM (GPU) with about 1 GB to spare for the "
+             "context" + (" and the vision projector" if mmproj_gb else "") + ". Bigger = closer to the original, "
+             "smaller = faster and lighter.\n"]
+    lines += [f"- `{q}` - {advice[q]}" for q in dict.fromkeys(pick)]
+    lines.append("\nK-quants (`Q5_K_M`, `Q4_K_M`...) run fast everywhere. I-quants (`IQ4_XS`, `IQ3_M`...) are better for "
+                 "their size and fast on NVIDIA / AMD GPUs, but slower than K-quants on CPUs and Apple Metal. `F16` / "
+                 "`BF16` are the unquantised weights, for making your own quants.")
+    imatrix = report.get("imatrix") or {}
+    rows = sorted(ggufs, key=lambda g: -(g.get("gb") or 0))
+    table = [f"\n## All quants ({len(rows)} files)\n",
+             "| | quant | size | RAM to run | imatrix | use it when | download |",
+             "|---|---|---|---|---|---|---|"]
+    for g in rows:
+        mark = "⭐" if g["quant"] == quant else ("👍" if g["quant"] in RECOMMENDED_QUANTS else "")
+        table.append(f"| {mark} | `{g['quant']}` | {g.get('gb', '?')} GB | {_ram_gb(g.get('gb'), 1.0 + mmproj_gb)} | "
+                     f"{'yes' if g.get('imatrix') else '-'} | {QUANT_USE.get(g['quant'], '')} | "
+                     f"[{g['file']}](https://huggingface.co/{repo}/resolve/main/{g['file']}) |")
+    notes = ["", "Experimental low-bit and ternary quants can have severe quality loss; evaluate before use. "
+             "F32 is expanded from F16 and does not restore precision. Older files in an existing repository may be "
+             "from an earlier run if a quant was skipped; check file revisions.",
+             "", "⭐ default · 👍 recommended. RAM to run = file + ~1 GB for a 4096-token context"
+             + (" + the vision projector" if mmproj_gb else "") + "; a longer context needs more."]
+    if imatrix:
+        notes.append(f"\n**imatrix:** the quants marked *yes* were made with an importance matrix computed on "
+                     f"{imatrix.get('chunks', '?')} x 512 tokens of this model's own training data"
+                     + (" (stopped early to save time)" if imatrix.get("partial") else "")
+                     + f", so they keep what Minecraftism needs most. The matrix is in this repo "
+                     f"(`{imatrix.get('file', 'imatrix.gguf')}`) if you want to make more quants.")
+    skipped = report.get("gguf_skipped") or []
+    if skipped:
+        notes.append("\n**Not made this time:** " + "; ".join(f"`{x['quant']}` ({x['why']})" for x in skipped) + ".")
+    notes.append("\n**Not made on purpose:** " + "; ".join(f"`{k}` - {v}" for k, v in NOT_MADE.items()) + ".")
+    if report.get("llama_cpp"):
+        notes.append(f"\nMade with llama.cpp {report['llama_cpp']} from the merged 16-bit weights.")
+    return "\n".join(lines + table + notes) + "\n"
+
+
+def _prompt_and_settings(preset: dict[str, Any], reasoning: bool, vision: bool, gguf: bool) -> str:
+    params = dict(preset.get("run_parameters") or RUN_PARAMETERS)
+    names = {"temperature": "temperature", "top_p": "top_p", "top_k": "top_k", "min_p": "min_p",
+             "repeat_penalty": "repeat penalty", "num_ctx": "context (tokens)", "num_predict": "max new tokens"}
+    rows = "".join(f"| {names[k]} | {params[k]} |\n" for k in names if k in params)
+    think = ("\nIt writes its thinking first, inside `<think>...</think>`, then the answer: hide or strip that "
+             "part before showing the reply.\n") if reasoning else ""
+    picture = ("\nPictures go in the user turn (Ollama, LM Studio and llama.cpp do this for you with the `mmproj` "
+               "file).\n") if vision else ""
+    where = ("Ollama, LM Studio and llama.cpp read the chat template from the GGUF, so you only need this for raw "
+             "completion APIs." if gguf else "`tokenizer.apply_chat_template` builds it for you.")
+    return f"""
+## Prompt format
+
+Qwen3's ChatML. {where}
+
+```text
+<|im_start|>system
+{{system prompt}}<|im_end|>
+<|im_start|>user
+{{your message}}<|im_end|>
+<|im_start|>assistant
+```
+{think}{picture}
+## Recommended settings
+
+| setting | value |
+|---|---|
+{rows}
+{"The `Modelfile` in this repo sets these for Ollama; set them yourself in other apps." if gguf else "Use them for `generate` / vLLM sampling."}
+"""
+
+
 def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any], repo: str, kind: str = "gguf") -> str:
     """README.md for a Hugging Face repo: the GGUF edition (``kind="gguf"``, also written next to the GGUF) or the
     merged full-precision safetensors edition (``kind="safetensors"``, written into ``safetensors/``)."""
     safetensors = kind == "safetensors"
     name = display_name(preset_name, preset) + (" (safetensors)" if safetensors else "")
     vision, reasoning = bool(preset.get("vision")), bool(preset.get("reasoning"))
-    base = preset.get("base_model") or preset["model"]
+    base = str(report.get("base_model") or preset.get("base_model") or preset["model"])
+    upstream = (preset.get("upstream_base_model") if base == preset.get("uncensored_model") else None)
     quant = str(report.get("quant") or "Q4_K_M").upper()
     tags = ["minecraft", "gguf", "pymc-bot", "minecraftism", "qwen3", "unsloth", "game-agent"]
     tags += ["vision", "image-text-to-text"] if vision else []
     tags += ["reasoning", "thinking"] if reasoning else []
     tags += ["uncensored", "abliterated"] if preset.get("uncensored") else []
     files = [f"- `{report.get('gguf', output_name(preset_name, preset, quant))}` - the model ({quant})"]
-    quant_rows = ""
     if report.get("ggufs"):
-        files = [f"- `{g['file']}` - {g['quant']}, {g.get('gb', '?')} GB" + (" (default)" if g["quant"] == quant else "")
-                 for g in report["ggufs"]]
-        quant_rows = ("\n| quant | file | size | use it when |\n|---|---|---|---|\n" + "".join(
-            f"| `{g['quant']}` | `{g['file']}` | {g.get('gb', '?')} GB | {QUANT_USE.get(g['quant'], '')} |\n"
-            for g in report["ggufs"]))
+        files = [f"- `{report.get('gguf', output_name(preset_name, preset, quant))}` - the default ({quant})",
+                 f"- {len(report['ggufs']) - 1} more `*.gguf` quants - every one is in the table above"]
+        if (report.get("imatrix") or {}).get("file"):
+            files.append(f"- `{report['imatrix']['file']}` - the importance matrix the quants were made with")
     if report.get("mmproj"):
         files.append(f"- `{report['mmproj']}` - the vision projector (needed for pictures)")
-    files += ["- `Modelfile` - for `ollama create`", "- `pymc_model.json` - training report PyMC Bot reads on import"]
+    files += ["- `Modelfile` - for `ollama create`", "- `IMPORTING.md` - Ollama and GGUF import instructions",
+              "- `pymc_model.json` - training report PyMC Bot reads on import"]
     if report.get("essentials"):
         files.append("- " + ", ".join(f"`{name}`" for name in report["essentials"][:6])
                      + (" ..." if len(report["essentials"]) > 6 else "") + " - tokenizer, config and chat template")
@@ -2235,7 +3318,8 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         gguf_repo = str(report.get("hub_repo") or f"<your-hf-name>/{preset.get('hub') or 'pymc-minecraft-GGUF'}")
         files = ["- `model*.safetensors` - the merged weights (LoRA folded into the base, 16-bit)",
                  "- `config.json`, `generation_config.json` - model config",
-                 "- tokenizer files + `chat_template.jinja` - the chat format it was trained with"]
+                 "- tokenizer files + `chat_template.jinja` - the chat format it was trained with",
+                 "- `Modelfile` and `IMPORTING.md` - local import instructions (runtime support varies)"]
         if vision:
             files.append("- `preprocessor_config.json` / processor files - how pictures are prepared")
     evaluation = report.get("eval") or {}
@@ -2248,6 +3332,19 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         eval_lines = ("\n## Evaluation (held-out rows)\n\n| valid JSON | right action | right answers | rows |\n|---|---|---|---|\n"
                       f"| {pct('json_valid_pct')} | {pct('action_match_pct')} | {pct('answer_keywords_pct')} | "
                       f"{evaluation.get('rows', '-')} |\n")
+    agentic = report.get("agentic") or {}
+    if agentic.get("tuned"):
+        tuned, base = agentic["tuned"], agentic.get("base") or {}
+        cell = lambda d, k: "-" if d.get(k) is None else f"{d[k]}%"  # noqa: E731
+        base_name = str(report.get("base_model") or "base").split("/")[-1]
+        eval_lines += ("\n## Agentic score (tool calling)\n\nHeld-out multi-turn tool chats it never trained on "
+                       f"({tuned.get('asked', '?')} prompts: the right function with exactly the right arguments, and no "
+                       "call when no tool fits), base model measured on the same prompts:\n\n"
+                       "| model | score | right tool | exact calls | no call when none fits |\n|---|---|---|---|---|\n"
+                       + (f"| {base_name} | {cell(base, 'score')} | {cell(base, 'right_tool')} | {cell(base, 'exact_calls')} | "
+                          f"{cell(base, 'no_call_when_none_fits')} |\n" if base else "")
+                       + f"| **{display_name(preset_name, preset)}** | **{cell(tuned, 'score')}** | {cell(tuned, 'right_tool')} | "
+                         f"{cell(tuned, 'exact_calls')} | {cell(tuned, 'no_call_when_none_fits')} |\n")
     vision_text = ("\nIt also **sees**: it was trained on first-person screenshots recorded with the PyMC Bot Fabric mod, "
                    "paired with what the player did next and grounded descriptions of each picture. In PyMC Bot turn on "
                    "*let the model see (vision)* in the panel's AI settings and the bot sends its rendered view every few turns.\n") if vision else ""
@@ -2277,11 +3374,10 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
         lines = []
         off, on = distill.get("offpolicy") or {}, distill.get("onpolicy") or {}
         if off:
-            lines.append(f"- **Off-policy:** the teacher wrote {off.get('used', 0)} of the training answers "
-                         f"({off.get('general', 0)} everyday chat, {off.get('mcqa', 0)} Minecraft facts rewritten "
-                         "around the exact answer"
-                         + (", with its own thinking traces" if reasoning else "") + "). Game turns kept their "
-                         "rule-checked JSON.")
+            lines.append(f"- **Off-policy:** teacher output was accepted for {off.get('used', 0)} training rows "
+                         f"({off.get('general', 0)} everyday chat, {off.get('mcqa', 0)} Minecraft facts). "
+                         "Minecraft answers remain unchanged; teacher traces may contain errors. "
+                         "Game turns kept their rule-checked JSON.")
         if on:
             lines.append(f"- **On-policy:** {on.get('steps', 0)} steps ({on.get('replies', 0)} replies written by the "
                          f"student and graded token by token by the teacher, reverse KL "
@@ -2297,7 +3393,7 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
                         f"{who}:\n\n" + "\n".join(lines) + "\n")
     data_text = ""
     if sources:
-        data_text = ("\n## Training data\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
+        data_text = ("\n## Training data (scheduled rows)\n\n| source | licence | commercial use | rows |\n|---|---|---|---|\n"
                      + "".join(f"| [{d['name']}]({d['url']}) | {d['license']} | {'yes' if d.get('commercial') else 'no'} "
                                f"| {d.get('rows', '-')} |\n" for d in sources))
     if report.get("commercial"):
@@ -2320,8 +3416,9 @@ def model_card(preset_name: str, preset: dict[str, Any], report: dict[str, Any],
                    f"further fine-tuning): [{st_repo}](https://huggingface.co/{st_repo})\n")
     library = "gguf"
     others = [g["quant"] for g in report.get("ggufs") or [] if g["quant"] != quant]
-    other_quants = (f"\nOther sizes: put the quant after the colon, e.g. `ollama run hf.co/{repo}:{others[0]}` "
-                    f"({', '.join(others)}).\n" if others else "")
+    other_quants = (f"\nOther sizes: put any quant from [the table](#which-file-should-i-download) after the colon, e.g. "
+                    f"`ollama run hf.co/{repo}:{others[0]}`" + (f" or `:{others[1]}`" if len(others) > 1 else "")
+                    + ".\n" if others else "")
     use = f"""With PyMC Bot (switches the bot to this model with the short Minecraft prompt):
 
 ```bash
@@ -2334,10 +3431,19 @@ With Ollama:
 ollama run hf.co/{repo}:{quant}
 ```
 {other_quants}
-With llama.cpp:
+With llama.cpp (`-hf` downloads the quant{" and the vision projector" if vision else ""} by itself):
 
 ```bash
+llama-server -hf {repo}:{quant}
+# or with a file you downloaded:
 {llama}
+```
+
+One file only (LM Studio and Jan find this repo by its name too):
+
+```bash
+pip install -U huggingface_hub
+hf download {repo} {report.get('gguf', output_name(preset_name, preset, quant))} --local-dir .
 ```"""
     if safetensors:
         library = "transformers"
@@ -2385,11 +3491,34 @@ With PyMC Bot / Ollama, use the GGUF edition:
 ```bash
 python -m pymc_bot llm import --hf {gguf_repo}
 ```"""
+    # Hub tree groups under Qwen's original checkpoint; the body identifies the actual Huihui weights.
+    card_base, relation = upstream or base, ""
+    if st_repo and not safetensors:  # the model tree: base -> fine-tune (safetensors) -> quantized (this repo)
+        card_base, relation = st_repo, "\nbase_model_relation: quantized"
+    elif safetensors:
+        relation = "\nbase_model_relation: finetune"
+    if not safetensors:
+        tags += ["llama.cpp", "ollama"] + (["imatrix"] if report.get("imatrix") else [])
+    guide = "" if safetensors else gguf_quant_guide(report, repo, quant)
+    links = [f"[GGUF: every quant from F16 to IQ1_S](https://huggingface.co/{gguf_repo})"] if safetensors else \
+        (["[which file?](#which-file-should-i-download)"] if guide else [])
+    if st_repo and not safetensors:
+        links.append(f"[safetensors](https://huggingface.co/{st_repo})")
+    links += [f"[base model](https://huggingface.co/{base})", f"[PyMC Bot]({PROJECT_URL})"]
+    upstream_line = (f"| Upstream Qwen lineage | [{upstream}](https://huggingface.co/{upstream}) "
+                     "(Hub tree grouping; the training base above was used) |\n" if upstream else "")
+    turbo_text = ("## Turbo\n\nThis 4B edition selects shorter complete everyday examples and asks the optional "
+                  "teacher for concise answers. " + ("Thinking traces are retained. " if reasoning else "")
+                  + "Minecraft reference answers and game JSON are not truncated during training. The Ollama "
+                  f"profile defaults to {preset['run_parameters']['num_ctx']} context tokens and "
+                  f"{preset['run_parameters']['num_predict']} output tokens, including any thinking trace. "
+                  "Long prompts or answers can be truncated; override num_ctx and num_predict as needed. "
+                  "Speed and quality have not been benchmarked.\n" if preset.get("turbo") else "")
     return f"""---
 license: other
 license_name: polyform-noncommercial-1.0.0
 license_link: https://polyformproject.org/licenses/noncommercial/1.0.0/
-base_model: {base}
+base_model: {card_base}{relation}{"" if safetensors else chr(10) + "quantized_by: codero-sus"}
 tags:
 {chr(10).join('- ' + t for t in tags)}
 language:
@@ -2397,6 +3526,8 @@ language:
 pipeline_tag: {'image-text-to-text' if vision else 'text-generation'}
 library_name: {library}
 ---
+
+![PyMC Bot banner](https://raw.githubusercontent.com/codero-sus/PyMC_Bot/main/banner.jpg)
 
 # {name}
 
@@ -2406,28 +3537,49 @@ action as JSON (flee the creeper, eat, answer the player in chat, mine wood...),
 answers questions about mobs, items, crafting and mechanics without a web search.
 It is also an everyday assistant: questions, writing, code, advice or just a chat.
 {think_text_}{vision_text}{uncensored_text}{formats}
+{' · '.join(links)}
+
+## Quick start
+
+{use}
+{guide}{_prompt_and_settings(preset, reasoning, vision, not safetensors)}
+## About this edition
+
 | | |
 |---|---|
 | Edition | {name} (`{preset_name}`) |
-| Base model | [{base}](https://huggingface.co/{base}) (Apache-2.0) |
-| Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
+| Training base actually used | [{base}](https://huggingface.co/{base}) |
+{upstream_line}| Fine-tune | LoRA r={report.get('rank', 32)} with Unsloth on Kaggle (T4), {report.get('train_rows', '?')} rows, loss {report.get('loss', '?')} |
 | Data | {data_cell} |
 | Size | {size} |
+{turbo_text}
 {eval_lines}{test_lines}{distill_text}{data_text}{system_text}
 ## Files
 
 {chr(10).join(files)}
-{quant_rows}
-## Use it
 
-{use}
+## Limitations
 
+- It is a small (4B) model: it can be confidently wrong. Check important facts, and let PyMC Bot's rule checks
+  guard the game actions.
+- Its Minecraft knowledge comes mostly from Java Edition data; Bedrock differences and the newest updates may be
+  missing.
+- It was trained on examples of up to {report.get('max_seq') or 3072} tokens; very long chats lose the thread.
+{"- It is uncensored: it does not refuse. You are responsible for how you use it." + chr(10) if preset.get("uncensored") else ""}
 ## License and credits
 
+Required Notice: Copyright codero-sus ({AUTHOR_URL}). Minecraftism is part of PyMC Bot ({PROJECT_URL}) and is
+licensed under PolyForm Noncommercial 1.0.0 (https://polyformproject.org/licenses/noncommercial/1.0.0/). Anyone who
+shares these weights, or quants or fine-tunes made from them, must pass on this notice and a link to the original.
+
+- Quants, merges and fine-tunes by others are welcome for non-commercial use: keep the notice above and link here.
 - Made with ❤️ by [codero-sus]({AUTHOR_URL}) - {' - '.join(WEBSITES)}
 - **Personal, non-commercial use only.** The fine-tune is released under PolyForm Noncommercial 1.0.0, and
   {data_note}. The base model's own license (Apache-2.0) still applies to the base weights.
 - Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+
+<sub>This page uses a third-party view counter at 2no.co; it may receive a request when the card is viewed.</sub>
+<img src="https://2no.co/pymc_bot_REAL" width="1" height="1" alt="Page view counter" />
 """
 
 
@@ -2441,6 +3593,36 @@ def write_cards(out: Path, preset_name: str, preset: dict[str, Any], report: dic
         st_repo = report.get("hub_repo_safetensors") or safetensors_repo(repo)
         (folder / "README.md").write_text(model_card(preset_name, preset, report, st_repo, kind="safetensors"),
                                           encoding="utf-8")
+
+
+def write_import_files(folder: Path, preset: dict[str, Any], system: str, *, gguf: str = "", mmproj: str = "",
+                       template: str | None = None) -> None:
+    """Write portable import instructions and an Ollama Modelfile beside the actual weights."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "Modelfile").write_text(modelfile_text(gguf or ".", preset["family"], template, mmproj or None,
+                                                   preset.get("run_parameters"), system), encoding="utf-8")
+    if gguf:
+        projector = f" --mmproj ./{mmproj}" if mmproj else ""
+        vision_note = (f"Keep `{mmproj}` beside the model; image support depends on the runtime and architecture.\n"
+                       if mmproj else "This export has no vision projector; image input is unavailable.\n"
+                       if preset.get("vision") else "")
+        steps = (f"Use the shipped `{gguf}` with `Modelfile`. Download both files into the same directory "
+                 "before running the following commands there:\n\n"
+                 "```sh\nollama create minecraftism -f Modelfile\nollama run minecraftism\n```\n\n"
+                 "For a different quant, download it and change the first `FROM` in `Modelfile` to its filename.\n\n"
+                 f"llama.cpp: `llama-server -m ./{gguf}{projector}`.\n\n"
+                 "LM Studio and other GGUF clients: open the downloaded GGUF in a compatible client.\n\n"
+                 + vision_note)
+    else:
+        steps = ("Download the complete repository, including every weight shard, tokenizer and config, into one "
+                 "directory. The included `Modelfile` uses `FROM .`; from that directory run:\n\n"
+                 "```sh\nollama create minecraftism -f Modelfile\nollama run minecraftism\n```\n\n"
+                 "Safetensors import support depends on Ollama version and architecture. For Transformers or vLLM, "
+                 "load the complete directory with the compatible model and tokenizer/processor classes.\n")
+    (folder / "IMPORTING.md").write_text("# Importing Minecraftism\n\n" + steps +
+        "\nUse a current runtime that supports the model architecture. Import and vision support have not been "
+        "verified for every runtime or platform.\n", encoding="utf-8")
 
 
 def resolve_repo(repo: str, preset: dict[str, Any], whoami: Any = None) -> str:
@@ -2601,6 +3783,50 @@ def plan_batches(lengths: list[int], preset: dict[str, Any], world: int, max_seq
             "mean": round(sum(capped) / len(capped))}
 
 
+MERGE_KINDS = ("qa", "mcqa")
+
+
+def merge_qa(rows: list[dict[str, Any]], per_chat: int, rng: Any = None) -> list[dict[str, Any]]:
+    """Single-turn Q&A rows that share a system prompt become multi-turn chats of up to ``per_chat`` questions:
+    the system prompt (~300 tokens, ~80% of a Q&A row, trained on by nobody) is then read once per chat instead of
+    once per question. Every answer is still trained on (all assistant turns are). Two phrasings of one fact never
+    share a chat (the second would just be copied from the first). Only for editions that don't think: Qwen's
+    thinking template drops the traces of earlier turns, which would teach answering without thinking."""
+    if per_chat < 2:
+        return list(rows)
+    import random as _random
+
+    rng = rng or _random.Random(0)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        messages = row.get("messages") or []
+        if (row.get("kind") in MERGE_KINDS and not row.get("images") and len(messages) == 3
+                and [m.get("role") for m in messages] == ["system", "user", "assistant"]):
+            groups.setdefault(str(messages[0].get("content") or ""), []).append(row)
+        else:
+            out.append(row)
+    for system, members in groups.items():
+        rng.shuffle(members)
+        pending = members
+        while pending:
+            chat, answers, left = [], set(), []
+            for row in pending:
+                answer = " ".join(str(row["messages"][2]["content"]).split()).lower()
+                if len(chat) < per_chat and answer not in answers:
+                    chat.append(row)
+                    answers.add(answer)
+                else:
+                    left.append(row)
+            turns = [{"role": "system", "content": system}]
+            for row in chat:
+                turns += [dict(row["messages"][1]), dict(row["messages"][2])]
+            out.append({"messages": turns, "kind": "qa-chat" if len(chat) > 1 else chat[0].get("kind"),
+                        "source": chat[0].get("source"), "check": {}, "merged": len(chat)})
+            pending = left
+    return out
+
+
 def is_oom(exc: BaseException) -> bool:
     return "OutOfMemory" in type(exc).__name__ or "out of memory" in str(exc).lower()
 
@@ -2741,6 +3967,55 @@ def run_training(trainer: Any, rebuild: Any, world: int, tries: int = 4) -> Any:
                 raise
             trainer = safer
     return trainer.train()
+
+
+def ordered_training_phases(rows: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Private Minecraftism rows first; preserve the order inside each independently shuffled phase."""
+    priority = [r for r in rows if r.get("dataset_id") == MINECRAFTISM_DATASET]
+    other = [r for r in rows if r.get("dataset_id") != MINECRAFTISM_DATASET]
+    return [(name, phase) for name, phase in (("minecraftism-dataset", priority), ("other-data", other)) if phase]
+
+
+def run_ordered_phases(args: argparse.Namespace, rows: list[dict[str, Any]], run_phase: Any) -> Any:
+    """Train one epoch per partition in order; do not proceed past an interrupted priority phase.
+
+    run_phase(name, rows, remaining_steps) returns (train_output, phase_completed). The optimizer is reset between
+    phases, but the same model/LoRA weights are kept. A global --max-steps budget is shared between phases.
+    """
+    budget = int(getattr(args, "max_steps", 0) or 0)
+    remaining = budget
+    results = []
+    last = None
+    for name, phase_rows in ordered_training_phases(rows):
+        if results and (not results[-1]["complete"] or (budget > 0 and remaining <= 0)):
+            print(f"skipping {name}: earlier phase was interrupted or the step budget is exhausted")
+            break
+        deadline = float(getattr(args, "deadline", 0) or 0)
+        reserve = float(getattr(args, "reserve_minutes", 0) or 0)
+        if results and deadline and time.time() >= deadline - reserve * 60:
+            print(f"skipping {name}: the export time reserve has been reached")
+            break
+        print(f"training phase: {name} ({len(phase_rows)} rows)", flush=True)
+        last, complete = run_phase(name, phase_rows, remaining if budget > 0 else 0)
+        steps = int(getattr(last, "global_step", 0) or 0)
+        if budget > 0:
+            remaining = max(0, remaining - steps)
+        complete = bool(complete) and not bool(getattr(args, "stopped_early", None))
+        results.append({"phase": name, "rows_scheduled": len(phase_rows), "steps": steps, "complete": complete})
+        print(f"training phase {name}: {'completed' if complete else 'incomplete'} ({steps} steps)", flush=True)
+    args.training_phases = results
+    if last is None:
+        raise ValueError("No rows to train")
+    return last
+
+
+def phase_max_steps(row_count: int, batch: int, accum: int, world: int, epochs: float, budget: int) -> tuple[int, int]:
+    """Bound an optional global step budget; default -1 lets Trainer enforce the requested epochs."""
+    import math
+
+    batches = math.ceil(row_count / max(1, batch * world))
+    expected = max(1, math.ceil(max(1, batches // max(1, accum)) * epochs))
+    return (min(budget, expected) if budget > 0 else -1), expected
 
 
 def end_ddp() -> None:
@@ -2892,13 +4167,14 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
     """The rows the teacher answers in phase 1 (off-policy distillation).
 
     * everyday chat (human-written answers) gets the teacher's answer, with a thinking trace for thinking editions;
-    * Minecraft Q&A is rewritten around its exact answer (it goes in as a reference, so nothing is invented);
+    * Minecraft Q&A can receive teacher reasoning, but its original answer remains unchanged;
     * game turns keep their rule-checked JSON, and Nemotron's thinking rows were already distilled from a far bigger
       model, so neither is touched."""
     thinking = bool(preset.get("reasoning"))
     general = [i for i, row in enumerate(rows)
-               if row.get("kind") == "general" and row.get("source") != "reasoning" and not row.get("images")]
-    facts = [i for i, row in enumerate(rows) if row.get("kind") == "mcqa" and not row.get("images")]
+               if row.get("kind") == "general" and row.get("source") not in ("reasoning", "persona") and not row.get("images")]
+    facts = [i for i, row in enumerate(rows) if row.get("kind") == "mcqa" and not row.get("images")
+             and row.get("dataset_id") != MINECRAFTISM_DATASET]  # learn the private dataset as supplied first
     picked: list[int] = []
     for a, b in zip(general, facts, strict=False):  # both kinds, half and half while both last
         picked += [a, b]
@@ -2911,8 +4187,14 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
             continue
         messages = [dict(m) for m in row["messages"][:-1]]
         reference = row["messages"][-1]["content"] if row.get("kind") == "mcqa" else ""
+        if preset.get("turbo") and not reference:
+            note = "Answer concisely and directly while retaining the details needed to answer correctly."
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + note
+            else:
+                messages.insert(0, {"role": "system", "content": note})
         if reference:
-            note = ("Reference facts for your answer (exact, from the game's own data): " + reference
+            note = ("Reference answer supplied for this question: " + reference
                     + "\nAnswer the user naturally and helpfully in your own words. Keep every fact, number and name "
                       "exactly as in the reference and add nothing you are not sure about. Never mention the reference.")
             if messages and messages[0]["role"] == "system":
@@ -2920,6 +4202,7 @@ def teacher_jobs(rows: list[dict[str, Any]], preset: dict[str, Any], limit: int,
             else:
                 messages.insert(0, {"role": "system", "content": note})
         jobs.append({"row": index, "messages": messages, "reference": reference, "thinking": thinking,
+                     "max_answer_chars": 600 if preset.get("turbo") and not reference else None,
                      "key": _job_key(teacher, messages, thinking)})
     return jobs
 
@@ -2943,6 +4226,8 @@ def accept_teacher_answer(job: dict[str, Any], trace: str, answer: str, uncensor
     """Why a teacher answer is dropped (``""`` = keep it)."""
     if len(answer) < 2:
         return "empty"
+    if job.get("max_answer_chars") and len(answer) > job["max_answer_chars"]:
+        return "too long"
     if uncensored and is_refusal(answer):
         return "refusal"
     if job.get("reference"):
@@ -2970,9 +4255,11 @@ def apply_teacher_answers(rows: list[dict[str, Any]], jobs: list[dict[str, Any]]
         trace, answer = parsed  # type: ignore[misc]
         row = dict(out[job["row"]])
         row["messages"] = [dict(m) for m in row["messages"]]
-        row["messages"][-1]["content"] = answer
+        # The teacher can supply CoT, but never replace the original Minecraft answer.
+        row["messages"][-1]["content"] = job["reference"] if job.get("reference") else answer
         if job["thinking"]:
             row["reasoning"] = trace
+            row["reasoning_origin"] = "teacher"
         row["teacher"] = teacher
         out[job["row"]] = row
         stats["used"] += 1
@@ -3526,7 +4813,7 @@ def distill_offpolicy(args: argparse.Namespace, preset: dict[str, Any], rows: li
         args.writer_fallback = retry_with
         return distill_offpolicy(args, preset, rows, world, generate)
     distilled, stats = apply_teacher_answers(rows, jobs, known, teacher, bool(getattr(args, "uncensored", False)))
-    print(f"distillation: {stats['used']}/{stats['asked']} rows now carry the teacher's answer"
+    print(f"distillation: {stats['used']}/{stats['asked']} rows now use teacher output or reasoning"
           + (f" (kept the original for: {json.dumps(stats['dropped'])})" if stats["dropped"] else ""))
     args.distill_report = stats
     return distilled
@@ -3568,7 +4855,7 @@ def onpolicy_prompts(rows: list[dict[str, Any]], steps: int, batch: int, world: 
     JSON - the teacher never saw the bot's rules)."""
     import random
 
-    prompts = [row["messages"][:-1] for row in rows if row.get("kind") in ("general", "mcqa") and not row.get("images")
+    prompts = [row["messages"][:-1] for row in rows if row.get("kind") in ("general", "mcqa") and row.get("source") != "persona" and not row.get("images")
                and row.get("messages") and row["messages"][-1].get("role") == "assistant"]
     if not prompts:
         return []
@@ -3761,49 +5048,58 @@ def train(args: argparse.Namespace, preset: dict[str, Any], rows: list[dict[str,
     if preset["chat_template"]:
         tokenizer = get_chat_template(tokenizer, chat_template=preset["chat_template"])
 
-    texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in rows]
-    dataset = Dataset.from_dict({"text": texts})
     user, assistant = TURN_MARKERS[preset["family"]]
-    callbacks = training_callbacks(args)
-    plan = plan_batches(token_lengths(tokenizer, texts) if args.token_budget > 0 else [], preset, world,
-                        args.max_seq, args.token_budget)
-    if plan["p95"]:
-        print(f"batches: {plan['batch']} rows per GPU x {plan['accum']} accumulation x {world} GPU(s) "
-              f"(rows: ~{plan['mean']} tokens, 95% <= {plan['p95']}; same {preset['batch'] * preset['accum']} rows per "
-              f"step as before, in fewer passes)")
-    settings = {"group": True}
 
-    def build() -> Any:
-        options = speed_options(args, preset, world, text=True, plan=plan)
-        if not settings["group"]:
-            options.pop("group_by_length", None)
-        config = SFTConfig(
-            dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=plan["batch"],
-            warmup_steps=10, num_train_epochs=args.epochs,
-            max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr, logging_steps=10,
-            optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
-            output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", **options,
-        )
-        built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
-                           callbacks=callbacks)
-        return train_on_responses_only(built, instruction_part=user, response_part=assistant)
+    def run_phase(name: str, phase_rows: list[dict[str, Any]], budget: int) -> tuple[Any, bool]:
+        trained = phase_rows
+        if getattr(args, "merge_qa", 0) > 1 and not preset.get("reasoning"):
+            trained = merge_qa(phase_rows, args.merge_qa)
+            chats = [r for r in trained if r.get("merged", 0) > 1]
+            if chats:
+                print(f"Q&A ({name}): {sum(r['merged'] for r in chats)} rows in {len(chats)} chats")
+        texts = [render(tokenizer, prepare_messages(row, preset), preset) for row in trained]
+        dataset = Dataset.from_dict({"text": texts})
+        plan = plan_batches(token_lengths(tokenizer, texts) if args.token_budget > 0 else [], preset, world,
+                            args.max_seq, args.token_budget)
+        settings = {"group": True}
+        max_steps, _expected = phase_max_steps(len(trained), plan["batch"], plan["accum"], world, args.epochs, budget)
 
-    def rebuild(exc: BaseException) -> Any:
-        if is_oom(exc) and plan["batch"] > 1:
-            plan["batch"] = max(1, plan["batch"] // 2)
-            plan["accum"] = max(1, round(preset["batch"] * preset["accum"] / (plan["batch"] * world)))
-            print(f"out of GPU memory - trying {plan['batch']} rows per batch x {plan['accum']} accumulation")
-            torch.cuda.empty_cache()
-            return build()
-        if settings["group"] and getattr(args, "group_by_length", False) and not is_oom(exc):
-            settings["group"] = False
-            print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
-            return build()
-        return None
+        def build() -> Any:
+            options = speed_options(args, preset, world, text=True, plan=plan)
+            if not settings["group"]:
+                options.pop("group_by_length", None)
+            config = SFTConfig(
+                dataset_text_field="text", max_length=args.max_seq, per_device_train_batch_size=plan["batch"],
+                warmup_steps=10, num_train_epochs=args.epochs, max_steps=max_steps,
+                learning_rate=args.lr, logging_steps=10, optim="adamw_8bit", weight_decay=0.001,
+                lr_scheduler_type="linear", seed=args.seed, output_dir=str(scratch_for(out, "checkpoints")),
+                save_strategy="no", report_to="none", **options,
+            )
+            built = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=dataset, args=config,
+                               callbacks=training_callbacks(args))
+            return train_on_responses_only(built, instruction_part=user, response_part=assistant)
 
-    stats = run_training(build(), rebuild, world)
+        def rebuild(exc: BaseException) -> Any:
+            if is_oom(exc) and plan["batch"] > 1:
+                plan["batch"] = max(1, plan["batch"] // 2)
+                plan["accum"] = max(1, round(preset["batch"] * preset["accum"] / (plan["batch"] * world)))
+                print(f"out of GPU memory - trying {plan['batch']} rows per batch x {plan['accum']} accumulation")
+                torch.cuda.empty_cache()
+                return build()
+            if settings["group"] and getattr(args, "group_by_length", False) and not is_oom(exc):
+                settings["group"] = False
+                print(f"length-grouped batches failed ({type(exc).__name__}: {exc}) - training without them")
+                return build()
+            return None
+
+        stats = run_training(build(), rebuild, world)
+        return stats, max_steps < 0  # a step-limited run cannot guarantee a complete dataset pass
+
+    stats = run_ordered_phases(args, rows, run_phase)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
-    if getattr(args, "onpolicy_steps", 0) > 0:
+    if (getattr(args, "onpolicy_steps", 0) > 0 and
+            len(args.training_phases) == len(ordered_training_phases(rows)) and
+            all(p["complete"] for p in args.training_phases)):
         try:
             args.onpolicy_report = onpolicy_distill(args, preset, model, tokenizer, rows, world, rank)
         except Exception as exc:  # noqa: BLE001 - the fine-tuned model is kept as it is
@@ -3957,7 +5253,6 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
         finetune_attention_modules=True, finetune_mlp_modules=True, r=args.rank, lora_alpha=args.rank,
         lora_dropout=0, bias="none", random_state=args.seed,
     )
-    dataset = [{"messages": vision_messages(row, preset, load_image)} for row in rows]
     FastVisionModel.for_training(model)
     user, assistant = TURN_MARKERS[preset["family"]]
     try:  # recent unsloth-zoo: response-only loss inside the collator (also for text-only rows)
@@ -3966,18 +5261,23 @@ def train_vision(args: argparse.Namespace, preset: dict[str, Any], rows: list[di
     except TypeError:
         collator = UnslothVisionDataCollator(model, processor)
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    config = SFTConfig(
-        per_device_train_batch_size=preset["batch"], warmup_steps=10,
-        num_train_epochs=args.epochs, max_steps=args.max_steps if args.max_steps > 0 else -1, learning_rate=args.lr,
-        logging_steps=10, optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
-        output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
-        remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
-        max_length=args.max_seq, **speed_options(args, preset, world, text=False),
-    )
-    callbacks = training_callbacks(args)
-    trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config,
-                         callbacks=callbacks)
-    stats = trainer.train()
+    def run_phase(name: str, phase_rows: list[dict[str, Any]], budget: int) -> tuple[Any, bool]:
+        dataset = [{"messages": vision_messages(row, preset, load_image)} for row in phase_rows]
+        accum = max(1, round(preset["accum"] / max(1, world)))
+        max_steps, _expected = phase_max_steps(len(dataset), preset["batch"], accum, world, args.epochs, budget)
+        config = SFTConfig(
+            per_device_train_batch_size=preset["batch"], warmup_steps=10,
+            num_train_epochs=args.epochs, max_steps=max_steps, learning_rate=args.lr,
+            logging_steps=10, optim="adamw_8bit", weight_decay=0.001, lr_scheduler_type="linear", seed=args.seed,
+            output_dir=str(scratch_for(out, "checkpoints")), save_strategy="no", report_to="none", fp16=not bf16, bf16=bf16,
+            remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
+            max_length=args.max_seq, **speed_options(args, preset, world, text=False),
+        )
+        trainer = SFTTrainer(model=model, tokenizer=processor, data_collator=collator, train_dataset=dataset, args=config,
+                             callbacks=training_callbacks(args))
+        return trainer.train(), max_steps < 0  # do not move to other data on a step-limited run
+
+    stats = run_ordered_phases(args, rows, run_phase)
     print(f"trained in {(time.time() - started) / 60:.0f} min, loss {stats.training_loss:.3f}")
     if world > 1:
         end_ddp()
@@ -4000,9 +5300,12 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
     report: dict[str, Any] = {"preset": args.preset, "model_name": display_name(args.preset, preset), "base_model": model_name,
                               "edition": preset.get("edition"), "vision": bool(preset.get("vision")),
                               "reasoning": bool(preset.get("reasoning")), "train_rows": len(rows), "rank": args.rank,
+                              "max_seq": args.max_seq,
                               "images": sum(len(row.get("images") or []) for row in rows), "loss": round(loss, 4),
                               "uncensored": bool(preset.get("uncensored")), "system_prompt": args.system_prompt,
                               "general_rows": sum(1 for row in rows if row.get("kind") == "general"),
+                              "identity_rows_scheduled": sum(1 for row in rows if row.get("identity_training")),
+                              "systemless_rows_scheduled": getattr(args, "systemless_examples", 0),
                               "commercial": bool(getattr(args, "commercial", False)), "data": data_sources(rows, args)}
     distill = {key: value for key, value in (("offpolicy", getattr(args, "distill_report", None)),
                                              ("onpolicy", getattr(args, "onpolicy_report", None))) if value}
@@ -4023,7 +5326,21 @@ def finish(args: argparse.Namespace, preset: dict[str, Any], model: Any, tokeniz
         summary = run_tests(generate, test_rows(eval_rows, preset, args.system_prompt))
         (out / "tests.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         report["tests"] = {key: value for key, value in summary.items() if key != "results"}
+        if not summary["identity_ok"]:
+            print("WARNING: identity tests failed, including possible no-system checks; inspect tests.json. "
+                  "Exporting weights does not fix this behavior.", flush=True)
+    if getattr(args, "tool_eval", None):
+        for_inference()
+        try:
+            report["agentic"] = agentic_eval(generate, args.tool_eval, model)
+        except Exception as exc:  # noqa: BLE001 - never lose the trained model to the eval
+            print(f"agentic eval failed ({type(exc).__name__}: {exc})")
 
+    if getattr(args, "training_phases", None):
+        report["training_phases"] = args.training_phases
+        if (len(args.training_phases) != len(ordered_training_phases(rows)) or
+                not all(phase["complete"] for phase in args.training_phases)):
+            report["train_rows_scheduled"] = report.pop("train_rows")  # not all scheduled rows were necessarily seen
     if getattr(args, "stopped_early", None):
         report["stopped_early"] = args.stopped_early
     lock = getattr(args, "export_lock", None)
@@ -4117,6 +5434,8 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
     st_dir = out / SAFETENSORS_DIR
     uploader = Uploader(background=bool(hub))
     # 1. the safetensors edition (merged by save_safetensors): uploaded in the background, first in the queue
+    if report.get("safetensors") and st_dir.is_dir():
+        write_import_files(st_dir, preset, args.system_prompt)
     if hub and report.get("safetensors"):
         report["hub_repo_safetensors"] = hub["safetensors"]
         write_cards(out, args.preset, preset, report, repo)
@@ -4152,11 +5471,13 @@ def export_and_publish(args: argparse.Namespace, preset: dict[str, Any], model: 
         mmproj = out / made["mmproj"] if made.get("mmproj") else None
         if preset.get("vision") and mmproj is None:
             print("warning: no mmproj (vision projector) was exported - the model will only read text")
-        (out / "Modelfile").write_text(modelfile_text(gguf.name, preset["family"], made.get("template"),
-                                                      mmproj.name if mmproj else None,
-                                                      preset.get("run_parameters"), args.system_prompt), encoding="utf-8")
+        write_import_files(out, preset, args.system_prompt, gguf=gguf.name,
+                           mmproj=mmproj.name if mmproj else "", template=made.get("template"))
+        write_ollama_params(out, preset)
         report.update({"gguf": gguf.name, "quant": made["files"][0]["quant"], "gguf_route": made.get("route"),
-                       "gguf_gb": round(gguf.stat().st_size / 1e9, 2), "ggufs": made["files"]})
+                       "gguf_gb": round(gguf.stat().st_size / 1e9, 2), "ggufs": made["files"],
+                       "gguf_skipped": made.get("skipped") or [], "imatrix": made.get("imatrix"),
+                       "llama_cpp": made.get("llama_cpp")})
         if mmproj:
             report["mmproj"] = mmproj.name
         if args.test_gguf:
@@ -4214,8 +5535,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-limit", type=int, default=150, help="eval rows to try after training (0 = skip)")
     parser.add_argument("--gguf", default="q4_k_m", help="GGUF quantisation (q4_k_m, q5_k_m, q8_0) or 'none'")
     parser.add_argument("--gguf-quants", default=None,
-                        help="more GGUFs made from the safetensors and uploaded one by one, e.g. q8_0,q6_k,q5_k_m,"
-                             "q4_k_m,q3_k_m (default: those when uploading, else none; 'none' = only --gguf)")
+                        help="more GGUFs made from the safetensors and uploaded one by one: 'all' (every llama.cpp "
+                             "quant, F16 and BF16 to IQ1_S; the default when uploading), 'standard' (q8_0,q6_k,"
+                             "q5_k_m,q4_k_m,q3_k_m) or a list like q8_0,iq4_xs ('none' = only --gguf)")
+    parser.add_argument("--imatrix-chunks", type=int, default=IMATRIX_CHUNKS,
+                        help=f"512-token chunks of the training data the importance matrix is computed on "
+                             f"(default {IMATRIX_CHUNKS}; ~10 min on a CPU for 4B)")
     parser.add_argument("--gguf-scratch", default=None,
                         help="work folder for the F16 GGUF and the quants (default: /tmp/pymc-gguf, off Kaggle's "
                              "20 GB output disk)")
@@ -4237,6 +5562,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--group-by-length", action="store_true",
                         help="text editions: batches of similar length (less padding, faster)")
     parser.add_argument("--loader-workers", type=int, default=0, help="data-loader worker processes per GPU")
+    parser.add_argument("--merge-qa", type=int, default=0,
+                        help="text editions that don't think: Q&A rows with the same system prompt trained as chats of "
+                             "this many questions (the ~300-token system prompt read once per chat, every answer still "
+                             "trained; ~2.5x fewer Q&A tokens); 0/1 = off")
     parser.add_argument("--token-budget", type=int, default=0,
                         help="text editions: rows per GPU batch sized so a batch holds about this many tokens (padding-"
                              "free, same effective batch, fewer accumulation steps; 0 = the preset's batch)")
@@ -4291,6 +5620,8 @@ def build_parser() -> argparse.ArgumentParser:
                                                      "Minecraftism prompt); written into the Modelfile")
     parser.add_argument("--persona-mix", type=float, default=0.5,
                         help="share of Minecraft Q&A rows that get the everyday system prompt (0-1)")
+    parser.add_argument("--systemless-fraction", type=float, default=0.5,
+                        help="fraction of ordinary examples using the default system prompt to train without it (0-1)")
     parser.add_argument("--general", type=int, default=0,
                         help="everyday chat rows to mix in from Hugging Face (keeps it a good daily assistant)")
     parser.add_argument("--general-dataset", help=f"ShareGPT/messages/ChatML chat dataset, 'name:split' picks a split "
@@ -4299,6 +5630,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="dataset with <think> traces used instead for the thinking editions ('name:split'; "
                              f"default {REASONING_DATASET}; --commercial: {COMMERCIAL_REASONING_DATASET})")
     parser.add_argument("--no-identity", action="store_true", help="skip the 'who are you' rows")
+    parser.add_argument("--tools", type=int, default=0,
+                        help="tool-calling (agentic) chats to mix in, in Qwen3's own tool format; the agentic score "
+                             f"(base vs fine-tuned, {TOOL_EVAL} held-out chats) goes into the report and the card")
+    parser.add_argument("--tool-dataset", default=TOOL_DATASET, help="'name:split' with messages/tool_calls and "
+                                                                     "metadata.tools (default %(default)s, CC BY 4.0)")
     parser.add_argument("--minecraft-qa", type=int, default=0,
                         help="Minecraft Q&A rows streamed from a big Hugging Face Q&A set (sampled and filtered)")
     parser.add_argument("--minecraft-qa-dataset",
@@ -4431,6 +5767,10 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
         extra = [row for row in extra if all(row is not h for h in held)]
         eval_rows = eval_rows + held
     rows = rows + extra
+    systemless = (systemless_examples(rows, args.system_prompt, max(0.0, min(1.0, args.systemless_fraction)), rng)
+                  if args.preset in EDITIONS else 0)
+    args.systemless_examples = systemless
+    print(f"training: {systemless} ordinary examples use no system prompt; game/tool instructions are preserved")
     rng.shuffle(rows)
     kinds: dict[str, int] = {}
     for row in extra:

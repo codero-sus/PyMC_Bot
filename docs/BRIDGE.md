@@ -79,8 +79,6 @@ owned by the account, which is not the email used to log in. Python merges each 
   `disconnected` and `MinecraftBot`'s monitor thread reconnects (3 attempts, 5s/10s/15s backoff) unless
   `auto_reconnect=False`.
 
-## Testing without Minecraft
+## Simulator
 
-`tests/fixtures/fake_bridge.js` implements this whole protocol with canned data, so the Python adapter is
-covered in CI without mineflayer or a server (`tests/test_node_bridge.py`). The real bridge is exercised by
-`tests/test_node_live.py`, which is opt-in via `PYMC_TEST_SERVER=host:port`.
+Use the built-in simulated backend for smoke checks without connecting to Minecraft.

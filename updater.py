@@ -11,16 +11,12 @@ or use the wrappers next to this file: ``updater.cmd`` (Windows) / ``./updater.s
 
 How it updates PyMC_Bot - always by downloading and extracting a ``.zip``, never with git:
 
-1. asks GitHub which commit is newest on this build's update channel (one small API call);
-2. downloads that exact commit as a source ``.zip`` and checks it (complete archive, and the commit
-   id stored inside the zip must match);
-3. extracts it over this folder. Your files are kept: ``pymc_bot_config.json``, ``.venv``,
-   ``models/``, recordings, ``.git`` and anything else that is not part of the project are never
-   touched, and every project file you changed is first copied to ``.pymc_backup/<time>/``;
-4. removes files the project deleted since your last update - but only files you never edited.
+1. finds the newest eligible published GitHub release;
+2. downloads its source archive and verifies its SHA-256 and archive structure;
+3. extracts it over this folder, preserving configuration, models and other protected data;
+4. backs up changed project files and removes unmodified files deleted since the previous update.
 
-A git clone works too: it is updated the same way (``.git`` is left alone, so ``git status`` will
-show the new files as changes - commit, stash or reset them as you like).
+For a manual branch snapshot, use ``--branch NAME`` instead.
 
 Afterwards ``pip install -r requirements.txt`` (and ``npm install``) run only if those files
 changed, using ``.venv`` when it exists. The mod update finds ``pymcbot-<version>+<mc>.jar``
@@ -29,8 +25,7 @@ in your mods folder, downloads the jar for the same Minecraft version from the n
 release, checks its size, SHA-256 and ``fabric.mod.json``, and keeps the old one as ``*.jar.old``.
 
 Only the Python standard library is used, so the updater works before anything is installed.
-Set ``GITHUB_TOKEN`` to raise GitHub's API limit (60 requests/hour without it); without the API
-the updater still works by downloading the zip and reading the commit id stored in it.
+Set ``GITHUB_TOKEN`` to raise GitHub's API limit (60 requests/hour without it).
 
 Made with love by codero-sus - https://github.com/codero-sus - https://codero.is-a.dev - https://the-codero.web.app/
 """
@@ -48,6 +43,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -72,17 +68,20 @@ JAR_RE = re.compile(r"^(?P<id>pymcbot|pymcplaytime)-(?P<version>\d+(?:\.\d+)*)\+
 DEPENDENCY_FILES = ("requirements.txt", "requirements-train.txt", "requirements-dev.txt", "package.json")
 # Never written by a zip update, even if a future archive contained them.
 PROTECTED = (".git", ".venv", "venv", "node_modules", "models", ".pymc_profiles", BACKUP_DIR,
-             "pymc_bot_config.json", STATE_FILE, "pymc-playtime")
+             "pymc_bot_config.json", "pymc_bot_auth.json", STATE_FILE, ".pymc_update.lock", "pymc-playtime", "pymcbot",
+             "bot-memory", "pymc_bot_places.json", "knowledge_cache.json", "llm_turns.jsonl")
 
 
-# ---------------------------------------------------------------------------- update channel
+# ---------------------------------------------------------------------------- update branch
 #
-# The branch this build updates from is stored sealed (XOR with a fixed key, base85, reversed) so
-# it does not show up as plain text in this file, in the console output or in error messages.
-# This only hides the name from casual reading - it is not encryption. Maintainers re-seal a new
-# branch with:  python updater.py --seal <branch>   and paste the result into _CHANNEL.
+# Updates come from the public ``main`` branch. ``--branch NAME`` picks another one.
+DEFAULT_BRANCH = "main"
+
+# Builds used to follow a hidden update channel. Its name stays sealed (XOR with a fixed key, base85,
+# reversed) and is only used to keep it out of the console, error messages and project files (see
+# redact() and the leak-guard test) - it is no longer updated from. Not encryption, just not plain text.
 _SEAL_KEY = hashlib.sha256(b"PyMC_Bot:update-channel:v1").digest()
-_CHANNEL = (
+_RETIRED_CHANNEL = (
     "?43GhL@Uq!fF+s"
     "ERTSYozS}+{qdR1"
 )
@@ -93,7 +92,7 @@ def _xor(data: bytes) -> bytes:
 
 
 def seal(text: str) -> str:
-    """Seal a branch name for ``_CHANNEL``."""
+    """Seal a branch name (how ``_RETIRED_CHANNEL`` was made)."""
     return base64.b85encode(_xor(text.encode("utf-8"))).decode("ascii")[::-1]
 
 
@@ -102,8 +101,13 @@ def unseal(blob: str) -> str:
 
 
 def update_channel() -> str:
-    """The branch this build follows (never printed)."""
-    return unseal(_CHANNEL)
+    """The branch this build updates from: ``main``."""
+    return DEFAULT_BRANCH
+
+
+def retired_channel() -> str:
+    """The old hidden update channel (never printed, never updated from)."""
+    return unseal(_RETIRED_CHANNEL)
 
 
 def _secret_forms(ref: str) -> set[str]:
@@ -113,12 +117,12 @@ def _secret_forms(ref: str) -> set[str]:
 
 
 def redact(text: str, refs: tuple[str, ...] = ()) -> str:
-    """``text`` with the update channel (and any other hidden ``refs``) replaced by a placeholder."""
+    """``text`` with the retired hidden channel (and any other hidden ``refs``) replaced by a placeholder."""
     out = str(text)
     hidden = set(refs)
     try:
-        hidden.add(update_channel())
-    except (ValueError, UnicodeDecodeError):  # pragma: no cover - only if _CHANNEL was mangled
+        hidden.add(retired_channel())
+    except (ValueError, UnicodeDecodeError):  # pragma: no cover - only if _RETIRED_CHANNEL was mangled
         pass
     for ref in hidden:
         for form in sorted(_secret_forms(ref), key=len, reverse=True):
@@ -135,7 +139,7 @@ class RateLimited(UpdateError):
 
 
 def say(message: str = "") -> None:
-    # Every line goes through redact(), so the update channel can never reach the console.
+    # Every line goes through redact(), so the retired hidden channel can never reach the console.
     try:
         print(f"[update] {redact(message)}" if message else "", flush=True)
     except BrokenPipeError:
@@ -160,11 +164,14 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> urllib.re
 
 #: Seconds to wait before trying again when GitHub has a hiccup (HTTP 5xx, a dropped connection, a timeout).
 RETRY_DELAYS = (2.0, 6.0)
+AUTO_MODE = False
 
 
 def http_get(url: str, accept: str = "application/vnd.github+json", timeout: float = 60.0) -> bytes:
     """GET with a clear error message (rate limits, offline, missing branch...); short GitHub hiccups are
     retried twice before giving up."""
+    if AUTO_MODE:
+        timeout = min(timeout, 5.0 if accept == "application/vnd.github+json" else 60.0)
     for delay in (*RETRY_DELAYS, None):
         try:
             with urllib.request.urlopen(_request(url, accept), timeout=timeout) as response:
@@ -353,9 +360,9 @@ def remove_deleted(root: Path, old_files: dict, new_files: dict) -> dict[str, li
 
 
 def update_zip(root: Path, repo: str, ref: str | None, check: bool) -> bool:
-    """Updates PyMC_Bot from a downloaded source zip. ``ref`` None = this build's update channel."""
+    """Updates PyMC_Bot from a downloaded source zip. ``ref`` None = the ``main`` branch."""
     channel = ref or update_channel()
-    where = "the update channel" if ref is None else "the chosen branch"
+    where = f"the {DEFAULT_BRANCH} branch" if ref is None else "the chosen branch"
     if git_checkout_present(root):
         say("a .git folder is here - it is not used: the update comes as a zip and .git is left alone")
     say(f"checking {where} on GitHub ...")
@@ -565,17 +572,20 @@ def install_jar(mods_dir: Path, data: bytes, name: str, replaces: list[Path]) ->
     target = mods_dir / name
     tmp = mods_dir / (name + ".part")
     tmp.write_bytes(data)
+    moved: list[tuple[Path, Path]] = []
     try:
         for old in replaces:
-            if old.resolve() == target.resolve():
-                continue
             backup = old.with_name(old.name + ".old")
             if backup.exists():
                 backup.unlink()
             old.rename(backup)
+            moved.append((old, backup))
         os.replace(tmp, target)
-    except PermissionError as exc:
+    except OSError as exc:
         tmp.unlink(missing_ok=True)
+        for old, backup in reversed(moved):
+            if backup.exists():
+                os.replace(backup, old)
         raise UpdateError(f"{exc.filename or mods_dir} is in use - close Minecraft and run the updater again") from exc
     return target
 
@@ -593,7 +603,7 @@ def newest_mod_release(repo: str, allow_pre: bool) -> dict | None:
 
 
 def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool, check: bool,
-               reinstall: bool = False) -> bool:
+               reinstall: bool = False, require_digest: bool = False) -> bool:
     say(f"mods folder: {mods_dir}")
     jars = installed_jars(mods_dir)
     targets: dict[str, list[InstalledJar]] = {}
@@ -612,8 +622,8 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
     changed = False
     for mc, current in sorted(targets.items()):
         best = max((j.version for j in current), key=version_tuple, default=None)
-        if best and version_tuple(best) >= version_tuple(newest) and not reinstall:
-            say(f"Minecraft {mc}: PyMC Bot mod {best} is up to date")
+        if best and version_tuple(best) > version_tuple(newest) and not reinstall:
+            say(f"Minecraft {mc}: PyMC Bot mod {best} is newer")
             continue
         asset = asset_for(release, newest, mc)
         if asset is None:
@@ -621,10 +631,19 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
                                key=version_tuple)
             say(f"Minecraft {mc}: {release['tag_name']} has no jar for it (available: {', '.join(supported)})")
             continue
+        if best and version_tuple(best) == version_tuple(newest) and not reinstall:
+            digest = str(asset.get("digest") or "")
+            unchanged = (len(current) == 1 and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)
+                         and hashlib.sha256(current[0].path.read_bytes()).hexdigest().lower() == digest[7:].lower())
+            if unchanged or (not require_digest and not digest):
+                say(f"Minecraft {mc}: PyMC Bot mod {best} is up to date")
+                continue
         action = f"{best} -> {newest}" if best else f"install {newest}"
         say(f"Minecraft {mc}: {action}  ({asset['name']}, {asset.get('size', '?')} bytes)")
         if check:
             continue
+        if require_digest and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", str(asset.get("digest") or "")):
+            raise UpdateError("release mod archive has no SHA-256 digest")
         data = http_get(asset["browser_download_url"], accept="application/octet-stream", timeout=300)
         verify_jar(data, asset, mc)
         target = install_jar(mods_dir, data, asset["name"], [j.path for j in current])
@@ -641,23 +660,125 @@ def update_mod(mods_dir: Path, repo: str, mc_wanted: str | None, allow_pre: bool
 # ---------------------------------------------------------------------------- main
 
 
+def update_release(root: Path, repo: str, check: bool, allow_pre: bool = False,
+                   report_available: bool = False) -> bool:
+    release = newest_mod_release(repo, allow_pre)
+    if release is None:
+        raise UpdateError("no published release is available")
+    version = release_version(str(release.get("tag_name", "")))
+    asset = next((a for a in release.get("assets", []) if a.get("name") == "PyMC_Bot-source.zip"), None)
+    if not version or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", version) or not asset:
+        raise UpdateError("the published release has no source archive")
+    digest = str(asset.get("digest") or "")
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        raise UpdateError("the release source archive has no SHA-256 digest")
+    size = asset.get("size")
+    if not isinstance(size, int) or size <= 0 or size > 100_000_000:
+        raise UpdateError("invalid release source archive size")
+    url = str(asset.get("browser_download_url") or "")
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.username or parsed.password
+            or not parsed.path.startswith(f"/{repo}/releases/download/")):
+        raise UpdateError("invalid release source archive URL")
+    state = read_state(root)
+    properties = root / "mod" / "gradle.properties"
+    try:
+        match = re.search(r"(?m)^mod_version\s*=\s*([0-9.]+)\s*$", properties.read_text(encoding="utf-8"))
+    except OSError:
+        match = None
+    installed = [str(v) for v in (state.get("release_version"), match.group(1) if match else None) if v]
+    if any(version_tuple(v) > version_tuple(version) for v in installed):
+        say("installed version is newer than the selected release")
+        return False
+    if state.get("repo") == repo and state.get("release_digest") == digest:
+        say("PyMC_Bot is up to date")
+        return False
+    say(f"release {version} is available")
+    if check:
+        return report_available
+    archive = http_get(url, accept="application/octet-stream", timeout=300)
+    if len(archive) != size or hashlib.sha256(archive).hexdigest().lower() != digest[7:].lower():
+        raise UpdateError("release source archive verification failed")
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            infos = [item for item in zf.infolist() if not item.is_dir()]
+            if not infos or sum(item.file_size for item in infos) > 200_000_000 or zf.testzip():
+                raise UpdateError("invalid release source archive")
+            top = PurePosixPath(infos[0].filename).parts[0]
+            paths = set()
+            for item in infos:
+                parts = PurePosixPath(item.filename).parts
+                if (len(parts) < 2 or parts[0] != top or ".." in parts or "\\" in item.filename
+                        or item.filename.startswith("/") or ":" in parts[1] or (item.external_attr >> 16) & 0o170000 == 0o120000):
+                    raise UpdateError("unsafe release source archive")
+                rel = PurePosixPath(*parts[1:])
+                if str(rel) in paths:
+                    raise UpdateError("duplicate release source path")
+                paths.add(str(rel))
+                for parent in (root.joinpath(*rel.parts[:i]) for i in range(1, len(rel.parts) + 1)):
+                    if parent.is_symlink():
+                        raise UpdateError("refusing to update through a symlink")
+            if not {"updater.py", "pymc_bot/__main__.py"} <= paths:
+                raise UpdateError("release source archive is incomplete")
+    except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+        raise UpdateError("release source archive is invalid") from exc
+    old_files = state.get("files") if isinstance(state.get("files"), dict) else {}
+    managed = set(paths)
+    for raw in old_files:
+        rel = PurePosixPath(raw)
+        if rel.is_absolute() or ".." in rel.parts or not rel.parts or is_protected(rel) or "\\" in raw or ":" in rel.parts[0]:
+            continue
+        if any(root.joinpath(*rel.parts[:i]).is_symlink() for i in range(1, len(rel.parts) + 1)):
+            raise UpdateError("refusing to update through a symlink")
+        managed.add(str(rel))
+    managed = {name for name in managed if not is_protected(PurePosixPath(name))}
+    with tempfile.TemporaryDirectory(prefix=".pymc-stage-", dir=root) as staging:
+        staging = Path(staging)
+        existing = set()
+        for name in managed:
+            dest = root.joinpath(*PurePosixPath(name).parts)
+            if dest.is_file():
+                backup = staging / name
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dest, backup)
+                existing.add(name)
+        try:
+            report = apply_zip(archive, root)
+            if old_files:
+                remove_deleted(root, old_files, report["files"])
+            _write_file(root / STATE_FILE, (json.dumps({"repo": repo, "release_version": version,
+                        "release_digest": digest, "files": report["files"]}, indent=2) + "\n").encode("utf-8"))
+        except BaseException:
+            for name in managed:
+                dest = root.joinpath(*PurePosixPath(name).parts)
+                if name in existing:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(staging / name, dest)
+                elif dest.is_file():
+                    dest.unlink()
+            raise
+    say(f"updated {len(report['written'])} file(s) from release {version}")
+    return True
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="updater",
         description="Update PyMC_Bot, its dependencies and the PyMC Bot mod from GitHub.",
         epilog="Examples:  updater --check   |   updater --mod   |   updater --mod-only --mc 1.21.4",
     )
+    parser.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--check", action="store_true", help="only report available updates, change nothing")
     parser.add_argument("--mod", action="store_true", help="also update the Fabric mod jar in your mods folder")
     parser.add_argument("--mod-only", action="store_true", help="only update the Fabric mod")
     parser.add_argument("--mc", metavar="VERSION", help="Minecraft version to install the mod for (e.g. 1.21.4, 26.3)")
     parser.add_argument("--mods-dir", type=Path, help="mods folder (default: the official launcher's .minecraft/mods)")
-    parser.add_argument("--pre", action="store_true", help="allow mod pre-releases even when a stable release exists")
+    parser.add_argument("--pre", action="store_true", help="allow pre-releases even when a stable release exists")
     parser.add_argument("--reinstall", action="store_true", help="download the mod again even if it is up to date")
     parser.add_argument("--branch", default=None, metavar="NAME",
-                        help="update from another branch instead of this build's update channel")
+                        help=f"update from another branch instead of {DEFAULT_BRANCH}")
     parser.add_argument("--repo", default=REPO, help=argparse.SUPPRESS)
-    parser.add_argument("--seal", metavar="BRANCH", help=argparse.SUPPRESS)  # maintainers: value for _CHANNEL
+    parser.add_argument("--seal", metavar="BRANCH", help=argparse.SUPPRESS)  # maintainers: seal a branch name
     deps = parser.add_mutually_exclusive_group()
     deps.add_argument("--deps", action="store_true", help="reinstall dependencies even if unchanged")
     deps.add_argument("--no-deps", action="store_true", help="never touch dependencies")
@@ -665,35 +786,57 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
+    global AUTO_MODE, RETRY_DELAYS
     args = build_parser().parse_args(argv)
+    if args.auto:
+        AUTO_MODE = True
+        RETRY_DELAYS = ()
+        if git_checkout_present(root):
+            return 0
     if args.seal:
         print(seal(args.seal))
         return 0
     if args.mc and not (args.mod or args.mod_only):
         args.mod = True
     say(f"PyMC_Bot updater - {args.repo}" + ("  (check only)" if args.check else ""))
+    pulled = False
     try:
         if not args.mod_only:
             before = file_hashes(root)
-            pulled = update_zip(root, args.repo, args.branch, args.check)
+            try:
+                pulled = (update_zip(root, args.repo, args.branch, args.check) if args.branch
+                          else update_release(root, args.repo, args.check, args.pre,
+                                              report_available=args.auto and args.check))
+            except UpdateError:
+                if not args.auto:
+                    raise
+            if args.auto and args.check:
+                return 11 if pulled else 0
             if not args.no_deps and (pulled or args.deps):
                 update_dependencies(root, before, args.deps, args.check)
             if pulled:
                 say("restart PyMC_Bot (the panel / bot) to use the new version")
+        if args.auto and installed_jars(args.mods_dir or default_mods_dir()):
+            args.mod = True
         if args.mod or args.mod_only:
             say()
-            update_mod(args.mods_dir or default_mods_dir(), args.repo, args.mc, args.pre, args.check, args.reinstall)
+            try:
+                update_mod(args.mods_dir or default_mods_dir(), args.repo, args.mc, args.pre, args.check,
+                           args.reinstall, require_digest=args.auto)
+            except UpdateError:
+                if not args.auto:
+                    raise
     except UpdateError as exc:
         say(f"ERROR: {exc}")
-        return 1
-    except Exception as exc:  # never show a traceback (it could contain the update channel)
+        return 10 if args.auto and pulled else 1
+    except Exception as exc:  # never show a traceback (it could contain a hidden branch name)
         say(f"ERROR: unexpected {type(exc).__name__}: {exc}")
-        return 1
+        return 10 if args.auto and pulled else 1
     except KeyboardInterrupt:
         say("cancelled")
         return 130
     say("done")
-    return 0
+    return 10 if args.auto and not args.mod_only and pulled else 0
 
 
 if __name__ == "__main__":

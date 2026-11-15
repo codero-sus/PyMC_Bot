@@ -1,13 +1,16 @@
 """Command line entry point.
 
-``python -m pymc_bot [serve|run|train|models|action|doctor|probe|search|mob|llm|stub|about]``
+``python -m pymc_bot [serve|run|train|models|action|auth|doctor|probe|search|mob|llm|stub|about]``
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -58,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--auto-agent", action="store_true", help="also start the AI loop on startup")
     serve.add_argument("--log-level", default="info", choices=["critical", "error", "warning", "info", "debug", "trace"])
     serve.add_argument("--reload", action="store_true", help="auto-reload on code changes (development)")
+    serve.add_argument("--no-auth", action="store_true",
+                       help="turn the login off (only for a panel nobody else can reach; also PYMC_BOT_NO_AUTH=1)")
 
     run = sub.add_parser("run", help="headless: connect the bot and play (optionally with the AI loop)")
     _add_config_arg(run)
@@ -127,12 +132,32 @@ def build_parser() -> argparse.ArgumentParser:
     action = sub.add_parser("action", help="send one manual action to a running panel")
     action.add_argument("payload", help='action JSON, e.g. \'{"action":"wander"}\' or {"action":"goto","x":10,"z":4}')
     action.add_argument("--url", default="http://127.0.0.1:8000", help="panel base URL")
+    action.add_argument("--token", default=None,
+                        help="the panel's API token (default: PYMC_BOT_TOKEN; create one with 'auth token')")
+
+    auth_cmd = sub.add_parser("auth", help="the panel's login: set the password, API token, status, reset")
+    _add_config_arg(auth_cmd)
+    auth_sub = auth_cmd.add_subparsers(dest="auth_command", metavar="{status,set-password,token,revoke-token,reset}")
+    auth_sub.add_parser("status", help="is there an account, is an API token set (default)")
+    set_pw = auth_sub.add_parser("set-password", help="create the account or change its password (asks for it)")
+    set_pw.add_argument("--username", default=None, help="account name (default: the current one, else 'admin')")
+    auth_sub.add_parser("token", help="create a new API token (printed once; replaces the old one)")
+    auth_sub.add_parser("revoke-token", help="remove the API token")
+    auth_sub.add_parser("reset", help="forget the account: the panel asks for a new one with a setup code")
 
     setup = sub.add_parser("setup", help="install the Minecraft bridge (mineflayer) without npm, and Node.js if missing",
                            aliases=["install-bridge"])
     from pymc_bot import node_setup
 
     node_setup.add_arguments(setup)
+
+    bench = sub.add_parser("bench", help="synthetic model checks or simulated goal integration checks")
+    bench.add_argument("--suite", choices=["model", "sim-tech"], default="model", help="benchmark suite")
+    bench.add_argument("--model", default=None, help="installed Ollama model name (required for model suite)")
+    bench.add_argument("--url", default="http://127.0.0.1:11434", help="Ollama server URL")
+    bench.add_argument("--repeats", type=int, choices=range(1, 11), default=1, help="repeat each case (1-10)")
+    bench.add_argument("--json-mode", action="store_true", help="request Ollama JSON-object output")
+    bench.add_argument("--output", default=None, help="optional JSON report file")
 
     doctor = sub.add_parser("doctor", help="check the environment (node, mineflayer, ollama, cortex, config)")
     _add_config_arg(doctor)
@@ -221,14 +246,48 @@ def cmd_serve(args: argparse.Namespace) -> int:
     host = args.host or settings.server.host
     port = args.port or settings.server.port
 
+    import os
+
+    from pymc_bot import auth
+
+    if getattr(args, "no_auth", False):
+        os.environ["PYMC_BOT_NO_AUTH"] = "1"
     app = create_app(
         config_path=args.config,
         autostart=args.autostart,
         auto_agent=args.auto_agent,
     )
     print(f"PyMC_Bot {__version__} control panel: http://{host}:{port}  (config: {store.path})")
+    if auth.auth_disabled():
+        print("WARNING: login is OFF - anyone who can reach this port controls your bots."
+              + (" Bind to 127.0.0.1 (--host 127.0.0.1) or drop --no-auth." if host not in ("127.0.0.1", "localhost") else ""))
+    else:
+        accounts = app.state.auth
+        print(f"login       : {'account ' + repr(accounts.username) if accounts.configured else 'not set up yet'}"
+              f"  ({accounts.path})")
     print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://codero.is-a.dev \u00b7 https://the-codero.web.app/")
-    uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
+    root = _source_install_root()
+    if root is None:
+        from pymc_bot.package_update import eligible
+        watch_package = eligible()
+    else:
+        watch_package = False
+    if (root is None and not watch_package) or args.reload:
+        uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
+        return 0
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level=args.log_level))
+    finished = threading.Event()
+    restart = threading.Event()
+    target = _watch_package if watch_package else _watch_release
+    watcher = threading.Thread(target=target, args=(root, app, server, finished, restart), daemon=True)
+    watcher.start()
+    try:
+        server.run()
+    finally:
+        finished.set()
+        watcher.join(timeout=1)
+    if restart.is_set():
+        os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])
     return 0
 
 
@@ -490,6 +549,8 @@ def cmd_models(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------- action
 def cmd_action(args: argparse.Namespace) -> int:
+    import os
+
     import httpx
 
     url = args.url.rstrip("/") + "/api/bot/action"
@@ -497,13 +558,74 @@ def cmd_action(args: argparse.Namespace) -> int:
         payload = json.loads(args.payload)
     except json.JSONDecodeError:
         payload = {"raw": args.payload}
+    token = getattr(args, "token", None) or os.environ.get("PYMC_BOT_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token.strip()}"} if token.strip() else {}
     try:
-        response = httpx.post(url, json=payload, timeout=60.0)
+        response = httpx.post(url, json=payload, headers=headers, timeout=60.0)
     except httpx.HTTPError as exc:
         print(f"Could not reach {url}: {exc}", file=sys.stderr)
         return 2
     print(response.status_code, response.text)
+    if response.status_code == 401:
+        print("The panel needs a login: pass --token (or set PYMC_BOT_TOKEN). Create a token in the panel "
+              "(Advanced > Login & API token) or with: python -m pymc_bot auth token", file=sys.stderr)
     return 0 if response.status_code < 400 else 1
+
+
+# ----------------------------------------------------------------------- auth
+def cmd_auth(args: argparse.Namespace) -> int:
+    import getpass
+
+    from pymc_bot import auth
+
+    path = auth.default_auth_path(ConfigStore(args.config, autoload=False).path)
+    accounts = auth.AuthStore(path)
+    command = args.auth_command or "status"
+    if command == "status":
+        info = accounts.status()
+        print(f"auth file   : {info['file']} {'(exists)' if path.exists() else '(not created yet)'}")
+        print(f"account     : {info['username'] if info['configured'] else 'none - the panel shows a setup form'}")
+        print(f"api token   : {'set' if info['token'] else 'none'}")
+        if auth.auth_disabled():
+            print("login       : OFF (PYMC_BOT_NO_AUTH is set)")
+        return 0
+    if command == "set-password":
+        username = args.username or accounts.username or "admin"
+        try:
+            auth.check_username(username)
+            password = getpass.getpass(f"New password for '{username}': ")
+            auth.check_password_rules(password)
+            if getpass.getpass("Repeat it: ") != password:
+                print("The two passwords are different - nothing changed.", file=sys.stderr)
+                return 1
+            accounts.set_account(username, password)
+        except auth.AuthError as exc:
+            print(f"Not changed: {exc}", file=sys.stderr)
+            return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\ncancelled", file=sys.stderr)
+            return 1
+        print(f"Saved. Log in to the panel as '{username}' (every other session was logged out).")
+        return 0
+    if command == "token":
+        if not accounts.configured:
+            print("Create the account first: python -m pymc_bot auth set-password", file=sys.stderr)
+            return 1
+        token = accounts.new_token()
+        print(token)
+        print("\nShown once - keep it safe. Use it as 'Authorization: Bearer <token>', with "
+              "'python -m pymc_bot action --token ...' (or PYMC_BOT_TOKEN), or in Minecraft: /pymcbot bot token <token>",
+              file=sys.stderr)
+        return 0
+    if command == "revoke-token":
+        accounts.revoke_token()
+        print("API token removed.")
+        return 0
+    if command == "reset":
+        accounts.reset()
+        print("Account removed. The panel now asks for a new one (the setup code is printed in its console).")
+        return 0
+    return 2  # pragma: no cover - argparse rejects other names
 
 
 # --------------------------------------------------------------------- doctor
@@ -523,6 +645,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"minecraft   : {mc_range['oldest']} - {mc_range['latest']} (newer servers need ViaVersion + ViaBackwards "
               "until mineflayer adds them; then run the updater or `python -m pymc_bot setup --force`)")
     print(f"config      : {store.path} {'(exists)' if store.path.exists() else '(will be created)'}")
+    from pymc_bot import auth as _auth
+
+    _accounts = _auth.AuthStore(_auth.default_auth_path(store.path))
+    print(f"panel login : {'OFF (PYMC_BOT_NO_AUTH)' if _auth.auth_disabled() else ('account ' + repr(_accounts.username) if _accounts.configured else 'not set up yet (setup code on first serve, or: auth set-password)')}")
     if store.load_error:
         print(f"config note : {store.load_error}")
     print(f"server      : {settings.minecraft.host}:{settings.minecraft.port} "
@@ -719,7 +845,7 @@ def cmd_llm(args: argparse.Namespace) -> int:
         print(result.message)
         if not args.hf:
             print(f"Modelfile: {result.modelfile}")
-        if result.info.get("vision"):
+        if result.info.get("vision") and result.activated:
             print("Vision edition: the bot will attach its view every few turns (agent.vision; needs the optional "
                   "bridge packages - see docs/MINECRAFT_LLM.md).")
         if result.activated:
@@ -794,11 +920,9 @@ def _llm_build(args: argparse.Namespace, store: ConfigStore) -> int:
     print(f"\n{card['train']} training rows ready in {out}/. Next:\n"
           f"  1. kaggle.com > Datasets > New Dataset > upload the files in {out}/ (skip wiki_cache), or\n"
           f"     kaggle datasets create -p {out}   (edit the id in dataset-metadata.json first)\n"
-          "  2. open pynb/PyMC_Minecraft_LLM_Kaggle.ipynb on Kaggle, Add Input = your dataset,\n"
-          "     Accelerator = GPU T4 x2, pick the Minecraftism EDITIONS, Run All (llm presets lists them)\n"
-          "  3. python -m pymc_bot llm import --hf <you>/Minecraftism-4B-Uncensored-GGUF   (HF_TOKEN secret set;\n"
-          "     UNCENSORED = False in the notebook: <you>/Minecraftism-4B-GGUF)\n"
-          "     or download /kaggle/working/<edition> and run: python -m pymc_bot llm import <folder>")
+          f"  2. inspect the trainer: python {out}/train_minecraft_llm.py --help\n"
+          "     Notebooks are not included; training needs its own dependencies and hardware.\n"
+          "  3. import a compatible GGUF with python -m pymc_bot llm import --hf <repo>")
     if card.get("images"):
         print(f"  {card['images']} pictures in {out}/images/ - upload that folder too (the VL editions need it)")
     return 0
@@ -813,12 +937,34 @@ def cmd_stub(args: argparse.Namespace) -> int:
     return stub_main(argv)
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    if args.suite == "sim-tech":
+        from pymc_bot.sim_bench import run_sim_bench
+        report = run_sim_bench(repeats=args.repeats)
+        failed = report["pass_rate"] < 1.0
+    else:
+        from pymc_bot.bench import benchmark
+        if not args.model:
+            print("--model is required for the model benchmark", file=sys.stderr)
+            return 2
+        with OllamaClient(base_url=args.url, model=args.model) as client:
+            report = benchmark(client, repeats=args.repeats, json_mode=args.json_mode)
+        failed = all(row["error"] for row in report["results"])
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return int(failed)
+
+
 DISPATCH = {
+    "bench": cmd_bench,
     "serve": cmd_serve,
     "run": cmd_run,
     "train": cmd_train,
     "models": cmd_models,
     "action": cmd_action,
+    "auth": cmd_auth,
     "doctor": cmd_doctor,
     "setup": cmd_setup,
     "install-bridge": cmd_setup,
@@ -831,7 +977,120 @@ DISPATCH = {
 }
 
 
+def _source_install_root() -> Path | None:
+    root = Path(__file__).resolve().parent.parent
+    if (root / "updater.py").is_file() and (root / "pyproject.toml").is_file() and not (root / ".git").exists():
+        return root
+    return None
+
+
+def _watch_release(root: Path, app: Any, server: Any, finished: threading.Event,
+                   restart: threading.Event, interval: float = 600.0) -> None:
+    while not finished.wait(interval):
+        try:
+            fleet = app.state.fleet
+            if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
+                continue
+            if any(fleet.ai_running(bot) for bot in fleet.all_bots()):
+                continue
+            # The installed mod can change independently of the source release. It takes effect
+            # on the next Minecraft launch; a locked jar is retried during a later check.
+            _run_locked_update(root, "--mod-only")
+            result = subprocess.run([sys.executable, str(root / "updater.py"), "--auto", "--check"], cwd=root,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    check=False, timeout=120)
+            if result.returncode != 11 or finished.is_set() or server.should_exit:
+                continue
+            # The fleet could have started while the network checks were in progress.
+            if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
+                continue
+            if any(fleet.ai_running(bot) for bot in fleet.all_bots()):
+                continue
+            restart.set()
+            server.should_exit = True
+            return
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            continue
+
+
+def _watch_package(root: Path | None, app: Any, server: Any, finished: threading.Event,
+                   restart: threading.Event, interval: float = 600.0) -> None:
+    from pymc_bot.package_update import update
+
+    while not finished.wait(interval):
+        fleet = app.state.fleet
+        if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
+            continue
+        if any(fleet.ai_running(bot) for bot in fleet.all_bots()) or not update(check=True):
+            continue
+        if finished.is_set() or server.should_exit or app.state.training_service.running:
+            continue
+        if any(bot.state not in ("disconnected", "error") or fleet.ai_running(bot) for bot in fleet.all_bots()):
+            continue
+        restart.set()
+        server.should_exit = True
+        return
+
+
+def _run_locked_update(root: Path, *args: str) -> subprocess.CompletedProcess[Any] | None:
+    """Avoid concurrent release updates from two local app instances."""
+    try:
+        with (root / ".pymc_update.lock").open("a+b") as lock:
+            if os.name == "nt":
+                import msvcrt
+
+                lock.seek(0)
+                if not lock.read(1):
+                    lock.write(b"0")
+                    lock.flush()
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return subprocess.run([sys.executable, str(root / "updater.py"), "--auto", *args], cwd=root,
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  check=False)
+    except OSError:
+        return None
+
+
+def _prepare_startup() -> None:
+    if os.environ.pop("PYMC_BOT_UPDATE_RESTARTED", None) or (len(sys.argv) > 1 and sys.argv[1] not in ("serve", "run")):
+        return
+    root = _source_install_root()
+    if root is None:
+        from pymc_bot.package_update import update
+        try:
+            with (Path(sys.prefix) / ".pymcbot-update.lock").open("a+b") as lock:
+                if os.name == "nt":
+                    import msvcrt
+                    lock.seek(0)
+                    if not lock.read(1):
+                        lock.write(b"0")
+                        lock.flush()
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                updated = update()
+        except OSError:
+            return
+        if updated:
+            from pymc_bot.package_update import restart
+            restart()
+        return
+    result = _run_locked_update(root)
+    if result is not None and result.returncode == 10:
+        os.environ["PYMC_BOT_UPDATE_RESTARTED"] = "1"
+        os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        _prepare_startup()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.command:

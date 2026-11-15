@@ -27,6 +27,7 @@ from typing import Any
 
 from pymc_bot.inventory import Inventory
 from pymc_bot.knowledge import shorten
+from pymc_bot.llm_train import answer_plan
 from pymc_bot.mobs import MobDatabase, load_mobs
 
 #: Sentences longer than this are cut (a trace is a few lines, not an essay).
@@ -267,15 +268,31 @@ def turn_reasoning(state: dict[str, Any], decision: dict[str, Any] | str, *, nam
             decision = json.loads(decision)
         except ValueError:
             decision = {}
-    parts = [status_line(state, rng), place_line(state)]
+    status, place = status_line(state, rng), place_line(state)
     threats, hostile = threats_line(state, db)
-    parts.append(threats)
-    parts.append(players_line(state))
-    parts.append(chat_line(history, name, db))
-    parts.append(memory_line(mind))
-    parts.append(rules_line(allowed or {}, str(decision.get("action") or ""), hostile, history))
-    parts.append(action_line(decision, state, hostile, rng))
-    return _limit(" ".join(p for p in parts if p))
+    players, chat, memory = players_line(state), chat_line(history, name, db), memory_line(mind)
+    # what matters most comes first, like a player would notice it - never the same opener on every turn (all
+    # 6,000 traces used to start with "Health X/20, food Y/20.", even with a creeper 3 blocks away)
+    health, food = _hp(state.get("health", 20)), _hp(state.get("food", 20))
+    near = min((_dist(e) for e in hostile), default=99.0)
+    first: list[str] = []
+    if health <= 6:
+        first.append(status)
+    if hostile and near <= 8:
+        first.append(threats)
+    if chat:
+        first.append(chat)
+    if food <= 6 and status not in first:
+        first.append(status)
+    rest = [p for p in (status, place, threats, players, memory) if p and p not in first]
+    rng.shuffle(rest)
+    tail = " ".join(p for p in (rules_line(allowed or {}, str(decision.get("action") or ""), hostile, history),
+                                 action_line(decision, state, hostile, rng)) if p)
+    body: list[str] = []
+    for part in first + rest:  # the least important context goes when it is too long - never the decision
+        if part and len(" ".join([*body, part, tail])) <= MAX_TRACE:
+            body.append(part)
+    return _limit(" ".join([*body, tail]))
 
 
 def decision_reasoning(decision: dict[str, Any] | str, prompt: str = "") -> str:
@@ -296,25 +313,31 @@ def decision_reasoning(decision: dict[str, Any] | str, prompt: str = "") -> str:
 
 def qa_reasoning(question: str, answer: str, source: str = "", db: MobDatabase | None = None,
                  rng: random.Random | None = None) -> str:
-    """A short trace for a knowledge question: topic, the facts that matter, how to answer."""
-    rng = rng or random.Random(0)
+    """A trace for a knowledge question: a plan for the answer it needs (``llm_train.answer_plan``), plus the
+    mob-database notes when the question really is about a mob.
+
+    Earlier traces were one fixed form ("The question: ... What I know: ... Key point: <the answer's first
+    sentence>. Answer directly and briefly."). A model trained on thousands of them writes that form for every
+    question and fills the slots with invented facts (a stat card for a piston, a "key point" that is wrong),
+    always "briefly", even for "explain how" questions. So: no copied key point, no fixed closing line, and the
+    mob notes only for mobs."""
+    del rng  # kept for callers; the plan is chosen from the question itself
     db = db or load_mobs()
     question = clean(question)
+    parts = [clean(answer_plan(question, answer))]
     found = db.find_in_text(question)
-    parts = [f"The question: {question}"]
     if found:
         mob = db.mobs[found[0][0]]
-        parts.append(f"It's about the {mob['name'].lower()}. What I know: {clean(shorten(db.prompt_line(mob), 220))}.")
+        name = mob["name"].lower()
+        line = clean(shorten(db.prompt_line(mob), 220))
+        line = line[len(name):].strip() if line.lower().startswith(name) else line
+        card = re.match(r"\((.*?)\):?\s*(.*)", line)  # "(hostile, 30 HP): text" -> "hostile, 30 HP; text"
+        line = f"{card.group(1)}; {card.group(2)}" if card else line
+        parts.append(f"My notes on the {name}: {line}.")
     elif source == "wiki":
-        parts.append("This is a Minecraft Wiki topic; I'll summarise what the wiki says in plain words.")
-    else:
-        parts.append("Basic Minecraft knowledge.")
-    first = clean(re.split(r"(?<=[.!?])\s", str(answer or "").strip(), maxsplit=1)[0])[:200]
-    if first:
-        parts.append(f"Key point: {first}")
+        parts.append("The Minecraft Wiki covers this; I'll put it in plain words.")
     if re.search(r"\b(damage|hit|hp|health|hearts?)\b", question, re.I):
         parts.append("Damage is in health points, 2 HP is one heart.")
-    parts.append(rng.choice(["Answer directly and briefly.", "Keep it short and correct.", "Give the answer, no fluff."]))
     return _limit(" ".join(parts))
 
 

@@ -82,20 +82,25 @@ class OllamaClient:
         temperature: float | None = None,
         timeout: float | None = None,
         images: list[str] | None = None,
+        json_mode: bool = False,
     ) -> str:
-        """``POST /api/chat``. ``images`` (base64, no data: prefix) go with the last user message."""
+        """``POST /api/chat``. Images go to the last user message; JSON mode is optional."""
         chat_messages = [dict(m) for m in messages]
         if images:
             for message in reversed(chat_messages):
                 if message.get("role") == "user":
                     message["images"] = list(images)
                     break
+            else:
+                raise OllamaError("cannot attach images without a user message")
         payload: dict[str, Any] = {
             "model": model or self.model,
             "messages": chat_messages,
             "stream": False,
             "options": {"temperature": self.temperature if temperature is None else temperature},
         }
+        if json_mode:
+            payload["format"] = "json"
         if system:
             payload["messages"] = [{"role": "system", "content": system}, *payload["messages"]]
         data = self._post("/api/chat", payload, timeout=timeout or self.timeout)
@@ -112,6 +117,7 @@ class OllamaClient:
         model: str | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        json_mode: bool = False,
     ) -> str:
         payload: dict[str, Any] = {
             "model": model or self.model,
@@ -121,6 +127,8 @@ class OllamaClient:
         }
         if system:
             payload["system"] = system
+        if json_mode:
+            payload["format"] = "json"
         data = self._post("/api/generate", payload, timeout=timeout or self.timeout)
         content = data.get("response")
         if not isinstance(content, str) or not content.strip():

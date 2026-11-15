@@ -6,6 +6,13 @@
 
 > **Made with ❤️ by [codero-sus](https://github.com/codero-sus)** · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)
 
+**Intended scope:** single-player worlds and private self-hosted servers you control, not public servers.
+This is an intended-use scope, not a technical guarantee that public servers are blocked.
+For recordings of another person, obtain their informed permission before recording or training.
+The mod can separately observe a nearby player with `/pymcbot observe start <player> consent`;
+its movement/look labels are inferred from visible motion, not the player's hidden inputs or inventory.
+See the [mod guide](mod/README.md) for limitations and stopping the recording.
+
 A **Python-controlled Minecraft player bot** it joins a (cracked / offline-mode) server as a normal
 player, you configure and steer it from a **web control panel served by Uvicorn**, and it can hand the
 wheel to a **local LLM** – an Ollama model, or any model hosted by
@@ -71,9 +78,23 @@ Minecraft versions), and it is driven purely by JSON from Python.
 
 ## Quickstart
 
+### PyPI (after publication)
+
+Once a release has been published to PyPI, install it with `python -m pip install pymc-bot`,
+then run `pymc-bot setup` for the Mineflayer/Node.js bridge and `pymc-bot serve` for the panel.
+Python 3.10 or newer is required. Node.js and Mineflayer are separate runtime dependencies;
+the setup command helps install them for real Minecraft servers. The package also has a simulator.
+Virtualenv wheel installs check for a newer stable GitHub release wheel on startup and while the
+panel is idle; verified updates install automatically and restart the app. System Python, editable
+installs and Git checkouts are not changed this way. Pip, write access and a release-provided SHA-256
+are required; failed checks or installs are retried later.
+The package is licensed under PolyForm Noncommercial 1.0.0, not MIT. For publishing instructions,
+see [Python package publishing](docs/PYPI.md). Until the first upload succeeds, use the GitHub
+release or source instructions below.
+
 **No git?** Every [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) has all the downloads:
 `PyMC_Bot-source.zip` (the bot), `updater.py` / `updater.cmd` / `updater.sh`, the mod jar for each Minecraft
-version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + Kaggle notebook) and
+version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + trainer) and
 `SHA256SUMS.txt`. Unzip the source, then continue from `python -m venv` below.
 
 ```bash
@@ -88,6 +109,10 @@ python -m pymc_bot setup   # mineflayer bridge for real servers - NO npm needed 
 python -m pymc_bot serve          # or: python -m pymc_bot      (serve is the default)
 # -> http://localhost:8000
 ```
+
+**First run: create your login.** The panel controls your bots, so it is protected by a login. The console
+prints a one-time **setup code**; open the panel, enter it with a username and password, and you are in
+(or run `python -m pymc_bot auth set-password` first). Details: [Login](#login).
 
 In the panel:
 
@@ -220,22 +245,18 @@ python updater.py         # anywhere
 
 | Command | What it does |
 | --- | --- |
-| `updater --check` | shows the new commits / mod release, changes nothing |
+| `updater --check` | shows the source / mod release, changes nothing |
 | `updater` | updates PyMC_Bot; reinstalls Python packages / mineflayer (npm-free, `python -m pymc_bot setup`) **only if** `requirements*.txt` / `package.json` changed |
 | `updater --mod` | also updates the recorder mod in your `.minecraft/mods` folder |
 | `updater --mod-only` | only the mod |
 | `updater --mod-only --mc 1.21.4` | installs the mod for 1.21.4 when it is not there yet |
 | `updater --help` | all options (`--mods-dir`, `--pre`, `--reinstall`, `--deps`, `--no-deps`, `--branch`) |
 
-* **PyMC_Bot itself – always a `.zip`, never git:** the updater asks GitHub for the newest commit
-  of this build's *update channel*, downloads exactly that commit as a source `.zip`, checks it
-  (complete archive, commit id inside the zip matches) and extracts it over the folder.
-  `pymc_bot_config.json`, `.venv`, `models/`, recordings, `.git` and every other file of yours are
-  left alone; project files you changed are backed up to `.pymc_backup/<time>/` first, and files the
-  project deleted are removed on later updates – unless you edited them. Works the same for a
-  downloaded ZIP and a git clone (git is never run; a clone just shows the new files in `git status`).
-  The channel is built into `updater.py` and never printed; `--branch NAME` follows another branch
-  instead. Out of GitHub API calls? The updater downloads the zip and reads the commit id from it.
+* **PyMC_Bot itself – always a `.zip`, never git:** the updater downloads the source archive from
+  the newest eligible GitHub release and verifies its SHA-256 and archive paths before installing it.
+  Your configuration, models, recordings, bot memory and `.git` are preserved; changed project files
+  are backed up to `.pymc_backup/`. It will not replace a newer installed version with an older release.
+  `--branch NAME` remains available for an explicit manual branch snapshot.
 * **Mod:** finds `pymcbot-<version>+<mc>.jar` (or a pre-0.6 `pymcplaytime-*.jar`, which it replaces) in the mods folder (`%APPDATA%\.minecraft\mods`,
   `~/Library/Application Support/minecraft/mods`, `~/.minecraft/mods`, or `--mods-dir`),
   downloads the jar for the same Minecraft version from the newest
@@ -374,7 +395,19 @@ that makes it act like a real player at a keyboard, not an assistant:
   "Food 5/20 (hungry - eat soon)", "Waiting for your answer: <Steve> wanna mine together?" – with the exact
   JSON appended for coordinates.
 * **Remembers** – its goal, the last `agent.memory_turns` actions with whether they worked (so it stops
-  retrying a failing path), its last thoughts and what it already said.
+  retrying a failing path), its last thoughts and what it already said. A small local experience memory
+  also carries recent addressed messages and action outcomes into later sessions, helping the LLM adapt
+  its next decision; it does **not** train or modify the model.
+  Experience memory is on by default and stored under `bot-memory/` next to the config, separately for
+  each bot and server. It keeps at most 8 players × 3 short addressed messages, plus 8 action outcomes
+  and short thoughts. Only relevant players and the latest 4 outcomes enter a prompt. Entries older than
+  7 days are ignored on access and removed on the next write, not by a background deletion timer. This
+  is personal data: obvious secret words and slash commands are filtered, but filtering is not foolproof;
+  stored context may be sent to your configured LLM provider. Disable with `agent.persistent_memory`, the
+  panel, or `/pymcbot bot ai memory off` (disabling does not delete existing files). Use the panel's clear
+  button or `/pymcbot bot ai memory clear` to delete the selected bot's current-server file. Other bot/server
+  files can be removed from `bot-memory/`. Clearing persistent memory does not erase current-session chat,
+  logs or optional recorded training turns.
 * **Chats like a person** – short casual lines in the other player's language, no markdown, no "as an AI"
   speeches, never the same line twice; a typing pause before sending and a `chat_cooldown` for messages
   nobody asked for (replies skip it). If someone sincerely asks whether it is a bot, it says so.
@@ -574,7 +607,7 @@ python -m pymc_bot mob --list --since 1.21       # mobs added in 1.21 or later
 
 The API is `GET /api/mobs` (filters) and `GET /api/mobs/{name}`. Untick **answer mob questions from the mob
 database** (`search.use_mob_database`) to send every question to the web instead. You can also add modded mobs
-to the JSON file: `python -m pytest tests/test_mobs.py` checks the format.
+to the JSON file.
 They gate the AI only; the **Inventory & life** buttons and the clickable hotbar in the panel always work.
 
 ### Demo brain (no GPU, no download)
@@ -596,8 +629,8 @@ Train **Minecraftism**, a small model that is **the bot's brain and a Minecraft 
 the same JSON decisions, chats like a player and answers mob, crafting and mechanics questions without a web
 search. Data comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki
 pages, turns the bot recorded, your playtime and screenshots, and (optionally) a bigger teacher model you run.
-Outside the game it is an **everyday assistant** with its own system prompt (not "you are a bot"). The notebook trains it
-**uncensored** by default (abliterated base and refusal-free chat data; `UNCENSORED = False` turns it off).
+Outside the game it can be used as an **everyday assistant**. Training notebooks are not included
+in this branch; the dataset builder supplies a standalone trainer.
 By default it uses only **data whose licence allows commercial use** (`COMMERCIAL_ONLY = True`): OpenAssistant chat
 (Apache-2.0), NVIDIA Nemotron thinking traces (CC BY 4.0), exact Minecraft Q&A generated from minecraft-data (MIT)
 and, for the VL editions, minecraft-raytrace frames (MIT) with Q&A made from their raycast labels. The model card
@@ -613,17 +646,8 @@ even without your own screenshots. It can also run an **optional test suite**: b
 
 ```bash
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
-#   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
-#   Discord: secret discord_webhook_inform_me1 = your webhook URL -> server online + URL, status, warnings before it closes
-#   latest notebook (Kaggle: File -> Import Notebook -> paste): https://github.com/codero-sus/PyMC_Bot/raw/e5b82ed65b9a9f75e3e208b3127e287f40052997/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb
-#   GPU_MODE = "parallel": two editions at once, one per T4 (one edition: both T4s merge on it); MAX_HOURS keeps the upload inside 12 h
-#   DISTILL: Qwen3-style strong-to-weak distillation - Qwen3-14B writes answers, Qwen3-8B teaches the 4B token by token
-#   (the teacher runs on vLLM over both T4s; its answers are kept on HF so the next session reuses them)
-#   editions_to_be_trained = {txt, txt_think, vl, vl_think} picks what is trained; FAST: token-sized batches,
-#   data streamed once for all editions, GGUFs made on the CPU while the T4 trains the next edition
+#   Training notebooks are not included in this branch. Use the trainer script in llm_data/.
 python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
-#   the notebook first publishes <you>/Minecraftism-4B (compact 16-bit safetensors, for transformers / vLLM), then
-#   GGUF quants made from it to <you>/Minecraftism-4B-GGUF: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q3_K_M (--quant Q8_0)
 python -m pymc_bot llm eval --model minecraftism
 ```
 
@@ -666,6 +690,32 @@ player model, live view, manual control, events and raw config, the panel has:
 | **Feedback** | toasts for every panel action and connection change, spinners on buttons while a request runs, a damage flash and low-health pulse on the meters, confirmation before destructive actions |
 | **Live view** | the minimap eases between status frames, scrolls its grid with the bot and draws a radar sweep |
 | **About** | ⓘ opens the credits (also `GET /api/about`) |
+| **Login** | log out (⇥ in the top bar), change the password and create the API token under *Advanced → Login & API token* |
+
+### Login
+
+The panel listens on `0.0.0.0` (your whole network) by default and can start bots, change the config and
+run training, so it is locked behind a small login (`pymc_bot/auth.py`, standard library only):
+
+* **One account** in `pymc_bot_auth.json` next to the config – a separate file, so `GET /api/config`
+  never shows it and *Reset to defaults* keeps it. The password is a salted PBKDF2-SHA256 hash; the file
+  is private (`0600`). It is ignored by git and kept by the updater.
+* **First run:** the panel shows *Create your login* and asks for the **setup code** printed in the
+  console, so nobody else on your network can claim the panel before you. Or, in a terminal:
+  `python -m pymc_bot auth set-password`.
+* **Sessions** are signed, HttpOnly cookies (12 h, or 30 days with *Keep me logged in*). Changing the
+  password logs out every other browser.
+* **API token** for scripts, `python -m pymc_bot action` and the mod's `/pymcbot bot …` commands:
+  `Authorization: Bearer <token>`. Create it in the panel or with `python -m pymc_bot auth token`; it
+  is shown once and only its hash is stored.
+* **Brute force:** 5 failed logins from one address within 5 minutes lock that address out for a minute.
+* **Forgot the password?** `python -m pymc_bot auth set-password` sets a new one; `auth reset` removes
+  the account (the panel asks for a new one with a fresh setup code).
+* **Turn it off** only for a panel nobody else can reach: `python -m pymc_bot serve --host 127.0.0.1 --no-auth`
+  (or `PYMC_BOT_NO_AUTH=1`).
+
+The login protects the panel, not the connection: on an untrusted network put it behind HTTPS (a reverse
+proxy or a tunnel) – the cookie gets the `Secure` flag automatically when the request is HTTPS.
 
 ---
 
@@ -699,11 +749,12 @@ PyMC_Bot joins servers on **Aternos, exaroton, Minehut, FalixNodes**, and server
 
 | Command | What it does |
 | --- | --- |
-| `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent]` | run the web config panel (Uvicorn) |
+| `python -m pymc_bot serve [--host 0.0.0.0] [--port 8000] [--autostart] [--auto-agent] [--no-auth]` | run the web config panel (Uvicorn), behind its [login](#login) |
+| `python -m pymc_bot auth [status\|set-password [--username NAME]\|token\|revoke-token\|reset]` | the panel's login: create the account / change the password, make an API token (printed once), reset |
 | `python -m pymc_bot run [--backend node\|simulated] [--server host:port] [--seconds N] [--no-ai] [--populate N] [--premium EMAIL] [--think auto\|heuristic\|ollama\|cortex\|trained] [--cortex-url URL] [--cortex-model ID]` | headless bot: connect and play (optionally populate the server), logs to stdout |
 | `python -m pymc_bot train [--dataset FILE] [--steps N] [--engine mlp\|transformer] [--advanced [--entity-slots N] [--item-slots N]] [--min-episode S] [--idle-keep PCT] [--resume] [--simulate MINUTES] [--ollama-model NAME]` | train a player model on recorded playtime (self-checkpointing, resumable); `--advanced` learns entity + item vocabularies |
 | `python -m pymc_bot models [--models-dir models] [--json]` | list trained checkpoints with their metrics |
-| `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000]` | poke a running panel from the shell |
+| `python -m pymc_bot action '{"action":"wander"}' [--url http://127.0.0.1:8000] [--token TOKEN]` | poke a running panel from the shell (token: `--token` or `PYMC_BOT_TOKEN`) |
 | `python -m pymc_bot setup [--method auto\|python\|bundle\|npm] [--zip FILE] [--node auto\|download\|skip] [--check]` | install the Minecraft bridge (mineflayer + a portable Node.js if needed) **without npm** |
 | `python -m pymc_bot doctor` | environment check (Node, mineflayer, Minecraft range, Ollama, Cortex, config, server ping, hosting tips) |
 | `python -m pymc_bot probe [host[:port]] [--json]` | ping a server without joining: online / asleep / starting, version, players, SRV target, tips for Aternos & co (exit 0 online, 3 asleep, 1 unreachable) |
@@ -787,6 +838,7 @@ Everything is also configurable through `pymc_bot_config.json` (created next to 
     "human_chat": true,                // typing pauses, no repeats, cooldown for unprompted chat
     "chat_cooldown": 6.0,              // seconds between messages nobody asked for
     "memory_turns": 8,                 // recent actions the LLM remembers
+    "persistent_memory": true,        // small local per-bot/server experience memory
     "compact_prompt": false,           // short system prompt for a Minecraft-trained model (docs/MINECRAFT_LLM.md)
     "record_turns": false,             // save LLM turns as training data ...
     "turns_file": "llm_turns.jsonl",   // ... in this file next to the config
@@ -818,9 +870,13 @@ which stays gated). Invalid values are rejected with HTTP 422 and never overwrit
 
 ## HTTP API
 
-The panel is a thin client over a small JSON API – script it from anything:
+The panel is a thin client over a small JSON API – script it from anything. Every call except the login
+needs the API token ([Login](#login)):
 
 ```bash
+export PYMC=$(python -m pymc_bot auth token)        # or create it in the panel
+curl() { command curl -H "Authorization: Bearer $PYMC" "$@"; }   # every call below sends it
+
 # status: bot, AI, stats, backends, Ollama health
 curl -s localhost:8000/api/status | jq '.bot.state, .agent.running'
 
@@ -853,31 +909,20 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 
 ---
 
+## Speedrun challenges
+
+The **Speedruns** panel offers 41 timed inventory challenges using the existing goal controller:
+logs, cobblestone, coal, raw iron, torches, early tools and a furnace. Set a challenge on the selected
+bot, then start its AI or advance with Step. The timer includes pauses and stops when a fresh
+inventory observation confirms the target; items already in inventory count. Times are held only in
+memory, not saved as records. These are not world-reset, dragon-kill or official leaderboard runs.
+They still depend on permissions, local terrain, server version and the limits of the planner.
+
 ## Development
 
-```bash
-pip install -r requirements-dev.txt
-
-pytest -q                       # 435 tests, no Minecraft server, no LLM required (2 skip without torch)
-ruff check .                    # lint
-pytest --cov=pymc_bot -q        # coverage
-
-# opt-in end-to-end test against a real (offline-mode) server
-PYMC_TEST_SERVER=127.0.0.1:25565 pytest tests/test_node_live.py -v
-```
-
-The suite runs the bot against the simulated world, exercises the whole FastAPI surface (including the
-WebSocket), tests the Node adapter against a fake bridge process (`tests/fixtures/fake_bridge.js`) and runs
-the AI loop against the Ollama stub. The training stack is covered end to end as well: the encoder layout is
-pinned in `tests/test_features.py`, `tests/test_train.py` covers checkpoints/resume/metrics, and
-`tests/test_local_model.py` lets a real trained model drive a simulated bot.
-CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12, the transformer engine with PyTorch,
-and **builds the Fabric mod for all 16 Minecraft versions from 1.21.1 to 26.3** on JDK 25 (one matrix
-job per version from `mod/versions.json`; 1.21.x jars target Java 21, 26.x jars Java 25), **launches
-the game with the mod on every version from 1.21.4 on** (Fabric's client game test in a virtual
-display: it records a few seconds of scripted play, checks the dataset and uploads screenshots) and
-uploads each jar plus a `pymcbot-all-versions` bundle. When everything is green, the `release`
-job attaches all 16 jars to the GitHub release `pymcbot-v<mod_version>`.
+Run `ruff check .`, `node scripts/check_ui.mjs` and `python -m pymc_bot bench --suite sim-tech`
+for basic checks. CI builds the distributions and Fabric mod and runs simulated smoke checks.
+The Python test suite and training notebooks are no longer included in this branch.
 
 ```
 pymc_bot/
@@ -901,7 +946,6 @@ pymc_bot/
 ├── web/             index.html, styles.css, app.js (no build step)
 └── node/            minecraft_bridge.js  (the only JavaScript)
 mod/                 Fabric mod (MC 1.21.1 – 26.3): records your playtime into a training dataset
-tests/               pytest suite + fake bridge fixture
 scripts/dev.sh       small helper for common tasks
 updater.py           self-updater for the bot, its dependencies and the mod (+ updater.cmd / updater.sh)
 ```
@@ -910,6 +954,10 @@ updater.py           self-updater for the bot, its dependencies and the mod (+ u
 
 | Symptom | Fix |
 | --- | --- |
+| The panel asks for a **setup code** | first run: it is printed in the console that runs `python -m pymc_bot serve` (a new one on every start until the account exists) – or create the account with `python -m pymc_bot auth set-password` |
+| Forgot the panel password | `python -m pymc_bot auth set-password` (works while the panel runs; other sessions are logged out) |
+| `401 login required` from scripts / `the panel needs a login` in Minecraft | create an API token (panel: *Advanced → Login & API token*, or `python -m pymc_bot auth token`) and send it: `Authorization: Bearer <token>`, `action --token`, or `/pymcbot bot token <token>` in game |
+| `too many failed logins` | 5 wrong passwords in 5 minutes lock that address out for a minute – wait, then try again |
 | `mineflayer is not installed` | run `python -m pymc_bot setup` (no npm needed; downloads a portable Node.js 22 too if yours is missing or older) - or click **Install mineflayer** in the panel |
 | Bot connects then immediately leaves | check the event stream: wrong version? try an explicit `version` instead of `auto` |
 | `unsupported protocol version` | set the app's version to the server's (e.g. `1.20.4`) |
@@ -972,3 +1020,167 @@ Third-party parts keep their own licenses: the compile-only Mod Menu API stubs i
 template files the mod was bootstrapped from (CC0) and all npm/PyPI dependencies.
 
 <p align="center"><sub>Made with ❤️ by <a href="https://github.com/codero-sus">codero-sus</a> · <a href="https://codero.is-a.dev">codero.is-a.dev</a> · <a href="https://the-codero.web.app/">the-codero.web.app</a></sub></p>
+
+### Learning from failed actions
+
+The AI temporarily avoids repeating certain non-emergency jobs (such as mining, walking and
+crafting) after two failures in the same situation. It tries its built-in policy instead, or waits if that would repeat the same
+failure. The bounded cache is in memory only and expires after 45 seconds; moving to another
+area, changing inventory or changing the target can allow another attempt. Survival actions
+and direct manual commands are never blocked by this recovery mechanism. This is local runtime
+adaptation, not model-weight training or a guarantee of human-level behavior.
+
+### Movement, combat and Minecraftism from the mod
+
+With the panel running, `/pymcbot bot move forward+left+sprint 0.6` combines controls in a
+short movement burst (`forward`, `back`, `left`, `right`, `jump`, `sneak`, or `sprint`;
+0.1–2 seconds). Opposite directions and duplicate controls are rejected. The AI can also
+combine controls using the `move_controls` action. To move and ease the view
+at the same time, try `/pymcbot bot do smooth_move direction=forward+left yaw=90 pitch=0 seconds=0.8`.
+`smooth_look` turns without moving; yaw and pitch are in degrees. These are short key holds,
+not a promise of obstacle avoidance, smooth pathfinding or anti-cheat compatibility.
+
+`/pymcbot bot do shoot mob=skeleton weapon=bow` also accepts `weapon=crossbow`.
+`/pymcbot bot do critical_hit mob=zombie` attempts one falling melee hit against a
+nearby mob; only the server determines whether it was a critical hit. The `shield`
+skill preserves an equipped totem when health is low or unknown unless `force=true`.
+The existing `totem` and `pillar_up` skills remain available. These controls require
+items and a compatible Minecraft/bridge version; damage, range and line of sight are
+server-dependent. The bridge checks for players near the firing corridor before shooting,
+but this is not a guarantee against friendly fire: players can move after the check and
+projectile paths vary. The heuristic brain retreats from nearby creepers and may fire one
+arrow at a time at a distant hostile when equipped, then reassesses. Experimental attempts
+are also available as `throw_projectile` (snowball or egg), `spear_attack`, `throw_trident`
+(requires `confirm=true`, and the trident may be
+lost), and `mace_smash` (`mode=fall`, `tower`, or `wind_charge`). Tower and wind-charge
+setups require `confirm=true`, health of at least 12, and a totem already in the off hand;
+tower also needs building blocks. The panel's **allow risky combat for AI** switch is off
+by default and must be enabled for the AI to choose these setups or throw a trident.
+Wind charges can affect the world and nearby entities; a totem is not a guarantee of survival.
+The autopilot also tries to face and block an apparently incoming projectile when a shield is
+already in its off hand; it never swaps out a totem for this reflex. You can also request
+`/pymcbot bot do block_projectile` with a shield equipped. Disable **block projectile**
+in the autopilot panel if unwanted. This uses an approximate straight-line prediction and periodic
+snapshots, so it can miss, react late, interrupt other actions or misjudge the trajectory. It does
+not reliably dodge projectiles or guarantee a block. These mechanics are attempts, not confirmed hits or successful combos;
+server/version compatibility and live gameplay still need testing. The simulator explicitly
+reports the new projectile and mace mechanics as unsupported rather than faking their results.
+
+The autopilot can approach an identified beneficial dropped potion or a nearby low-flying
+beneficial thrown potion when safe, and tries to move away from harmful or unidentified thrown
+potions and lingering effect clouds. It uses the pathfinder and refuses to move if the destination
+isn't known to be safe; both potion reflexes can be switched off in the autopilot panel. A moving
+potion may land before the bot reaches it; receiving an effect or picking an item up is not
+confirmed. The bot won't assume an unknown cloud is helpful. Many modern servers send potion
+contents as numeric registry IDs or omit cloud effects; those are treated as **unknown**, not
+decoded by color or guessed. Classification and movement are best-effort and have not been
+verified on a live server.
+
+### Optional model routing and a read-only benchmark
+
+The Ollama panel can optionally route between two **already installed** models: a routine model
+and a complex model. It uses simple rules for danger, nearby hostiles and planning-related goal/chat
+words. The last selection and reason appear in status. It is off by default, does not install models,
+and does not replace survival autopilot or guarantee speed or better decisions. A missing/unsupported
+model can fail and trigger the usual heuristic fallback. Switching models may incur load time and memory
+costs. When VL is enabled all turns stay on the main configured VL model, even on turns without an image.
+
+`python -m pymc_bot bench --model <installed-ollama-name> --repeats 2 --output report.json` runs
+three fixed synthetic, **read-only** action-choice prompts and reports parse/strict-JSON/known-action/
+expected-action rates and response latency. `--json-mode` requests JSON output. It does not execute
+actions, spawn worlds, measure survival, parkour or wood-to-iron, or prove overall gameplay skill;
+fixed expected actions are narrow checks, not the only valid choices. The report contains no player
+recordings or notebooks. Run it yourself against a model; it does not train or upload anything.
+
+`python -m pymc_bot bench --suite sim-tech` additionally runs bounded, isolated simulated goal
+scenarios from an empty inventory, including a low-health pause. It records completion, step counts
+and elapsed time, and returns a nonzero exit status if a case fails. This is an integration check
+for the built-in simulator and deterministic goal controller, **not** an LLM benchmark, real server,
+parkour course, realistic survival world or wood-to-iron speedrun.
+
+### More reliable decisions and saved places
+
+Ollama's optional **JSON-object output** switch asks the runtime for JSON on action decisions,
+including VL requests. It is off by default for compatibility. It does not enforce a complete
+per-action schema, guarantee valid or safe actions, or make a model more capable; normal parsing
+and permission checks still apply. If the runtime does not support it, disable the switch.
+
+Homes and waypoints are stored per bot and connected server. Travel to a saved place now refuses
+cross-dimension navigation and invalid coordinates instead of walking to the same coordinates in
+another dimension. These are saved waypoints, not an automatic map or portal planner. Waypoint
+writes are synchronized among bots in one Python process; separate processes are not coordinated.
+
+### Inspect the connected client's registry
+
+The panel's **Client registry lookup**, or `GET /api/bot/registry?kind=item&query=pickaxe`, reads
+bounded pages of item or block names from the selected bot's connected Mineflayer registry. Use
+`kind=block`, `offset` and `limit` (at most 100) to page through results. The panel also looks up
+client-known crafting recipes for an exact item, via `GET /api/bot/recipes?item=stone_pickaxe`;
+this does not check ingredients or craft anything. The simulator explicitly reports these lookups
+as unavailable. This is the registry exposed to the client, not a Fabric mod-pack registry/recipe
+exporter: modded entries and recipes can be missing, and IDs may differ between versions or servers.
+It does not download, persist or upload the registry.
+
+### Optional container observations
+
+Enable **remember inspected container locations and contents** in the panel to store up to 64
+successful `chest_contents` observations per bot/server in a local SQLite file under `world-memory`.
+Only real bridge responses with known block coordinates and dimension are saved; the simulated
+backend does not invent chest locations. Observations expire after 30 days, and may become stale
+immediately when anyone changes a chest. They are not a shared live inventory, map, portal finder,
+or permission to open a container. Up to four observations in the current dimension may be included
+in model prompts; they can therefore be sent to the configured AI provider. The panel and
+`GET /api/ai/world-memory` can display the selected bot/server's saved observations. Disabling the
+setting stops recording and prompting but does not erase existing files; clearing bot memory also
+clears these observations for that bot/server. In-flight inspections may save again after a clear.
+
+### Bounded gathering goals
+
+In the AI panel, choose an item and target count under **Gathering goal**, then start AI or
+use **Step once**. Alternatively, use `/pymcbot bot ai gather oak_log 8`,
+`/pymcbot bot ai goal status` and `/pymcbot bot ai goal cancel`. This deterministic goal
+supports the listed logs, cobblestone, cobbled deepslate, coal, raw iron, torches, wooden/stone
+pickaxes, stone swords and furnaces. Counts are 1–64 for gathering and torches and 1–8 for the
+early-game crafting goals. The target is the **total currently in inventory**, not an additional quantity.
+It mines one block or approaches a nearby matching drop per turn and only marks completion
+when a later inventory snapshot confirms the count. For coal and raw iron it can try the deepslate
+ore variant after a failed or unproductive attempt; each variant is searched by the Mineflayer
+bridge, not predicted from a full map. Targeted collection ignores drops whose item type is unknown.
+Stone, coal and iron gathering check for a suitable pickaxe; if one is missing the bot may craft it
+and place a crafting table only when AI inventory and building permissions allow it.
+It pauses for unsafe observations or disabled AI movement/mining permissions and gives up after
+bounded repeated failures or no progress. Torch goals use a small fixed dependency plan: gather logs,
+craft planks and sticks, obtain coal or use existing charcoal, then craft torches in the inventory.
+They require inventory, movement and mining permissions. If mining requires a missing pickaxe, the
+goal can prepare one only with AI inventory and building permissions; that preparation may place a
+crafting table. Otherwise it pauses. The torch's own stick, plank and torch crafting steps use only
+the inventory grid. Each step is reassessed against inventory. Early-game goals can make a wooden pickaxe,
+gather cobblestone, and craft a stone pickaxe,
+stone sword or furnace. These goals require inventory, mining, movement **and building** permissions:
+they may create and place a crafting table. They reserve planks for a table if no table is in inventory,
+even when a table might already be nearby. After each action they replan from inventory; actions and
+station placement are not guaranteed. They pause for observed lava, dangerous/unknown potions and
+approximately incoming projectiles, as well as other safety conditions; periodic observations and
+physics estimates can miss danger. AI crafting avoids stations if AI building or movement is disabled.
+This is a small fixed recipe set, not a general tech-tree planner, and it does not guarantee safe
+navigation or item drops. The regular survival autopilot remains independent and may interrupt or act while a
+goal is paused. Goals are in-memory, tied to the bot/server, and stopping AI cancels them.
+Cancel requests cannot undo actions already sent to the server. This has not been verified in
+live Minecraft gameplay.
+
+`/pymcbot bot ai stop` requests the AI loop to stop and interrupts cooperative bridge
+waits, navigation, held movement keys and active digging. The response is an acknowledgement,
+not proof that every in-flight Minecraft operation has completed: a network or plugin operation
+already sent to the server may still finish, and releasing a charged weapon can fire it. Check
+status before starting another task. `/pymcbot bot stop` also requests cancellation of the
+current and queued movement/skill work, but does not stop the AI; it may choose another action
+unless you also stop it. Already-issued server operations cannot always be undone.
+
+`/pymcbot bot ai model minecraftism` selects an **already installed** Ollama model
+name and sets the main AI mode to Ollama; replace `minecraftism` with your actual
+imported name. It does not download, train or verify a model, and fleet brain overrides
+still apply. `/pymcbot bot ai vl <installed-name>` selects an installed VL model and enables
+vision; `/pymcbot bot ai vision on` enables live vision for the currently configured model;
+`/pymcbot bot ai vision off` disables it. `/pymcbot bot status` shows the resolved brain,
+model and vision status. Vision requires the optional renderer and compatible model/runtime;
+see the [Minecraftism guide](docs/MINECRAFT_LLM.md#letting-the-bot-see-vl-editions).

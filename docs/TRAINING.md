@@ -203,19 +203,6 @@ whose system prompt describes the learned habits, so you can pick it in the conf
 like any other model. The native policy above is the faithful one — it reproduces your
 inputs; the Ollama persona is a chat-friendly wrapper around the same statistics.
 
-## 4. Tests
-
-```bash
-python -m pytest -q                      # includes the training/policy suite
-python -m pytest tests/test_train.py tests/test_local_model.py -q
-pytest --cov=pymc_bot
-```
-
-`tests/test_features.py` pins the encoder layouts (basic v1 and advanced v2, so checkpoints stay loadable),
-`tests/test_train.py` covers checkpoints/resume/metrics/service, `tests/test_local_model.py`
-drives a simulated bot with a real trained model, and `tests/test_training_api.py` covers the
-HTTP API end to end. Transformer tests are skipped when PyTorch is not installed.
-
 ## Troubleshooting
 
 | Symptom | Fix |

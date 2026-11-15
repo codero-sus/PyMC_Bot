@@ -61,6 +61,7 @@
       <button id="btn-connect" class="btn primary">Connect</button>
       <button id="btn-disconnect" class="btn">Disconnect</button>
       <button id="btn-reconnect" class="btn ghost" title="Stop and reconnect with the saved settings">Reconnect</button>
+      <button id="btn-logout" class="btn ghost icon-btn hidden" title="Log out" aria-label="Log out"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5M5 12h11"/></svg></button>
     </div>
   </header>
 
@@ -68,6 +69,7 @@
     <a href="#card-server" data-target="card-server">🌐 Server</a>
     <a href="#card-fleet" data-target="card-fleet">👥 Players</a>
     <a href="#card-brain" data-target="card-brain">🧠 AI brain</a>
+    <a href="#card-speedruns" data-target="card-speedruns">⏱️ Speedruns</a>
     <a href="#card-training" data-target="card-training">🎓 Player model</a>
     <a href="#card-world" data-target="card-world">🗺️ Live view</a>
     <a href="#card-controls" data-target="card-controls">🎮 Controls</a>
@@ -270,6 +272,9 @@
         <span>Let Ollama decide the bot's actions (brain = auto)</span>
       </label>
       <p class="note">When disabled (or unreachable) the bot runs a small built-in heuristic policy, so it always keeps playing.</p>
+      <p class="note"><strong>Minecraftism</strong> — codero-sus's Minecraft-focused model family, including VL vision editions.
+        Select an installed model below; Minecraftism models appear first in the list.
+        <a href="https://huggingface.co/mr-sus" target="_blank" rel="noopener noreferrer">Explore Minecraftism models</a>.</p>
       <div class="fields two">
         <label>Ollama URL <input id="cfg-ollama-url" type="text" placeholder="http://127.0.0.1:11434" /></label>
         <label>Model
@@ -279,6 +284,17 @@
         <label>Decision interval (s) <input id="cfg-ollama-interval" type="number" min="0.5" max="300" step="0.5" /></label>
         <label>Temperature <input id="cfg-ollama-temp" type="number" min="0" max="2" step="0.05" /></label>
       </div>
+      <label class="toggle"><input id="cfg-ollama-json-mode" type="checkbox" />
+        <span>Request JSON-object output from Ollama (optional; model/runtime support required)</span>
+      </label>
+      <label class="toggle"><input id="cfg-ollama-routing" type="checkbox" />
+        <span>Route text decisions between two installed models (experimental)</span>
+      </label>
+      <div class="fields two">
+        <label>Routine model <input id="cfg-ollama-routine-model" type="text" list="models" placeholder="installed Turbo model name" /></label>
+        <label>Complex model <input id="cfg-ollama-complex-model" type="text" list="models" placeholder="installed Thinking model name" /></label>
+      </div>
+      <p class="note">Routing uses simple state/goal heuristics; it is not a reflex or a guarantee of speed. Vision uses the main configured VL model.</p>
       <div class="actions">
         <button id="btn-ai-start" class="btn primary">Start AI</button>
         <button id="btn-ai-stop" class="btn">Stop AI</button>
@@ -286,6 +302,34 @@
         <button id="btn-refresh-models" class="btn ghost">Refresh models</button>
         <button id="btn-pull" class="btn ghost">Pull model</button>
       </div>
+
+      <details>
+        <summary>Inventory goal <span class="hint">— gather or craft toward a verified target</span></summary>
+        <p class="note">The bot works in short steps while AI runs. If it needs a tool, it can craft one and may place a crafting table when AI building and inventory permissions allow it. Early-game tool and furnace goals also require those permissions. Progress means items currently in inventory.</p>
+        <div class="fields two">
+          <label>Item <select id="goal-item">
+            <option>oak_log</option><option>spruce_log</option><option>birch_log</option><option>jungle_log</option>
+            <option>acacia_log</option><option>dark_oak_log</option><option>mangrove_log</option><option>cherry_log</option>
+            <option>cobblestone</option><option>cobbled_deepslate</option><option>coal</option><option>raw_iron</option><option>torch</option>
+            <option>wooden_pickaxe</option><option>stone_pickaxe</option><option>stone_sword</option><option>furnace</option>
+          </select></label>
+          <label>Target count <input id="goal-count" type="number" min="1" max="64" value="4" /></label>
+        </div>
+        <div class="actions"><button id="btn-goal-start" class="btn">Set goal</button><button id="btn-goal-cancel" class="btn ghost">Cancel goal</button></div>
+        <p id="goal-status" class="note">No gathering goal.</p>
+      </details>
+
+      <details>
+        <summary>Client registry lookup <span class="hint">— inspect available item and block names</span></summary>
+        <p class="note">Read-only Mineflayer client registry and recipe lookup. Modded server entries and recipes may be missing; this is not a complete mod-pack dump.</p>
+        <div class="fields two">
+          <label>Kind <select id="registry-kind"><option value="item">Items</option><option value="block">Blocks</option></select></label>
+          <label>Name contains <input id="registry-query" type="text" maxlength="64" placeholder="e.g. pickaxe" /></label>
+        </div>
+        <div class="actions"><button id="btn-registry-search" class="btn ghost">Look up names</button>
+          <button id="btn-recipe-search" class="btn ghost">Look up recipes for exact item</button></div>
+        <pre id="registry-result" class="note">Connect a real bot to look up its client registry.</pre>
+      </details>
 
       <details id="cortex-box">
         <summary>Cortex LLMHoster <span class="hint" id="cortex-summary">— local OpenAI-compatible model host</span></summary>
@@ -358,12 +402,21 @@
         <div class="fields two">
           <label>Memory (recent actions) <input id="cfg-memory-turns" type="number" min="1" max="30" step="1" /></label>
           <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
+          <label class="check"><input id="cfg-persistent-memory" type="checkbox" /> save a small local experience memory</label>
+          <label class="check"><input id="cfg-spatial-memory" type="checkbox" /> remember inspected container locations and contents</label>
           <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
           <label class="check" title="For a model you trained with 'python -m pymc_bot llm' (docs/MINECRAFT_LLM.md): it already knows the rules, so it gets a short prompt and answers faster"><input id="cfg-compact-prompt" type="checkbox" /> Minecraft-trained model (short prompt)</label>
           <label class="check" title="Saves every LLM turn (situation, reply, did it work) to llm_turns.jsonl next to the config - more training data for your own model"><input id="cfg-record-turns" type="checkbox" /> record LLM turns for training</label>
           <label class="check" title="For vision models (Minecraftism VL or any Ollama/Cortex model that reads images): the bot sends a picture of what it sees. Needs the optional vision packages for the bridge (docs/MINECRAFT_LLM.md)"><input id="cfg-vision" type="checkbox" /> let the model see (vision)</label>
           <label>Picture every N turns <input id="cfg-vision-every" type="number" min="1" max="20" step="1" /></label>
+          <label>Picture width (px) <input id="cfg-vision-width" type="number" min="64" max="1024" step="1" /></label>
         </div>
+        <p class="note">Local memory keeps short addressed chat snippets, action outcomes and thoughts per bot/server.
+          Optional container memory records inspected locations and contents, which can become stale. These may be sent
+          to the configured AI provider. Turning either option off does not delete saved memory; clear it below.</p>
+        <button id="btn-world-memory" class="btn ghost">Show remembered containers</button>
+        <pre id="world-memory-list" class="note">Container memory not loaded.</pre>
+        <button id="btn-clear-memory" type="button" class="btn ghost">Clear selected bot's saved memory</button>
       </details>
       <div class="permissions">
         <strong>AI permissions</strong>
@@ -374,11 +427,24 @@
         <label class="check" title="hotbar, armour, moving items, dropping and giving"><input id="cfg-allow-inventory" type="checkbox" /> use inventory</label>
         <label class="check" title="placing blocks and right-clicking items"><input id="cfg-allow-building" type="checkbox" /> build</label>
         <label class="check"><input id="cfg-allow-mob-fighting" type="checkbox" /> fight mobs</label>
+        <label class="check" title="Allows the AI to use risky mace setups and throw tridents; items may be lost and falls can kill"><input id="cfg-allow-risky-combat" type="checkbox" /> allow risky combat for AI</label>
         <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
       </div>
       <p id="ai-status" class="note"></p>
     </section>
 
+
+    <!-- ---------------------------------------------------------- speedruns -->
+    <section class="card" id="card-speedruns">
+      <header>
+        <h2><span class="icon" aria-hidden="true">⏱️</span>Speedruns <span class="tag">inventory challenges</span></h2>
+      </header>
+      <p class="note">Choose from 41 timed gathering and crafting challenges for the selected bot. The timer includes pauses and starts when the goal is set; completion requires the target in inventory. Existing items count. These are not world-reset or game-completion speedruns.</p>
+      <label>Challenge <select id="speedrun-preset"></select></label>
+      <div class="actions"><button id="btn-speedrun-start" class="btn">Start challenge</button><button id="btn-speedrun-cancel" class="btn ghost">Cancel</button></div>
+      <p id="speedrun-status" class="note">No goal running. Start AI or use Step to advance a challenge.</p>
+      <p class="note">Starting replaces the selected bot's current goal. Times are in-memory, lost on backend restart, and are not official records. Minecraft version, world, inventory, permissions and simulator versus real server affect results.</p>
+    </section>
 
     <!-- ----------------------------------------------------------- training -->
     <section class="card span-2" id="card-training">
@@ -623,6 +689,29 @@
         </div>
         <p class="note" id="raw-config-status"></p>
       </details>
+      <details id="account-box" class="hidden">
+        <summary>Login &amp; API token <span id="account-user" class="hint"></span></summary>
+        <p class="note">The panel is protected by a login. Changing the password logs out every other browser.</p>
+        <div class="fields two">
+          <label>Current password <input id="account-current" type="password" autocomplete="current-password" /></label>
+          <label>New password <input id="account-new" type="password" autocomplete="new-password" minlength="8" /></label>
+        </div>
+        <div class="actions">
+          <button id="btn-account-password" class="btn">Change password</button>
+        </div>
+        <p class="note">An <b>API token</b> lets scripts and the Minecraft mod use the panel:
+          <code>Authorization: Bearer &lt;token&gt;</code>, <code>python -m pymc_bot action --token …</code> or in-game
+          <code>/pymcbot bot token &lt;token&gt;</code>. It is shown once; a new one replaces the old.</p>
+        <div class="account-token hidden" id="account-token-row">
+          <input id="account-token" type="text" readonly spellcheck="false" aria-label="New API token" />
+          <button id="btn-account-copy" class="btn small">Copy</button>
+        </div>
+        <div class="actions">
+          <button id="btn-account-token" class="btn">New API token</button>
+          <button id="btn-account-revoke" class="btn danger">Revoke token</button>
+        </div>
+        <p class="note" id="account-status"></p>
+      </details>
       <details>
         <summary>HTTP API</summary>
         <ul class="api-list">
@@ -636,6 +725,7 @@
           <li><code>GET /api/autopilot/status</code> · <code>POST /api/autopilot/run</code> <code>{"rule":"sleep"}</code></li>
           <li><code>GET|POST /api/setup/bridge</code> — install mineflayer without npm</li>
           <li><code>WS /ws</code> — live <code>event</code> / <code>status</code> frames</li>
+          <li><code>POST /api/auth/login|logout</code> · <code>GET /api/auth/status</code> — every other call needs the login cookie or <code>Authorization: Bearer &lt;token&gt;</code></li>
         </ul>
       </details>
     </section>

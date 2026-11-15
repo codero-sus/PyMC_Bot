@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.venv-dataset/
 *.egg-info/
 build/
 dist/
@@ -17,9 +18,11 @@ npm-debug.log*
 
 # Local runtime state
 pymc_bot_config.json
+pymc_bot_auth.json
 .pymc_profiles/
 .pymc_backup/
 .pymc_update.json
+.pymc_update.lock
 *.log
 
 # Editors / OS
@@ -30,6 +33,9 @@ pymc_bot_config.json
 # Local playtime recordings / datasets (the mod writes them into the game folder)
 /pymcbot/
 /pymc-playtime/
+
+# Private local bot experience (chat snippets and action outcomes)
+bot-memory/
 
 # web lookup cache of the AI (pymc_bot.knowledge)
 knowledge_cache.json

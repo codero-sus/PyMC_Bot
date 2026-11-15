@@ -1,0 +1,45 @@
+{
+	"schemaVersion": 1,
+	"id": "pymcbot",
+	"version": "${version}",
+	"name": "PyMC Bot",
+	"description": "The PyMC Bot companion mod: records your Minecraft playtime (position, look direction, block neighbourhood, nearby entities and the keys you pressed) into a dataset that PyMC Bot trains a player model on. Open the PyMC Bot settings page with /pymcbot settings, the hotkey or Mod Menu's Configure button. One jar per Minecraft version, 1.21.1 to 26.3. Made with \u2764\ufe0f by codero-sus - https://codero.is-a.dev - https://the-codero.web.app/",
+	"authors": [
+		{
+			"name": "codero-sus",
+			"contact": {
+				"homepage": "https://the-codero.web.app/",
+				"website": "https://codero.is-a.dev",
+				"github": "https://github.com/codero-sus"
+			}
+		}
+	],
+	"contact": {
+		"homepage": "https://the-codero.web.app/",
+		"sources": "https://github.com/codero-sus/PyMC_Bot",
+		"issues": "https://github.com/codero-sus/PyMC_Bot/issues"
+	},
+	"license": "PolyForm-Noncommercial-1.0.0",
+	"provides": [
+		"pymcplaytime"
+	],
+	"icon": "assets/pymcbot/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"dev.pymc.pymcb.client.PymcPlaytimeClient"
+		],
+		"modmenu": [
+			"dev.pymc.pymcb.client.PymcModMenu"
+		]${gametest_entrypoint}
+	},
+	"depends": {
+		"fabricloader": ">=${loader}",
+		"minecraft": "${minecraft}",
+		"java": ">=${java}",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"modmenu": "*"
+	}
+}

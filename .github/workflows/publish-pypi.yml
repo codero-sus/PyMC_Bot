@@ -1,0 +1,64 @@
+name: Publish Python package
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload to PyPI (leave off to build and validate only)
+        type: boolean
+        default: false
+      confirm:
+        description: To publish, type pymc-bot
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[pypi]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and validate the release archives
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+          python scripts/check_distribution.py dist
+      - name: Smoke-test installed wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/pymc-wheel"
+          "$RUNNER_TEMP/pymc-wheel/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/pymc-wheel/bin/pymc-bot" --help
+          "$RUNNER_TEMP/pymc-wheel/bin/python" -m pymc_bot bench --suite sim-tech
+      - name: Preserve distributions for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/*
+          if-no-files-found: error
+      - name: Check publish confirmation
+        if: inputs.publish || github.event_name == 'push'
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            test "$CONFIRM" = pymc-bot || { echo 'Enter pymc-bot in confirm to publish.'; exit 1; }
+          fi
+          test -n "$PYPI_TOKEN" || { echo 'Add the PYPI_API_TOKEN GitHub Actions secret.'; exit 1; }
+      - name: Publish to PyPI
+        if: inputs.publish || github.event_name == 'push'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
