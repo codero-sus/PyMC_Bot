@@ -34,9 +34,13 @@ public final class RecorderHud {
         PlaytimeRecorder recorder = PymcPlaytimeClient.recorder();
         PlaytimeConfig cfg = PlaytimeConfig.get();
         Minecraft mc = Minecraft.getInstance();
-        if (recorder == null || !cfg.showHud || mc.player == null || Mc.hudHidden(mc)) {
+        if (recorder == null || mc.player == null || Mc.hudHidden(mc)) {
             return;
         }
+        if (PymcPlaytimeClient.remoteRecorder().active()) {
+            canvas.text("PyMC Bot: REMOTE OBSERVATION", 4, 4, RED);
+        }
+        if (!cfg.showHud) return;
         PlaytimeRecorder.HudState state = recorder.hudState();
         if (state.active()) {
             draw(canvas, state, cfg.hudCorner, System.currentTimeMillis());

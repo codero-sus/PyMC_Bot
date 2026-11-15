@@ -8,8 +8,10 @@
 
 **Intended scope:** single-player worlds and private self-hosted servers you control, not public servers.
 This is an intended-use scope, not a technical guarantee that public servers are blocked.
-For recordings of another person, obtain their informed permission before recording or training;
-the existing mod records the player running it, not a remote player's hidden inputs.
+For recordings of another person, obtain their informed permission before recording or training.
+The mod can separately observe a nearby player with `/pymcbot observe start <player> consent`;
+its movement/look labels are inferred from visible motion, not the player's hidden inputs or inventory.
+See the [mod guide](mod/README.md) for limitations and stopping the recording.
 
 A **Python-controlled Minecraft player bot** it joins a (cracked / offline-mode) server as a normal
 player, you configure and steer it from a **web control panel served by Uvicorn**, and it can hand the
@@ -82,6 +84,10 @@ Once a release has been published to PyPI, install it with `python -m pip instal
 then run `pymc-bot setup` for the Mineflayer/Node.js bridge and `pymc-bot serve` for the panel.
 Python 3.10 or newer is required. Node.js and Mineflayer are separate runtime dependencies;
 the setup command helps install them for real Minecraft servers. The package also has a simulator.
+Virtualenv wheel installs check for a newer stable GitHub release wheel on startup and while the
+panel is idle; verified updates install automatically and restart the app. System Python, editable
+installs and Git checkouts are not changed this way. Pip, write access and a release-provided SHA-256
+are required; failed checks or installs are retried later.
 The package is licensed under PolyForm Noncommercial 1.0.0, not MIT. For publishing instructions,
 see [Python package publishing](docs/PYPI.md). Until the first upload succeeds, use the GitHub
 release or source instructions below.

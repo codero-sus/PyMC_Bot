@@ -1,9 +1,21 @@
 # PyMC Bot mod (Fabric)
 
 **Intended scope:** single-player worlds and private self-hosted servers you control, not public
-servers. Obtain informed permission before recording someone else's play. The recorder currently
-captures only its local player; another person may record their own play and deliberately share
-the dataset for training, but there is no remote-player recording hook.
+servers. Obtain informed permission before recording someone else's play. To record a nearby
+visible player, use `/pymcbot observe start <player> consent`, then `/pymcbot observe stop`.
+The consent word is the operator's confirmation, not technical proof of the player's permission.
+The HUD shows when observation is active. Only visible movement and view changes are inferred;
+private inventory, exact keys, attack/use inputs and the player's screen are not available. The
+recording stops on disconnect, after ten seconds out of view or after one hour. Files are saved
+separately under `pymcbot/remote-observations/`; train explicitly with
+`python -m pymc_bot train --dataset <path-to-file>`. These incomplete, inferred samples are not
+equivalent to the local recorder and may produce a poor model. Server ownership is not verified.
+
+For a conventionally named jar in the instance's `mods` folder, the mod starts a separate helper
+when Minecraft closes. It checks stable GitHub releases, verifies the new jar's release SHA-256,
+Minecraft version and mod metadata, and retains the old jar as a backup. The new jar is used on the
+next launch; missing digests, permissions, network failures and nonstandard jar locations prevent
+the update and are retried on a later shutdown. No running mod is hot-reloaded.
 
 With their consent, the other player can run `/pymcbot record start`, play, then run
 `/pymcbot record stop` and `/pymcbot export` on their own client. They can share their

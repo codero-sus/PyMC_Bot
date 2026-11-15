@@ -267,13 +267,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
               f"  ({accounts.path})")
     print("Made with \u2764\ufe0f by codero-sus \u00b7 https://github.com/codero-sus \u00b7 https://codero.is-a.dev \u00b7 https://the-codero.web.app/")
     root = _source_install_root()
-    if root is None or args.reload:
+    if root is None:
+        from pymc_bot.package_update import eligible
+        watch_package = eligible()
+    else:
+        watch_package = False
+    if (root is None and not watch_package) or args.reload:
         uvicorn.run(app, host=host, port=port, log_level=args.log_level, reload=args.reload)
         return 0
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level=args.log_level))
     finished = threading.Event()
     restart = threading.Event()
-    watcher = threading.Thread(target=_watch_release, args=(root, app, server, finished, restart), daemon=True)
+    target = _watch_package if watch_package else _watch_release
+    watcher = threading.Thread(target=target, args=(root, app, server, finished, restart), daemon=True)
     watcher.start()
     try:
         server.run()
@@ -1007,6 +1013,25 @@ def _watch_release(root: Path, app: Any, server: Any, finished: threading.Event,
             continue
 
 
+def _watch_package(root: Path | None, app: Any, server: Any, finished: threading.Event,
+                   restart: threading.Event, interval: float = 600.0) -> None:
+    from pymc_bot.package_update import update
+
+    while not finished.wait(interval):
+        fleet = app.state.fleet
+        if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
+            continue
+        if any(fleet.ai_running(bot) for bot in fleet.all_bots()) or not update(check=True):
+            continue
+        if finished.is_set() or server.should_exit or app.state.training_service.running:
+            continue
+        if any(bot.state not in ("disconnected", "error") or fleet.ai_running(bot) for bot in fleet.all_bots()):
+            continue
+        restart.set()
+        server.should_exit = True
+        return
+
+
 def _run_locked_update(root: Path, *args: str) -> subprocess.CompletedProcess[Any] | None:
     """Avoid concurrent release updates from two local app instances."""
     try:
@@ -1036,6 +1061,26 @@ def _prepare_startup() -> None:
         return
     root = _source_install_root()
     if root is None:
+        from pymc_bot.package_update import update
+        try:
+            with (Path(sys.prefix) / ".pymcbot-update.lock").open("a+b") as lock:
+                if os.name == "nt":
+                    import msvcrt
+                    lock.seek(0)
+                    if not lock.read(1):
+                        lock.write(b"0")
+                        lock.flush()
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                updated = update()
+        except OSError:
+            return
+        if updated:
+            from pymc_bot.package_update import restart
+            restart()
         return
     result = _run_locked_update(root)
     if result is not None and result.returncode == 10:

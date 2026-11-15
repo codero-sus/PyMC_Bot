@@ -1,5 +1,13 @@
 # PyMC Bot mod – changelog
 
+## 0.13.0
+
+- Observe a consenting nearby player with `/pymcbot observe start <player> consent`; movement and
+  view labels are inferred from visible state, not private keys or inventory. Stop with
+  `/pymcbot observe stop`. Data is kept separate and requires explicit selection for training.
+- A separate post-shutdown helper checks stable GitHub releases and installs a verified newer mod
+  jar for the current Minecraft version. The updated jar loads on the next Minecraft launch.
+
 ## 0.12.0
 
 - **The panel has a login now** (PyMC Bot app: `python -m pymc_bot serve`), so the `/pymcbot bot …`

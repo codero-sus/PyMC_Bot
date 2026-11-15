@@ -91,6 +91,14 @@ public final class PymcCommands {
                     .then(guarded("episode").executes(ctx -> feedback(ctx.getSource(), recorder.endEpisode())))
                     .then(literal("status").executes(ctx -> feedback(ctx.getSource(), recorder.status())));
 
+            LiteralArgumentBuilder<FabricClientCommandSource> observe = literal("observe")
+                    .then(guarded("start").then(Mc.argument("player", StringArgumentType.word())
+                            .then(literal("consent").executes(ctx -> feedback(ctx.getSource(),
+                                    PymcPlaytimeClient.remoteRecorder().start(Minecraft.getInstance(),
+                                            StringArgumentType.getString(ctx, "player")))))))
+                    .then(guarded("stop").executes(ctx -> feedback(ctx.getSource(), PymcPlaytimeClient.remoteRecorder().stop())))
+                    .then(literal("status").executes(ctx -> feedback(ctx.getSource(), PymcPlaytimeClient.remoteRecorder().status())));
+
             LiteralArgumentBuilder<FabricClientCommandSource> sample = guarded("sample")
                     .then(Mc.argument("ticks", IntegerArgumentType.integer(1, 200))
                             .executes(ctx -> {
@@ -226,6 +234,7 @@ public final class PymcCommands {
                         .executes(ctx -> feedback(ctx.getSource(), help()))
                         .then(literal("help").executes(ctx -> feedback(ctx.getSource(), help())))
                         .then(record)
+                        .then(observe)
                         .then(guarded("pause").executes(ctx -> feedback(ctx.getSource(), recorder.pause())))
                         .then(guarded("resume").executes(ctx -> feedback(ctx.getSource(), recorder.resume())))
                         .then(sample)
