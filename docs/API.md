@@ -170,6 +170,8 @@ curl -sX POST localhost:8000/api/antiafk/poke -H 'content-type: application/json
 | `POST` | `/api/bot/stop` | – | stop the AI loop and disconnect |
 | `POST` | `/api/bot/reconnect` | – | stop + start |
 | `GET` | `/api/bot/snapshot` | – | world snapshot only |
+| `GET` | `/api/bot/registry?kind=item&query=pickaxe&offset=0&limit=50` | – | paged, read-only Mineflayer client registry (items or blocks); at most 100 entries; simulator unsupported |
+| `GET` | `/api/bot/recipes?item=stone_pickaxe&limit=20` | – | client-known crafting recipes for an exact item; at most 50, no inventory check; may omit modded/server recipes |
 | `GET` | `/api/bot/chat` | – | recent chat history (`{"messages":[{"time","username","message"}]}`) |
 | `POST` | `/api/bot/chat` | `{"message": "hi", "bot": "Pop_1"}` | send chat (respects `agent.max_chat_length`); `bot` may be a username, `"selected"` (default) or `"all"` |
 | `POST` | `/api/bot/command` | `{"command": "list", "bot": "all"}` | run a server command on the selected/all bots (`/` is added if missing, needs op) |
@@ -187,6 +189,11 @@ and the whole panel follow the selected player. The default is the main bot.
 | `POST` | `/api/ai/start` | start the decision loop (409 if the bot is not connected) |
 | `POST` | `/api/ai/stop` | stop the loop (aborts the current action) |
 | `POST` | `/api/ai/step` | decide and execute exactly one action now |
+| `PUT` | `/api/ai/goal` | set a selected-bot inventory goal: `{"item":"stone_pickaxe","count":1}`; 409 if a goal action is still in flight |
+| `GET` | `/api/ai/goal` | show the selected bot's in-memory goal and verified progress |
+| `DELETE` | `/api/ai/goal` | cancel the goal; operations already sent to the server may still finish |
+| `GET` | `/api/ai/world-memory` | list selected-bot/server historical inspected containers; observations may be stale |
+| `DELETE` | `/api/ai/memory` | clear selected-bot/server experience and saved container observations |
 
 ### Training a player model on playtime
 

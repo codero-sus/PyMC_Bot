@@ -67,15 +67,16 @@ def test_permissions_identity_and_observation():
 def test_failure_bounds_and_no_progress():
     goal = GatherGoal()
     goal.start("raw_iron", 1, IDENTITY)
+    prepared = state({"name": "stone_pickaxe", "count": 1})
     for _ in range(2):
-        _, action = step(goal, state())
-        goal.finish(action["token"], False, "not reachable", state())
+        _, action = step(goal, prepared)
+        goal.finish(action["token"], False, "not reachable", prepared)
     assert goal.snapshot()["status"] == "failed"
     goal.start("coal", 1, IDENTITY)
     for _ in range(4):
-        _, action = step(goal, state())
-        goal.finish(action["token"], True, "mined", state())
-    assert step(goal, state())[0] == "wait"
+        _, action = step(goal, prepared)
+        goal.finish(action["token"], True, "mined", prepared)
+    assert step(goal, prepared)[0] == "wait"
     assert goal.snapshot()["status"] == "failed"
 
 
@@ -87,10 +88,11 @@ def test_alternate_ore_after_failure_or_no_progress(item, first, second):
     for success in (False, True):
         goal = GatherGoal()
         goal.start(item, 1, IDENTITY)
-        _, action = step(goal, state())
+        prepared = state({"name": "stone_pickaxe", "count": 1})
+        _, action = step(goal, prepared)
         assert action["params"]["block"] == first
-        goal.finish(action["token"], success, "attempted", state())
-        _, action = step(goal, state())
+        goal.finish(action["token"], success, "attempted", prepared)
+        _, action = step(goal, prepared)
         assert action["params"]["block"] == second
         goal.finish(action["token"], True, "mined", state({"name": item, "count": 1}))
         assert goal.snapshot()["status"] == "completed"

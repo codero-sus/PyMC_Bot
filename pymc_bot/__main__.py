@@ -151,8 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     node_setup.add_arguments(setup)
 
-    bench = sub.add_parser("bench", help="read-only synthetic Ollama action-choice and latency checks")
-    bench.add_argument("--model", required=True, help="installed Ollama model name")
+    bench = sub.add_parser("bench", help="synthetic model checks or simulated goal integration checks")
+    bench.add_argument("--suite", choices=["model", "sim-tech"], default="model", help="benchmark suite")
+    bench.add_argument("--model", default=None, help="installed Ollama model name (required for model suite)")
     bench.add_argument("--url", default="http://127.0.0.1:11434", help="Ollama server URL")
     bench.add_argument("--repeats", type=int, choices=range(1, 11), default=1, help="repeat each case (1-10)")
     bench.add_argument("--json-mode", action="store_true", help="request Ollama JSON-object output")
@@ -933,15 +934,23 @@ def cmd_stub(args: argparse.Namespace) -> int:
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    from pymc_bot.bench import benchmark
-
-    with OllamaClient(base_url=args.url, model=args.model) as client:
-        report = benchmark(client, repeats=args.repeats, json_mode=args.json_mode)
+    if args.suite == "sim-tech":
+        from pymc_bot.sim_bench import run_sim_bench
+        report = run_sim_bench(repeats=args.repeats)
+        failed = report["pass_rate"] < 1.0
+    else:
+        from pymc_bot.bench import benchmark
+        if not args.model:
+            print("--model is required for the model benchmark", file=sys.stderr)
+            return 2
+        with OllamaClient(base_url=args.url, model=args.model) as client:
+            report = benchmark(client, repeats=args.repeats, json_mode=args.json_mode)
+        failed = all(row["error"] for row in report["results"])
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
     print(text)
-    return 1 if all(row["error"] for row in report["results"]) else 0
+    return int(failed)
 
 
 DISPATCH = {

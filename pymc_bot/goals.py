@@ -5,7 +5,9 @@ import math
 import threading
 from typing import Any
 
+from pymc_bot.autopilot import incoming_projectile
 from pymc_bot.inventory import Inventory, short
+from pymc_bot.tech_plan import PICKAXES, RECIPES, next_tech_step
 
 # Explicit Minecraft item -> block mappings. No recipe invention or destructive arbitrary block IDs.
 GATHERABLE = {
@@ -27,10 +29,12 @@ class GatherGoal:
 
     def start(self, item: str, count: int, identity: tuple[Any, ...]) -> dict[str, Any]:
         item = str(item).strip().lower().removeprefix("minecraft:")
-        if item not in GATHERABLE and item != "torch":
-            raise ValueError("unsupported item; choose a listed log, cobblestone, cobbled_deepslate, coal, raw_iron or torch")
+        if item not in GATHERABLE and item != "torch" and item not in RECIPES:
+            raise ValueError("unsupported goal item; choose one from the inventory goal list")
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 64:
             raise ValueError("count must be an integer between 1 and 64")
+        if item in RECIPES and count > 8:
+            raise ValueError("early-game crafting goals are limited to 8 items")
         with self._lock:
             if self._inflight:
                 raise RuntimeError("a goal action is still running; wait for it to finish")
@@ -56,7 +60,7 @@ class GatherGoal:
             return {k: v for k, v in self._goal.items() if k != "identity"} | {"in_flight": self._inflight}
 
     def next(self, state: dict[str, Any], identity: tuple[Any, ...], *, mining: bool, movement: bool,
-             inventory: bool = True) -> tuple[str, dict[str, Any] | None]:
+             inventory: bool = True, building: bool = False) -> tuple[str, dict[str, Any] | None]:
         """Return (kind, payload): none, wait, or one claimed action with a generation token."""
         with self._lock:
             g = self._goal
@@ -80,8 +84,11 @@ class GatherGoal:
             if count >= g["count"]:
                 g.update(status="completed", detail="target verified in inventory")
                 return "wait", None
-            if g["item"] == "torch" and not inventory:
-                g.update(status="paused", detail="torch plan requires AI inventory permission")
+            if (g["item"] == "torch" or g["item"] in RECIPES) and not inventory:
+                g.update(status="paused", detail="crafting plan requires AI inventory permission")
+                return "wait", None
+            if g["item"] in RECIPES and not building:
+                g.update(status="paused", detail="tech plan requires AI building permission to place a crafting table")
                 return "wait", None
             if not mining or not movement:
                 g.update(status="paused", detail="requires AI mining and movement permissions")
@@ -93,26 +100,41 @@ class GatherGoal:
             hostile = any(e.get("hostile") and not e.get("player") and _near(e.get("dist"), 8)
                           for e in (state.get("entities") or []) if isinstance(e, dict))
             oxygen = state.get("oxygen")
-            if not math.isfinite(health) or health <= 8 or hostile or state.get("on_fire") or (
+            if not math.isfinite(health) or health <= 8 or hostile or state.get("on_fire") or state.get("in_lava") or (
                 state.get("in_water") and (not _near(oxygen, 20) or _near(oxygen, 8))
             ):
                 g.update(status="paused", detail="waiting for a safer situation")
                 return "wait", None
-            if g["attempts"] >= (64 if g["item"] == "torch" else 12) or g["no_progress"] >= 4:
+            if _nearby_hazard(state):
+                g.update(status="paused", detail="waiting for a nearby projectile or potion hazard to pass")
+                return "wait", None
+            extended = g["item"] in RECIPES or g["item"] in {"cobblestone", "cobbled_deepslate", "coal", "raw_iron"}
+            if g["attempts"] >= (96 if extended else 64 if g["item"] == "torch" else 12) or g["no_progress"] >= 4:
                 g.update(status="failed", detail="no verified progress; inspect the area and try a new goal")
                 return "wait", None
             target = g["item"]
             action = ""
             params: dict[str, Any] = {}
-            if target == "torch":
-                plan = _torch_next(state, g["count"] - count)
+            if target == "torch" or target in RECIPES:
+                plan = (_torch_next(state, g["count"] - count) if target == "torch"
+                        else next_tech_step(state, target))
                 if isinstance(plan, str):
                     g.update(status="paused", detail=plan)
                     return "wait", None
                 action, params, target = plan
+            if not action and target in {"cobblestone", "cobbled_deepslate", "coal", "raw_iron"}:
+                if not _matching_drop(state, target) and not _has_tool(state, target):
+                    if not inventory or not building:
+                        g.update(status="paused", detail="a suitable pickaxe is needed; automatic toolmaking requires AI inventory and building permissions")
+                        return "wait", None
+                    tool = "stone_pickaxe" if target == "raw_iron" else "wooden_pickaxe"
+                    plan = next_tech_step(state, tool)
+                    if isinstance(plan, str):
+                        g.update(status="paused", detail=plan)
+                        return "wait", None
+                    action, params, target = plan
             if not action:
-                drops = state.get("ground_items") or []
-                matching_drop = any(isinstance(d, dict) and short(d.get("item")) == target and _near(d.get("dist"), 8) for d in drops)
+                matching_drop = _matching_drop(state, target)
                 action = "collect" if matching_drop else "mine"
                 variants = ALTERNATES.get(target, (GATHERABLE[target],))
                 params = {"item": target} if matching_drop else {"block": variants[g["variant"] % len(variants)]}
@@ -128,6 +150,17 @@ class GatherGoal:
             g = self._goal
             if not g or token != self._generation or g["status"] == "cancelled":
                 return
+            if isinstance(state, dict) and state.get("status", "connected") == "connected":
+                observed = _inventory_count(state, g["item"])
+                progress = _inventory_count(state, g["progress_item"])
+                if observed is not None and observed >= g["count"]:
+                    g.update(observed=observed, status="completed", detail="target verified in inventory")
+                    return
+                if (not ok and progress is not None and g["progress_before"] is not None
+                        and progress > g["progress_before"]):
+                    g.update(observed=observed, failures=0, no_progress=0,
+                             detail="action reported failure but inventory changed; reassessing")
+                    return
             if not ok:
                 if g["last_action"] == "mine":
                     g["variant"] += 1
@@ -157,6 +190,40 @@ class GatherGoal:
                 g["detail"] = "action returned; target not yet verified"
 
 
+def _matching_drop(state: dict[str, Any], target: str) -> bool:
+    drops = state.get("ground_items")
+    return isinstance(drops, list) and any(
+        isinstance(drop, dict) and short(drop.get("item")) == target and _near(drop.get("dist"), 8)
+        for drop in drops
+    )
+
+
+def _has_tool(state: dict[str, Any], target: str) -> bool:
+    try:
+        names = Inventory.from_snapshot(state).names()
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if target == "raw_iron":
+        return bool(names & {"stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"})
+    return bool(names & PICKAXES)
+
+
+def _nearby_hazard(state: dict[str, Any]) -> bool:
+    entities = state.get("entities")
+    if not isinstance(entities, list):
+        return False
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if incoming_projectile(entity) is not None:
+            return True
+        potion = entity.get("potion")
+        if (isinstance(potion, dict) and potion.get("form") in {"thrown", "cloud"}
+                and potion.get("kind") in {"bad", "unknown"} and _near(entity.get("dist"), 8)):
+            return True
+    return False
+
+
 def _torch_next(state: dict[str, Any], missing: int) -> tuple[str, dict[str, Any], str] | str:
     """Plan exactly one torch prerequisite; never invent recipes or place stations."""
     try:
@@ -174,10 +241,6 @@ def _torch_next(state: dict[str, Any], missing: int) -> tuple[str, dict[str, Any
                 return "craft", {"item": planks, "count": 4, "no_station": True}, planks
             return "", {}, "oak_log"
         if inv.count("coal") + inv.count("charcoal") < batches:
-            drops = state.get("ground_items") or []
-            coal_drop = any(isinstance(d, dict) and short(d.get("item")) == "coal" and _near(d.get("dist"), 8) for d in drops)
-            if not coal_drop and not any(name.endswith("_pickaxe") for name in inv.names()):
-                return "torch plan needs a pickaxe to mine coal or coal/charcoal in inventory"
             return "", {}, "coal"
         return "craft", {"item": "torch", "count": 4, "no_station": True}, "torch"
     except (TypeError, ValueError, OverflowError):

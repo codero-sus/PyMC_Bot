@@ -304,17 +304,30 @@
 
       <details>
         <summary>Inventory goal <span class="hint">— gather or craft toward a verified target</span></summary>
-        <p class="note">The selected bot works in short steps while AI runs. Torch goals gather wood and coal and craft prerequisites without placing a station. It pauses when unsafe or permissions are off. Progress means items currently in inventory.</p>
+        <p class="note">The bot works in short steps while AI runs. If it needs a tool, it can craft one and may place a crafting table when AI building and inventory permissions allow it. Early-game tool and furnace goals also require those permissions. Progress means items currently in inventory.</p>
         <div class="fields two">
           <label>Item <select id="goal-item">
             <option>oak_log</option><option>spruce_log</option><option>birch_log</option><option>jungle_log</option>
             <option>acacia_log</option><option>dark_oak_log</option><option>mangrove_log</option><option>cherry_log</option>
             <option>cobblestone</option><option>cobbled_deepslate</option><option>coal</option><option>raw_iron</option><option>torch</option>
+            <option>wooden_pickaxe</option><option>stone_pickaxe</option><option>stone_sword</option><option>furnace</option>
           </select></label>
           <label>Target count <input id="goal-count" type="number" min="1" max="64" value="4" /></label>
         </div>
         <div class="actions"><button id="btn-goal-start" class="btn">Set goal</button><button id="btn-goal-cancel" class="btn ghost">Cancel goal</button></div>
         <p id="goal-status" class="note">No gathering goal.</p>
+      </details>
+
+      <details>
+        <summary>Client registry lookup <span class="hint">— inspect available item and block names</span></summary>
+        <p class="note">Read-only Mineflayer client registry and recipe lookup. Modded server entries and recipes may be missing; this is not a complete mod-pack dump.</p>
+        <div class="fields two">
+          <label>Kind <select id="registry-kind"><option value="item">Items</option><option value="block">Blocks</option></select></label>
+          <label>Name contains <input id="registry-query" type="text" maxlength="64" placeholder="e.g. pickaxe" /></label>
+        </div>
+        <div class="actions"><button id="btn-registry-search" class="btn ghost">Look up names</button>
+          <button id="btn-recipe-search" class="btn ghost">Look up recipes for exact item</button></div>
+        <pre id="registry-result" class="note">Connect a real bot to look up its client registry.</pre>
       </details>
 
       <details id="cortex-box">

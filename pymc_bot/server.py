@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -770,6 +770,32 @@ def create_app(
     def bot_snapshot() -> dict[str, Any]:
         controller = selected_bot()
         return {"state": controller.state, "username": controller.username, **controller.snapshot()}
+
+    @app.get("/api/bot/registry")
+    def bot_registry(kind: Literal["item", "block"] = "item", query: str = Query(default="", max_length=64,
+                     pattern=r"^[a-zA-Z0-9_:./-]*$"), offset: int = Query(default=0, ge=0, le=50000),
+                     limit: int = Query(default=50, ge=1, le=100)) -> dict[str, Any]:
+        controller = selected_bot()
+        if not controller.connected:
+            raise HTTPException(status_code=409, detail="Connect the bot first.")
+        with controller.action_scope():
+            ok, result = controller._perform("registry_lookup", {"kind": kind, "query": query, "offset": offset,
+                                                                  "limit": limit}, quiet=True)  # noqa: SLF001
+        if not ok:
+            raise HTTPException(status_code=503, detail=controller.last_failure or "registry lookup unavailable")
+        return result
+
+    @app.get("/api/bot/recipes")
+    def bot_recipes(item: str = Query(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_:./-]+$"),
+                    limit: int = Query(default=20, ge=1, le=50)) -> dict[str, Any]:
+        controller = selected_bot()
+        if not controller.connected:
+            raise HTTPException(status_code=409, detail="Connect the bot first.")
+        with controller.action_scope():
+            ok, result = controller._perform("recipe_lookup", {"item": item, "limit": limit}, quiet=True)  # noqa: SLF001
+        if not ok:
+            raise HTTPException(status_code=503, detail=controller.last_failure or "recipe lookup unavailable")
+        return result
 
     @app.get("/api/bot/chat")
     def bot_chat_history() -> dict[str, Any]:

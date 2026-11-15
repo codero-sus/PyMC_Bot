@@ -196,7 +196,7 @@ class BaseBackend(abc.ABC):
     #: Slots are numbered like a player sees them (0-8 hotbar, 9-35 backpack; pymc_bot.inventory).
     LIFE_COMMANDS: tuple[str, ...] = (
         "select_slot", "move_slot", "equip", "unequip", "swap_hands", "toss", "place", "use_item",
-        "eat", "sleep", "wake", "collect", "attack_mob",
+        "eat", "sleep", "wake", "collect", "attack_mob", "registry_lookup", "recipe_lookup",
         *SKILL_COMMANDS,  # chop_tree, craft, harvest, deposit... (pymc_bot.skills)
     )
 
@@ -422,10 +422,23 @@ class SimulatedBackend(BaseBackend):
         block = (block or "stone").strip().lower().replace(" ", "_")
         time.sleep(0.05)
         with self._lock:
-            if self._inv.add(block, 1):
+            drops = {"stone": "cobblestone", "deepslate": "cobbled_deepslate",
+                     "coal_ore": "coal", "deepslate_coal_ore": "coal",
+                     "iron_ore": "raw_iron", "deepslate_iron_ore": "raw_iron"}
+            held = self._inv.held.name if self._inv.held else ""
+            if block in drops:
+                eligible = held in {"wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "golden_pickaxe",
+                                    "diamond_pickaxe", "netherite_pickaxe"}
+                if block in {"iron_ore", "deepslate_iron_ore"}:
+                    eligible = held in {"stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"}
+                if not eligible:
+                    self.log.add(f"Mined {block} without a suitable tool; nothing dropped.", "info", "sim")
+                    return True
+            drop = drops.get(block, block)
+            if self._inv.add(drop, 1):
                 self.log.add(f"Mined 1 {block}, but the inventory is full - it stays on the ground.", "warn", "sim")
                 x, _, z = self._position
-                self._ground.append({"name": block, "count": 1, "x": x, "z": z, "at": time.monotonic()})
+                self._ground.append({"name": drop, "count": 1, "x": x, "z": z, "at": time.monotonic()})
                 return True
         self.log.add(f"Mined 1 {block}.", "success", "sim")
         return True
@@ -498,6 +511,12 @@ class SimulatedBackend(BaseBackend):
             return False, str(exc).strip("'\"") or cmd, {}
         time.sleep(0.02)
         return True, "", result
+
+    def _do_registry_lookup(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("client registry lookup is unavailable in the simulated backend")
+
+    def _do_recipe_lookup(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("client recipe lookup is unavailable in the simulated backend")
 
     def _slot(self, params: dict[str, Any], key: str = "slot") -> int:
         index = int(params[key])

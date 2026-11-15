@@ -645,7 +645,8 @@ class AgentLoop:
     def _goal_turn_scoped(self, settings: AppSettings, state: dict[str, Any]) -> tuple[bool, str] | None:
         identity = self._goal_identity()
         kind, step = self.goal.next(state, identity, mining=settings.agent.allow_mining,
-                                    movement=settings.agent.allow_movement, inventory=settings.agent.allow_inventory)
+                                    movement=settings.agent.allow_movement, inventory=settings.agent.allow_inventory,
+                                    building=settings.agent.allow_building)
         if kind == "none":
             return None
         if kind == "wait":
@@ -657,13 +658,18 @@ class AgentLoop:
         try:
             self._last_exchange = None
             ok, detail = self._act(decision)
-            return ok, detail
+        except Exception as exc:  # noqa: BLE001 - report and bound a failed goal step without killing the loop
+            self._errors += 1
+            self._last_error = str(exc)
+            detail = f"goal action failed: {type(exc).__name__}: {str(exc)[:160]}"
+            self.log.add(detail, "warn", "agent")
         finally:
             try:
                 observation = self.bot.snapshot() if self._goal_identity() == identity else None
             except Exception:  # noqa: BLE001  # a failed observation cannot verify a goal
                 observation = None
             self.goal.finish(step["token"], ok, detail, observation)
+        return ok, detail
 
     def _run_loop(self) -> None:
         failures = 0

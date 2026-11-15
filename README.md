@@ -1093,6 +1093,12 @@ actions, spawn worlds, measure survival, parkour or wood-to-iron, or prove overa
 fixed expected actions are narrow checks, not the only valid choices. The report contains no player
 recordings or notebooks. Run it yourself against a model; it does not train or upload anything.
 
+`python -m pymc_bot bench --suite sim-tech` additionally runs bounded, isolated simulated goal
+scenarios from an empty inventory, including a low-health pause. It records completion, step counts
+and elapsed time, and returns a nonzero exit status if a case fails. This is an integration check
+for the built-in simulator and deterministic goal controller, **not** an LLM benchmark, real server,
+parkour course, realistic survival world or wood-to-iron speedrun.
+
 ### More reliable decisions and saved places
 
 Ollama's optional **JSON-object output** switch asks the runtime for JSON on action decisions,
@@ -1104,6 +1110,17 @@ Homes and waypoints are stored per bot and connected server. Travel to a saved p
 cross-dimension navigation and invalid coordinates instead of walking to the same coordinates in
 another dimension. These are saved waypoints, not an automatic map or portal planner. Waypoint
 writes are synchronized among bots in one Python process; separate processes are not coordinated.
+
+### Inspect the connected client's registry
+
+The panel's **Client registry lookup**, or `GET /api/bot/registry?kind=item&query=pickaxe`, reads
+bounded pages of item or block names from the selected bot's connected Mineflayer registry. Use
+`kind=block`, `offset` and `limit` (at most 100) to page through results. The panel also looks up
+client-known crafting recipes for an exact item, via `GET /api/bot/recipes?item=stone_pickaxe`;
+this does not check ingredients or craft anything. The simulator explicitly reports these lookups
+as unavailable. This is the registry exposed to the client, not a Fabric mod-pack registry/recipe
+exporter: modded entries and recipes can be missing, and IDs may differ between versions or servers.
+It does not download, persist or upload the registry.
 
 ### Optional container observations
 
@@ -1123,19 +1140,31 @@ clears these observations for that bot/server. In-flight inspections may save ag
 In the AI panel, choose an item and target count under **Gathering goal**, then start AI or
 use **Step once**. Alternatively, use `/pymcbot bot ai gather oak_log 8`,
 `/pymcbot bot ai goal status` and `/pymcbot bot ai goal cancel`. This deterministic goal
-supports the listed logs, cobblestone, cobbled deepslate, coal, raw iron and torches, with target counts
-from 1 to 64. The target is the **total currently in inventory**, not an additional quantity.
+supports the listed logs, cobblestone, cobbled deepslate, coal, raw iron, torches, wooden/stone
+pickaxes, stone swords and furnaces. Counts are 1–64 for gathering and torches and 1–8 for the
+early-game crafting goals. The target is the **total currently in inventory**, not an additional quantity.
 It mines one block or approaches a nearby matching drop per turn and only marks completion
 when a later inventory snapshot confirms the count. For coal and raw iron it can try the deepslate
 ore variant after a failed or unproductive attempt; each variant is searched by the Mineflayer
 bridge, not predicted from a full map. Targeted collection ignores drops whose item type is unknown.
+Stone, coal and iron gathering check for a suitable pickaxe; if one is missing the bot may craft it
+and place a crafting table only when AI inventory and building permissions allow it.
 It pauses for unsafe observations or disabled AI movement/mining permissions and gives up after
 bounded repeated failures or no progress. Torch goals use a small fixed dependency plan: gather logs,
 craft planks and sticks, obtain coal or use existing charcoal, then craft torches in the inventory.
-They require inventory, movement and mining permissions, and pause if coal must be mined without a
-pickaxe. Each step is reassessed against inventory; the torch plan never places or travels to a crafting
-table. AI crafting also avoids stations if AI building or movement is disabled. It does not craft tools,
-infer arbitrary recipes, or guarantee safe navigation or item drops. The regular survival autopilot remains independent and may interrupt or act while a
+They require inventory, movement and mining permissions. If mining requires a missing pickaxe, the
+goal can prepare one only with AI inventory and building permissions; that preparation may place a
+crafting table. Otherwise it pauses. The torch's own stick, plank and torch crafting steps use only
+the inventory grid. Each step is reassessed against inventory. Early-game goals can make a wooden pickaxe,
+gather cobblestone, and craft a stone pickaxe,
+stone sword or furnace. These goals require inventory, mining, movement **and building** permissions:
+they may create and place a crafting table. They reserve planks for a table if no table is in inventory,
+even when a table might already be nearby. After each action they replan from inventory; actions and
+station placement are not guaranteed. They pause for observed lava, dangerous/unknown potions and
+approximately incoming projectiles, as well as other safety conditions; periodic observations and
+physics estimates can miss danger. AI crafting avoids stations if AI building or movement is disabled.
+This is a small fixed recipe set, not a general tech-tree planner, and it does not guarantee safe
+navigation or item drops. The regular survival autopilot remains independent and may interrupt or act while a
 goal is paused. Goals are in-memory, tied to the bot/server, and stopping AI cancels them.
 Cancel requests cannot undo actions already sent to the server. This has not been verified in
 live Minecraft gameplay.

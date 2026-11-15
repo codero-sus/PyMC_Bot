@@ -308,6 +308,7 @@ function buildState() {
     sky_light: feet && typeof feet.skyLight === 'number' ? feet.skyLight : null,
     oxygen: typeof bot.oxygenLevel === 'number' ? bot.oxygenLevel : 20,
     in_water: Boolean(bot.entity.isInWater),
+    in_lava: Boolean(bot.entity.isInLava || (feet && feet.name === 'lava')),
     on_fire: typeof meta === 'number' && (meta & 0x01) === 0x01,
     raining: Boolean(bot.isRaining),
     dead: typeof bot.health === 'number' && bot.health <= 0,
@@ -866,6 +867,63 @@ function registry() {
 
 function need() {
   if (!bot || !bot.entity) throw new Error('not connected');
+}
+
+/** Read-only, paginated view of the registry available to this Mineflayer client. */
+function cmdRegistryLookup(params) {
+  need();
+  const kind = String(params.kind || 'item');
+  if (!['item', 'block'].includes(kind)) throw new Error('kind must be item or block');
+  const query = String(params.query || '').trim().toLowerCase();
+  if (query.length > 64 || !/^[a-z0-9_:./-]*$/.test(query)) throw new Error('invalid registry query');
+  const offset = Number(params.offset || 0);
+  const limit = Number(params.limit || 50);
+  if (!Number.isInteger(offset) || offset < 0 || offset > 50000 ||
+      !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('invalid registry page');
+  const data = registry();
+  const table = kind === 'item' ? data.itemsByName : data.blocksByName;
+  if (!table || typeof table !== 'object') throw new Error(`${kind} registry unavailable`);
+  const entries = Object.entries(table).filter(([key, value]) => value && typeof value === 'object' &&
+    typeof value.name === 'string' && (key.toLowerCase().includes(query) || value.name.toLowerCase().includes(query)));
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  const page = entries.slice(offset, offset + limit).map(([key, value]) => ({
+    key: key.slice(0, 128), name: value.name.slice(0, 128),
+    display_name: String(value.displayName || '').slice(0, 128),
+    id: Number.isSafeInteger(value.id) ? value.id : null,
+    stack_size: Number.isSafeInteger(value.stackSize) ? value.stackSize : null,
+  }));
+  return {kind, query, offset, limit, total: entries.length, entries: page,
+    source: 'mineflayer_registry', version: String(bot.version || ''),
+    note: 'Client registry only; server modded registries and recipes may be incomplete.'};
+}
+
+function cmdRecipeLookup(params) {
+  need();
+  const item = String(params.item || '').trim().toLowerCase().replace(/^minecraft:/, '');
+  const limit = Number(params.limit || 20);
+  if (!item || item.length > 64 || !/^[a-z0-9_:./-]+$/.test(item)) throw new Error('invalid item name');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('invalid recipe limit');
+  const data = registry();
+  const info = data.itemsByName && data.itemsByName[item];
+  if (!info || !Number.isSafeInteger(info.id)) throw new Error(`item ${item} not found in client registry`);
+  if (typeof bot.recipesAll !== 'function') throw new Error('recipe lookup unavailable');
+  const recipes = bot.recipesAll(info.id, null, true);
+  if (!Array.isArray(recipes)) throw new Error('recipe lookup unavailable');
+  const ingredient = (entry) => {
+    if (!entry || !Number.isSafeInteger(entry.id) || entry.id < 0) return null;
+    const found = data.items && data.items[entry.id];
+    return {id: entry.id, name: found && typeof found.name === 'string' ? found.name.slice(0, 128) : null,
+      metadata: Number.isSafeInteger(entry.metadata) ? entry.metadata : null,
+      count: Number.isSafeInteger(entry.count) ? Math.abs(entry.count) : null};
+  };
+  const results = recipes.slice(0, limit).map((recipe) => ({
+    result: ingredient(recipe.result), requires_table: Boolean(recipe.requiresTable),
+    shape: Array.isArray(recipe.inShape) ? recipe.inShape.slice(0, 3).map(row =>
+      Array.isArray(row) ? row.slice(0, 3).map(ingredient) : []) : null,
+    ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients.slice(0, 16).map(ingredient) : null,
+  }));
+  return {item, total: recipes.length, recipes: results, source: 'mineflayer_registry', version: String(bot.version || ''),
+    note: 'Client registry recipes may be incomplete or differ from this server; ingredients are not inventory-checked.'};
 }
 
 function cleanName(value) {
@@ -2370,6 +2428,8 @@ const COMMANDS = {
   collect: cmdCollect,
   attack_mob: cmdAttackMob,
   snapshot: cmdSnapshot,
+  registry_lookup: cmdRegistryLookup,
+  recipe_lookup: cmdRecipeLookup,
   // skills (pymc_bot/skills.py)
   drink: cmdDrink,
   surface: cmdSurface,

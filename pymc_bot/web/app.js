@@ -1236,6 +1236,25 @@ function wire() {
     } catch (error) { reportError(error); }
   });
   $('btn-goal-cancel').addEventListener('click', () => api('/api/ai/goal', { method: 'DELETE' }).catch(reportError));
+  $('btn-registry-search').addEventListener('click', async () => {
+    try {
+      const params = new URLSearchParams({kind: $('registry-kind').value, query: $('registry-query').value.trim(), limit: '50'});
+      const data = await api(`/api/bot/registry?${params}`);
+      $('registry-result').textContent = `${data.total} matches (${data.version || 'unknown version'}; showing first ${data.entries.length})\n` +
+        data.entries.map(entry => `${entry.key} — ${entry.display_name || entry.name} (id ${entry.id ?? '?'})`).join('\n') +
+        '\nClient registry may not contain all server mods or recipes.';
+    } catch (error) { reportError(error); }
+  });
+  $('btn-recipe-search').addEventListener('click', async () => {
+    try {
+      const item = $('registry-query').value.trim();
+      if (!item) throw new Error('Enter an exact item name first.');
+      const params = new URLSearchParams({item, limit: '20'});
+      const data = await api(`/api/bot/recipes?${params}`);
+      $('registry-result').textContent = `${data.total} client recipes for ${data.item} (showing ${data.recipes.length}).\n` +
+        JSON.stringify(data.recipes, null, 2) + '\nRecipes may be incomplete; inventory is not checked.';
+    } catch (error) { reportError(error); }
+  });
   $('btn-ai-step').addEventListener('click', () => api('/api/ai/step', { method: 'POST' }).catch(reportError));
   $('btn-refresh-models').addEventListener('click', () => refreshModels());
   $('btn-train-start').addEventListener('click', () => startTraining());

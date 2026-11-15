@@ -48,6 +48,7 @@ jobs:
           node tests/fixtures/gather_bridge_harness.js pymc_bot/node/minecraft_bridge.js
           node tests/fixtures/craft_goal_bridge_harness.js pymc_bot/node/minecraft_bridge.js
           node tests/fixtures/container_memory_bridge_harness.js pymc_bot/node/minecraft_bridge.js
+          node tests/fixtures/registry_bridge_harness.js pymc_bot/node/minecraft_bridge.js
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
