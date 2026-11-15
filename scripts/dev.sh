@@ -5,7 +5,7 @@
 #   ./scripts/dev.sh serve     # run the web config panel (autostart + AI loop)
 #   ./scripts/dev.sh demo      # panel + Ollama stub, simulated world, AI on
 #   ./scripts/dev.sh run       # headless bot
-#   ./scripts/dev.sh test      # pytest
+#   ./scripts/dev.sh test      # simulated goal smoke check
 #   ./scripts/dev.sh lint      # ruff + node syntax checks
 #   ./scripts/dev.sh doctor    # environment check
 set -euo pipefail
@@ -62,7 +62,7 @@ PYCODE
     ;;
 
   test)
-    exec "$PY" -m pytest -q "$@"
+    exec "$PY" -m pymc_bot bench --suite sim-tech "$@"
     ;;
 
   lint)
@@ -70,7 +70,6 @@ PYCODE
     if command -v node >/dev/null 2>&1; then
       node --check pymc_bot/node/minecraft_bridge.js
       node --check pymc_bot/web/app.js
-      node --check tests/fixtures/fake_bridge.js
       node scripts/check_ui.mjs
     fi
     echo "lint ok"

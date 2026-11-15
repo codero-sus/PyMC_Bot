@@ -12,8 +12,6 @@ Writes to ``--out``:
 * ``pymc-minecraft-llm-kit.zip`` - the ready-made training data + Kaggle script (upload it to Kaggle)
 * ``train_minecraft_llm.py`` - the trainer on its own
 
-The Kaggle notebook is **not** part of the release: the kit's README and the release notes link it pinned
-to the release's commit, and Kaggle imports it from there (File > Import Notebook).
 * ``pymc-bot-node-modules.zip`` - mineflayer prebuilt (``python -m pymc_bot setup --method bundle``, no npm)
 
 ``SHA256SUMS.txt`` is written by :func:`checksums` over the final folder (jars included).
@@ -31,7 +29,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_notes import notebook_url  # noqa: E402
 
 UPDATER_FILES = ("updater.py", "updater.sh", "updater.cmd")
 KIT_README = """PyMC Bot - Minecraft LLM kit
@@ -41,15 +38,9 @@ Ready-made training data for Minecraftism, your own Minecraft model (the bot's b
 expert) in four editions: minecraftism, minecraftism-thinking, minecraftism-vl, minecraftism-vl-thinking.
 
 1. kaggle.com > Datasets > New Dataset > upload everything in the llm_data folder.
-2. Code > New Notebook > File > Import Notebook > paste this link (the notebook of this release):
-   {notebook_url}
-   Add Input = your dataset, Settings > Accelerator = GPU T4 x2, Internet on.
-   Optional: Add-ons > Secrets > HF_TOKEN (a Hugging Face write token) to publish the model.
-   Edit the settings cell (EDITIONS, UNCENSORED, SYSTEM_PROMPT, RUN_TESTS...), Run All.
-   First time: QUICK_TEST = True checks everything in ~15 minutes.
-3. python -m pymc_bot llm import --hf <your-hf-name>/Minecraftism-4B-Uncensored-GGUF
-   (UNCENSORED = False: .../Minecraftism-4B-GGUF)
-   or download /kaggle/working/minecraftism and run:  python -m pymc_bot llm import minecraftism
+2. The trainer is included as train_minecraft_llm.py. Run it with --help to see its options.
+   Training needs suitable hardware and dependencies; no notebook is included.
+3. Import a compatible model with python -m pymc_bot llm import --hf <repo>.
 The VL editions need pictures: record with /pymcbot screenshots on (mod 0.10+), then
 python -m pymc_bot llm build --playtime <folder> --screenshots
 
@@ -108,7 +99,7 @@ def llm_kit(out: Path, work: Path, wiki_pages: int, turns: int) -> list[Path]:
         for path in sorted(data.iterdir()):
             if path.is_file():
                 archive.write(path, f"llm_data/{path.name}")
-        archive.writestr("README.txt", KIT_README.replace("{notebook_url}", notebook_url()))
+        archive.writestr("README.txt", KIT_README)
     shutil.copyfile(data / "train_minecraft_llm.py", out / "train_minecraft_llm.py")
     return [kit, out / "train_minecraft_llm.py"]
 

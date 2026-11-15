@@ -18,9 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -53,27 +50,6 @@ def wheel_version() -> str:
     return "0.0.0"
 
 
-NOTEBOOK_PATH = "pynb/PyMC_Minecraft_LLM_Kaggle.ipynb"
-
-
-def commit_sha() -> str:
-    """The full commit this release is built from (CI: GITHUB_SHA), or "" when unknown."""
-    sha = os.environ.get("GITHUB_SHA", "").strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", sha):
-        try:
-            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
-                                 check=True).stdout.strip()
-        except (OSError, subprocess.CalledProcessError):
-            sha = ""
-    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else ""
-
-
-def notebook_url(sha: str | None = None) -> str:
-    """The Kaggle notebook pinned to a commit (never a branch). The notebook is not a release asset any more:
-    Kaggle imports it straight from this link (File > Import Notebook)."""
-    sha = commit_sha() if sha is None else sha
-    return f"{REPO}/raw/{sha}/{NOTEBOOK_PATH}" if sha else f"{REPO}/blob/main/pynb/README.md"
-
 
 def downloads(version: str) -> list[str]:
     """Every file on the release besides the per-version jars (built by scripts/release_kit.py)."""
@@ -93,20 +69,8 @@ def downloads(version: str) -> list[str]:
         f"| `pymcbot-{version}-all-versions.zip` | all mod jars in one zip |",
         "| `pymc-minecraft-llm-kit.zip` | **Your own Minecraft LLM**: ready-made training data (mob database, "
         "game situations, Minecraft Wiki pages) - upload `llm_data` to Kaggle |",
-        "| `train_minecraft_llm.py` | **Train Minecraftism** on Kaggle "
-        "(GPU T4 x2): the trainer the notebook runs. The notebook is not attached - import it on Kaggle "
-        f"(File → Import Notebook → paste) from `{notebook_url()}` (this release's commit). Pick what to train with "
-        "`editions_to_be_trained = {txt, txt_think, vl, vl_think}` - only those are trained. **Both T4s train** every edition together "
-        "(`GPU_MODE = \"parallel\"`: one edition per T4, both T4s merged on a single edition via HF Accelerate DDP, fp16; "
-        "`\"merge\"` = both T4s on every edition). `DISTILL` runs Qwen3's "
-        "strong-to-weak distillation: Qwen3-14B writes answers (on vLLM across both T4s, kept on Hugging Face for the next session), then Qwen3-8B teaches the 4B token by token (on-policy reverse KL). `MAX_HOURS` stops training in time for the export and upload "
-        "before Kaggle's 12 h limit, `FAST` sizes batches by tokens, streams shared data once and makes the GGUFs on the "
-        "CPU (uploading meanwhile) while the T4 trains the next edition, and `AUTO_EXIT` ends the session when everything is on Hugging Face. Results, logs and the shared data cache stay in `/kaggle/working`; downloads, GGUF work files and other throwaway files go to `/kaggle/tmp`. Every edition is uploaded to Hugging Face **twice**: "
-        "**safetensors** first (`<you>/Minecraftism-4B-Uncensored`, the compact 16-bit merged model for "
-        "transformers / vLLM / fine-tuning; `SAFETENSORS = True`), then **GGUF** quants made from it "
-        "(`<you>/Minecraftism-4B-Uncensored-GGUF`: every quant from F16 and BF16 down to IQ1_S, made with an "
-        "importance matrix, each uploaded as soon as it is ready; `GGUF_QUANTS`), both with `tokenizer.json` and the configs. Afterwards `python -m pymc_bot llm import --hf <you>/Minecraftism-4B-Uncensored-GGUF` "
-        "(guide: `docs/MINECRAFT_LLM.md` in the source zip) |",
+        "| `train_minecraft_llm.py` | Minecraft model trainer; use `--help` for options. "
+        "Training notebooks are not included. |",
         "| `pymc-bot-node-modules.zip` | **mineflayer, prebuilt** for players who can't (or don't want to) use npm: "
         "`python -m pymc_bot setup` fetches it by itself when needed, or offline: "
         "`python -m pymc_bot setup --zip pymc-bot-node-modules.zip` |",
@@ -120,7 +84,7 @@ def notes(mod_dir: Path = MOD) -> str:
     table = json.loads((mod_dir / "versions.json").read_text(encoding="utf-8"))
     rows = []
     for entry in reversed(table["versions"]):
-        tested = "launched in CI" if entry.get("gametest") else "compiled in CI"
+        tested = "compiled in CI"
         rows.append(
             f"| {entry['minecraft']} | `{jar_name(version, entry['minecraft'])}` "
             f"| {entry['fabric_api']} or newer | {entry['java']} | {tested} |"

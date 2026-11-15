@@ -2,8 +2,8 @@
 
 The distribution name is `pymc-bot` (import name `pymc_bot`); the version comes from
 `pyproject.toml`. PyPI versions cannot be overwritten or reused, including after deletion.
-This workflow does not publish automatically on pushes or releases. A successful build or a
-GitHub push is not proof of a PyPI upload.
+The workflow publishes on a push containing `[pypi]`, or when explicitly requested by manual dispatch.
+A successful build or a GitHub push is not proof of a PyPI upload.
 
 ## One-time setup
 

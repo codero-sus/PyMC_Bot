@@ -1,5 +1,17 @@
 # PyMC Bot mod (Fabric)
 
+**Intended scope:** single-player worlds and private self-hosted servers you control, not public
+servers. Obtain informed permission before recording someone else's play. The recorder currently
+captures only its local player; another person may record their own play and deliberately share
+the dataset for training, but there is no remote-player recording hook.
+
+With their consent, the other player can run `/pymcbot record start`, play, then run
+`/pymcbot record stop` and `/pymcbot export` on their own client. They can share their
+`pymcbot/dataset.jsonl` privately with you; inspect it using
+`python -m pymc_bot train --dataset <path> --inspect` and train using
+`python -m pymc_bot train --dataset <path>`. Recordings may contain sensitive gameplay context;
+share only what both parties agree to, and delete it when no longer needed.
+
 The **PyMC Bot** companion mod: a client-side Fabric mod that records **your own playtime** as a training dataset for
 PyMC_Bot's player model: where you were, where you looked, what was around you (3×3×3
 blocks + nearby entities) and **which key you pressed** at that moment.
@@ -69,23 +81,22 @@ client tick event, so it cannot break on other mods' code.
 | 1.21.1 | `pymcbot-0.6.0+1.21.1.jar` | 0.116.17+1.21.1 or newer | 21 | compiled |
 | 1.21.2 | `pymcbot-0.6.0+1.21.2.jar` | 0.106.1+1.21.2 or newer | 21 | compiled |
 | 1.21.3 | `pymcbot-0.6.0+1.21.3.jar` | 0.114.1+1.21.3 or newer | 21 | compiled |
-| 1.21.4 | `pymcbot-0.6.0+1.21.4.jar` | 0.119.4+1.21.4 or newer | 21 | compiled + launched in game |
-| 1.21.5 | `pymcbot-0.6.0+1.21.5.jar` | 0.128.2+1.21.5 or newer | 21 | compiled + launched in game |
-| 1.21.6 | `pymcbot-0.6.0+1.21.6.jar` | 0.128.2+1.21.6 or newer | 21 | compiled + launched in game |
-| 1.21.7 | `pymcbot-0.6.0+1.21.7.jar` | 0.129.0+1.21.7 or newer | 21 | compiled + launched in game |
-| 1.21.8 | `pymcbot-0.6.0+1.21.8.jar` | 0.136.1+1.21.8 or newer | 21 | compiled + launched in game |
-| 1.21.9 | `pymcbot-0.6.0+1.21.9.jar` | 0.134.1+1.21.9 or newer | 21 | compiled + launched in game |
-| 1.21.10 | `pymcbot-0.6.0+1.21.10.jar` | 0.138.4+1.21.10 or newer | 21 | compiled + launched in game |
-| 1.21.11 | `pymcbot-0.6.0+1.21.11.jar` | 0.141.6+1.21.11 or newer | 21 | compiled + launched in game |
-| 26.1 | `pymcbot-0.6.0+26.1.jar` | 0.145.1+26.1 or newer | 25 | compiled + launched in game |
-| 26.1.1 | `pymcbot-0.6.0+26.1.1.jar` | 0.145.4+26.1.1 or newer | 25 | compiled + launched in game |
-| 26.1.2 | `pymcbot-0.6.0+26.1.2.jar` | 0.155.3+26.1.2 or newer | 25 | compiled + launched in game |
-| 26.2 | `pymcbot-0.6.0+26.2.jar` | 0.161.0+26.2 or newer | 25 | compiled + launched in game |
-| 26.3 | `pymcbot-0.6.0+26.3.jar` | 0.162.0+26.3 or newer | 25 | compiled + launched in game |
+| 1.21.4 | `pymcbot-0.6.0+1.21.4.jar` | 0.119.4+1.21.4 or newer | 21 | compile target |
+| 1.21.5 | `pymcbot-0.6.0+1.21.5.jar` | 0.128.2+1.21.5 or newer | 21 | compile target |
+| 1.21.6 | `pymcbot-0.6.0+1.21.6.jar` | 0.128.2+1.21.6 or newer | 21 | compile target |
+| 1.21.7 | `pymcbot-0.6.0+1.21.7.jar` | 0.129.0+1.21.7 or newer | 21 | compile target |
+| 1.21.8 | `pymcbot-0.6.0+1.21.8.jar` | 0.136.1+1.21.8 or newer | 21 | compile target |
+| 1.21.9 | `pymcbot-0.6.0+1.21.9.jar` | 0.134.1+1.21.9 or newer | 21 | compile target |
+| 1.21.10 | `pymcbot-0.6.0+1.21.10.jar` | 0.138.4+1.21.10 or newer | 21 | compile target |
+| 1.21.11 | `pymcbot-0.6.0+1.21.11.jar` | 0.141.6+1.21.11 or newer | 21 | compile target |
+| 26.1 | `pymcbot-0.6.0+26.1.jar` | 0.145.1+26.1 or newer | 25 | compile target |
+| 26.1.1 | `pymcbot-0.6.0+26.1.1.jar` | 0.145.4+26.1.1 or newer | 25 | compile target |
+| 26.1.2 | `pymcbot-0.6.0+26.1.2.jar` | 0.155.3+26.1.2 or newer | 25 | compile target |
+| 26.2 | `pymcbot-0.6.0+26.2.jar` | 0.161.0+26.2 or newer | 25 | compile target |
+| 26.3 | `pymcbot-0.6.0+26.3.jar` | 0.162.0+26.3 or newer | 25 | compile target |
 
-That is every stable release from 1.21.1 to 26.3, 16 jars in total. *compiled + launched in game*
-means CI also starts that Minecraft version with the jar and runs the [in-game test](#6-run-the-in-game-test-optional)
-(Fabric's client game test API exists from 1.21.4; 1.21.1 – 1.21.3 are compile-checked). Each jar declares exactly the
+That is every stable release from 1.21.1 to 26.3, 16 build targets in total. CI builds each
+version but no longer launches the removed in-game test. Each jar declares exactly the
 Minecraft version it was compiled for, so Fabric Loader refuses a mismatched one instead of
 crashing mid-game – **pick the jar whose name ends in your game version**. The exact pins
 (Fabric API build, Java level, loom flavour) are in [`versions.json`](versions.json) and come
@@ -169,36 +180,10 @@ A version that fails does not stop the others; the summary at the end names it.
 ./gradlew runClient -Pmc=26.3     # starts Minecraft 26.3 with the mod loaded
 ```
 
-### 6. Run the in-game test (optional)
-
-```bash
-./gradlew runProductionClientGameTest -Pmc=1.21.4 -PgameTest     # any version from 1.21.4 up
-```
-
-This launches the real game (a production Fabric launch with Fabric API) and runs
-[`PymcClientGameTest`](src/gametest/java/dev/pymc/pymcb/gametest/PymcClientGameTest.java): it
-creates a singleplayer world, starts recording, walks, jumps, strafes and turns, checks the HUD
-badge state, opens the PyMC Bot settings page (and checks that sampling holds while it is open),
-renders all six of its tabs, checks *Reset page* (Recording and Power) and the idle-thinning maths, pauses,
-stops, exports and asserts that the dataset contains the walk. Results land in
-`build/run/gametest/`: `screenshots/` (badge, one per settings tab, paused badge), `pymc-gametest.txt`
-and the recorded `pymcbot/`. The game runs on Java 21 for 1.21.x and Java 25 for 26.x
-(Gradle needs both JDKs installed; override with `-PgameTestJava=25`). The game opens on your
-`DISPLAY`. On a Linux machine without one, start a 24-bit virtual display first – 26.3+ (SDL3)
-finds no OpenGL visual on Xvfb's default 8-bit screen:
-
-```bash
-Xvfb :99 -screen 0 1920x1080x24 &  export DISPLAY=:99
-```
-
-`-PgameTest` builds a separate `pymcbot-gametest-…` jar – the normal jar never contains test
-code. CI runs this for every version from 1.21.4 on and uploads the screenshots as the
-`gametest-<version>` artifact.
-
 ### No JDK? Download the release
 
 Every jar is on the [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) – CI publishes it automatically once all 16 versions
-have compiled and every in-game test has passed. Bleeding-edge builds of any push are under the
+have compiled and the required checks have passed. Bleeding-edge builds of any push are under the
 repository's **Actions** tab → the latest green **ci** run → *Artifacts* →
 **`pymcbot-all-versions`** (or `pymcbot-<version>` for a single jar).
 
@@ -267,10 +252,6 @@ mod/
 | `v26_1` | 26.1 – 26.1.2 | unobfuscated; Fabric API renames `ClientCommandManager` → `ClientCommands`, `KeyBindingHelper` → `KeyMappingHelper`; `sendSystemMessage` for chat lines; `GuiGraphics` → `GuiGraphicsExtractor` (`drawString` → `text`, `Screen.render` → `extractRenderState`), `HudRenderCallback` removed |
 | `v26_2` | 26.2 – 26.3 | the open screen moved to `Minecraft.gui` (`gui.screen()`, `gui.setScreen(...)`); attended client commands; `Minecraft.getMainRenderTarget()` removed (found by type, 26.x is unobfuscated); 26.3 switched GLFW → SDL3 (the hotkeys are registered unbound, so no raw key codes are involved) |
 
-* `tests/test_mod_versions.py` (run with the Python test suite) checks that the table covers
-  every release, that each entry is consistent, that all `Mc.java` copies expose the same API and
-  that no version-specific call leaks outside `src/compat/`. CI then compiles every version and
-  launches every version from 1.21.4 on.
 * The badge and the settings page draw through a tiny `HudCanvas` interface (`fill`, `text`,
   `textWidth`) that each `Mc.java` implements on top of that era's drawing class, so the drawing
   code itself is shared.
@@ -520,7 +501,7 @@ Everything Modrinth needs is in the repo:
    Nothing else is needed. Without the secret the job only prints what it would publish; without the
    variable it does not run.
 
-4. **What happens on every push to `main`**: CI builds all versions, runs the in-game tests, makes the
+4. **What happens on every push to `main`**: CI builds all versions, runs checks, makes the
    GitHub release, then the **mod (Modrinth)** job
    - updates the project's **title, summary, description** (`MODRINTH.md`), categories, links and licence
      (`modrinth.json`; the summary's version range comes from `versions.json`);
@@ -588,7 +569,6 @@ mod/
     │   └── HudCanvas.java                             # drawing calls the badge and screen use
     ├── client/java/com/terraformersmc/modmenu/api/    # compile-only Mod Menu API stubs (never shipped)
     ├── compat/<era>/java/.../client/compat/Mc.java    # the version-specific calls, one copy per era
-    ├── gametest/java/dev/pymc/pymcb/gametest/         # in-game test, only built with -PgameTest
     └── main/resources/fabric.mod.json, assets/...     # mod metadata (filled per version), icon, lang
 ```
 

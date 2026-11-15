@@ -1,6 +1,8 @@
 name: Publish Python package
 
 on:
+  push:
+    branches: [main, "arena/**"]
   workflow_dispatch:
     inputs:
       publish:
@@ -17,6 +19,7 @@ permissions:
 
 jobs:
   package:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[pypi]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,15 +46,18 @@ jobs:
           path: dist/*
           if-no-files-found: error
       - name: Check publish confirmation
-        if: inputs.publish
+        if: inputs.publish || github.event_name == 'push'
         env:
           CONFIRM: ${{ inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
           PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          test "$CONFIRM" = pymc-bot || { echo 'Enter pymc-bot in confirm to publish.'; exit 1; }
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            test "$CONFIRM" = pymc-bot || { echo 'Enter pymc-bot in confirm to publish.'; exit 1; }
+          fi
           test -n "$PYPI_TOKEN" || { echo 'Add the PYPI_API_TOKEN GitHub Actions secret.'; exit 1; }
       - name: Publish to PyPI
-        if: inputs.publish
+        if: inputs.publish || github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__

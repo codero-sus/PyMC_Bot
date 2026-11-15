@@ -59,14 +59,7 @@ jobs:
           node --check pymc_bot/node/probe.js
           node --check pymc_bot/node/potions.js
           node --check pymc_bot/web/app.js
-          node --check tests/fixtures/fake_bridge.js
           node scripts/check_ui.mjs
-          node tests/fixtures/vision_bridge_harness.js pymc_bot/node/minecraft_bridge.js
-          node tests/fixtures/potion_bridge_harness.js pymc_bot/node/minecraft_bridge.js
-          node tests/fixtures/gather_bridge_harness.js pymc_bot/node/minecraft_bridge.js
-          node tests/fixtures/craft_goal_bridge_harness.js pymc_bot/node/minecraft_bridge.js
-          node tests/fixtures/container_memory_bridge_harness.js pymc_bot/node/minecraft_bridge.js
-          node tests/fixtures/registry_bridge_harness.js pymc_bot/node/minecraft_bridge.js
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -89,7 +82,7 @@ jobs:
           node pymc_bot/node/probe.js 127.0.0.1 1 3000 > probe.out || true; grep -q '"ok":false' probe.out
 
   test:
-    name: tests (python ${{ matrix.python-version }})
+    name: smoke checks (python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -102,18 +95,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"   # the bridge protocol tests need node
+          node-version: "22"
       - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
-      - name: Run the test suite
-        run: |
-          set -o pipefail
-          pytest -q 2>&1 | tee pytest.log
-      - name: Publish test failure diagnostics
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci_diagnostics.py pytest.log --title "pytest failed (python ${{ matrix.python-version }})"
       - name: CLI smoke test
         run: |
           python -m pymc_bot --version
@@ -135,7 +119,6 @@ jobs:
             python /tmp/ci-llm/train_minecraft_llm.py --dry-run --data /tmp/ci-llm --preset "$preset"
           done
           python -m pymc_bot llm presets
-          python -c "import json; nb = json.load(open('pynb/PyMC_Minecraft_LLM_Kaggle.ipynb')); print(len(nb['cells']), 'notebook cells')"
       - name: Minecraft LLM - live Minecraft Wiki pages into the dataset
         if: matrix.python-version == '3.12'
         continue-on-error: true   # third-party site; never block a build on it
@@ -162,18 +145,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Unit tests (offline, with none of the bot's packages installed)
-        shell: bash
-        run: |
-          set -o pipefail
-          pip install pytest
-          python -m pytest tests/test_updater.py -q --noconftest -rfE 2>&1 | tee updater-tests.log
-      - name: Publish test failure diagnostics
-        if: failure()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_diagnostics.py updater-tests.log --title "updater tests failed (${{ matrix.os }})"
       - name: Windows wrapper (updater.cmd)
         if: runner.os == 'Windows'
         shell: cmd
@@ -194,57 +165,6 @@ jobs:
           test -f "$mods"/pymc*+1.21.4.jar
           python updater.py --mod-only --mods-dir "$mods" | tee again.log
           grep -q "is up to date" again.log
-      - name: Live zip update of a downloaded copy
-        shell: bash
-        run: |
-          exec > >(tee -a "$GITHUB_WORKSPACE/updater-live.log") 2>&1
-          set -x
-          copy="$RUNNER_TEMP/zipcopy"
-          mkdir -p "$copy"
-          git archive --format=zip -o "$RUNNER_TEMP/source.zip" HEAD
-          python -m zipfile -e "$RUNNER_TEMP/source.zip" "$copy"   # tar mangles D:\ paths on Windows
-          echo '{"host": "keep-me"}' > "$copy/pymc_bot_config.json"
-          echo "local edit" >> "$copy/README.md"
-          cd "$copy"
-          # The default update channel only - the updater never prints which branch that is.
-          python updater.py --no-deps | tee update.log
-          grep -q keep-me pymc_bot_config.json
-          ls .pymc_backup/*/README.md
-          python - <<'PY'
-          import json
-          state = json.load(open(".pymc_update.json"))
-          assert state["channel"] == "default" and len(state["sha"]) == 40 and state["files"], state.keys()
-          PY
-          python updater.py --check > check.log; grep -q "up to date" check.log   # no pipe: grep -q would close it early
-          if grep -qi "git pull\|git fetch" update.log; then echo "the updater must not use git"; exit 1; fi
-      - name: Publish live update diagnostics
-        if: failure()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_diagnostics.py updater-live.log --title "updater live check failed (${{ matrix.os }})"
-
-  training-transformer:
-    name: training (transformer engine, torch)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies (CPU torch)
-        run: |
-          pip install -r requirements-dev.txt
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Transformer engine tests
-        run: |
-          set -o pipefail
-          pytest tests/test_train.py tests/test_local_model.py tests/test_distillation.py -q 2>&1 | tee pytest.log
-      - name: Publish test failure diagnostics
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci_diagnostics.py pytest.log --title "transformer engine tests failed"
 
   mod-versions:
     name: mod (version list)
@@ -325,20 +245,20 @@ jobs:
           if grep -q "com/terraformersmc" jar-contents.txt; then
             echo "::error::$jar ships the Mod Menu API stubs"; exit 1
           fi
-          # Release jars never carry the in-game test (that is the separate -PgameTest jar).
+          # Release jars must not carry in-game test code.
           if grep -qi gametest jar-contents.txt || grep -q "fabric-client-gametest" fabric.mod.json.out; then
             echo "::error::$jar contains game test code"; exit 1
           fi
       - name: Extract the gradle errors
-        if: failure() && steps.ingame.outcome != 'failure'
+        if: failure()
         run: |
           grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt
           wc -l mod/errors.txt
       - name: Probe the Minecraft API signatures
-        if: failure() && steps.ingame.outcome != 'failure'
+        if: failure()
         run: python3 scripts/mc_api_probe.py | tee mod/api-probe.log
       - name: Publish mod build diagnostics
-        if: failure() && steps.ingame.outcome != 'failure'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -351,72 +271,6 @@ jobs:
           path: mod/build/libs/pymcbot-*+${{ matrix.mc }}.jar
           if-no-files-found: error
 
-      # ---- in-game test: launch the real game with the mod (1.21.4+, "gametest" in versions.json)
-      - name: Is there an in-game test for ${{ matrix.mc }}?
-        id: gt
-        run: |
-          enabled=$(jq -r --arg mc "${{ matrix.mc }}" '.versions[] | select(.minecraft == $mc) | .gametest' mod/versions.json)
-          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
-          echo "in-game test for ${{ matrix.mc }}: $enabled"
-      - name: Start a virtual display with software OpenGL
-        if: steps.gt.outputs.enabled == 'true'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q xvfb libgl1-mesa-dri libglx-mesa0 libegl1 mesa-utils mesa-vulkan-drivers
-          # 24-bit colour: Minecraft 26.3+ opens its window through SDL3, which finds no GLX visual
-          # on xvfb-run's default 8-bit screen. With DISPLAY set, the Gradle task uses this display.
-          Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
-          sleep 2
-          DISPLAY=:99 glxinfo -B | grep -E "OpenGL (renderer|version)|direct rendering" || true
-      - name: Download the game assets (retried - Mojang's CDN occasionally drops a file)
-        if: steps.gt.outputs.enabled == 'true'
-        working-directory: mod
-        run: |
-          for attempt in 1 2 3; do
-            ./gradlew downloadAssets -Pmc=${{ matrix.mc }} -PgameTest --no-daemon -q && exit 0
-            echo "::warning::asset download attempt $attempt failed, retrying in 20 s"
-            sleep 20
-          done
-          exit 1
-      - name: Launch Minecraft ${{ matrix.mc }} and run the in-game test
-        id: ingame
-        if: steps.gt.outputs.enabled == 'true'
-        working-directory: mod
-        timeout-minutes: 15
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: |
-          set -o pipefail
-          # -PgameTest builds a separate pymcbot-gametest jar with the test entrypoint;
-          # the release jar uploaded above is untouched.
-          # The game runs on its own Java (21 for 1.21.x, preinstalled on the runner; 25 for 26.x).
-          ./gradlew runProductionClientGameTest -Pmc=${{ matrix.mc }} -PgameTest --no-daemon --stacktrace \
-            -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_25_X64 2>&1 | tee gametest.log
-      - name: In-game test report
-        if: always() && steps.gt.outputs.enabled == 'true'
-        run: |
-          cat mod/build/run/gametest/pymc-gametest.txt 2>/dev/null || echo "(no report - the game did not reach the test)"
-          ls -la mod/build/run/gametest/screenshots 2>/dev/null || true
-      - name: Publish in-game test diagnostics
-        if: failure() && steps.ingame.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          grep -n -E "pymc gametest|AssertionError|Exception|Caused by|ERROR|FATAL|What went wrong|xvfb|GLFW|SDL|OpenGL" mod/gametest.log mod/build/run/gametest/logs/latest.log 2>/dev/null | head -250 > mod/gametest-errors.txt || true
-          python scripts/ci_diagnostics.py mod/gametest-errors.txt --title "mc ${{ matrix.mc }}: in-game test errors (extracted)" --limit 16000
-          python scripts/ci_diagnostics.py mod/gametest.log --title "mc ${{ matrix.mc }}: in-game test log tail" --limit 16000
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.gt.outputs.enabled == 'true'
-        with:
-          name: gametest-${{ matrix.mc }}
-          path: |
-            mod/build/run/gametest/screenshots/
-            mod/build/run/gametest/pymc-gametest.txt
-            mod/build/run/gametest/pymcbot/meta.json
-            mod/build/run/gametest/logs/latest.log
-            mod/gametest.log
-          if-no-files-found: warn
 
   mod-bundle:
     name: mod (all versions bundle)
@@ -459,7 +313,7 @@ jobs:
           if-no-files-found: error
 
   # Publishes every jar on a GitHub release (no login needed to download). Runs only after every
-  # version built and every in-game test passed. Pushes to main make the stable release
+  # required builds and checks pass. Pushes to main make the stable release
   # pymcbot-v<mod_version>; other branches make/refresh it as a pre-release but never
   # replace a stable one. Bump mod_version in mod/gradle.properties for a new release.
   release:

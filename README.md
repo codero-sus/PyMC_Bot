@@ -6,6 +6,11 @@
 
 > **Made with ❤️ by [codero-sus](https://github.com/codero-sus)** · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)
 
+**Intended scope:** single-player worlds and private self-hosted servers you control, not public servers.
+This is an intended-use scope, not a technical guarantee that public servers are blocked.
+For recordings of another person, obtain their informed permission before recording or training;
+the existing mod records the player running it, not a remote player's hidden inputs.
+
 A **Python-controlled Minecraft player bot** it joins a (cracked / offline-mode) server as a normal
 player, you configure and steer it from a **web control panel served by Uvicorn**, and it can hand the
 wheel to a **local LLM** – an Ollama model, or any model hosted by
@@ -83,7 +88,7 @@ release or source instructions below.
 
 **No git?** Every [GitHub release](https://github.com/codero-sus/PyMC_Bot/releases) has all the downloads:
 `PyMC_Bot-source.zip` (the bot), `updater.py` / `updater.cmd` / `updater.sh`, the mod jar for each Minecraft
-version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + trainer; the notebook is linked, pinned to the release commit) and
+version (plus an all-versions zip), a pip wheel, the Minecraft LLM kit (training data + trainer) and
 `SHA256SUMS.txt`. Unzip the source, then continue from `python -m venv` below.
 
 ```bash
@@ -596,7 +601,7 @@ python -m pymc_bot mob --list --since 1.21       # mobs added in 1.21 or later
 
 The API is `GET /api/mobs` (filters) and `GET /api/mobs/{name}`. Untick **answer mob questions from the mob
 database** (`search.use_mob_database`) to send every question to the web instead. You can also add modded mobs
-to the JSON file: `python -m pytest tests/test_mobs.py` checks the format.
+to the JSON file.
 They gate the AI only; the **Inventory & life** buttons and the clickable hotbar in the panel always work.
 
 ### Demo brain (no GPU, no download)
@@ -618,8 +623,8 @@ Train **Minecraftism**, a small model that is **the bot's brain and a Minecraft 
 the same JSON decisions, chats like a player and answers mob, crafting and mechanics questions without a web
 search. Data comes from the mob database, checked crafting facts, thousands of game situations, Minecraft Wiki
 pages, turns the bot recorded, your playtime and screenshots, and (optionally) a bigger teacher model you run.
-Outside the game it is an **everyday assistant** with its own system prompt (not "you are a bot"). The notebook trains it
-**uncensored** by default (abliterated base and refusal-free chat data; `UNCENSORED = False` turns it off).
+Outside the game it can be used as an **everyday assistant**. Training notebooks are not included
+in this branch; the dataset builder supplies a standalone trainer.
 By default it uses only **data whose licence allows commercial use** (`COMMERCIAL_ONLY = True`): OpenAssistant chat
 (Apache-2.0), NVIDIA Nemotron thinking traces (CC BY 4.0), exact Minecraft Q&A generated from minecraft-data (MIT)
 and, for the VL editions, minecraft-raytrace frames (MIT) with Q&A made from their raycast labels. The model card
@@ -635,18 +640,8 @@ even without your own screenshots. It can also run an **optional test suite**: b
 
 ```bash
 python -m pymc_bot llm build [--playtime <mod folder> --screenshots]   # llm_data/ (+ images/ for VL)
-#   upload llm_data to Kaggle, add the HF_TOKEN secret, run pynb/PyMC_Minecraft_LLM_Kaggle.ipynb (T4 x2)
-#   Discord: secret discord_webhook_inform_me1 = your webhook URL -> server online + URL, status, warnings before it closes
-#   secret ping_role = a Discord role ID -> pinged on startup, stages, uploads, errors, 5/3/2/1 h left, the end
-#   latest notebook (Kaggle: File -> Import Notebook -> paste): https://github.com/codero-sus/PyMC_Bot/raw/8abbc9e0bc729a08eb6475de685113c74f6f706f/pynb/PyMC_Minecraft_LLM_Kaggle.ipynb
-#   GPU_MODE = "parallel": two editions at once, one per T4 (one edition: both T4s merge on it); MAX_HOURS keeps the upload inside 12 h
-#   DISTILL: Qwen3-style strong-to-weak distillation - Qwen3-14B writes answers, Qwen3-8B teaches the 4B token by token
-#   (the teacher runs on vLLM over both T4s; its answers are kept on HF so the next session reuses them)
-#   editions_to_be_trained = {txt, txt_think, vl, vl_think} picks what is trained; FAST: token-sized batches,
-#   data streamed once for all editions, GGUFs made on the CPU while the T4 trains the next edition
+#   Training notebooks are not included in this branch. Use the trainer script in llm_data/.
 python -m pymc_bot llm import --hf <you>/Minecraftism-4B-GGUF       # from Hugging Face -> Ollama, bot switched over
-#   the notebook first publishes <you>/Minecraftism-4B (compact 16-bit safetensors, for transformers / vLLM), then
-#   every GGUF quant made from it (F16 ... Q4_K_M ... IQ1_S) to <you>/Minecraftism-4B-GGUF (--quant Q8_0)
 python -m pymc_bot llm eval --model minecraftism
 ```
 
@@ -910,29 +905,9 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 
 ## Development
 
-```bash
-pip install -r requirements-dev.txt
-
-pytest -q                       # 435 tests, no Minecraft server, no LLM required (2 skip without torch)
-ruff check .                    # lint
-pytest --cov=pymc_bot -q        # coverage
-
-# opt-in end-to-end test against a real (offline-mode) server
-PYMC_TEST_SERVER=127.0.0.1:25565 pytest tests/test_node_live.py -v
-```
-
-The suite runs the bot against the simulated world, exercises the whole FastAPI surface (including the
-WebSocket), tests the Node adapter against a fake bridge process (`tests/fixtures/fake_bridge.js`) and runs
-the AI loop against the Ollama stub. The training stack is covered end to end as well: the encoder layout is
-pinned in `tests/test_features.py`, `tests/test_train.py` covers checkpoints/resume/metrics, and
-`tests/test_local_model.py` lets a real trained model drive a simulated bot.
-CI (`.github/workflows/ci.yml`) runs lint + tests on Python 3.10–3.12, the transformer engine with PyTorch,
-and **builds the Fabric mod for all 16 Minecraft versions from 1.21.1 to 26.3** on JDK 25 (one matrix
-job per version from `mod/versions.json`; 1.21.x jars target Java 21, 26.x jars Java 25), **launches
-the game with the mod on every version from 1.21.4 on** (Fabric's client game test in a virtual
-display: it records a few seconds of scripted play, checks the dataset and uploads screenshots) and
-uploads each jar plus a `pymcbot-all-versions` bundle. When everything is green, the `release`
-job attaches all 16 jars to the GitHub release `pymcbot-v<mod_version>`.
+Run `ruff check .`, `node scripts/check_ui.mjs` and `python -m pymc_bot bench --suite sim-tech`
+for basic checks. CI builds the distributions and Fabric mod and runs simulated smoke checks.
+The Python test suite and training notebooks are no longer included in this branch.
 
 ```
 pymc_bot/
@@ -956,7 +931,6 @@ pymc_bot/
 ├── web/             index.html, styles.css, app.js (no build step)
 └── node/            minecraft_bridge.js  (the only JavaScript)
 mod/                 Fabric mod (MC 1.21.1 – 26.3): records your playtime into a training dataset
-tests/               pytest suite + fake bridge fixture
 scripts/dev.sh       small helper for common tasks
 updater.py           self-updater for the bot, its dependencies and the mod (+ updater.cmd / updater.sh)
 ```

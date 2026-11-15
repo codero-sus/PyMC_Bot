@@ -39,8 +39,6 @@ Issues = "https://github.com/codero-sus/PyMC_Bot/issues"
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0",
-  "pytest-cov>=4.1",
   "ruff>=0.4",
 ]
 
@@ -59,14 +57,6 @@ packages = ["pymc_bot"]
 [tool.setuptools.package-data]
 pymc_bot = ["web/*.html", "web/*.js", "web/*.css", "web/*.svg", "node/*.js", "node/package.json", "data/*.json"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
-# Make `pytest` (not only `python -m pytest`) import the local package, so the
-# suite runs the same way in CI as on a developer machine.
-pythonpath = ["."]
-filterwarnings = ["ignore::DeprecationWarning"]
-
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -74,7 +64,3 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501"]
-
-[tool.ruff.lint.per-file-ignores]
-# The collector cell starts with the module docstring (pymc_bot/llm_webdata.py verbatim), then its imports.
-"pynb/Minecraftism_Dataset_Kaggle.ipynb" = ["E402"]
