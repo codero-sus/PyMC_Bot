@@ -54,6 +54,22 @@ let lastEventTs = 0;
 let pollTimer = null;
 let fleetStatus = null;
 
+// Each challenge is an existing supported inventory goal, not an unimplemented progression route.
+const SPEEDRUNS = [
+  ...['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry']
+    .flatMap(wood => [1, 4, 16].map(count => ({item: `${wood}_log`, count}))),
+  ...[1, 8, 16, 32].map(count => ({item: 'cobblestone', count})),
+  ...['coal', 'raw_iron'].flatMap(item => [1, 4, 8].map(count => ({item, count}))),
+  ...[4, 8, 16].map(count => ({item: 'torch', count})),
+  ...['wooden_pickaxe', 'stone_pickaxe', 'stone_sword', 'furnace'].map(item => ({item, count: 1})),
+];
+
+function speedrunTime(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const minutes = Math.floor(value / 60);
+  return `${minutes}:${(value % 60).toFixed(2).padStart(5, '0')}`;
+}
+
 /* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
   const done = trackBusy();
@@ -287,6 +303,9 @@ function renderStatus(status) {
   $('goal-status').textContent = task
     ? `${task.status}: ${task.item} ${task.observed ?? '?'} / ${task.count} · ${task.detail}`
     : 'No gathering goal.';
+  $('speedrun-status').textContent = task
+    ? `${task.status} · ${task.item.replaceAll('_', ' ')} ${task.observed ?? '?'} / ${task.count} · ${speedrunTime(task.elapsed_seconds)} · ${task.detail}`
+    : 'No goal running. Start AI or use Step to advance a challenge.';
   $('btn-ai-start').disabled = agent.running || state !== 'connected';
   $('btn-ai-stop').disabled = !agent.running;
   $('btn-ai-step').disabled = state !== 'connected';
@@ -1195,6 +1214,28 @@ async function selectBot(username) {
 
 /* ------------------------------------------------------------------ actions */
 function wire() {
+  const presetSelect = $('speedrun-preset');
+  for (const [index, preset] of SPEEDRUNS.entries()) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = `${preset.count} × ${preset.item.replaceAll('_', ' ')}`;
+    presetSelect.appendChild(option);
+  }
+  $('btn-speedrun-start').addEventListener('click', async () => {
+    const preset = SPEEDRUNS[Number(presetSelect.value)];
+    if (!preset) return;
+    try {
+      await api('/api/ai/goal', {method: 'PUT', body: JSON.stringify(preset)});
+      renderStatus(await api('/api/status'));
+      ui.toast('Challenge set. Start AI or use Step to advance it.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-speedrun-cancel').addEventListener('click', async () => {
+    try {
+      await api('/api/ai/goal', {method: 'DELETE'});
+      renderStatus(await api('/api/status'));
+    } catch (error) { reportError(error); }
+  });
   $('btn-connect').addEventListener('click', async () => {
     try { await saveConfig(true); await api('/api/bot/start', { method: 'POST' }); }
     catch (err) { appendLog({ level: 'error', source: 'panel', message: err.message, time: nowTime() }); }

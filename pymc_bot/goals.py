@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from typing import Any
 
 from pymc_bot.autopilot import incoming_projectile
@@ -41,7 +42,8 @@ class GatherGoal:
             self._generation += 1
             self._goal = {"item": item, "count": count, "observed": None, "status": "active", "detail": "waiting for a fresh observation",
                           "attempts": 0, "failures": 0, "no_progress": 0, "variant": 0,
-                          "last_action": "", "progress_item": item, "progress_before": None, "identity": identity}
+                          "last_action": "", "progress_item": item, "progress_before": None, "identity": identity,
+                          "_started": time.monotonic(), "_ended": None}
             return self.snapshot()
 
     def cancel(self) -> bool:
@@ -51,13 +53,17 @@ class GatherGoal:
             if active:
                 self._goal["status"] = "cancelled"
                 self._goal["detail"] = "cancel requested; already-sent actions may still finish"
+                self._goal["_ended"] = time.monotonic()
             return active
 
     def snapshot(self) -> dict[str, Any] | None:
         with self._lock:
             if not self._goal:
                 return None
-            return {k: v for k, v in self._goal.items() if k != "identity"} | {"in_flight": self._inflight}
+            end = self._goal["_ended"]
+            elapsed = (time.monotonic() if end is None else end) - self._goal["_started"]
+            return {k: v for k, v in self._goal.items() if k not in {"identity", "_started", "_ended"}} | {
+                "in_flight": self._inflight, "elapsed_seconds": round(max(0, elapsed), 2)}
 
     def next(self, state: dict[str, Any], identity: tuple[Any, ...], *, mining: bool, movement: bool,
              inventory: bool = True, building: bool = False) -> tuple[str, dict[str, Any] | None]:
@@ -69,7 +75,7 @@ class GatherGoal:
             if self._inflight:
                 return "wait", None
             if g["identity"] != identity:
-                g.update(status="failed", detail="bot or server changed; create a new goal")
+                g.update(status="failed", detail="bot or server changed; create a new goal", _ended=time.monotonic())
                 return "wait", None
             if not isinstance(state, dict) or state.get("status", "connected") != "connected":
                 g.update(status="paused", detail="waiting for connection")
@@ -82,7 +88,7 @@ class GatherGoal:
                 g["no_progress"] = 0
             g["observed"] = count
             if count >= g["count"]:
-                g.update(status="completed", detail="target verified in inventory")
+                g.update(status="completed", detail="target verified in inventory", _ended=time.monotonic())
                 return "wait", None
             if (g["item"] == "torch" or g["item"] in RECIPES) and not inventory:
                 g.update(status="paused", detail="crafting plan requires AI inventory permission")
@@ -110,7 +116,7 @@ class GatherGoal:
                 return "wait", None
             extended = g["item"] in RECIPES or g["item"] in {"cobblestone", "cobbled_deepslate", "coal", "raw_iron"}
             if g["attempts"] >= (96 if extended else 64 if g["item"] == "torch" else 12) or g["no_progress"] >= 4:
-                g.update(status="failed", detail="no verified progress; inspect the area and try a new goal")
+                g.update(status="failed", detail="no verified progress; inspect the area and try a new goal", _ended=time.monotonic())
                 return "wait", None
             target = g["item"]
             action = ""
@@ -154,7 +160,7 @@ class GatherGoal:
                 observed = _inventory_count(state, g["item"])
                 progress = _inventory_count(state, g["progress_item"])
                 if observed is not None and observed >= g["count"]:
-                    g.update(observed=observed, status="completed", detail="target verified in inventory")
+                    g.update(observed=observed, status="completed", detail="target verified in inventory", _ended=time.monotonic())
                     return
                 if (not ok and progress is not None and g["progress_before"] is not None
                         and progress > g["progress_before"]):
@@ -166,7 +172,7 @@ class GatherGoal:
                     g["variant"] += 1
                 g["failures"] += 1
                 if g["failures"] >= 2:
-                    g.update(status="failed", detail=f"two actions failed: {str(detail)[:160]}")
+                    g.update(status="failed", detail=f"two actions failed: {str(detail)[:160]}", _ended=time.monotonic())
                 else:
                     g["detail"] = f"action failed; will reassess: {str(detail)[:120]}"
                 return
@@ -185,7 +191,7 @@ class GatherGoal:
                 g["variant"] += 1
             g["observed"] = count
             if count >= g["count"]:
-                g.update(status="completed", detail="target verified in inventory")
+                g.update(status="completed", detail="target verified in inventory", _ended=time.monotonic())
             else:
                 g["detail"] = "action returned; target not yet verified"
 

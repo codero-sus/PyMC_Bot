@@ -982,12 +982,20 @@ def _watch_release(root: Path, app: Any, server: Any, finished: threading.Event,
                    restart: threading.Event, interval: float = 600.0) -> None:
     while not finished.wait(interval):
         try:
+            fleet = app.state.fleet
+            if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
+                continue
+            if any(fleet.ai_running(bot) for bot in fleet.all_bots()):
+                continue
+            # The installed mod can change independently of the source release. It takes effect
+            # on the next Minecraft launch; a locked jar is retried during a later check.
+            _run_locked_update(root, "--mod-only")
             result = subprocess.run([sys.executable, str(root / "updater.py"), "--auto", "--check"], cwd=root,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    check=False)
+                                    check=False, timeout=120)
             if result.returncode != 11 or finished.is_set() or server.should_exit:
                 continue
-            fleet = app.state.fleet
+            # The fleet could have started while the network checks were in progress.
             if app.state.training_service.running or any(bot.state not in ("disconnected", "error") for bot in fleet.all_bots()):
                 continue
             if any(fleet.ai_running(bot) for bot in fleet.all_bots()):
@@ -995,17 +1003,12 @@ def _watch_release(root: Path, app: Any, server: Any, finished: threading.Event,
             restart.set()
             server.should_exit = True
             return
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
             continue
 
 
-def _prepare_startup() -> None:
-    if os.environ.pop("PYMC_BOT_UPDATE_RESTARTED", None) or (len(sys.argv) > 1 and sys.argv[1] not in ("serve", "run")):
-        return
-    root = _source_install_root()
-    if root is None:
-        return
-    updater = root / "updater.py"
+def _run_locked_update(root: Path, *args: str) -> subprocess.CompletedProcess[Any] | None:
+    """Avoid concurrent release updates from two local app instances."""
     try:
         with (root / ".pymc_update.lock").open("a+b") as lock:
             if os.name == "nt":
@@ -1021,12 +1024,21 @@ def _prepare_startup() -> None:
                 import fcntl
 
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            result = subprocess.run([sys.executable, str(updater), "--auto"], cwd=root,
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    check=False)
+            return subprocess.run([sys.executable, str(root / "updater.py"), "--auto", *args], cwd=root,
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  check=False)
     except OSError:
+        return None
+
+
+def _prepare_startup() -> None:
+    if os.environ.pop("PYMC_BOT_UPDATE_RESTARTED", None) or (len(sys.argv) > 1 and sys.argv[1] not in ("serve", "run")):
         return
-    if result.returncode == 10:
+    root = _source_install_root()
+    if root is None:
+        return
+    result = _run_locked_update(root)
+    if result is not None and result.returncode == 10:
         os.environ["PYMC_BOT_UPDATE_RESTARTED"] = "1"
         os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])
 

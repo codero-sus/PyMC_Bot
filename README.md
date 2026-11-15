@@ -903,6 +903,15 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 
 ---
 
+## Speedrun challenges
+
+The **Speedruns** panel offers 41 timed inventory challenges using the existing goal controller:
+logs, cobblestone, coal, raw iron, torches, early tools and a furnace. Set a challenge on the selected
+bot, then start its AI or advance with Step. The timer includes pauses and stops when a fresh
+inventory observation confirms the target; items already in inventory count. Times are held only in
+memory, not saved as records. These are not world-reset, dragon-kill or official leaderboard runs.
+They still depend on permissions, local terrain, server version and the limits of the planner.
+
 ## Development
 
 Run `ruff check .`, `node scripts/check_ui.mjs` and `python -m pymc_bot bench --suite sim-tech`
