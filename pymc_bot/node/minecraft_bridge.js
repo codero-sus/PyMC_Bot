@@ -834,6 +834,25 @@ async function cmdCollect(params) {
   return { picked };
 }
 
+// Mineflayer exposes block raycasts, not canSeeEntity. Refuse an attack when any
+// sampled voxel is unloaded, and raycast actual collision shapes to the target.
+function hasMeleeSight(target) {
+  if (!bot || !bot.entity || !bot.entity.position || !target || !target.position ||
+      !bot.world || typeof bot.world.raycast !== 'function') return false;
+  const eye = bot.entity.position.offset(0, Number.isFinite(bot.entity.eyeHeight) ? bot.entity.eyeHeight : 1.62, 0);
+  const end = target.position.offset(0, (target.height || 1.6) * 0.7, 0);
+  const delta = end.minus(eye), distance = delta.norm();
+  if (!Number.isFinite(distance) || distance <= 0 || distance > 5) return false;
+  const direction = delta.scaled(1 / distance);
+  try {
+    for (let d = 0; d <= distance; d += 0.2) {
+      if (!bot.blockAt(eye.plus(direction.scaled(d)))) return false;
+    }
+    if (!bot.blockAt(end)) return false;
+    return !bot.world.raycast(eye, direction, distance);
+  } catch (_) { return false; }
+}
+
 async function cmdAttackMob(params) {
   if (!bot) throw new Error('not connected');
   const wanted = params.mob ? String(params.mob).toLowerCase().replace(/^minecraft:/, '') : '';
@@ -862,7 +881,7 @@ async function cmdAttackMob(params) {
       await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.85, 0));
       checkAction();
       if (bot.entities[target.id] && target.isValid !== false && bot.entity.position.distanceTo(target.position) <= 3 &&
-          typeof bot.canSeeEntity === 'function' && bot.canSeeEntity(target) &&
+          hasMeleeSight(target) &&
           !Object.values(bot.entities).some((e) => e && e !== bot.entity && e.position && e.isValid !== false &&
             (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 2)) {
         bot.attack(target);
@@ -2041,18 +2060,19 @@ async function cmdDuelPlayer(params) {
     if (!bot.entities[target.id] || target.isValid === false || !target.position) break;
     if (!Number.isFinite(bot.health) || bot.health < 12) break;
     if (bot.entity.position.distanceTo(target.position) > 3) break;
-    if (typeof bot.canSeeEntity !== 'function' || !bot.canSeeEntity(target)) break;
+    if (!hasMeleeSight(target)) break;
     if (Object.values(bot.entities || {}).some((e) => e && e !== target && e !== bot.entity && e.position && e.isValid !== false && (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3)) break;
     await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7, 0), true);
     checkAction();
     if (!bot.entities[target.id] || target.isValid === false || !target.position || !Number.isFinite(bot.health) || bot.health < 12 ||
-        bot.entity.position.distanceTo(target.position) > 3 || !bot.canSeeEntity(target) ||
+        bot.entity.position.distanceTo(target.position) > 3 || !hasMeleeSight(target) ||
         Object.values(bot.entities || {}).some((e) => e && e !== target && e !== bot.entity && e.position && e.isValid !== false &&
           (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3)) break;
     bot.attack(target);
     hits++;
     await sleep(1000);
   }
+  if (!hits) throw new Error('duel stopped without a hit: target out of reach/sight, health low, or another player nearby');
   return { target: target.username, hits, message: `duel stopped after ${hits} attempted hit(s); damage and consent are not verified` };
 }
 
