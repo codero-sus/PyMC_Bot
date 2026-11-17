@@ -293,6 +293,9 @@ function renderStatus(status) {
     ? `running · ${agent.decisions} decisions` + (last ? ` · last: ${last.action} ${JSON.stringify(last.params || {})}${last.source ? ` (${last.source})` : ''}` : '')
       + (last && last.thought ? ` · thinks: “${last.thought}”` : '') + (agent.memory && agent.memory.goal ? ` · goal: ${agent.memory.goal}` : '')
     : `idle · ${agent.decisions} decisions` + (agent.last_error ? ` · last error: ${agent.last_error}` : ''));
+  if (agent.affect && agent.affect.state) {
+    $('ai-status').textContent += ` · situational affect: ${agent.affect.state} (${agent.affect.reason})`;
+  }
   if (agent.vision && agent.vision.enabled) {
     $('ai-status').textContent += ` · vision: ${agent.vision.status}` + (agent.vision.last_error ? ` (${agent.vision.last_error})` : '');
   }

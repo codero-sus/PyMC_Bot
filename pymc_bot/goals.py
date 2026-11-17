@@ -112,7 +112,7 @@ class GatherGoal:
                 g.update(status="paused", detail="waiting for a safer situation")
                 return "wait", None
             if _nearby_hazard(state):
-                g.update(status="paused", detail="waiting for a nearby projectile or potion hazard to pass")
+                g.update(status="paused", detail="waiting for a nearby block, projectile or potion hazard to pass")
                 return "wait", None
             extended = g["item"] in RECIPES or g["item"] in {"cobblestone", "cobbled_deepslate", "coal", "raw_iron"}
             if g["attempts"] >= (96 if extended else 64 if g["item"] == "torch" else 12) or g["no_progress"] >= 4:
@@ -215,6 +215,9 @@ def _has_tool(state: dict[str, Any], target: str) -> bool:
 
 
 def _nearby_hazard(state: dict[str, Any]) -> bool:
+    blocks = state.get("nearby_hazards")
+    if isinstance(blocks, list) and blocks:
+        return True
     entities = state.get("entities")
     if not isinstance(entities, list):
         return False

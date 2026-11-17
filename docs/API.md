@@ -169,7 +169,7 @@ curl -sX POST localhost:8000/api/antiafk/poke -H 'content-type: application/json
 | `GET` | `/api/server/probe?host=&port=` | – | server list ping without joining (defaults to the configured server; `host` may be `host:port`): `{"ok", "online", "asleep", "state", "version", "protocol", "players": {"online","max","sample"}, "motd", "latency", "resolved", "host", "port", "hosting", "summary", "tips"}` |
 | `POST` | `/api/bot/stop` | – | stop the AI loop and disconnect |
 | `POST` | `/api/bot/reconnect` | – | stop + start |
-| `GET` | `/api/bot/snapshot` | – | world snapshot only |
+| `GET` | `/api/bot/snapshot` | – | world snapshot only; Mineflayer reports observed `nearby_hazards` and, when available, visible player sneaking/sprinting flags. Hidden traps and intent are not known |
 | `GET` | `/api/bot/registry?kind=item&query=pickaxe&offset=0&limit=50` | – | paged, read-only Mineflayer client registry (items or blocks); at most 100 entries; simulator unsupported |
 | `GET` | `/api/bot/recipes?item=stone_pickaxe&limit=20` | – | client-known crafting recipes for an exact item; at most 50, no inventory check; may omit modded/server recipes |
 | `GET` | `/api/bot/chat` | – | recent chat history (`{"messages":[{"time","username","message"}]}`) |
@@ -184,7 +184,7 @@ and the whole panel follow the selected player. The default is the main bot.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/ai/status` | running flag, decision/error counters, last decision (with the model's `thought` and `goal`), `persona`, `memory` (goal, recent actions, last thought) |
+| `GET` | `/api/ai/status` | running flag, counters, last decision, persona, short-term memory, and heuristic `affect` (state and reason; not real feelings) |
 | `GET` | `/api/ai/behaviours` | `{selected, behaviours: [{key, label, emoji, blurb}]}` – the behaviours the LLM bot can be given (set one with `PUT /api/config` `{"agent": {"persona": key}}`); the prompts behind them are not exposed |
 | `POST` | `/api/ai/start` | start the decision loop (409 if the bot is not connected) |
 | `POST` | `/api/ai/stop` | stop the loop (aborts the current action) |

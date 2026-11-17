@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from pymc_bot import skills
+from pymc_bot.affect import affect
 from pymc_bot.autopilot import NEUTRAL_MOBS
 from pymc_bot.bot import MinecraftBot
 from pymc_bot.config import AppSettings, ConfigStore
@@ -211,6 +212,8 @@ class HeuristicPolicy:
             return Decision("totem", {}, "heuristic", thought="Health is low; protect myself before continuing.")
         if threat and threat_kind == "creeper" and threat_dist <= 5 and can["movement"]:
             return Decision("flee", {}, "heuristic", thought="That creeper is too close; back away.")
+        if isinstance(state.get("nearby_hazards"), list) and state["nearby_hazards"]:
+            return Decision("wait", {}, "heuristic", thought="Suspicious blocks nearby; pause and reassess.")
         if health <= 8 or food <= 6:
             if not knows_items or inv.best_food(food, health) is not None:
                 return Decision("eat", {}, "heuristic")
@@ -266,7 +269,7 @@ class HeuristicPolicy:
             if can["chat"]:
                 return Decision(
                     "say",
-                    {"message": self._rng.choice(["on it!", "sure, coming", "hey", "yeah?", "one sec"])},
+                    {"message": self._rng.choice(["hey", "yeah?", "what's up?"])},
                     "heuristic",
                 )
 
@@ -562,6 +565,7 @@ class AgentLoop:
             "resolved_brain": self.resolved_brain(),
             "trained": trained.describe() if trained is not None else None,
             "persona": self._settings().agent.persona,
+            "affect": affect(self.bot.snapshot()),
             "memory": self.mind.snapshot(),
             "recovery": self.recovery.snapshot(),
             "task": self.goal.snapshot(),
@@ -909,6 +913,7 @@ class AgentLoop:
             try:
                 experience = self.experience()
                 experience.observe(history, self.bot.username)
+                experience.observe_players(state.get("players"), self.bot.username)
                 relevant = [str(p.get("name", "")) for p in state.get("players") or []]
                 relevant += [str(e.get("username", "")) for e in history[-8:]]
                 memories = experience.context(relevant)
@@ -1331,6 +1336,8 @@ class AgentLoop:
             try:
                 experience = self.experience()
                 experience.observe(self.bot.chat_history, self.bot.username)
+                if isinstance(state, dict):
+                    experience.observe_players(state.get("players"), self.bot.username)
                 # The low-level trained policy may run several times per second; its button
                 # bursts are not useful lessons and would cause unnecessary disk writes.
                 if not str(decision.source).startswith("trained"):

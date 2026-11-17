@@ -539,6 +539,14 @@ def build_turn_prompt(
     night = " - mobs spawn in the dark, stay near light or other players" if tod == "night" else ""
     lines.append(f"You ({name}) are at x={px:.0f} y={py:.0f} z={pz:.0f} in the {dim}. It is {tod}{night}.")
     lines.append(_vitals(state))
+    from pymc_bot.affect import affect
+
+    feeling = affect(state)
+    lines.append(f"Situational affect (heuristic, not a fact about anyone): {feeling['state']} - {feeling['reason']}.")
+    hazards = state.get("nearby_hazards")
+    if isinstance(hazards, list) and hazards:
+        names = ", ".join(_clean(str(name))[:64] for name in hazards[:12])
+        lines.append(f"Possible nearby hazards: {names}. Avoid stepping on or digging near them; hidden traps may exist.")
     awareness = []
     if state.get("on_fire"):
         awareness.append("you are on fire")

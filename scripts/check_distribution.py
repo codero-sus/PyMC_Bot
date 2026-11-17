@@ -9,7 +9,7 @@ from pathlib import Path
 
 REQUIRED = {
     "pymc_bot/__main__.py", "pymc_bot/node/minecraft_bridge.js", "pymc_bot/node/potions.js",
-    "pymc_bot/node/probe.js", "pymc_bot/node/package.json", "pymc_bot/data/mobs.json",
+    "pymc_bot/node/probe.js", "pymc_bot/node/safety.js", "pymc_bot/node/package.json", "pymc_bot/data/mobs.json",
     "pymc_bot/web/index.html", "pymc_bot/web/login.html", "pymc_bot/web/login.js",
     "pymc_bot/web/app.js", "pymc_bot/web/styles.css", "pymc_bot/web/fx.js",
 }

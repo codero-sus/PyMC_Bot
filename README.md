@@ -909,6 +909,21 @@ plus running the learned policy in [docs/TRAINING.md](docs/TRAINING.md).
 
 ---
 
+## Navigation, mining and social context
+
+Mineflayer pathfinding now avoids detected pressure plates, tripwire, TNT, redstone mechanisms,
+sculk sensors and other listed hazards, disables automatic digging, bridging and parkour, and limits
+planned drops. Explicit mining checks adjacent fluids, falling blocks, suspicious mechanisms and
+the block supporting the bot before digging. Unloaded or unknown adjacent blocks stop the attempt.
+These checks are conservative heuristics: concealed traps, modded blocks, changes after planning,
+fall damage and server-side mechanics can still defeat them. They may also reject safe routes.
+
+The panel displays a **situational affect** derived from current observations (such as alert near a
+hostile mob), not real feelings or a judgment of a person's character. Optional, bounded local
+experience memory can retain recent direct interactions, visible sneaking/sprinting flags, outcomes
+and sanitized thoughts for up to seven days; it is not model-weight training, and the panel can
+clear it. These flags are not evidence of a player's intent. See the memory setting before enabling it.
+
 ## Speedrun challenges
 
 The **Speedruns** panel offers 41 timed inventory challenges using the existing goal controller:

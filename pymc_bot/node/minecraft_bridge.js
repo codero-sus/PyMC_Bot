@@ -31,6 +31,7 @@ let mineflayerVersions = null; // { testedVersions, latestSupportedVersion, olde
 let pathfinder = null;   // optional, enables real A* pathfinding
 const { probe } = require('./probe');
 const { classifyPotion } = require('./potions');
+const { digRisk, observedHazards, safeMovements } = require('./safety');
 let goals = null;
 let bot = null;
 let stateTimer = null;
@@ -203,6 +204,9 @@ function buildState() {
       y: Number(p.y.toFixed(2)),
       z: Number(p.z.toFixed(2)),
       distance: Number(pos.distanceTo(p).toFixed(2)),
+      // Visible entity flags only; not proof of the player's intent or exact key presses.
+      sneaking: typeof player.entity.metadata?.[0] === 'number' ? Boolean(player.entity.metadata[0] & 0x02) : null,
+      sprinting: typeof player.entity.metadata?.[0] === 'number' ? Boolean(player.entity.metadata[0] & 0x08) : null,
     });
   }
   players.sort((a, b) => a.distance - b.distance);
@@ -296,6 +300,7 @@ function buildState() {
     held_item: heldItem,
     entities,
     ground_items: groundItems,
+    nearby_hazards: observedHazards(bot),
     // Slot layout as a player sees it: 0-8 hotbar, 9-35 backpack (pymc_bot.inventory).
     slots: inv.slots,
     selected_slot: inv.selected,
@@ -448,8 +453,10 @@ async function cmdConnect(params) {
     if (pathfinder) {
       try {
         bot.loadPlugin(pathfinder.pathfinder);
+        bot.pathfinder.setMovements(safeMovements(bot, pathfinder));
       } catch (err) {
-        log('warn', `Could not load pathfinder plugin: ${err.message}`);
+        pathfinder = null;
+        log('warn', `Could not configure safe pathfinder: ${err.message}`);
       }
     }
     startStateLoop();
@@ -587,6 +594,8 @@ async function cmdDig(params) {
   if (bot.entity.position.distanceTo(block.position) > 4.5) {
     return { dug: false, reason: `${blockName} is too far away` };
   }
+  const risk = digRisk(bot, block);
+  if (risk) return { dug: false, reason: `unsafe to dig: ${risk}` };
   try {
     await withTimeout(bot.dig(block), Math.max(3000, deadline - Date.now()), `digging ${blockName}`);
     return { dug: true, block: blockName };
@@ -1030,13 +1039,19 @@ async function digBlock(block) {
   if (!(await reachBlock(block.position, 20000))) throw new Error(`cannot reach the ${block.name}`);
   const fresh = bot.blockAt(block.position);
   if (!fresh || fresh.name !== block.name) return false;
+  const risk = digRisk(bot, fresh);
+  if (risk) throw new Error(`unsafe to dig ${fresh.name}: ${risk}`);
   await equipBestTool(fresh);
   checkAction();
-  if (fresh.harvestTools && !(bot.heldItem && fresh.harvestTools[bot.heldItem.type])) {
-    throw new Error(`${fresh.name} needs a better tool`);
+  const refreshed = bot.blockAt(block.position);
+  if (!refreshed || refreshed.name !== fresh.name) return false;
+  const updatedRisk = digRisk(bot, refreshed);
+  if (updatedRisk) throw new Error(`unsafe to dig ${fresh.name}: ${updatedRisk}`);
+  if (refreshed.harvestTools && !(bot.heldItem && refreshed.harvestTools[bot.heldItem.type])) {
+    throw new Error(`${refreshed.name} needs a better tool`);
   }
-  if (!bot.canDigBlock(fresh)) throw new Error(`cannot dig the ${fresh.name} from here`);
-  await withTimeout(bot.dig(fresh, true), 30000, `digging ${fresh.name}`);
+  if (!bot.canDigBlock(refreshed)) throw new Error(`cannot dig the ${refreshed.name} from here`);
+  await withTimeout(bot.dig(refreshed, true), 30000, `digging ${refreshed.name}`);
   return true;
 }
 
@@ -2195,8 +2210,7 @@ async function cmdReactPotion(params) {
     throw new Error('no known safe potion destination');
   }
   const previous = owner.pathfinder.movements;
-  const safe = new pathfinder.Movements(owner);
-  safe.canDig = false; safe.allowParkour = false; safe.allow1by1towers = false; safe.scafoldingBlocks = [];
+  const safe = safeMovements(owner, pathfinder);
   safe.maxDropDown = 1;
   if (Array.isArray(safe.exclusionAreasStep)) {
     safe.exclusionAreasStep.push(block => {

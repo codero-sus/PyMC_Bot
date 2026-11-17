@@ -16,6 +16,7 @@ from pymc_bot.mind import mentions
 MAX_USERS = 8
 MESSAGES_PER_USER = 3
 MAX_OUTCOMES = 8
+MAX_OBSERVATIONS = 12
 MAX_AGE = 7 * 24 * 60 * 60
 MAX_FILE_BYTES = 32_768
 # Avoid retaining obvious secrets or commands. This is not a complete secret detector.
@@ -34,7 +35,7 @@ class Experience:
         key = hashlib.sha256(identity.lower().encode()).hexdigest()[:24]
         self.path = directory / "bot-memory" / f"{key}.json"
         self.lock = threading.RLock()
-        self.data: dict[str, Any] = {"users": {}, "outcomes": [], "last_chat": 0.0}
+        self.data: dict[str, Any] = {"users": {}, "outcomes": [], "observations": [], "last_chat": 0.0}
         self._load()
 
     def _load(self) -> None:
@@ -47,10 +48,13 @@ class Experience:
             users = raw.get("users", {})
             outcomes = raw.get("outcomes", [])
             if isinstance(users, dict) and isinstance(outcomes, list):
-                self.data = {"users": users, "outcomes": outcomes, "last_chat": raw.get("last_chat", 0.0)}
+                observations = raw.get("observations", [])
+                self.data = {"users": users, "outcomes": outcomes,
+                             "observations": observations if isinstance(observations, list) else [],
+                             "last_chat": raw.get("last_chat", 0.0)}
                 self._prune()
         except (OSError, ValueError, TypeError, OverflowError):
-            self.data = {"users": {}, "outcomes": [], "last_chat": 0.0}
+            self.data = {"users": {}, "outcomes": [], "observations": [], "last_chat": 0.0}
 
     def _prune(self) -> None:
         cutoff = time.time() - MAX_AGE
@@ -80,7 +84,13 @@ class Experience:
         last_chat = self.data.get("last_chat", 0.0)
         if not isinstance(last_chat, (int, float)) or not cutoff <= last_chat <= time.time() + 60:
             last_chat = 0.0
-        self.data = {"users": users, "outcomes": outcomes, "last_chat": last_chat}
+        observations = []
+        for row in self.data.get("observations", [])[-MAX_OBSERVATIONS:]:
+            if (isinstance(row, dict) and isinstance(row.get("name"), str) and NAME.fullmatch(row["name"])
+                    and row.get("behavior") in {"sneaking", "sprinting"}
+                    and isinstance(row.get("ts"), (int, float)) and cutoff <= row["ts"] <= time.time() + 60):
+                observations.append({"name": row["name"], "behavior": row["behavior"], "ts": row["ts"]})
+        self.data = {"users": users, "outcomes": outcomes, "observations": observations, "last_chat": last_chat}
 
     def _save(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -123,6 +133,33 @@ class Experience:
                 self._prune()
                 self._save()
 
+    def observe_players(self, players: Any, bot_name: str) -> None:
+        """Retain a small sample of visible flags, without position or inferred motives."""
+        if not isinstance(players, list):
+            return
+        now = time.time()
+        with self.lock:
+            self._prune()
+            observations = self.data["observations"]
+            changed = False
+            for player in players[:24]:
+                if not isinstance(player, dict):
+                    continue
+                name = str(player.get("name") or "")
+                if not NAME.fullmatch(name) or name.lower() == bot_name.lower():
+                    continue
+                for behavior in ("sneaking", "sprinting"):
+                    if player.get(behavior) is not True:
+                        continue
+                    if any(row["name"].lower() == name.lower() and row["behavior"] == behavior
+                           and now - row["ts"] < 60 for row in observations):
+                        continue
+                    observations.append({"name": name, "behavior": behavior, "ts": now})
+                    changed = True
+            if changed:
+                self._prune()
+                self._save()
+
     def outcome(self, action: str, ok: bool, detail: str, thought: str = "") -> None:
         # Do not persist chat or its contents in action results.
         if action in {"say", "chat"}:
@@ -144,8 +181,13 @@ class Experience:
         with self.lock:
             self._prune()
             keys = {name.lower() for name in names}
-            users = [f"<{name}> {row['text']}" for name, rows in self.data["users"].items()
-                     if name.lower() in keys for row in rows][-6:]
+            relevant = [(name, rows) for name, rows in self.data["users"].items() if name.lower() in keys]
+            users = [f"<{name}> {row['text']}" for name, rows in relevant for row in rows][-6:]
+            # Only counts retained direct interactions; this is not a trust score or character judgment.
+            users += [f"<{name}> {len(rows)} recent direct message(s) retained; do not infer intent or loyalty"
+                      for name, rows in relevant][-3:]
+            users += [f"<{row['name']}> previously observed {row['behavior']} (not proof of intent)"
+                      for row in self.data["observations"] if row["name"].lower() in keys][-3:]
             outcomes = [f"{row['action']}: {'worked' if row['ok'] else 'failed'} ({row['detail']})"
                         + (f"; thought: {row['thought']}" if row["thought"] else "")
                         for row in self.data["outcomes"][-4:]]
@@ -153,5 +195,5 @@ class Experience:
 
     def clear(self) -> None:
         with self.lock:
-            self.data = {"users": {}, "outcomes": [], "last_chat": time.time()}
+            self.data = {"users": {}, "outcomes": [], "observations": [], "last_chat": time.time()}
             self.path.unlink(missing_ok=True)
