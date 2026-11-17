@@ -409,3 +409,12 @@ ws.onmessage = (m) => { const frame = JSON.parse(m.data); if (frame.type === 'ev
 ---
 
 <sub>Made with ❤️ by [codero-sus](https://github.com/codero-sus) · [codero.is-a.dev](https://codero.is-a.dev) · [the-codero.web.app](https://the-codero.web.app/)</sub>
+
+### Manual arena skills
+
+`GET /api/skills` marks operator-only skills with `manual_only`. They are not available to the AI. Use the Skills panel or `POST /api/bot/skill`, and only on servers where the operator has permission:
+
+- `{"name":"web_snare","params":{"x":10,"y":64,"z":10,"pattern":"single","confirm":true}}` places one cobweb, or `pattern: "line"` places up to three along +X. Coordinates are integer block positions in reach; all positions must initially be observed air over solid ground, with no nearby entities. Bring cobwebs. No digging, explosives or redstone are used. A failed or cancelled action may leave a partial snare; inspect and clean up afterward. This is a simple slowing obstacle, not a guaranteed effective trap.
+- `{"name":"duel_player","params":{"player":"Steve","seconds":5,"confirm":true}}` attempts close-range melee for 1–15 seconds. Enable `agent.allow_attacking` first; it is off by default. Confirm only with the named player's consent. The client cannot verify consent. It does not chase, shoot or guarantee damage, and stops if health is low/unknown, the target leaves reach/sight, or another player is close. Server lag and movement can defeat these precautions.
+
+Both skills require an explicit JSON boolean `true`; the simulator reports them unsupported. Aborting cannot undo already sent actions. Use a private arena and test server-specific behavior before relying on these controls.

@@ -1043,6 +1043,12 @@ class SimulatedBackend(BaseBackend):
             self._respawns.append((time.monotonic() + 60.0, target))
         return {"target": short(target["type"]), "message": "simulated a falling hit (critical not confirmed)"}
 
+    def _do_web_snare(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("cobweb placement is not simulated; use an authorized real Minecraft arena")
+
+    def _do_duel_player(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise InventoryError("player duels are not simulated; use an authorized real Minecraft arena")
+
     def _do_react_potion(self, params: dict[str, Any]) -> dict[str, Any]:
         raise InventoryError("potion entities and effects are not simulated; use a compatible real Minecraft server")
 

@@ -849,19 +849,30 @@ async function cmdAttackMob(params) {
   const target = candidates[0];
   const deadline = Date.now() + Math.max(2000, Math.min(30000, Number(params.seconds || 15) * 1000));
   let hits = 0;
-  while (Date.now() < deadline && bot.entities[target.id] && target.isValid !== false) {
-    const distance = bot.entity.position.distanceTo(target.position);
-    if (distance > 3 && pathfinder && bot.pathfinder) {
-      bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
+  try {
+    while (Date.now() < deadline && bot.entities[target.id] && target.isValid !== false) {
+      checkAction();
+      if (!Number.isFinite(bot.health) || bot.health < 8) break;
+      const distance = bot.entity.position.distanceTo(target.position);
+      if (distance > 3 && pathfinder && bot.pathfinder) {
+        bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
+      } else {
+        stopPath();
+      }
+      await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.85, 0));
+      checkAction();
+      if (bot.entities[target.id] && target.isValid !== false && bot.entity.position.distanceTo(target.position) <= 3 &&
+          typeof bot.canSeeEntity === 'function' && bot.canSeeEntity(target) &&
+          !Object.values(bot.entities).some((e) => e && e !== bot.entity && e.position && e.isValid !== false &&
+            (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 2)) {
+        bot.attack(target);
+        hits += 1;
+      }
+      await sleep(1000 + Math.random() * 150); // conservative cadence; server decides actual damage
     }
-    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.85, 0));
-    if (distance <= 3.2) {
-      bot.attack(target);
-      hits += 1;
-    }
-    await sleep(600 + Math.random() * 150); // attack cooldown, like a player timing the swing
+  } finally {
+    stopPath();
   }
-  stopPath();
   const killed = !bot.entities[target.id] || target.isValid === false;
   return { target: target.name, hits, killed };
 }
@@ -1123,6 +1134,43 @@ async function placeAt(pos, item) {
     }
   }
   return false;
+}
+
+// Manual, non-explosive arena snare. No navigation, digging, redstone or concealed placement.
+async function cmdWebSnare(params) {
+  need();
+  if (params.confirm !== true) throw new Error('set confirm=true to place cobwebs in an authorized arena');
+  const coords = [params.x, params.y, params.z];
+  if (!coords.every(Number.isSafeInteger) || coords.some((n) => Math.abs(n) > 30000000)) throw new Error('integer x, y, z coordinates are required');
+  const pattern = params.pattern || 'single';
+  if (!['single', 'line'].includes(pattern)) throw new Error('pattern must be single or line');
+  const V = Vec3();
+  const positions = (pattern === 'line' ? [0, 1, 2] : [0]).map((dx) => new V(coords[0] + dx, coords[1], coords[2]));
+  const validate = (pos) => {
+    if (bot.entity.position.distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4) throw new Error('snare position is out of reach');
+    const here = bot.blockAt(pos), floor = bot.blockAt(pos.offset(0, -1, 0));
+    if (!here || !['air', 'cave_air', 'void_air'].includes(here.name) || !floor || floor.boundingBox !== 'block') throw new Error('snare requires observed empty air above solid ground');
+    if (Object.values(bot.entities || {}).some((e) => e && e.position && e.isValid !== false && e.position.distanceTo(pos.offset(0.5, 0.5, 0.5)) < 2.5)) throw new Error('an entity is too close to the snare');
+    if (bot.entity.position.distanceTo(pos.offset(0.5, 0.5, 0.5)) < 2.5) throw new Error('bot is too close to the snare');
+  };
+  positions.forEach(validate);
+  if (countItem('cobweb') < positions.length) throw new Error('not enough cobwebs');
+  let placed = 0;
+  try {
+    for (const pos of positions) {
+      checkAction();
+      validate(pos);
+      const item = findItem((it) => it.name === 'cobweb');
+      if (!item) throw new Error('no cobwebs left');
+      if (!(await placeAt(pos, item))) throw new Error('placement failed');
+      const result = bot.blockAt(pos);
+      if (!result || result.name !== 'cobweb') throw new Error('server did not confirm cobweb');
+      placed++;
+    }
+  } catch (err) {
+    throw new Error(`snare stopped after ${placed} confirmed cobweb(s): ${err.message}; inspect the area`);
+  }
+  return { placed_count: placed, message: `placed ${placed} cobweb(s); remove them after the arena session` };
 }
 
 function buildingItem(wanted) {
@@ -1976,6 +2024,38 @@ async function cmdCriticalHit(params) {
   return { target: mobName(target), message: `attempted a falling hit on ${mobName(target)} (critical not confirmed)` };
 }
 
+// An operator must assert consent; the client cannot verify it. No pursuit or projectiles.
+async function cmdDuelPlayer(params) {
+  need();
+  if (params.confirm !== true) throw new Error('set confirm=true only for a consenting opponent');
+  const wanted = String(params.player || '').trim().toLowerCase();
+  if (!/^[a-z0-9_]{1,16}$/.test(wanted)) throw new Error('a valid player name is required');
+  const seconds = Number(params.seconds === undefined ? 5 : params.seconds);
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 15) throw new Error('seconds must be between 1 and 15');
+  const target = Object.values(bot.entities || {}).find((e) => e && e !== bot.entity && e.username && e.username.toLowerCase() === wanted);
+  if (!target || !target.position || target.isValid === false) throw new Error('named player is not visible');
+  let hits = 0;
+  const deadline = Date.now() + seconds * 1000;
+  while (Date.now() < deadline) {
+    checkAction();
+    if (!bot.entities[target.id] || target.isValid === false || !target.position) break;
+    if (!Number.isFinite(bot.health) || bot.health < 12) break;
+    if (bot.entity.position.distanceTo(target.position) > 3) break;
+    if (typeof bot.canSeeEntity !== 'function' || !bot.canSeeEntity(target)) break;
+    if (Object.values(bot.entities || {}).some((e) => e && e !== target && e !== bot.entity && e.position && e.isValid !== false && (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3)) break;
+    await bot.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7, 0), true);
+    checkAction();
+    if (!bot.entities[target.id] || target.isValid === false || !target.position || !Number.isFinite(bot.health) || bot.health < 12 ||
+        bot.entity.position.distanceTo(target.position) > 3 || !bot.canSeeEntity(target) ||
+        Object.values(bot.entities || {}).some((e) => e && e !== target && e !== bot.entity && e.position && e.isValid !== false &&
+          (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3)) break;
+    bot.attack(target);
+    hits++;
+    await sleep(1000);
+  }
+  return { target: target.username, hits, message: `duel stopped after ${hits} attempted hit(s); damage and consent are not verified` };
+}
+
 function combatTarget(params, range) {
   const wanted = cleanName(params.mob);
   const target = entitiesNear((e) => {
@@ -2470,6 +2550,8 @@ const COMMANDS = {
   place_torch: cmdPlaceTorch,
   light_up: cmdLightUp,
   build_shelter: cmdBuildShelter,
+  web_snare: cmdWebSnare,
+  duel_player: cmdDuelPlayer,
   pillar_up: cmdPillarUp,
   activate: cmdActivate,
   ride: cmdRide,

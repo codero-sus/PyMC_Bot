@@ -1090,6 +1090,8 @@ class AgentLoop:
 
         skill = skills.get(action)
         if skill is not None:
+            if skill.manual_only and enforce_permissions:
+                return False, f"{skill.name} is manual-only"
             return self._execute_skill(skill, params, agent, blocked)
 
         if action in ("wait", "noop", "none", "nothing"):

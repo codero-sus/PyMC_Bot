@@ -72,10 +72,12 @@ class Skill:
     aliases: tuple[str, ...] = ()
     timeout: float = 30.0
     moves: bool = True  # holds the bot's motion lock while it runs
+    manual_only: bool = False  # never chosen by the AI; explicitly requested by the operator
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "name": self.name, "group": self.group, "summary": self.summary, "permission": self.permission,
+            "manual_only": self.manual_only,
             "example": {"action": self.name, **self.example}, "aliases": list(self.aliases),
             "params": {k: {"type": p.kind, "default": p.default} for k, p in self.params.items()},
         }
@@ -158,6 +160,10 @@ SKILLS: tuple[Skill, ...] = (
           {"radius": _p("int", 8, 3, 16), "count": _p("int", 6, 1, 32)}, timeout=120.0, aliases=("light_area",)),
     Skill("build_shelter", "building", "wall yourself in with a roof (emergency night shelter)", {}, "building",
           "build_shelter", {"block": _p("str", "")}, timeout=90.0, aliases=("shelter",)),
+    Skill("web_snare", "building", "manually place a small cobweb snare on a private arena floor",
+          {"x": 0, "y": 64, "z": 0, "pattern": "single", "confirm": False}, "building", "web_snare",
+          {"x": _p("int"), "y": _p("int"), "z": _p("int"), "pattern": _p("str", "single"),
+           "confirm": _p("bool", False)}, timeout=25.0, manual_only=True),
     Skill("pillar_up", "building", "jump and place blocks under you to tower up", {"height": 4}, "building",
           "pillar_up", {"height": _p("int", 4, 1, 32), "block": _p("str", "")}, timeout=60.0, aliases=("tower",)),
     Skill("activate", "building", "use a door, button, lever, trapdoor or gate", {"block": "door"}, "movement",
@@ -192,6 +198,10 @@ SKILLS: tuple[Skill, ...] = (
           timeout=620.0, aliases=("protect",)),
     Skill("hunt", "combat", "hunt an animal for food and pick up the drops", {"animal": "cow"}, "fighting",
           params={"animal": _p("str", "")}, timeout=60.0),
+    Skill("duel_player", "combat", "manually attempt a short melee duel with a named consenting player",
+          {"player": "Steve", "seconds": 5, "confirm": False}, "fighting", "duel_player",
+          {"player": _p("str", ""), "seconds": _p("int", 5, 1, 15), "confirm": _p("bool", False)},
+          timeout=20.0, manual_only=True),
     Skill("critical_hit", "combat", "attempt a falling melee hit on a nearby mob (not guaranteed critical)",
           {"mob": "zombie"}, "fighting", "critical_hit", {"mob": _p("str", "")}, timeout=5.0,
           aliases=("crit",)),
@@ -238,7 +248,7 @@ def catalogue() -> list[dict[str, Any]]:
 
 def action_examples() -> dict[str, str]:
     """``{name: "summary: {json example}"}`` - merged into the agent's ACTIONS table."""
-    return {s.name: f'{s.summary}: {json.dumps({"action": s.name, **s.example})}' for s in SKILLS}
+    return {s.name: f'{s.summary}: {json.dumps({"action": s.name, **s.example})}' for s in SKILLS if not s.manual_only}
 
 
 #: Permission defaults of the prompt (same as the AI's switches out of the box: building is off).
@@ -250,6 +260,8 @@ def prompt_reference(allowed: dict[str, bool] | None = None) -> str:
     allowed = {**_PROMPT_DEFAULTS, **(allowed or {})}
     lines = [" skills (bigger jobs that take a while - pick one and let it finish)"]
     for skill in SKILLS:
+        if skill.manual_only:
+            continue
         if skill.permission != "none" and not allowed.get(skill.permission, True):
             continue
         example = json.dumps({"action": skill.name, **skill.example}, separators=(", ", ": "))
@@ -290,11 +302,13 @@ def clean_params(skill: Skill, params: dict[str, Any] | None) -> dict[str, Any]:
                 value = value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "yes", "on")
             else:
                 value = short(str(value)).replace(" ", "_")[:64]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             if spec.default is not None:
                 out[key] = spec.default
             continue
         if spec.kind in ("int", "float"):
+            if not math.isfinite(value):
+                continue
             if spec.low is not None:
                 value = max(type(value)(spec.low), value)
             if spec.high is not None:
@@ -357,6 +371,12 @@ def _server_key(bot: MinecraftBot) -> str:
 # ---------------------------------------------------------------------------- running a skill
 def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Do one skill now. Returns ``(ok, what happened)`` in the words the AI and the panel show."""
+    if skill.name in ("web_snare", "duel_player") and (not params or params.get("confirm") is not True):
+        return False, "explicit confirm=true is required"
+    if skill.name == "duel_player" and not bot.store.settings.agent.allow_attacking:
+        return False, "player attacking is disabled in settings"
+    if skill.name == "web_snare" and any(type(params.get(key)) is not int for key in ("x", "y", "z")):
+        return False, "snare x, y, z must be integer block coordinates"
     params = clean_params(skill, params)
     python = _PYTHON_SKILLS.get(skill.name)
     if python is not None:

@@ -1668,7 +1668,7 @@ function pickSkill(skill) {
   delete example.action;
   $('skill-params').value = Object.keys(example).length ? JSON.stringify(example) : '';
   const params = Object.entries(skill.params || {}).map(([k, p]) => `${k} (${p.type}${p.default !== null && p.default !== '' ? `, default ${p.default}` : ''})`);
-  $('skill-info').textContent = `${skill.name}: ${skill.summary}` + (params.length ? ` · options: ${params.join(', ')}` : '');
+  $('skill-info').textContent = `${skill.name}: ${skill.summary}` + (skill.manual_only ? ' · manual only; confirm explicitly after reviewing the risks' : '') + (params.length ? ` · options: ${params.join(', ')}` : '');
   for (const el of document.querySelectorAll('#skill-list .btn')) el.classList.toggle('selected', el.dataset.skill === skill.name);
 }
 
