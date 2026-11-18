@@ -261,6 +261,15 @@ jobs:
           if grep -qi gametest jar-contents.txt || grep -q "fabric-client-gametest" fabric.mod.json.out; then
             echo "::error::$jar contains game test code"; exit 1
           fi
+      - name: Compile experimental Quilt compatibility jar (not an in-game validation)
+        if: matrix.mc == '1.21.1'
+        working-directory: mod
+        run: |
+          set -o pipefail
+          ./gradlew build -Pmc=1.21.1 -PexperimentalQuilt=true --no-daemon --stacktrace 2>&1 | tee gradle-quilt.log
+          jar=$(ls build/libs/experimental-quilt-pymcbot-*+1.21.1.jar)
+          unzip -p "$jar" fabric.mod.json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["depends"]["fabricloader"] == ">=0.19.3"; assert d["depends"]["minecraft"] == "1.21.1"'
+          unzip -p build/libs/pymcbot-*+1.21.1.jar fabric.mod.json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["depends"]["fabricloader"] == ">=0.19.5"'
       - name: Extract the gradle errors
         if: failure()
         run: |

@@ -38,8 +38,9 @@ The **PyMC Bot** companion mod: a client-side Fabric mod that records **your own
 PyMC_Bot's player model: where you were, where you looked, what was around you (3×3×3
 blocks + nearby entities) and **which key you pressed** at that moment.
 
-**Works on every Fabric release from Minecraft 1.21.1 to 26.3** – one small jar per version,
-all built from the same source (see [Supported versions](#supported-versions)).
+The Fabric build targets the 16 Minecraft releases listed under [Supported versions](#supported-versions),
+one jar per version. Compilation does not establish that every feature works in game; in particular,
+player takeover has not yet been validated in a real client.
 
 **Download:** every jar is attached to the GitHub release
 [`pymcbot-v0.8.0`](https://github.com/codero-sus/PyMC_Bot/releases/tag/pymcbot-v0.8.0) (all releases: [Releases](https://github.com/codero-sus/PyMC_Bot/releases)) – no
@@ -95,6 +96,36 @@ cannot hand-roll), `settings.gradle`/`build.gradle`/`gradle.properties` (mod id
 `fabric.mod.json` and the Java sources under `src/`. The template's example mixins were
 deleted — this mod needs no mixins at all: it reads the vanilla key mappings and the
 client tick event, so it cannot break on other mods' code.
+
+## Loader and version status
+
+- **Fabric:** the 16 exact build targets below; no claim of support for earlier releases or snapshots.
+- **Quilt:** an experimental local compatibility build for Minecraft 1.21.1 is available below.
+  It has not been built or launched on Quilt yet. Standard jars require Fabric Loader 0.19.5;
+  Quilt Loader 0.30.1 reports Fabric Loader 0.19.3 and therefore cannot resolve that requirement.
+- **NeoForge and Forge:** no native port is available. Sinytra Connector may load some Fabric mods
+  on certain NeoForge versions, but this mod and its takeover safeguards have not been validated
+  with it. Do not assume compatibility or install a Fabric jar as a native Forge/NeoForge mod.
+
+### Experimental Quilt build (1.21.1 only)
+
+From `mod/`, with the JDK and build prerequisites described below:
+
+```bash
+./gradlew clean build -Pmc=1.21.1 -PexperimentalQuilt=true
+```
+
+On Windows use `gradlew.bat` instead. This produces
+`build/libs/experimental-quilt-pymcbot-<version>+1.21.1.jar`. It is the same Fabric source,
+not a native Quilt port: it compiles against the normal Fabric Loader dependency but declares
+`fabricloader >=0.19.3` to allow Quilt 0.30.1 to try to resolve it. You still need a compatible
+Fabric API implementation for that exact Minecraft/Quilt combination; its own requirements can
+prevent loading. Lowering the metadata requirement alone does not establish compatibility.
+Use a disposable client profile and world, back up data, and do not use takeover on a real world
+or server until the features and emergency release have been verified in that environment. Install
+only one PyMC Bot jar at a time. Keep the experimental filename unchanged: the existing automatic
+mod updater only handles conventionally named release jars, so this build will not auto-update.
+It is not published as a Quilt release. Normal builds and release metadata remain unchanged.
 
 ## Supported versions
 
