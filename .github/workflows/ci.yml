@@ -149,7 +149,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS arm64 hosted runners have repeatedly failed to acquire a runner; keep a real
+        # macOS check on the standard Intel image rather than skipping the publication gate.
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
     env:
       GITHUB_TOKEN: ${{ github.token }}   # raises the API rate limit for the live checks
     steps:
