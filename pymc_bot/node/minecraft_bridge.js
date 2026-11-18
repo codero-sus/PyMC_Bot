@@ -2052,23 +2052,25 @@ async function cmdDuelPlayer(params) {
   const seconds = Number(params.seconds === undefined ? 5 : params.seconds);
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 15) throw new Error('seconds must be between 1 and 15');
   const mode = String(params.mode || 'normal');
-  if (!['normal', 'swap'].includes(mode)) throw new Error('duel mode must be normal or swap');
-  if (mode === 'swap' && seconds < 2) throw new Error('swap mode needs at least 2 seconds');
+  const swapTargets = { swap: '_axe', axe_swap: '_axe', mace_swap: 'mace', spear_swap: '_spear' };
+  if (!['normal', 'axe', ...Object.keys(swapTargets)].includes(mode)) throw new Error('unknown duel mode');
+  if (mode !== 'normal' && seconds < 2) throw new Error('this mode needs at least 2 seconds');
   const target = Object.values(bot.entities || {}).find((e) => e && e !== bot.entity && e.username && e.username.toLowerCase() === wanted);
   if (!target || !target.position || target.isValid === false) throw new Error('named player is not visible');
-  let swordSlot = null, axeSlot = null;
-  if (mode === 'swap') {
+  let baseSlot = null, swapSlot = null;
+  const expectedSwap = swapTargets[mode];
+  if (mode !== 'normal') {
     const hotbar = invItems().filter((item) => item.slot >= 36 && item.slot <= 44);
-    const sword = hotbar.find((item) => item.name.endsWith('_sword'));
-    const axe = hotbar.find((item) => item.name.endsWith('_axe'));
-    if (!sword || !axe) throw new Error('swap mode requires a sword and an axe in hotbar slots');
-    swordSlot = sword.slot - 36;
-    axeSlot = axe.slot - 36;
-    bot.setQuickBarSlot(swordSlot);
+    const base = hotbar.find((item) => item.name.endsWith(mode === 'axe' ? '_axe' : '_sword'));
+    const swapped = expectedSwap && hotbar.find((item) => item.name.endsWith(expectedSwap));
+    if (!base || (expectedSwap && !swapped)) throw new Error(`mode ${mode} requires the specified weapons in hotbar slots`);
+    baseSlot = base.slot - 36;
+    if (swapped) swapSlot = swapped.slot - 36;
+    bot.setQuickBarSlot(baseSlot);
   }
   let hits = 0, swaps = 0;
   const deadline = Date.now() + seconds * 1000;
-  if (mode === 'swap') await sleep(1000); // allow the sword to recharge before attempting a swap
+  if (mode !== 'normal') await sleep(1200); // wait after selecting a weapon; server owns cooldown
   while (Date.now() < deadline) {
     checkAction();
     if (!bot.entities[target.id] || target.isValid === false || !target.position) break;
@@ -2082,27 +2084,32 @@ async function cmdDuelPlayer(params) {
         bot.entity.position.distanceTo(target.position) > 3 || !hasMeleeSight(target) ||
         Object.values(bot.entities || {}).some((e) => e && e !== target && e !== bot.entity && e.position && e.isValid !== false &&
           (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3)) break;
-    if (mode === 'swap') {
+    if (mode !== 'normal') {
       const slots = bot.inventory && bot.inventory.slots;
-      if (!slots || !slots[36 + swordSlot] || !slots[36 + swordSlot].name.endsWith('_sword') ||
-          !slots[36 + axeSlot] || !slots[36 + axeSlot].name.endsWith('_axe')) break;
-      // Issue a sword hit followed immediately by an axe swap and hit. Whether any
-      // server uses stale attributes or permits extra damage is entirely server-side.
-      bot.attack(target);
-      bot.setQuickBarSlot(axeSlot);
-      bot.attack(target);
-      bot.setQuickBarSlot(swordSlot);
-      hits += 2;
-      swaps++;
-    } else {
-      bot.attack(target);
-      hits++;
+      const base = slots && slots[36 + baseSlot];
+      const second = expectedSwap && slots && slots[36 + swapSlot];
+      if (!base || !base.name.endsWith(mode === 'axe' ? '_axe' : '_sword') ||
+          (expectedSwap && (!second || !second.name.endsWith(expectedSwap)))) break;
     }
-    await sleep(1000);
+    bot.attack(target);
+    hits++;
+    if (expectedSwap) {
+      // Attack first, then switch in the same event-loop turn. The server decides
+      // which attributes apply; no client-side bypass or damage is guaranteed.
+      bot.setQuickBarSlot(swapSlot);
+      swaps++;
+      if (mode === 'swap') { bot.attack(target); hits++; }
+      await sleep(100);
+      checkAction();
+      const base = bot.inventory && bot.inventory.slots && bot.inventory.slots[36 + baseSlot];
+      if (!base || !base.name.endsWith('_sword')) break;
+      bot.setQuickBarSlot(baseSlot);
+    }
+    await sleep(mode === 'axe' ? 1250 : (expectedSwap ? 1100 : 1000));
   }
   if (!hits) throw new Error('duel stopped without a hit: target out of reach/sight, health low, or another player nearby');
   return { target: target.username, hits, swaps, mode, message: `duel stopped after ${hits} attempted hit(s)` +
-    (mode === 'swap' ? ` and ${swaps} swap sequence(s); cooldown bypass is not confirmed` : '; damage and consent are not verified') };
+    (expectedSwap ? ` and ${swaps} swap sequence(s); attribute effects and cooldown bypass are not confirmed` : '; damage and consent are not verified') };
 }
 
 function combatTarget(params, range) {
