@@ -136,6 +136,10 @@ def multipart(data: dict[str, Any], jar: Path, filename: str | None = None) -> t
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+class AuthorizationError(SystemExit):
+    """Authentication and authorization errors cannot be fixed by trying every jar."""
+
+
 def _retry_delay(headers: Any, attempt: int) -> float:
     """Seconds to wait before the next try: Retry-After / X-Ratelimit-Reset, else 2, 4, 8, 16 s."""
     for name in ("Retry-After", "X-Ratelimit-Reset"):
@@ -169,7 +173,10 @@ def request(method: str, path: str, token: str | None, body: bytes | None = None
                 print(f"  Modrinth answered HTTP {exc.code} - retrying in {delay:.0f}s", file=sys.stderr)
                 sleep(delay)
                 continue
-            raise SystemExit(f"Modrinth {method} {path} failed: HTTP {exc.code} {detail}") from None
+            error = f"Modrinth {method} {path} failed: HTTP {exc.code} {detail}"
+            if exc.code in (401, 403):
+                raise AuthorizationError(error) from None
+            raise SystemExit(error) from None
         except urllib.error.URLError as exc:
             if attempt + 1 < attempts:
                 sleep(_retry_delay(None, attempt))
@@ -209,6 +216,19 @@ def metadata(data: dict[str, Any]) -> dict[str, Any]:
     """Fields of a create-version payload that PATCH /version/{id} accepts."""
     keys = ("name", "changelog", "game_versions", "loaders", "version_type", "featured", "dependencies", "status")
     return {key: data[key] for key in keys}
+
+
+def resolve_project_id(project: str, token: str, call: Callable[..., Any] = None) -> str:
+    """Resolve the slug before using it in a create-version payload, which requires an ID."""
+    info = (call or request)("GET", f"/project/{project}", token)
+    if not isinstance(info, dict):
+        raise SystemExit("Modrinth project lookup returned an invalid response")
+    project_id, slug = info.get("id"), info.get("slug")
+    if not isinstance(project_id, str) or not re.fullmatch(r"[0-9A-Za-z]{1,32}", project_id):
+        raise SystemExit("Modrinth project lookup did not return a valid project ID")
+    if project != project_id and (not isinstance(slug, str) or project.casefold() != slug.casefold()):
+        raise SystemExit("Modrinth project lookup returned a different slug; refusing to publish")
+    return project_id
 
 
 def update_project(project: str, token: str, settings: dict[str, Any], call: Callable[..., Any] = None) -> None:
@@ -348,6 +368,8 @@ def sync_versions(
                 if stale and stale != local_hash and (jar_mc == this_mc or (jar_mc is None and entry.get("primary"))):
                     _delete_file(call, token, existing["id"], stale)
             print(f"~ {number} {action}")
+        except AuthorizationError:
+            raise
         except SystemExit as exc:
             hint = explain_duplicate(call, token, local_hash) if "Duplicate files" in str(exc) else ""
             print(f"! {number} failed: {exc}{hint}")
@@ -355,7 +377,7 @@ def sync_versions(
 
     # Only the newest Minecraft version of the current release stays featured.
     for version in remote:
-        if version.get("featured") and version.get("version_number") not in ours:
+        if not counts["failed"] and not counts["skipped"] and version.get("featured") and version.get("version_number") not in ours:
             try:
                 call("PATCH", f"/version/{version['id']}", token, json.dumps({"featured": False}).encode())
                 print(f"- {version.get('version_number')} no longer featured")
@@ -444,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dry run: {len(payloads)} jar(s).")
         return 0
 
+    project_id = resolve_project_id(project, token)
+    for data, _ in payloads:
+        data["project_id"] = project_id
     if settings:
         update_project(project, token, settings)
         print("updated the project: title, summary, description, links and licence")
