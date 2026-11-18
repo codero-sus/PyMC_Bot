@@ -315,7 +315,7 @@ public final class PymcCommands {
                 .then(guarded("gather").then(Mc.argument("item", StringArgumentType.word())
                         .then(Mc.argument("count", IntegerArgumentType.integer(1, 64))
                                 .executes(ctx -> gatherGoal(StringArgumentType.getString(ctx, "item"),
-                                        IntegerArgumentType.getInteger(ctx, "count")))))
+                                        IntegerArgumentType.getInteger(ctx, "count"))))))
                 .then(literal("goal")
                         .executes(ctx -> goalStatus())
                         .then(literal("status").executes(ctx -> goalStatus()))
