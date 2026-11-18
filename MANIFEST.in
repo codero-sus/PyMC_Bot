@@ -3,4 +3,12 @@ prune pynb
 prune scripts
 prune mod
 prune docs
+include sandbox/minecraft-skill-lab/Dockerfile
+include sandbox/minecraft-skill-lab/.dockerignore
+include sandbox/minecraft-skill-lab/README.md
+include sandbox/minecraft-skill-lab/package.json
+include sandbox/minecraft-skill-lab/package-lock.json
+include sandbox/minecraft-skill-lab/runner.js
+include sandbox/minecraft-skill-lab/worker.js
 global-exclude *.ipynb
+exclude sandbox/minecraft-skill-lab/server.jar

@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!server.jar
+!runner.js
+!worker.js

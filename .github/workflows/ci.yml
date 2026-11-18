@@ -53,13 +53,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Syntax check the bridge, the panel JS and the test fixture
+      - name: Syntax check the bridge, panel and skill lab
         run: |
           node --check pymc_bot/node/minecraft_bridge.js
           node --check pymc_bot/node/probe.js
           node --check pymc_bot/node/potions.js
           node --check pymc_bot/node/safety.js
           node --check pymc_bot/web/app.js
+          node --check sandbox/minecraft-skill-lab/runner.js
+          node --check sandbox/minecraft-skill-lab/worker.js
           node scripts/check_ui.mjs
       - uses: actions/setup-python@v5
         with:

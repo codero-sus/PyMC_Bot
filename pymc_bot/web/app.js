@@ -557,6 +557,7 @@ function fillForm(cfg) {
   check('cfg-allow-mob-fighting', ag.allow_mob_fighting !== false);
   check('cfg-allow-risky-combat', ag.allow_risky_combat === true);
   check('cfg-skill-drafts', ag.allow_skill_drafts === true);
+  check('cfg-code-proposals', ag.allow_code_proposals === true);
   const se = cfg.search || {};
   check('cfg-search-enabled', se.enabled !== false && ag.allow_web_search !== false);
   set('cfg-search-provider', se.provider || 'minecraft_wiki');
@@ -694,6 +695,7 @@ function collectForm() {
       allow_mob_fighting: $('cfg-allow-mob-fighting').checked,
       allow_risky_combat: $('cfg-allow-risky-combat').checked,
       allow_skill_drafts: $('cfg-skill-drafts').checked,
+      allow_code_proposals: $('cfg-code-proposals').checked,
       allow_web_search: $('cfg-search-enabled').checked,
       greet_players: $('cfg-greet').checked,
       persona: selectedBehaviour(),
@@ -1212,6 +1214,8 @@ async function fleetCall(path, params, method = 'POST') {
 }
 
 async function selectBot(username) {
+  clearCodeReview();
+  codeScope = null;
   const result = await api('/api/fleet/select', { method: 'POST', body: JSON.stringify({ bot: username }) });
   appendLog({ level: 'info', source: 'panel', message: `Now controlling ${result.selected}`, time: nowTime() });
   renderStatus(await api('/api/status'));
@@ -1734,6 +1738,83 @@ async function deleteDraft() {
   await loadDrafts();
 }
 
+let reviewedCode = null;
+let codeScope = null;
+let codeReviewEpoch = 0;
+function clearCodeReview() {
+  codeReviewEpoch++;
+  reviewedCode = null;
+  $('code-preview').textContent = '';
+  $('code-trial').disabled = true;
+  $('code-approve').disabled = true;
+}
+
+async function loadCodeSkills() {
+  clearCodeReview();
+  const epoch = codeReviewEpoch;
+  const data = await api('/api/code-skills');
+  if (epoch !== codeReviewEpoch) return;
+  codeScope = data.scope;
+  const select = $('code-select');
+  select.replaceChildren(new Option('Choose a proposal', ''));
+  for (const row of data.proposals || []) select.add(new Option(`${row.name} · ${row.test?.status || 'not run'}`, row.name));
+  $('code-status').textContent = `${(data.proposals || []).length} proposal(s) for the selected bot/server`;
+}
+
+async function createCodeSkill() {
+  const name = $('code-name').value.trim();
+  if (!codeScope) throw new Error('Refresh proposals for the selected bot first');
+  if (!name || !$('code-request').value.trim()) throw new Error('Enter a name and request');
+  if ([...$('code-select').options].some(option => option.value === name) &&
+      !window.confirm(`Replace ${name}? This invalidates its review.`)) return;
+  $('code-create').disabled = true;
+  $('code-status').textContent = 'Generating; the isolated trial may take up to two minutes…';
+  try {
+    const result = await api('/api/code-skills', { method: 'POST', body: JSON.stringify({
+      name, request: $('code-request').value.trim(), provider: $('code-provider').value, scope: codeScope,
+    }) });
+    await loadCodeSkills();
+    $('code-status').textContent = `Created ${result.name}: ${result.test.status} · ${result.test.detail}`;
+  } finally { $('code-create').disabled = false; }
+}
+
+async function reviewCodeSkill() {
+  clearCodeReview();
+  const epoch = codeReviewEpoch;
+  const name = $('code-select').value;
+  if (!name) throw new Error('Choose a proposal first');
+  const row = await api(`/api/code-skills/${encodeURIComponent(name)}`);
+  if (epoch !== codeReviewEpoch || $('code-select').value !== name) return;
+  if (row.scope !== codeScope) throw new Error('Selected bot/server changed; refresh proposals');
+  reviewedCode = { name, digest: row.digest, scope: row.scope, revision: row.revision };
+  $('code-preview').textContent = `REQUEST: ${row.request}\nSHA-256: ${row.digest}\nTRIAL: ${row.test.status} · ${row.test.detail || ''}\nREVIEW: ${row.status}\n\nUNTRUSTED JAVASCRIPT\n${row.source}`;
+  $('code-status').textContent = 'Read the source carefully. Trial results do not establish safety or correctness.';
+  $('code-trial').disabled = false;
+  $('code-approve').disabled = row.test.status !== 'completed_unverified';
+}
+
+async function codeAction(action) {
+  if (!reviewedCode || reviewedCode.name !== $('code-select').value) throw new Error('Review the proposal first');
+  const row = reviewedCode;
+  if (!window.confirm(action === 'approve'
+    ? 'Record your review of this exact code? This does not enable live execution or certify safety.'
+    : 'Retry this code only in the configured isolated test world?')) return;
+  clearCodeReview();
+  $('code-status').textContent = action === 'trial' ? 'Running isolated trial…' : 'Recording review…';
+  const result = await api(`/api/code-skills/${encodeURIComponent(row.name)}/${action}`, {
+    method: 'POST', body: JSON.stringify({ confirm: true, digest: row.digest, scope: row.scope, revision: row.revision }),
+  });
+  $('code-status').textContent = action === 'trial' ? `${result.test.status} · ${result.test.detail}` : 'Review recorded; live execution remains disabled.';
+}
+
+async function deleteCodeSkill() {
+  const name = $('code-select').value;
+  if (!codeScope) throw new Error('Refresh proposals for the selected bot first');
+  if (!name || !window.confirm(`Delete proposal ${name}?`)) return;
+  await api(`/api/code-skills/${encodeURIComponent(name)}?scope=${encodeURIComponent(codeScope)}`, { method: 'DELETE' });
+  await loadCodeSkills();
+}
+
 async function loadAutopilot() {
   const data = await api('/api/autopilot/status');
   autopilotRules = data.rules || [];
@@ -1809,6 +1890,13 @@ function wireSkills() {
   $('draft-review').addEventListener('click', () => reviewDraft().catch(reportError));
   $('draft-run').addEventListener('click', () => runDraft().catch(reportError));
   $('draft-delete').addEventListener('click', () => deleteDraft().catch(reportError));
+  $('code-select').addEventListener('change', clearCodeReview);
+  $('code-create').addEventListener('click', () => createCodeSkill().catch(reportError));
+  $('code-refresh').addEventListener('click', () => loadCodeSkills().catch(reportError));
+  $('code-review').addEventListener('click', () => reviewCodeSkill().catch(reportError));
+  $('code-trial').addEventListener('click', () => codeAction('trial').catch(reportError));
+  $('code-approve').addEventListener('click', () => codeAction('approve').catch(reportError));
+  $('code-delete').addEventListener('click', () => deleteCodeSkill().catch(reportError));
   $('ap-enabled').addEventListener('change', () => saveAutopilot({ enabled: $('ap-enabled').checked }));
   $('ap-rules').addEventListener('change', (event) => {
     const flag = event.target.dataset.apFlag;
@@ -1915,6 +2003,7 @@ async function boot() {
   } catch (err) { reportError(err); }
   try { await loadSkills(); } catch (err) { reportError(err); }
   try { await loadDrafts(); } catch (err) { reportError(err); }
+  try { await loadCodeSkills(); } catch (err) { reportError(err); }
   try { await loadAutopilot(); } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   try { updateCortexPill(await api('/api/cortex/health')); } catch (err) { /* ignore */ }

@@ -116,6 +116,12 @@ class CodeSkillRequest(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     request: str = Field(min_length=1, max_length=500)
     provider: Literal["ollama", "cortex"] = "ollama"
+    scope: str | None = Field(default=None, pattern=r"^[0-9a-f]{24}$")
+
+
+class CodeReviewRequest(RunDraftRequest):
+    scope: str = Field(pattern=r"^[0-9a-f]{24}$")
+    revision: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class SkillRequest(BaseModel):
@@ -1571,7 +1577,8 @@ def create_app(
     @app.get("/api/code-skills")
     def list_code_skills() -> dict[str, Any]:
         try:
-            return {"proposals": code_store().list()}
+            target = code_store()
+            return {"proposals": target.list(), "scope": target.scope}
         except (OSError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -1581,6 +1588,8 @@ def create_app(
         try:
             name, description = validate_request(request.name, request.request)
             target = code_store()  # capture the bot/server before the model call
+            if request.scope is not None and request.scope != target.scope:
+                raise HTTPException(409, "selected bot/server changed; refresh proposals")
         except (OSError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         if not code_generation_lock.acquire(blocking=False):
@@ -1603,10 +1612,13 @@ def create_app(
                 client.close()
             proposal = target.save(name, description, source)
             result = run_isolated(proposal["source"])
-            target.set_test(name, proposal["digest"], result)
-            return target.get(name)
+            if not target.set_test(name, proposal["digest"], proposal["revision"], result):
+                raise HTTPException(409, "proposal changed during trial; review again")
+            return {**target.get(name), "scope": target.scope}
         except (OllamaError, CortexError) as exc:
             raise HTTPException(502, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(409, "proposal was deleted during trial") from exc
         except (OSError, ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc)) from exc
         finally:
@@ -1615,16 +1627,58 @@ def create_app(
     @app.get("/api/code-skills/{name}")
     def get_code_skill(name: str) -> dict[str, Any]:
         try:
-            return code_store().get(name)
+            target = code_store()
+            return {**target.get(name), "scope": target.scope}
         except KeyError as exc:
             raise HTTPException(404, "proposal not found") from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
-    @app.delete("/api/code-skills/{name}")
-    def delete_code_skill(name: str) -> dict[str, Any]:
+    @app.post("/api/code-skills/{name}/trial")
+    def trial_code_skill(name: str, request: CodeReviewRequest) -> dict[str, Any]:
+        from pymc_bot.code_lab import run_isolated
+        if request.confirm is not True:
+            raise HTTPException(422, "explicit confirmation required")
         try:
-            return {"deleted": code_store().delete(name)}
+            target = code_store()
+            if target.scope != request.scope:
+                raise HTTPException(409, "selected bot/server changed; review again")
+            proposal = target.get(name)
+            if proposal['digest'] != request.digest or proposal['revision'] != request.revision:
+                raise HTTPException(409, "proposal changed; review it again")
+            if not target.set_test(name, request.digest, request.revision,
+                                   {"status": "running", "detail": "Trial requested; review invalidated."}):
+                raise HTTPException(409, "proposal changed; review it again")
+            result = run_isolated(proposal['source'])
+            if not target.set_test(name, request.digest, request.revision, result):
+                raise HTTPException(409, "proposal changed during trial; review again")
+            return {**target.get(name), "scope": target.scope}
+        except KeyError as exc:
+            raise HTTPException(404, "proposal not found") from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/code-skills/{name}/approve")
+    def approve_code_skill(name: str, request: CodeReviewRequest) -> dict[str, Any]:
+        if request.confirm is not True:
+            raise HTTPException(422, "explicit confirmation required")
+        try:
+            target = code_store()
+            if target.scope != request.scope:
+                raise HTTPException(409, "selected bot/server changed; review again")
+            return {**target.approve(name, request.digest, request.revision), "scope": target.scope}
+        except KeyError as exc:
+            raise HTTPException(404, "proposal not found") from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/api/code-skills/{name}")
+    def delete_code_skill(name: str, scope: str | None = Query(default=None, pattern=r"^[0-9a-f]{24}$")) -> dict[str, Any]:
+        try:
+            target = code_store()
+            if scope is not None and target.scope != scope:
+                raise HTTPException(409, "selected bot/server changed; refresh proposals")
+            return {"deleted": target.delete(name)}
         except (OSError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
 

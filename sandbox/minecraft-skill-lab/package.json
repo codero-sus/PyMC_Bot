@@ -1,0 +1,9 @@
+{
+  "name": "pymc-bot-skill-lab",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "mineflayer": "4.39.0",
+    "mineflayer-pathfinder": "2.4.5"
+  }
+}

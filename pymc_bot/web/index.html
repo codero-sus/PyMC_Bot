@@ -429,6 +429,7 @@
         <label class="check"><input id="cfg-allow-mob-fighting" type="checkbox" /> fight mobs</label>
         <label class="check" title="Allows the AI to use risky mace setups and throw tridents; items may be lost and falls can kill"><input id="cfg-allow-risky-combat" type="checkbox" /> allow risky combat for AI</label>
         <label class="check" title="The model may write structured drafts; an operator must review and run each one"><input id="cfg-skill-drafts" type="checkbox" /> allow AI to write review-only skill drafts</label>
+        <label class="check" title="AI may propose JavaScript; trials require a separately configured isolated lab"><input id="cfg-code-proposals" type="checkbox" /> allow AI to propose JavaScript skills</label>
         <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
       </div>
       <p id="ai-status" class="note"></p>
@@ -629,6 +630,24 @@
       </div>
       <pre id="draft-preview" class="note" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
       <p id="draft-status" class="note" aria-live="polite"></p>
+      <h3>Mineflayer JavaScript proposals</h3>
+      <p class="note">Untrusted source is never run on your server. Trials require an operator-configured isolated lab and their result is not proof of safety. Approval records review only; live execution is not supported.</p>
+      <div class="inline">
+        <input id="code-name" type="text" maxlength="32" placeholder="skill_name" aria-label="Proposal name" />
+        <input id="code-request" type="text" maxlength="500" placeholder="Describe the Minecraft skill" aria-label="Skill request" />
+        <select id="code-provider" aria-label="Model provider"><option value="ollama">Ollama</option><option value="cortex">Cortex</option></select>
+        <button id="code-create" class="btn primary">Generate proposal</button>
+      </div>
+      <div class="inline">
+        <select id="code-select" aria-label="JavaScript proposal"><option value="">Choose a proposal</option></select>
+        <button id="code-refresh" class="btn ghost">Refresh</button>
+        <button id="code-review" class="btn ghost">Review source</button>
+        <button id="code-trial" class="btn ghost" disabled>Retry isolated trial</button>
+        <button id="code-approve" class="btn ghost" disabled>Record review</button>
+        <button id="code-delete" class="btn ghost">Delete</button>
+      </div>
+      <pre id="code-preview" class="note" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+      <p id="code-status" class="note" aria-live="polite"></p>
     </section>
 
     <!-- ----------------------------------------------------------- autopilot -->

@@ -34,8 +34,13 @@ pymc_bot_auth.json
 /pymcbot/
 /pymc-playtime/
 
-# Private local bot experience (chat snippets and action outcomes)
+# Private local bot experience and proposed source
 bot-memory/
+code-skill-proposals/
+skill-drafts/
+
+# Operator-provided Minecraft server, never redistributed
+sandbox/minecraft-skill-lab/server.jar
 
 # web lookup cache of the AI (pymc_bot.knowledge)
 knowledge_cache.json

@@ -84,6 +84,7 @@ ACTIONS: dict[str, str] = {
     "search": 'look something up (Minecraft Wiki): {"action": "search", "query": "how to tame a wolf"}',
     "inspect_item": 'inspect the client registry: {"action": "inspect_item", "item": "copper_ingot"}',
     "draft_skill": 'write a review-only skill draft: {"action":"draft_skill","skill_name":"wood_job","steps":[{"action":"chop_tree","params":{"count":2}}]}',
+    "propose_code_skill": 'propose Mineflayer code for review: {"action":"propose_code_skill","skill_name":"wood_job","request":"gather wood","source":"module.exports = async function (bot) { /* code */ }"}',
 }
 # the 44 skills: chop_tree, mine_ore, craft, smelt, harvest, deposit, go_home, guard... (pymc_bot.skills)
 ACTIONS.update(skills.action_examples())
@@ -912,6 +913,12 @@ class AgentLoop:
                        'Use {"action":"draft_skill","skill_name":"wood_job","steps":'
                        '[{"action":"chop_tree","params":{"count":2}}]}. '
                        f'Allowed draft actions: {", ".join(sorted(ALLOWED))}. Maximum six steps.\n')
+        if agent.allow_code_proposals:
+            prompt += ('You may propose a new Mineflayer JavaScript skill for human review using '
+                       '{"action":"propose_code_skill","skill_name":"new_job","request":"what it does",'
+                       '"source":"module.exports = async function (bot) { /* JavaScript */ }"}. '
+                       'It is not run on this server; sandbox testing may be unavailable. '
+                       'Propose sparingly, only when useful; do not put secrets in proposals.\n')
         return prompt
 
     def _build_prompt(self, settings: AppSettings, state: dict[str, Any]) -> str:
@@ -1099,6 +1106,18 @@ class AgentLoop:
                 return False, "search needs a query"
             result = self.look_up(query)
             return (True, f"looked up {query}: {result.summary(240)}") if result.ok else (False, f"found nothing for {query}: {result.error}")
+
+        if action == "propose_code_skill":
+            if not agent.allow_code_proposals:
+                return False, "AI code proposals are disabled in settings"
+            from pymc_bot.code_lab import CodeStore, submit_ai_proposal
+            host, port = self.bot.memory_server
+            target = CodeStore(self.store.path.parent, f"{host}:{port}/{self.bot.username}")
+            try:
+                row = submit_ai_proposal(target, params.get("skill_name"), params.get("request"), params.get("source"))
+            except (OSError, ValueError, TypeError) as exc:
+                return False, f"proposal rejected: {exc}"
+            return True, f"saved JavaScript proposal {row['name']} for review; isolated trial scheduled, never run on this server"
 
         if action == "draft_skill":
             if not agent.allow_skill_drafts:
@@ -1372,16 +1391,19 @@ class AgentLoop:
             decision = (Decision("wait", {}, "heuristic", thought="That approach failed twice; pause and reassess.")
                         if self.recovery.should_defer(alternative, state) else alternative)
         self._decisions += 1
-        self._last_decision = {**decision.to_dict(), "ts": time.time()}
+        # Keep potentially large untrusted code out of logs, conversational memory and turn datasets.
+        display = (Decision(decision.action, {"skill_name": str(decision.params.get("skill_name", ""))[:32]}, decision.source)
+                   if decision.action == "propose_code_skill" else decision)
+        self._last_decision = {**display.to_dict(), "ts": time.time()}
         self.mind.resize(self._settings().agent.memory_turns)
-        self.mind.note_decision(decision)
-        if decision.thought:
-            self.log.add(f"💭 {decision.thought}" + (f"  [goal: {decision.goal}]" if decision.goal else ""), "ai", "agent")
-        self.log.add(f"AI chose: {decision.action} {decision.params or ''}".rstrip(), "ai", "agent")
+        self.mind.note_decision(display)
+        if display.thought:
+            self.log.add(f"💭 {display.thought}" + (f"  [goal: {display.goal}]" if display.goal else ""), "ai", "agent")
+        self.log.add(f"AI chose: {display.action} {display.params or ''}".rstrip(), "ai", "agent")
         ok, detail = self.execute(decision)
         if isinstance(state, dict):
-            self.recovery.record(decision, state, ok, detail)
-        self.mind.note_result(decision, ok, detail)
+            self.recovery.record(display, state, ok, detail)
+        self.mind.note_result(display, ok, detail)
         if self._settings().agent.persistent_memory:
             try:
                 experience = self.experience()
@@ -1394,6 +1416,9 @@ class AgentLoop:
                     experience.outcome(decision.action, ok, detail, decision.thought)
             except OSError as exc:
                 self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
-        self._record_turn(decision, ok, detail)
+        if decision.action == "propose_code_skill":
+            self._last_exchange = None
+        else:
+            self._record_turn(decision, ok, detail)
         self.log.add(f"{'✓' if ok else '✗'} {detail}", "info" if ok else "warn", "agent")
         return ok, detail
