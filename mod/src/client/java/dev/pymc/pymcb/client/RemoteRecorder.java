@@ -21,6 +21,8 @@ import net.minecraft.world.phys.Vec3;
 public final class RemoteRecorder {
     private BufferedWriter writer;
     private UUID target;
+    // A consent confirmation applies only to the world in which observation started.
+    private Object world;
     private String name;
     private String episode;
     private Path file;
@@ -52,13 +54,14 @@ public final class RemoteRecorder {
         } catch (IOException e) {
             return "could not start observation: " + e.getMessage();
         }
-        target = found.getUUID(); name = found.getName().getString(); previous = null;
+        target = found.getUUID(); world = mc.level; name = found.getName().getString(); previous = null;
         tick = 0; missing = 0; samples = 0;
         return "observing " + name + " -> " + file + " (visible movement/look only). Stop: /pymcbot observe stop";
     }
 
     public synchronized void tick(Minecraft mc) {
-        if (writer == null || mc.level == null || mc.player == null) return;
+        if (writer == null) return;
+        if (mc.level == null || mc.player == null || mc.level != world) { stop(); return; }
         if (++tick > 72000) { stop(); return; } // at most one hour
         if (tick % 4 != 0) return;
         Player found = null;
@@ -73,7 +76,7 @@ public final class RemoteRecorder {
         float nextYaw = found.getYRot(), nextPitch = found.getXRot();
         if (previous != null) {
             double distance = pos.distanceTo(previous);
-            double turn = Math.abs(((nextYaw - yaw + 540.0) % 360.0) - 180.0) + Math.abs(nextPitch - pitch);
+            double turn = Math.abs(Math.IEEEremainder((double) nextYaw - yaw, 360.0)) + Math.abs(nextPitch - pitch);
             // Teleports/packet gaps are not training actions. Stationary or ambiguous samples are skipped.
             if (distance < 2.0 && (distance > 0.02 || turn > 2.0)) {
                 Vec3 velocity = found.getDeltaMovement();
@@ -93,7 +96,7 @@ public final class RemoteRecorder {
     public synchronized String stop() {
         if (writer == null) return "remote observation is not running";
         try { writer.close(); } catch (IOException e) { PymcPlaytimeMod.LOGGER.warn("Remote observation close failed: {}", e.toString()); }
-        writer = null; target = null; previous = null;
+        writer = null; target = null; world = null; previous = null;
         return "remote observation stopped: " + samples + " inferred samples in " + file;
     }
 

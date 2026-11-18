@@ -124,16 +124,39 @@ class CodeStore:
             self._write(data)
         return row.copy()
 
-    def set_test(self, name: str, digest: str, revision: str, result: dict[str, Any]) -> bool:
+    def begin_trial(self, name: str, digest: str, revision: str) -> str:
+        """Reserve this revision for one trial and invalidate any prior review."""
         with _LOCK:
             data = self._load()
             row = data.get(name)
             if not row or row['digest'] != digest or row['revision'] != revision:
+                raise ValueError('proposal changed; review it again')
+            previous = row.get('test', {})
+            started = previous.get('started_at')
+            now = time.time()
+            if (previous.get('status') == 'running' and isinstance(started, (int, float))
+                    and now - 180 < started <= now + 60):
+                raise ValueError('a trial for this proposal is already running')
+            trial_id = uuid.uuid4().hex
+            row['test'] = {'status': 'running', 'detail': 'Isolated trial requested.',
+                           'trial_id': trial_id, 'started_at': now}
+            row['status'] = 'unreviewed'
+            row.pop('reviewed_digest', None)
+            self._write(data)
+            return trial_id
+
+    def finish_trial(self, name: str, digest: str, revision: str, trial_id: str,
+                     result: dict[str, Any]) -> bool:
+        """Only the active attempt may write its result; stale completions are ignored."""
+        with _LOCK:
+            data = self._load()
+            row = data.get(name)
+            if (not row or row['digest'] != digest or row['revision'] != revision
+                    or row.get('test', {}).get('trial_id') != trial_id
+                    or row.get('test', {}).get('status') != 'running'):
                 return False
             row['test'] = {'status': str(result.get('status', 'error'))[:40],
                            'detail': str(result.get('detail', ''))[:240]}
-            row['status'] = 'unreviewed'
-            row.pop('reviewed_digest', None)
             self._write(data)
             return True
 
@@ -174,12 +197,13 @@ def submit_ai_proposal(store: CodeStore, name: Any, request: Any, source: Any) -
         if _LAST_AI_PROPOSAL and now - _LAST_AI_PROPOSAL < 300:
             raise ValueError('AI proposals are limited to one every five minutes')
         row = store.save(name, request, source, replace=False)
+        trial_id = store.begin_trial(row['name'], row['digest'], row['revision'])
         _LAST_AI_PROPOSAL = now
 
     def trial() -> None:
         result = run_isolated(row['source'])
         try:
-            store.set_test(row['name'], row['digest'], row['revision'], result)
+            store.finish_trial(row['name'], row['digest'], row['revision'], trial_id, result)
         except (OSError, ValueError):
             pass  # The proposal can be deleted or edited while the sandbox runs.
 

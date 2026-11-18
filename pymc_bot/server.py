@@ -1611,8 +1611,9 @@ def create_app(
             finally:
                 client.close()
             proposal = target.save(name, description, source)
+            trial_id = target.begin_trial(name, proposal["digest"], proposal["revision"])
             result = run_isolated(proposal["source"])
-            if not target.set_test(name, proposal["digest"], proposal["revision"], result):
+            if not target.finish_trial(name, proposal["digest"], proposal["revision"], trial_id, result):
                 raise HTTPException(409, "proposal changed during trial; review again")
             return {**target.get(name), "scope": target.scope}
         except (OllamaError, CortexError) as exc:
@@ -1646,11 +1647,12 @@ def create_app(
             proposal = target.get(name)
             if proposal['digest'] != request.digest or proposal['revision'] != request.revision:
                 raise HTTPException(409, "proposal changed; review it again")
-            if not target.set_test(name, request.digest, request.revision,
-                                   {"status": "running", "detail": "Trial requested; review invalidated."}):
-                raise HTTPException(409, "proposal changed; review it again")
+            try:
+                trial_id = target.begin_trial(name, request.digest, request.revision)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
             result = run_isolated(proposal['source'])
-            if not target.set_test(name, request.digest, request.revision, result):
+            if not target.finish_trial(name, request.digest, request.revision, trial_id, result):
                 raise HTTPException(409, "proposal changed during trial; review again")
             return {**target.get(name), "scope": target.scope}
         except KeyError as exc:

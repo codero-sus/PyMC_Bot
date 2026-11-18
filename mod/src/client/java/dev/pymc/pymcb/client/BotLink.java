@@ -171,7 +171,8 @@ public final class BotLink {
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream();
                 byte[] chunk = new byte[8192];
                 int read;
-                while ((read = in.read(chunk)) > 0 && buffer.size() < 4_000_000) {
+                while ((read = in.read(chunk)) != -1) {
+                    if (buffer.size() + read > 4_000_000) throw new IOException("panel response is too large");
                     buffer.write(chunk, 0, read);
                 }
                 text = buffer.toString(StandardCharsets.UTF_8);

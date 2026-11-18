@@ -39,6 +39,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Keep notebooks and test files out of Git
+        shell: bash
+        run: |
+          forbidden=$(git ls-files -- '*.ipynb' 'tests/**' 'test/**' ':(glob)**/tests/**' ':(glob)**/test/**' ':(glob)**/test_*.py' ':(glob)**/*_test.py' ':(glob)**/*.test.js' ':(glob)**/*.spec.js')
+          if [ -n "$forbidden" ]; then
+            echo '::error::Tracked notebooks or test files are not allowed:'
+            echo "$forbidden"
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -255,7 +264,8 @@ jobs:
       - name: Extract the gradle errors
         if: failure()
         run: |
-          grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt
+          # A Gradle failure need not match this filter; still publish the full log tail.
+          grep -n -E "error:|What went wrong|Could not |Caused by|Execution failed|^> |FAILURE" mod/gradle.log | head -200 > mod/errors.txt || true
           wc -l mod/errors.txt
       - name: Probe the Minecraft API signatures
         if: failure()
@@ -321,7 +331,7 @@ jobs:
   # replace a stable one. Bump mod_version in mod/gradle.properties for a new release.
   release:
     name: mod (GitHub release)
-    needs: [mod-bundle, release-kit, lint, javascript, test]
+    needs: [mod-bundle, release-kit, python-distribution, lint, javascript, test, updater]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && !contains(github.event.head_commit.message, '[no-release]'))
@@ -375,7 +385,7 @@ jobs:
   # [modrinth] in the commit message.
   modrinth:
     name: mod (Modrinth)
-    needs: [mod-bundle, lint, javascript, test]
+    needs: [mod-bundle, python-distribution, lint, javascript, test, updater]
     # main always publishes; any other branch only when the pushed commit message contains [modrinth].
     if: >-
       github.event_name == 'push' && vars.MODRINTH_PROJECT != '' &&

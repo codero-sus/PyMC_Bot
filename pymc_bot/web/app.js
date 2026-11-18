@@ -1767,14 +1767,16 @@ async function createCodeSkill() {
   if (!name || !$('code-request').value.trim()) throw new Error('Enter a name and request');
   if ([...$('code-select').options].some(option => option.value === name) &&
       !window.confirm(`Replace ${name}? This invalidates its review.`)) return;
+  const scope = codeScope;
   $('code-create').disabled = true;
   $('code-status').textContent = 'Generating; the isolated trial may take up to two minutes…';
   try {
     const result = await api('/api/code-skills', { method: 'POST', body: JSON.stringify({
-      name, request: $('code-request').value.trim(), provider: $('code-provider').value, scope: codeScope,
+      name, request: $('code-request').value.trim(), provider: $('code-provider').value, scope,
     }) });
+    if (codeScope !== scope) return;
     await loadCodeSkills();
-    $('code-status').textContent = `Created ${result.name}: ${result.test.status} · ${result.test.detail}`;
+    if (codeScope === scope) $('code-status').textContent = `Created ${result.name}: ${result.test.status} · ${result.test.detail}`;
   } finally { $('code-create').disabled = false; }
 }
 
@@ -1800,10 +1802,12 @@ async function codeAction(action) {
     ? 'Record your review of this exact code? This does not enable live execution or certify safety.'
     : 'Retry this code only in the configured isolated test world?')) return;
   clearCodeReview();
+  const epoch = codeReviewEpoch;
   $('code-status').textContent = action === 'trial' ? 'Running isolated trial…' : 'Recording review…';
   const result = await api(`/api/code-skills/${encodeURIComponent(row.name)}/${action}`, {
     method: 'POST', body: JSON.stringify({ confirm: true, digest: row.digest, scope: row.scope, revision: row.revision }),
   });
+  if (epoch !== codeReviewEpoch || codeScope !== row.scope) return;
   $('code-status').textContent = action === 'trial' ? `${result.test.status} · ${result.test.detail}` : 'Review recorded; live execution remains disabled.';
 }
 

@@ -6,7 +6,7 @@ visible player, use `/pymcbot observe start <player> consent`, then `/pymcbot ob
 The consent word is the operator's confirmation, not technical proof of the player's permission.
 The HUD shows when observation is active. Only visible movement and view changes are inferred;
 private inventory, exact keys, attack/use inputs and the player's screen are not available. The
-recording stops on disconnect, after ten seconds out of view or after one hour. Files are saved
+recording stops on disconnect, world changes, after ten seconds out of view or after one hour. Files are saved
 separately under `pymcbot/remote-observations/`; train explicitly with
 `python -m pymc_bot train --dataset <path-to-file>`. These incomplete, inferred samples are not
 equivalent to the local recorder and may produce a poor model. Server ownership is not verified.
@@ -23,6 +23,8 @@ With their consent, the other player can run `/pymcbot record start`, play, then
 `python -m pymc_bot train --dataset <path> --inspect` and train using
 `python -m pymc_bot train --dataset <path>`. Recordings may contain sensitive gameplay context;
 share only what both parties agree to, and delete it when no longer needed.
+
+Local recordings use unique filenames and do not overwrite an earlier episode if you start again quickly.
 
 The **PyMC Bot** companion mod: a client-side Fabric mod that records **your own playtime** as a training dataset for
 PyMC_Bot's player model: where you were, where you looked, what was around you (3×3×3

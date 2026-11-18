@@ -77,15 +77,19 @@ public final class Json {
     }
 
     private static final class Reader {
+        private static final int MAX_DEPTH = 128;
+        private static final java.util.regex.Pattern NUMBER = java.util.regex.Pattern.compile(
+                "-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?");
         final String text;
         int pos;
+        int depth;
 
         Reader(String text) {
             this.text = text;
         }
 
         void space() {
-            while (pos < text.length() && Character.isWhitespace(text.charAt(pos))) {
+            while (pos < text.length() && " \t\r\n".indexOf(text.charAt(pos)) >= 0) {
                 pos++;
             }
         }
@@ -97,9 +101,15 @@ public final class Json {
             char c = text.charAt(pos);
             switch (c) {
                 case '{':
-                    return object();
                 case '[':
-                    return array();
+                    if (++depth > MAX_DEPTH) {
+                        throw new IllegalArgumentException("JSON nesting limit exceeded");
+                    }
+                    try {
+                        return c == '{' ? object() : array();
+                    } finally {
+                        depth--;
+                    }
                 case '"':
                     return string();
                 case 't':
@@ -176,6 +186,7 @@ public final class Json {
                     return sb.toString();
                 }
                 if (c != '\\') {
+                    if (c < 0x20) throw new IllegalArgumentException("unescaped control character");
                     sb.append(c);
                     continue;
                 }
@@ -193,10 +204,19 @@ public final class Json {
                         if (pos + 4 > text.length()) {
                             throw new IllegalArgumentException("bad unicode escape");
                         }
-                        sb.append((char) Integer.parseInt(text.substring(pos, pos + 4), 16));
-                        pos += 4;
+                        int code = 0;
+                        for (int i = 0; i < 4; i++) {
+                            char hex = text.charAt(pos++);
+                            int digit = hex >= '0' && hex <= '9' ? hex - '0'
+                                    : hex >= 'a' && hex <= 'f' ? hex - 'a' + 10
+                                    : hex >= 'A' && hex <= 'F' ? hex - 'A' + 10 : -1;
+                            if (digit < 0) throw new IllegalArgumentException("bad unicode escape");
+                            code = code * 16 + digit;
+                        }
+                        sb.append((char) code);
                     }
-                    default -> sb.append(e);
+                    case '"', '\\', '/' -> sb.append(e);
+                    default -> throw new IllegalArgumentException("invalid JSON escape");
                 }
             }
             throw new IllegalArgumentException("unterminated string");
@@ -207,10 +227,13 @@ public final class Json {
             while (pos < text.length() && "+-0123456789.eE".indexOf(text.charAt(pos)) >= 0) {
                 pos++;
             }
-            if (start == pos) {
-                throw new IllegalArgumentException("bad JSON at " + pos);
+            String token = text.substring(start, pos);
+            if (!NUMBER.matcher(token).matches()) {
+                throw new IllegalArgumentException("bad JSON number at " + start);
             }
-            return Double.valueOf(text.substring(start, pos));
+            double value = Double.parseDouble(token);
+            if (!Double.isFinite(value)) throw new IllegalArgumentException("JSON number out of range");
+            return value;
         }
 
         void expect(char c) {

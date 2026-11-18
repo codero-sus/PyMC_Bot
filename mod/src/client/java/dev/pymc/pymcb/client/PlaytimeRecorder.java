@@ -11,6 +11,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 import dev.pymc.pymcb.Json;
 import dev.pymc.pymcb.PlaytimeConfig;
@@ -128,13 +129,16 @@ public final class PlaytimeRecorder {
             return "already recording as '" + runName + "' - use /pymcbot record stop";
         }
         resolvePaths();
-        runName = "run-" + LocalDateTime.now().format(RUN_STAMP) + "-" + episodeNumber;
+        // Restarts can occur in the same second, including after a game restart.
+        // Never reuse a filename or truncate an existing recording.
+        episodeNumber = 1;
+        runName = "run-" + LocalDateTime.now().format(RUN_STAMP) + "-" + UUID.randomUUID();
         try {
             Files.createDirectories(episodesDir);
             writer = Files.newBufferedWriter(
                     episodesDir.resolve(runName + ".ndjsonl"),
                     StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         } catch (IOException e) {
             writer = null;
             return "failed to open the episode file: " + e.getMessage();
@@ -221,7 +225,7 @@ public final class PlaytimeRecorder {
             writer = Files.newBufferedWriter(
                     episodesDir.resolve(runName + "-ep" + episodeNumber + ".ndjsonl"),
                     StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         } catch (IOException e) {
             writer = null;
             active = false;
