@@ -421,6 +421,12 @@ Additional manual duel modes are `"axe"` (attempt axe hits), `"axe_swap"`, `"mac
 
 Both skills require an explicit JSON boolean `true`; the simulator reports them unsupported. Aborting cannot undo already sent actions. Use a private arena and test server-specific behavior before relying on these controls.
 
+### Mineflayer code proposals
+
+`POST /api/code-skills` with `{"name":"tree_helper","request":"Gather nearby oak logs", "provider":"ollama"}` asks the configured Ollama model for a CommonJS Mineflayer skill. Use `"cortex"` for the configured Cortex provider. This is an explicit operator request, not continuous autonomous feature development; the request is sent to that provider. Avoid including private or sensitive information (the simple credential filter is incomplete).
+
+The proposal is stored locally per selected bot/server (up to 16; replacing a name resets its status), with a SHA-256 digest of the exact source. `GET /api/code-skills` lists metadata; `GET /api/code-skills/tree_helper` returns untrusted source for review; `DELETE /api/code-skills/tree_helper` removes it. Generated text can be wrong or malicious, and a digest is only an identity check, not a safety guarantee. The bot never executes this JavaScript on a live server and has no approval-to-deploy feature. Every automatic test attempt currently returns `blocked`: a verified isolated test-world runner has not been implemented. Do not run generated code on the host or a real server. The API is separate from the structured skill-draft executor below.
+
 ### Reviewable skill drafts and item discovery
 
 Set `agent.allow_skill_drafts` to `true` to let an LLM propose a named, **data-only** sequence of up to six existing skills. It can use `draft_skill` with `skill_name` and `steps`; drafts never run automatically. The operator can also create drafts without enabling AI drafting:

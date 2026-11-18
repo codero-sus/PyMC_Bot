@@ -1203,3 +1203,5 @@ see the [Minecraftism guide](docs/MINECRAFT_LLM.md#letting-the-bot-see-vl-editio
 ### Reviewable skill drafts
 
 With `agent.allow_skill_drafts` enabled, the LLM can propose a small structured skill sequence for operator review. `/api/skill-drafts` can list, inspect, export reviewable Python text, and explicitly run a digest-confirmed draft under permission and safety checks. Generated source is never executed automatically; the allowlist excludes arbitrary code and player combat. Item inspection uses the Mineflayer client registry, which may omit server-mod data. See [the API guide](docs/API.md#reviewable-skill-drafts-and-item-discovery).
+
+The separate `/api/code-skills` API can request and store Mineflayer JavaScript proposals from Ollama or Cortex. They are untrusted, review-only text: **isolated world testing is not yet available** and the automatic trial reports `blocked`. There is no live-server approval or execution path for this code. This is not autonomous software development or model training; see [the API guide](docs/API.md#mineflayer-code-proposals).
