@@ -4,7 +4,7 @@
 
 **Teach a Minecraft bot to play like you.** PyMC Bot is a small, client-side Fabric mod that records
 your own playtime — where you walk, where you look, what is around you and which keys you press — into
-a dataset. The free, open-source [PyMC Bot](https://github.com/codero-sus/PyMC_Bot) Python app trains
+a dataset. The source-available, non-commercial [PyMC Bot](https://github.com/codero-sus/PyMC_Bot) Python app trains
 a player model on it, and that model can then play a bot on your server the way you do.
 
 > One jar per Minecraft version, **1.21.1 to 26.3** — download the file that matches your game.
@@ -28,7 +28,10 @@ a player model on it, and that model can then play a bot on your server the way 
 - 🎮 **Drive your bots from the game** – `/pymcbot bot come`, `follow`, `do chop_tree`,
   `do mine_ore iron`, `auto on`… talk to the PyMC Bot app on your PC, so you can play while your
   bots gather, farm, fish, guard and sleep at night on their own.
-- 🪶 **Lightweight** – no mixins, no server-side part, nothing changes how the game plays.
+- 🎮 **Experimental player takeover** – opt in through the settings screen to let a configured backend
+  briefly turn or move your own player. Bind the emergency release key and try it only in a disposable
+  private world: the safety checks are limited and this feature has not been validated in-game.
+- 🪶 **Client-side** – no mixins or server-side mod required.
 
 ## How to use it
 
@@ -83,11 +86,13 @@ corner, auto-record, AFK skipping…).
 
 ## Privacy
 
-Everything stays on your computer, in `<game folder>/pymcbot/`. Recording makes **no network
-connections**, sends nothing anywhere and has no server component — it works in single-player and on
-any server, including offline-mode ones. Recordings from versions before 0.7 (folder `pymc-playtime/`)
-are moved to the new folder automatically. The only connection the mod ever opens is when you type
-`/pymcbot bot …`: it talks to *your own* PyMC Bot app (`127.0.0.1:8000` unless you change it).
+Local recordings are stored in `<game folder>/pymcbot/` and can contain sensitive gameplay data.
+Record only with permission. Remote observation infers visible player movement and view changes; the
+operator's consent confirmation is not technical proof of the other player's permission. Panel commands
+and optional takeover communicate with the configured backend, including its API token; use a trusted
+panel and encrypted transport for nonlocal connections. Takeover also sends limited player-state
+observations to the backend. A post-shutdown updater may contact GitHub to check for a release. See
+the [mod documentation](https://github.com/codero-sus/PyMC_Bot/blob/main/mod/README.md) for details.
 
 ## Requirements
 

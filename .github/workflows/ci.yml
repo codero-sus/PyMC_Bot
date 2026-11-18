@@ -389,7 +389,7 @@ jobs:
   # Syncs Modrinth after the builds and checks on pushes to main or explicitly requested branches: the project's
   # title, summary, description (mod/MODRINTH.md), links and licence (mod/modrinth.json), and every
   # version - missing ones are created, existing ones get fresh details, and their jar is replaced when
-  # the code changed. Needs the repository secret MODRINTH_TOKEN and the variable MODRINTH_PROJECT
+  # the code changed. Needs the repository secret MODRINTH_TOKEN and uses the pymcbot project slug
   # (see mod/README.md -> Publishing on Modrinth). Other branches publish only on request: put
   # [modrinth] in the commit message.
   modrinth:
@@ -397,7 +397,7 @@ jobs:
     needs: [mod-bundle, python-distribution, lint, javascript, test, updater]
     # main always publishes; any other branch only when the pushed commit message contains [modrinth].
     if: >-
-      github.event_name == 'push' && vars.MODRINTH_PROJECT != '' &&
+      github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || contains(github.event.head_commit.message, '[modrinth]'))
     runs-on: ubuntu-latest
     concurrency:
@@ -415,12 +415,11 @@ jobs:
       - name: Sync the Modrinth project and all versions
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-          MODRINTH_PROJECT: ${{ vars.MODRINTH_PROJECT }}
+          MODRINTH_PROJECT: pymcbot
         run: |
           if [ -z "$MODRINTH_TOKEN" ]; then
-            echo "::warning::MODRINTH_TOKEN secret is not set - showing what would be published"
-            python3 scripts/modrinth_publish.py --jars mod/dist --update-project --dry-run
-            exit 0
+            echo "::error::MODRINTH_TOKEN secret is not set; nothing was published"
+            exit 1
           fi
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then channel=release; else channel=beta; fi
           args="--jars mod/dist --channel $channel --update-project"
