@@ -3,5 +3,6 @@
 	"key.category.pymcbot.recorder": "PyMC Bot",
 	"key.pymcbot.toggle": "Start / stop recording",
 	"key.pymcbot.pause": "Pause / resume recording",
-	"key.pymcbot.settings": "Open PyMC Bot settings"
+	"key.pymcbot.settings": "Open PyMC Bot settings",
+	"key.pymcbot.release_control": "Emergency release player takeover"
 }

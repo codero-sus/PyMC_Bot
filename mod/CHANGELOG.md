@@ -1,5 +1,13 @@
 # PyMC Bot mod – changelog
 
+## 0.13.1
+
+- Added experimental, explicitly confirmed local-player takeover via the PyMC Bot panel. It is
+  limited to short forward/turn bursts and has menu, focus, input, health and timeout release gates.
+  Bind the emergency release key and use it only in a disposable or permitted world; terrain
+  heuristics cannot guarantee safety. The trained-policy mode is not supported by this path.
+- Avoid overwriting recording files and stop remote observation when the world changes.
+
 ## 0.13.0
 
 - Observe a consenting nearby player with `/pymcbot observe start <player> consent`; movement and

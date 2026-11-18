@@ -37,8 +37,11 @@ public final class RecorderHud {
         if (recorder == null || mc.player == null || Mc.hudHidden(mc)) {
             return;
         }
+        if (PymcPlaytimeClient.takeover().active()) {
+            canvas.text("PyMC Bot: PLAYER TAKEOVER - OPEN MENU TO RELEASE", 4, 4, RED);
+        }
         if (PymcPlaytimeClient.remoteRecorder().active()) {
-            canvas.text("PyMC Bot: REMOTE OBSERVATION", 4, 4, RED);
+            canvas.text("PyMC Bot: REMOTE OBSERVATION", 4, PymcPlaytimeClient.takeover().active() ? 16 : 4, RED);
         }
         if (!cfg.showHud) return;
         PlaytimeRecorder.HudState state = recorder.hudState();

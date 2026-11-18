@@ -249,7 +249,7 @@ jobs:
           grep -q '"name": "PyMC Bot"' fabric.mod.json.out
           grep -q '"modmenu"' fabric.mod.json.out
           unzip -l "$jar" > jar-contents.txt
-          for cls in compat/Mc RecorderHud PymcBotScreen PymcModMenu; do
+          for cls in compat/Mc RecorderHud PymcBotScreen PymcModMenu PlayerTakeover; do
             grep -q "dev/pymc/pymcb/client/$cls.class" jar-contents.txt || { echo "::error::$cls missing from $jar"; exit 1; }
           done
           grep -q "assets/pymcbot/lang/en_us.json" jar-contents.txt

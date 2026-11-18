@@ -51,6 +51,7 @@ from pymc_bot.playtime import (
     resolve_dataset_path,
     synthesize_playtime,
 )
+from pymc_bot.takeover import TakeoverObservation
 from pymc_bot.train import TrainConfig, TrainingService, default_run_name, list_models, read_card
 
 
@@ -1340,6 +1341,37 @@ def create_app(
         store.update({"agent": {"mode": "auto"}})
         event_log.add("Brain back to auto (Ollama when enabled, else heuristics).", "info", "train")
         return {"ok": True, "brain": store.settings.agent.mode}
+
+    # The mod explicitly opts in and owns the local-player control session.
+    # These routes only suggest a bounded movement; they do not control a bot.
+    takeover_lock = threading.Lock()
+
+    @app.get("/api/takeover/status")
+    def takeover_status() -> dict[str, Any]:
+        from pymc_bot.takeover import available
+        ok, detail = available(store.settings)
+        return {"ok": ok, "detail": detail, "protocol": 1}
+
+    @app.post("/api/takeover/decide")
+    def takeover_decide(observation: TakeoverObservation) -> dict[str, Any]:
+        from pymc_bot.takeover import available, decide
+        ok, detail = available(store.settings)
+        if not ok:
+            raise HTTPException(403, detail)
+        if not takeover_lock.acquire(blocking=False):
+            raise HTTPException(409, "Another takeover decision is pending")
+        try:
+            result = decide(store.settings, observation)
+            ok, current = available(store.settings)
+            if not ok or current != result['brain']:
+                raise HTTPException(409, "Takeover settings changed; release control")
+            return {"protocol": 1, **result}
+        except (OllamaError, CortexError) as exc:
+            raise HTTPException(503, "Takeover model unavailable") from exc
+        except ValueError as exc:
+            raise HTTPException(422, "Takeover decision unavailable") from exc
+        finally:
+            takeover_lock.release()
 
     @app.get("/api/policy/preview")
     def policy_preview(run: str | None = None) -> dict[str, Any]:

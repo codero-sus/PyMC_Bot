@@ -1,5 +1,13 @@
 # PyMC Bot mod (Fabric)
 
+## Hook and take over your player (experimental)
+
+In `/pymcbot settings`, open **Takeover**, select **Hook backend**, then click **Take over player** and **Confirm takeover**. Close settings to begin. Hooking only checks the configured panel connection and movement permission; it does not log in to Minecraft or move the player. Configure the panel URL and its API token using the existing `/pymcbot bot panel` and token commands. Set the backend AI mode to heuristic, Ollama or Cortex and allow movement. The trained-policy and off modes are not supported for this control path. The heuristic mode is rule-based, not an LLM.
+
+**Stay at the keyboard and use only in worlds or servers where you have permission.** Bind **Emergency release player takeover** under Options → Controls → PyMC Bot before starting (it is unbound by default). Opening any menu, losing focus, moving the camera or pressing most manual controls releases takeover; `/pymcbot takeover stop`, disconnect, damage, low health/food and a five-minute session limit also release it. The HUD shows a red takeover notice while active unless the HUD is hidden with F1. Release checks run on client ticks; a frozen client cannot run them. A held forward key may not be distinguishable from the bot's synthetic forward input; use the release key or open a menu. Returning from an opened menu never automatically resumes.
+
+This first version can only turn up to 10 degrees and briefly move forward. It cannot attack, jump, mine, chat or use inventory. It checks a small whitelist of visible floor blocks before each burst, but this is **not a safety guarantee**: hidden traps, mobs, server plugins, knockback, latency, and momentum can still cause harm. Test in a disposable, private world first; it is not full autonomous gameplay. On timeout, invalid response, screen change, changed player/world or backend error, control is released and stale responses are discarded. The mod sends health, food, yaw, ground state and the local path check to the configured panel; an enabled Ollama/Cortex model receives those same values. No chat, coordinates, inventory or account credentials are sent as observations. The configured panel still receives its API token, so use a trusted panel and encrypted transport for nonlocal connections.
+
 **Intended scope:** single-player worlds and private self-hosted servers you control, not public
 servers. Obtain informed permission before recording someone else's play. To record a nearby
 visible player, use `/pymcbot observe start <player> consent`, then `/pymcbot observe stop`.

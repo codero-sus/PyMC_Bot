@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymc-bot"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Python-controlled Minecraft player bot (cracked / offline-mode servers) with a Uvicorn config page and an optional Ollama brain."
 readme = "README.md"
 requires-python = ">=3.10"

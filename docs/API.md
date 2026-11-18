@@ -421,6 +421,12 @@ Additional manual duel modes are `"axe"` (attempt axe hits), `"axe_swap"`, `"mac
 
 Both skills require an explicit JSON boolean `true`; the simulator reports them unsupported. Aborting cannot undo already sent actions. Use a private arena and test server-specific behavior before relying on these controls.
 
+### Local-player takeover
+
+The Fabric mod's explicit **Hook backend** and **Take over player** controls use authenticated `GET /api/takeover/status` and `POST /api/takeover/decide`. These endpoints do not connect to or operate the Mineflayer bot; the attended mod owns its own temporary client-side input session. Decisions accept only health, food, yaw, on-ground and local `safe_ahead` boolean observations, and return only a short forward/stop decision and a turn of at most 10 degrees. Existing AI movement permissions apply. Heuristic, Ollama and Cortex modes are supported; off/trained modes fail closed. LLM backends receive those limited observations. Do not send arbitrary chat or credentials as observations.
+
+The client imposes additional local checks and stops on timeout or invalid/stale responses. Terrain checks and short bursts cannot guarantee safety, especially against hidden traps, mobs, server plugins, lag or knockback. The control is opt-in, time-limited and not full autonomous play. See the [mod guide](../mod/README.md#hook-and-take-over-your-player-experimental) for confirmation, emergency release and privacy details.
+
 ### Mineflayer code proposals
 
 `POST /api/code-skills` with `{"name":"tree_helper","request":"Gather nearby oak logs", "provider":"ollama"}` asks the configured Ollama model for a CommonJS Mineflayer skill; `"cortex"` selects Cortex. The request is sent to that provider. Avoid private information; the credential filter is incomplete. Alternatively, enabling `agent.allow_code_proposals` lets the LLM directly propose code as a decision, subject to a five-minute per-process rate limit, no automatic replacement and the 16-proposal storage cap. This is opt-in and not guaranteed to produce useful code or implement every request. The AI cannot approve code.

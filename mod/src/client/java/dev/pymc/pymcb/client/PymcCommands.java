@@ -235,6 +235,11 @@ public final class PymcCommands {
                         .then(literal("help").executes(ctx -> feedback(ctx.getSource(), help())))
                         .then(record)
                         .then(observe)
+                        .then(literal("takeover")
+                                .then(literal("stop").executes(ctx -> feedback(ctx.getSource(),
+                                        PymcPlaytimeClient.takeover().stop(Minecraft.getInstance(), "Takeover released."))))
+                                .then(literal("status").executes(ctx -> feedback(ctx.getSource(),
+                                        PymcPlaytimeClient.takeover().status()))))
                         .then(guarded("pause").executes(ctx -> feedback(ctx.getSource(), recorder.pause())))
                         .then(guarded("resume").executes(ctx -> feedback(ctx.getSource(), recorder.resume())))
                         .then(sample)
@@ -512,6 +517,7 @@ public final class PymcCommands {
                 + "/pymcbot settings   open the settings page (also: hotkey, Mod Menu)\n"
                 + "/pymcbot record start|stop   /pymcbot pause|resume   /pymcbot export\n"
                 + "/pymcbot screenshots on|off   pictures for the Minecraftism VL model\n"
+                + "/pymcbot takeover stop|status   release or check local-player takeover\n"
                 + "/pymcbot bot ...   drive your PyMC Bot bots from the game (/pymcbot bot help)\n"
                 + "/pymcbot status   /pymcbot train   /pymcbot about   (/pymc works too)";
     }

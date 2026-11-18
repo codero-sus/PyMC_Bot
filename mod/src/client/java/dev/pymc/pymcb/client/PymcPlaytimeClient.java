@@ -22,6 +22,8 @@ import net.minecraft.client.Minecraft;
 public class PymcPlaytimeClient implements ClientModInitializer {
     private static PlaytimeRecorder recorder;
     private static final RemoteRecorder remoteRecorder = new RemoteRecorder();
+    private static final PlayerTakeover takeover = new PlayerTakeover();
+    private static KeyMapping releaseKey;
     private static KeyMapping toggleKey;
     private static KeyMapping pauseKey;
     private static KeyMapping settingsKey;
@@ -38,6 +40,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         toggleKey = Mc.registerKey("key.pymcbot.toggle");
         pauseKey = Mc.registerKey("key.pymcbot.pause");
         settingsKey = Mc.registerKey("key.pymcbot.settings");
+        releaseKey = Mc.registerKey("key.pymcbot.release_control");
 
         // REC / PAUSED badge in a corner of the HUD while recording (/pymcbot hud off hides it).
         Mc.registerHud(RecorderHud::paint);
@@ -51,6 +54,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
                 openSettingsNextTick = false;
                 Mc.openScreen(mc, new PymcBotScreen(null));
             }
+            takeover.tick(mc);
             recorder.onClientTick();
             remoteRecorder.tick(mc);
         });
@@ -60,12 +64,14 @@ public class PymcPlaytimeClient implements ClientModInitializer {
             }
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> {
+            takeover.disconnect(mc);
             remoteRecorder.stop();
             if (recorder != null) {
                 recorder.onDisconnect();
             }
         });
         ClientLifecycleEvents.CLIENT_STOPPING.register(ignored -> {
+            takeover.disconnect(Minecraft.getInstance());
             launchUpdateHelper();
             remoteRecorder.stop();
             if (recorder != null) {
@@ -109,6 +115,9 @@ public class PymcPlaytimeClient implements ClientModInitializer {
     }
 
     private static void handleKeys(Minecraft mc) {
+        while (releaseKey.consumeClick()) {
+            if (takeover.active()) takeover.stop(mc, "Takeover released by emergency hotkey.");
+        }
         while (toggleKey.consumeClick()) {
             if (mc.player != null) {
                 PlaytimeRecorder.tell(mc.player, recorder.toggle());
@@ -128,6 +137,8 @@ public class PymcPlaytimeClient implements ClientModInitializer {
     public static void openSettings() {
         openSettingsNextTick = true;
     }
+
+    public static PlayerTakeover takeover() { return takeover; }
 
     public static RemoteRecorder remoteRecorder() {
         return remoteRecorder;

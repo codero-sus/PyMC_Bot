@@ -42,6 +42,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
     /** The tabs, in display order. */
     public enum Page {
         RECORDER("Recorder"),
+        TAKEOVER("Takeover"),
         RECORDING("Recording"),
         ADVANCED("Advanced"),
         POWER("Power"),
@@ -115,6 +116,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
     private final List<SliderOption> sliders = new ArrayList<>();
     private String lastMessage;
     private boolean confirmReset;
+    private boolean confirmTakeover;
     private Button resetButton;
 
     public PymcBotScreen(Screen parent) {
@@ -214,6 +216,7 @@ public class PymcBotScreen extends Mc.PaintedScreen {
 
         switch (page) {
             case RECORDER -> initRecorder();
+            case TAKEOVER -> initTakeover();
             case RECORDING -> initRecording();
             case ADVANCED -> initAdvanced();
             case POWER -> initPower();
@@ -281,6 +284,36 @@ public class PymcBotScreen extends Mc.PaintedScreen {
         option(1, 2, () -> "Training command",
                 "Prints the exact command that trains a PyMC Bot model on this dataset.",
                 () -> sayAll(PymcCommands.trainHint(recorder())));
+    }
+
+    private void initTakeover() {
+        option(0, 0, () -> "Hook backend", "Connect to the configured PyMC Bot panel without taking control.", () -> {
+            confirmTakeover = false;
+            act(PymcPlaytimeClient.takeover().hook(Minecraft.getInstance()));
+        });
+        option(1, 0, () -> PymcPlaytimeClient.takeover().active() ? "Release control"
+                        : confirmTakeover ? "Confirm takeover" : "Take over player",
+                "AI controls your player after you confirm and close settings. Open a menu to release.", () -> {
+                    Minecraft mc = Minecraft.getInstance();
+                    PlayerTakeover controller = PymcPlaytimeClient.takeover();
+                    if (controller.active()) {
+                        confirmTakeover = false;
+                        act(controller.stop(mc, "Takeover released."));
+                    } else if (!controller.hooked()) {
+                        confirmTakeover = false;
+                        act("Hook to the panel first.");
+                    } else if (!confirmTakeover) {
+                        confirmTakeover = true;
+                        act("Click Confirm takeover, then close settings. Keep a release key ready.");
+                    } else {
+                        confirmTakeover = false;
+                        act(controller.start(mc));
+                    }
+                });
+        option(0, 1, () -> "Status", "Show the hook and takeover state in chat.", () -> {
+            confirmTakeover = false;
+            act(PymcPlaytimeClient.takeover().status());
+        });
     }
 
     private void initRecording() {
@@ -499,6 +532,12 @@ public class PymcBotScreen extends Mc.PaintedScreen {
 
         switch (page) {
             case RECORDER -> paintRecorder(canvas, center);
+            case TAKEOVER -> paintLines(canvas, center, rowY(2) + 4, new String[]{
+                    PymcPlaytimeClient.takeover().status(),
+                    "Short forward and turning bursts only; no attack, mining or inventory.",
+                    "Release: open a menu, lose focus or use the emergency release key.",
+                    "Bind the release key in Options > Controls. Only use in worlds you control.",
+                    "Limited local observations are sent to the configured panel and model."});
             case ADVANCED -> paintLines(canvas, center, rowY(3) + 4, cfg().advanced
                     ? new String[]{"Advanced recording is ON: train with  python -m pymc_bot train --advanced",
                             "Larger limits = bigger datasets; 24 entities within 32 blocks is the default."}
