@@ -1199,3 +1199,7 @@ vision; `/pymcbot bot ai vision on` enables live vision for the currently config
 `/pymcbot bot ai vision off` disables it. `/pymcbot bot status` shows the resolved brain,
 model and vision status. Vision requires the optional renderer and compatible model/runtime;
 see the [Minecraftism guide](docs/MINECRAFT_LLM.md#letting-the-bot-see-vl-editions).
+
+### Reviewable skill drafts
+
+With `agent.allow_skill_drafts` enabled, the LLM can propose a small structured skill sequence for operator review. `/api/skill-drafts` can list, inspect, export reviewable Python text, and explicitly run a digest-confirmed draft under permission and safety checks. Generated source is never executed automatically; the allowlist excludes arbitrary code and player combat. Item inspection uses the Mineflayer client registry, which may omit server-mod data. See [the API guide](docs/API.md#reviewable-skill-drafts-and-item-discovery).

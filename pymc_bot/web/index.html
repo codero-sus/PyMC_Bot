@@ -428,6 +428,7 @@
         <label class="check" title="placing blocks and right-clicking items"><input id="cfg-allow-building" type="checkbox" /> build</label>
         <label class="check"><input id="cfg-allow-mob-fighting" type="checkbox" /> fight mobs</label>
         <label class="check" title="Allows the AI to use risky mace setups and throw tridents; items may be lost and falls can kill"><input id="cfg-allow-risky-combat" type="checkbox" /> allow risky combat for AI</label>
+        <label class="check" title="The model may write structured drafts; an operator must review and run each one"><input id="cfg-skill-drafts" type="checkbox" /> allow AI to write review-only skill drafts</label>
         <label class="check"><input id="cfg-greet" type="checkbox" /> greet players</label>
       </div>
       <p id="ai-status" class="note"></p>
@@ -608,7 +609,7 @@
       </header>
       <p class="note">Bigger jobs a player does: chop a tree, mine ore, farm, craft, smelt, fill a chest, trade,
         build a shelter, go home… Click one to fill in its options, double-click to run it straight away.
-        The AI can use every skill too (switches in <em>AI brain</em> still apply).</p>
+        Most skills can also be used by the AI (switches in <em>AI brain</em> still apply); manual-only skills require an operator.</p>
       <div id="skill-list" class="skill-list" role="list"></div>
       <div class="inline">
         <input id="skill-name" type="text" placeholder="skill" list="skill-names" class="skill-name" />
@@ -617,6 +618,17 @@
         <button id="btn-skill" class="btn primary">Run skill</button>
       </div>
       <p id="skill-info" class="note" aria-live="polite"></p>
+      <h3>Review skill drafts</h3>
+      <p class="note">AI-created drafts never run on their own. Review steps and generated Python text first. Running can change the world; permissions and server rules still apply.</p>
+      <div class="inline">
+        <select id="draft-select" aria-label="Skill draft"><option value="">Choose a draft</option></select>
+        <button id="draft-refresh" class="btn ghost">Refresh</button>
+        <button id="draft-review" class="btn ghost">Review</button>
+        <button id="draft-run" class="btn primary" disabled>Run reviewed draft</button>
+        <button id="draft-delete" class="btn ghost">Delete</button>
+      </div>
+      <pre id="draft-preview" class="note" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+      <p id="draft-status" class="note" aria-live="polite"></p>
     </section>
 
     <!-- ----------------------------------------------------------- autopilot -->

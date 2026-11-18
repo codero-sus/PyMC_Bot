@@ -227,6 +227,7 @@ class AgentSettings(BaseModel):
     allow_building: bool = False
     allow_mob_fighting: bool = True
     allow_risky_combat: bool = False
+    allow_skill_drafts: bool = False  # opt in to AI-written, review-only structured drafts
     # Let the LLM look Minecraft things up (the "search" action; settings in "search").
     allow_web_search: bool = True
     greet_players: bool = True

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import math
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -97,6 +100,16 @@ class ActionRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     raw: str | None = None
     bot: str | None = None
+
+
+class DraftSkillRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+    steps: list[dict[str, Any]] = Field(min_length=1, max_length=6)
+
+
+class RunDraftRequest(BaseModel):
+    confirm: bool = Field(strict=True)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class SkillRequest(BaseModel):
@@ -1451,6 +1464,94 @@ def create_app(
         ok = any(entry["ok"] for entry in results)
         detail = results[0]["detail"] if len(results) == 1 else f"{sum(1 for r in results if r['ok'])}/{len(results)} bots did it"
         return {"ok": ok, "skill": skill.name, "detail": detail if results else "no bots matched", "results": results}
+
+    # Structured drafts are data, not executable source. Only explicit operator runs can act.
+    draft_run_lock = threading.Lock()
+
+    def draft_store():
+        from pymc_bot.skill_drafts import DraftStore
+        controller = selected_bot()
+        host, port = controller.memory_server
+        return DraftStore(store.path.parent, f"{host}:{port}/{controller.username}")
+
+    def draft_with_digest(draft: dict[str, Any], identity: tuple[Any, ...] | None = None) -> dict[str, Any]:
+        if identity is None:
+            controller = selected_bot()
+            identity = (*controller.memory_server, controller.username.lower())
+        payload = json.dumps([identity, draft], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        return {**draft, "digest": hashlib.sha256(payload).hexdigest()}
+
+    @app.get("/api/skill-drafts")
+    def list_skill_drafts() -> dict[str, Any]:
+        try:
+            return {"drafts": [draft_with_digest(row) for row in draft_store().list()]}
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/skill-drafts")
+    def save_skill_draft(request: DraftSkillRequest) -> dict[str, Any]:
+        try:
+            return draft_with_digest(draft_store().save(request.name, request.steps))
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/skill-drafts/{name}")
+    def get_skill_draft(name: str) -> dict[str, Any]:
+        from pymc_bot.skill_drafts import python_code
+        try:
+            draft = draft_store().get(name)
+            return {**draft_with_digest(draft), "python": python_code(draft)}
+        except KeyError as exc:
+            raise HTTPException(404, "draft not found") from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.delete("/api/skill-drafts/{name}")
+    def delete_skill_draft(name: str) -> dict[str, Any]:
+        try:
+            return {"deleted": draft_store().delete(name)}
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/skill-drafts/{name}/run")
+    def run_skill_draft(name: str, request: RunDraftRequest) -> dict[str, Any]:
+        if request.confirm is not True:
+            raise HTTPException(422, "explicit confirmation required")
+        if not draft_run_lock.acquire(blocking=False):
+            raise HTTPException(409, "another draft is running")
+        try:
+            controller = selected_bot()
+            identity = (*controller.memory_server, controller.username.lower())
+            try:
+                draft = draft_store().get(name)
+            except KeyError as exc:
+                raise HTTPException(404, "draft not found") from exc
+            except (OSError, ValueError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if draft_with_digest(draft, identity)["digest"] != request.digest:
+                raise HTTPException(409, "draft changed; review it again")
+            agent = bot_fleet.agent_for(controller)
+            results = []
+            with controller.action_scope():
+                for step in draft["steps"]:
+                    if not controller.connected or controller.cancelled or identity != (*controller.memory_server, controller.username.lower()):
+                        return {"ok": False, "detail": "cancelled or bot/server changed", "results": results}
+                    state = controller.snapshot()
+                    health = state.get("health")
+                    if not isinstance(health, (int, float)) or not math.isfinite(health) or health <= 8 or state.get("nearby_hazards"):
+                        return {"ok": False, "detail": "paused: health unknown/low or nearby hazard", "results": results}
+                    from pymc_bot.skill_drafts import REQUIRED_FLAGS
+                    missing = [flag for flag in REQUIRED_FLAGS[step["action"]] if not getattr(store.settings.agent, flag)]
+                    if missing:
+                        return {"ok": False, "detail": f"step needs settings: {', '.join(missing)}", "results": results}
+                    ok, detail = agent.execute(Decision(step["action"], step["params"], source="operator:draft"),
+                                               enforce_permissions=True)
+                    results.append({"action": step["action"], "ok": ok, "detail": detail})
+                    if not ok:
+                        return {"ok": False, "detail": "step failed; later steps were not run", "results": results}
+            return {"ok": True, "detail": "draft completed", "results": results}
+        finally:
+            draft_run_lock.release()
 
     # --------------------------------------------------------------- autopilot
     @app.get("/api/autopilot/status")

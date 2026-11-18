@@ -556,6 +556,7 @@ function fillForm(cfg) {
   check('cfg-allow-building', Boolean(ag.allow_building));
   check('cfg-allow-mob-fighting', ag.allow_mob_fighting !== false);
   check('cfg-allow-risky-combat', ag.allow_risky_combat === true);
+  check('cfg-skill-drafts', ag.allow_skill_drafts === true);
   const se = cfg.search || {};
   check('cfg-search-enabled', se.enabled !== false && ag.allow_web_search !== false);
   set('cfg-search-provider', se.provider || 'minecraft_wiki');
@@ -692,6 +693,7 @@ function collectForm() {
       allow_building: $('cfg-allow-building').checked,
       allow_mob_fighting: $('cfg-allow-mob-fighting').checked,
       allow_risky_combat: $('cfg-allow-risky-combat').checked,
+      allow_skill_drafts: $('cfg-skill-drafts').checked,
       allow_web_search: $('cfg-search-enabled').checked,
       greet_players: $('cfg-greet').checked,
       persona: selectedBehaviour(),
@@ -1686,6 +1688,52 @@ async function runSkill() {
   appendLog({ level: result.ok ? 'success' : 'warn', source: 'skill', message: `${name}: ${result.detail}`, time: nowTime() });
 }
 
+let reviewedDraft = null;
+function clearDraftReview() {
+  reviewedDraft = null;
+  $('draft-run').disabled = true;
+  $('draft-preview').textContent = '';
+}
+
+async function loadDrafts() {
+  clearDraftReview();
+  const data = await api('/api/skill-drafts');
+  const select = $('draft-select');
+  select.replaceChildren(new Option('Choose a draft', ''));
+  for (const draft of data.drafts || []) select.add(new Option(draft.name, draft.name));
+  $('draft-status').textContent = `${(data.drafts || []).length} draft(s) for the selected bot/server`;
+}
+
+async function reviewDraft() {
+  clearDraftReview();
+  const name = $('draft-select').value;
+  if (!name) throw new Error('Choose a draft first');
+  const draft = await api(`/api/skill-drafts/${encodeURIComponent(name)}`);
+  if ($('draft-select').value !== name) return;
+  reviewedDraft = { name, digest: draft.digest };
+  $('draft-preview').textContent = `STEPS\n${JSON.stringify(draft.steps, null, 2)}\n\nPYTHON (review only, not executed)\n${draft.python}`;
+  $('draft-status').textContent = 'Review complete. Running acts in the world and requires enabled permissions.';
+  $('draft-run').disabled = false;
+}
+
+async function runDraft() {
+  if (!reviewedDraft || $('draft-select').value !== reviewedDraft.name) throw new Error('Review the draft first');
+  const draft = reviewedDraft;
+  if (!window.confirm(`Run ${draft.name} for the selected bot? It may change the world.`)) return;
+  clearDraftReview();
+  const result = await api(`/api/skill-drafts/${encodeURIComponent(draft.name)}/run`, {
+    method: 'POST', body: JSON.stringify({ confirm: true, digest: draft.digest }),
+  });
+  $('draft-status').textContent = `${result.detail}${result.results?.length ? ` · ${JSON.stringify(result.results)}` : ''}`;
+}
+
+async function deleteDraft() {
+  const name = $('draft-select').value;
+  if (!name || !window.confirm(`Delete draft ${name}?`)) return;
+  await api(`/api/skill-drafts/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  await loadDrafts();
+}
+
 async function loadAutopilot() {
   const data = await api('/api/autopilot/status');
   autopilotRules = data.rules || [];
@@ -1756,6 +1804,11 @@ function wireSkills() {
   $('skill-group').addEventListener('change', renderSkills);
   $('btn-skill').addEventListener('click', () => runSkill().catch(reportError));
   $('skill-params').addEventListener('keydown', (event) => { if (event.key === 'Enter') runSkill().catch(reportError); });
+  $('draft-select').addEventListener('change', clearDraftReview);
+  $('draft-refresh').addEventListener('click', () => loadDrafts().catch(reportError));
+  $('draft-review').addEventListener('click', () => reviewDraft().catch(reportError));
+  $('draft-run').addEventListener('click', () => runDraft().catch(reportError));
+  $('draft-delete').addEventListener('click', () => deleteDraft().catch(reportError));
   $('ap-enabled').addEventListener('change', () => saveAutopilot({ enabled: $('ap-enabled').checked }));
   $('ap-rules').addEventListener('change', (event) => {
     const flag = event.target.dataset.apFlag;
@@ -1861,6 +1914,7 @@ async function boot() {
     renderBridgeSetup(status.bridge_setup);
   } catch (err) { reportError(err); }
   try { await loadSkills(); } catch (err) { reportError(err); }
+  try { await loadDrafts(); } catch (err) { reportError(err); }
   try { await loadAutopilot(); } catch (err) { reportError(err); }
   try { updateOllamaPill(await api('/api/ollama/health')); } catch (err) { /* ignore */ }
   try { updateCortexPill(await api('/api/cortex/health')); } catch (err) { /* ignore */ }

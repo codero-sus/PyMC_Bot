@@ -420,3 +420,16 @@ ws.onmessage = (m) => { const frame = JSON.parse(m.data); if (frame.type === 'ev
 Additional manual duel modes are `"axe"` (attempt axe hits), `"axe_swap"`, `"mace_swap"`, and `"spear_swap"`. The swap modes require a sword and the named second weapon in the hotbar; they attack with the sword and immediately select the second weapon, briefly holding it before returning to the sword. `mace_swap` can attempt a Breach-enchantment swap if the mace has that enchantment, but no enchantment effect or smash is verified. `spear_swap` does not perform a spear charge or Lunge. These are timing experiments, not verified exploits; server patches and rules vary. The original `swap` mode additionally sends a second axe attack.
 
 Both skills require an explicit JSON boolean `true`; the simulator reports them unsupported. Aborting cannot undo already sent actions. Use a private arena and test server-specific behavior before relying on these controls.
+
+### Reviewable skill drafts and item discovery
+
+Set `agent.allow_skill_drafts` to `true` to let an LLM propose a named, **data-only** sequence of up to six existing skills. It can use `draft_skill` with `skill_name` and `steps`; drafts never run automatically. The operator can also create drafts without enabling AI drafting:
+
+- `POST /api/skill-drafts`: `{"name":"wood_job","steps":[{"action":"chop_tree","params":{"count":2}}]}`. Returns a SHA-256 digest.
+- `GET /api/skill-drafts` lists drafts; `GET /api/skill-drafts/wood_job` shows the steps, digest and reviewable Python source. The source is generated as text and is **never executed** by PyMC Bot.
+- To run the reviewed structured steps, `POST /api/skill-drafts/wood_job/run` with `{"confirm":true,"digest":"<digest from review>"}`. It checks the digest, enabled permissions (including movement, building and inventory where relevant), health, hazards and server identity before each step; it stops at the first failure. Operations already sent cannot be undone.
+- `DELETE /api/skill-drafts/wood_job` removes a draft. Storage is local, limited to 16 drafts, and separated per bot/server. Drafts are not part of `/api/ai/memory` and must be deleted separately.
+
+Only a small allowlist of existing gathering, farming, crafting and building skills can be drafted; player attacks, commands, arbitrary code, and recursive skills cannot be included. Non-vanilla namespace parameters are rejected because the existing skill executor can strip their namespace and target the wrong item. Review steps carefully: permitted mining/building still changes the world, and checks cannot detect every hazard or ownership boundary.
+
+The `inspect_item` AI action queries the Mineflayer client registry and, where available, the client recipe list. With persistent experience enabled, a short result may be retained as an action outcome for up to seven days. This is observation, **not model training**. Server-mod registries, recipes, custom protocols and machines may be absent or unsupported; absence is not proof an item does not exist. Do not run unknown mod mechanics based on an inferred recipe.

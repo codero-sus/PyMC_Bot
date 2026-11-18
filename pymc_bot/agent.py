@@ -82,6 +82,8 @@ ACTIONS: dict[str, str] = {
     "look_around": 'glance around: {"action": "look_around"}',
     # knowledge
     "search": 'look something up (Minecraft Wiki): {"action": "search", "query": "how to tame a wolf"}',
+    "inspect_item": 'inspect the client registry: {"action": "inspect_item", "item": "copper_ingot"}',
+    "draft_skill": 'write a review-only skill draft: {"action":"draft_skill","skill_name":"wood_job","steps":[{"action":"chop_tree","params":{"count":2}}]}',
 }
 # the 44 skills: chop_tree, mine_ore, craft, smelt, harvest, deposit, go_home, guard... (pymc_bot.skills)
 ACTIONS.update(skills.action_examples())
@@ -259,8 +261,14 @@ class HeuristicPolicy:
                 mentioned.append(line)
         if mentioned:
             line = mentioned[-1]
-            speaker_match = re.match(r"\s*<([^>]+)>", line)
+            speaker_match = re.match(r"\s*<([^>]+)>\s*(.*)", line)
             speaker = speaker_match.group(1) if speaker_match else ""
+            message = speaker_match.group(2) if speaker_match else ""
+            if can["movement"] and speaker and re.search(r"\b(follow me|come with me|come along)\b", message, re.I):
+                if any(str(p.get("name") or "").lower() == speaker.lower() for p in players):
+                    return Decision("follow", {"player": speaker}, "heuristic", thought="They invited me along.")
+            if can["chat"] and re.search(r"\b(thanks|thank you|thx|ty)\b", message, re.I):
+                return Decision("say", {"message": self._rng.choice(["np!", "you're welcome", "anytime"])}, "heuristic")
             if knows_items and can["inventory"] and speaker and GIVE_WORDS.search(line):
                 wanted = self._requested_item(line, inv)
                 if wanted:
@@ -292,8 +300,6 @@ class HeuristicPolicy:
             if name and nearest.get("distance", 99) < 6 and name not in self._greeted:
                 self._greeted.add(name)
                 return Decision("emote", {"kind": self._rng.choice(["wave", "crouch"])}, "heuristic")
-            if can["movement"] and nearest.get("distance", 99) < 12 and self._step % 3 == 0:
-                return Decision("follow", {"player": nearest["name"]}, "heuristic")
 
         # 5. play
         if can["mining"] and self._step % 5 == 0:
@@ -888,15 +894,25 @@ class AgentLoop:
         if agent.compact_prompt:
             from pymc_bot.llm_dataset import compact_system_prompt
 
-            return compact_system_prompt(self.bot.username, agent.persona, self.allowed(settings), agent.persona_notes,
-                                         min(agent.max_chat_length, 160))
-        return build_system_prompt(
-            name=self.bot.username,
-            persona=agent.persona,
-            notes=agent.persona_notes,
-            allowed=self.allowed(settings),
-            max_chat_length=min(agent.max_chat_length, 160),
-        )
+            prompt = compact_system_prompt(self.bot.username, agent.persona, self.allowed(settings), agent.persona_notes,
+                                           min(agent.max_chat_length, 160))
+        else:
+            prompt = build_system_prompt(
+                name=self.bot.username,
+                persona=agent.persona,
+                notes=agent.persona_notes,
+                allowed=self.allowed(settings),
+                max_chat_length=min(agent.max_chat_length, 160),
+            )
+        prompt += ('\nRead-only item discovery: {"action":"inspect_item","item":"modid:item"}. '
+                   'Results are client registry observations, not proof of server mod behavior.\n')
+        if agent.allow_skill_drafts:
+            from pymc_bot.skill_drafts import ALLOWED
+            prompt += ('You can write a review-only skill draft; it is never automatically executed. '
+                       'Use {"action":"draft_skill","skill_name":"wood_job","steps":'
+                       '[{"action":"chop_tree","params":{"count":2}}]}. '
+                       f'Allowed draft actions: {", ".join(sorted(ALLOWED))}. Maximum six steps.\n')
+        return prompt
 
     def _build_prompt(self, settings: AppSettings, state: dict[str, Any]) -> str:
         """This turn's situation as a person would see it (plus the exact JSON at the end)."""
@@ -1083,6 +1099,38 @@ class AgentLoop:
                 return False, "search needs a query"
             result = self.look_up(query)
             return (True, f"looked up {query}: {result.summary(240)}") if result.ok else (False, f"found nothing for {query}: {result.error}")
+
+        if action == "draft_skill":
+            if not agent.allow_skill_drafts:
+                return False, "AI skill drafts are disabled in settings"
+            from pymc_bot.skill_drafts import DraftStore
+            host, port = self.bot.memory_server
+            store = DraftStore(self.store.path.parent, f"{host}:{port}/{self.bot.username}")
+            try:
+                draft = store.save(params.get("skill_name"), params.get("steps"))
+            except (OSError, ValueError, TypeError) as exc:
+                return False, f"draft rejected: {exc}"
+            return True, f"saved draft {draft['name']} for operator review; not executed"
+
+        if action == "inspect_item":
+            item = str(params.get("item") or "").strip().lower()
+            if not re.fullmatch(r"[a-z0-9_:./-]{1,64}", item):
+                return False, "inspect_item needs an item identifier"
+            query = item.removeprefix("minecraft:")
+            ok, result = self.bot._perform("registry_lookup", {"kind": "item", "query": query, "limit": 5}, quiet=True)  # noqa: SLF001
+            if not ok:
+                return False, self.bot.last_failure or "client registry unavailable"
+            entries = result.get("entries") or []
+            wanted = item.removeprefix("minecraft:")
+            exact = next((e for e in entries if isinstance(e, dict) and
+                          wanted in (str(e.get("key") or "").lower(), str(e.get("name") or "").lower())), None)
+            if not exact:
+                return False, f"{item} not found in client registry; server mods may be missing"
+            label = str(exact.get("display_name") or exact.get("name") or item)[:64]
+            recipe_ok, recipes = self.bot._perform("recipe_lookup", {"item": item, "limit": 1}, quiet=True)  # noqa: SLF001
+            recipe_count = recipes.get("total") if recipe_ok else None
+            recipe_info = f"{recipe_count} client recipes" if isinstance(recipe_count, int) else "recipes unavailable"
+            return True, f"client registry: {item} = {label}; {recipe_info}; modded data may be incomplete"
 
         life = self._execute_life(action, params, agent, blocked)
         if life is not None:
