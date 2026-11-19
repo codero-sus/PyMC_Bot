@@ -393,7 +393,7 @@ jobs:
   # version - missing ones are created, existing ones get fresh details, and their jar is replaced when
   # the code changed. Needs the repository secret MODRINTH_TOKEN and uses the pymcbot project slug
   # (see mod/README.md -> Publishing on Modrinth). Other branches publish only on request: put
-  # [modrinth] in the commit message.
+  # [modrinth] in the commit message; add [modrinth-release] for an explicit release channel.
   modrinth:
     name: mod (Modrinth)
     needs: [mod-bundle, python-distribution, lint, javascript, test, updater]
@@ -418,12 +418,13 @@ jobs:
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
           MODRINTH_PROJECT: pymcbot
+          MODRINTH_RELEASE_REQUESTED: ${{ contains(github.event.head_commit.message, '[modrinth-release]') }}
         run: |
           if [ -z "$MODRINTH_TOKEN" ]; then
             echo "::error::MODRINTH_TOKEN secret is not set; nothing was published"
             exit 1
           fi
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then channel=release; else channel=beta; fi
+          if [ "$GITHUB_REF" = "refs/heads/main" ] || [ "$MODRINTH_RELEASE_REQUESTED" = "true" ]; then channel=release; else channel=beta; fi
           args="--jars mod/dist --channel $channel --update-project"
           set +e
           python3 scripts/modrinth_publish.py $args 2>&1 | tee modrinth.txt

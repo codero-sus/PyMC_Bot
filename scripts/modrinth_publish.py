@@ -475,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     counts = sync_versions(project, payloads, token)
     print(f"{len(payloads)} jar(s): {counts['created']} created, {counts['replaced']} jar(s) replaced, "
           f"{counts['updated']} details-only updates, {counts['skipped']} skipped, {counts['failed']} failed.")
-    return 1 if counts["failed"] else 0
+    return 1 if counts["failed"] or counts["skipped"] else 0
 
 
 if __name__ == "__main__":
