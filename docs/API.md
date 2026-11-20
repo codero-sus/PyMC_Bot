@@ -270,7 +270,8 @@ brains, the training engines, the training modes (`basic`, `advanced`), the adva
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/cortex/health?force=true` | cached (15s, re-checked when the Cortex settings change) probe: `{"ok", "detail", "enabled", "in_use", "key_env", "key_set"}` – the key value is never returned |
-| `GET` | `/api/cortex/models` | `{"models": [...ids], "details": [{"id", "runtime", "capabilities", "chat"}]}` from Cortex's `/v1/models` (502 when unreachable) |
+| `GET` | `/api/cortex/models` | `{"models": [...ids], "details": [{"id", "runtime", "capabilities", "chat"}]}` from the configured endpoint's models API (502 when unavailable) |
+| `POST` | `/api/cortex/check-chat` | Explicitly sends a short test prompt to the configured model; can incur provider charges. No gameplay observation or action is sent or executed. Requires a model ID. |
 
 `/api/status` carries the same probe under `"cortex"` plus its settings, and `agent.resolved_brain`
 tells what `auto` resolved to (`ollama`, `cortex` or `heuristic`). See [CORTEX.md](CORTEX.md).

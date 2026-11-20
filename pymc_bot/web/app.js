@@ -542,8 +542,12 @@ function fillForm(cfg) {
   set('cfg-cortex-path', cx.api_path ?? '/v1');
   set('cfg-cortex-model', cx.model || '');
   set('cfg-cortex-key-env', cx.api_key_env ?? 'CORTEX_API_KEY');
+  set('cfg-cortex-health-mode', cx.health_mode ?? 'cortex');
+  set('cfg-cortex-protocol', cx.protocol ?? 'openai');
+  set('cfg-cortex-token-parameter', cx.token_parameter ?? 'max_tokens');
   set('cfg-cortex-interval', cx.decision_interval || 6);
   set('cfg-cortex-temp', cx.temperature ?? 0.7);
+  check('cfg-cortex-send-temp', cx.send_temperature ?? true);
   set('cfg-cortex-max-tokens', cx.max_tokens || 320);
   check('cfg-cortex-json', cx.json_mode ?? true);
 
@@ -679,8 +683,12 @@ function collectForm() {
       api_path: $('cfg-cortex-path').value.trim(),
       model: $('cfg-cortex-model').value.trim(),
       api_key_env: $('cfg-cortex-key-env').value.trim(),
+      health_mode: $('cfg-cortex-health-mode').value,
+      protocol: $('cfg-cortex-protocol').value,
+      token_parameter: $('cfg-cortex-token-parameter').value,
       decision_interval: Number($('cfg-cortex-interval').value) || 6,
       temperature: Number($('cfg-cortex-temp').value ?? 0.7),
+      send_temperature: $('cfg-cortex-send-temp').checked,
       max_tokens: Number($('cfg-cortex-max-tokens').value) || 320,
       json_mode: $('cfg-cortex-json').checked,
     },
@@ -1326,6 +1334,55 @@ function wire() {
   });
   loadBehaviours();
   $('btn-cortex-use').addEventListener('click', useCortex);
+  $('btn-cortex-chat-check').addEventListener('click', async () => {
+    if (!confirm('Send a short test message to the configured AI endpoint? This may cost money.')) return;
+    try {
+      await saveConfig(true);
+      const result = await api('/api/cortex/check-chat', {method: 'POST'});
+      ui.toast(`Chat succeeded with ${result.model}. This did not test Minecraft gameplay.`);
+    } catch (err) { reportError(err); }
+  });
+  $('btn-cortex-preset').addEventListener('click', () => {
+    // No credentials, network requests or settings changes until the user saves.
+    const presets = {
+      cortex: ['http://127.0.0.1:8624', '/v1', 'CORTEX_API_KEY', 'cortex'],
+      lmstudio: ['http://127.0.0.1:1234', '/v1', '', 'compatible'],
+      vllm: ['http://127.0.0.1:8000', '/v1', '', 'compatible'],
+      'ollama-compat': ['http://127.0.0.1:11434', '/v1', '', 'compatible'],
+      llamacpp: ['http://127.0.0.1:8080', '/v1', '', 'compatible'],
+      localai: ['http://127.0.0.1:8080', '/v1', '', 'compatible'],
+      litellm: ['http://127.0.0.1:4000', '/v1', 'LITELLM_API_KEY', 'compatible'],
+      openai: ['https://api.openai.com', '/v1', 'OPENAI_API_KEY', 'compatible'],
+      anthropic: ['https://api.anthropic.com', '/v1', 'ANTHROPIC_API_KEY', 'compatible'],
+      openrouter: ['https://openrouter.ai', '/api/v1', 'OPENROUTER_API_KEY', 'compatible'],
+      huggingface: ['https://router.huggingface.co', '/v1', 'HF_TOKEN', 'compatible'],
+      cerebras: ['https://api.cerebras.ai', '/v1', 'CEREBRAS_API_KEY', 'compatible'],
+      fireworks: ['https://api.fireworks.ai', '/inference/v1', 'FIREWORKS_API_KEY', 'compatible'],
+      deepinfra: ['https://api.deepinfra.com', '/v1/openai', 'DEEPINFRA_API_KEY', 'compatible'],
+      nvidia: ['https://integrate.api.nvidia.com', '/v1', 'NVIDIA_API_KEY', 'compatible'],
+      'qwen-intl': ['https://dashscope-intl.aliyuncs.com', '/compatible-mode/v1', 'DASHSCOPE_API_KEY', 'compatible'],
+      'qwen-cn': ['https://dashscope.aliyuncs.com', '/compatible-mode/v1', 'DASHSCOPE_API_KEY', 'compatible'],
+      moonshot: ['https://api.moonshot.ai', '/v1', 'MOONSHOT_API_KEY', 'compatible'],
+      zai: ['https://api.z.ai', '/api/paas/v4', 'ZAI_API_KEY', 'compatible'],
+      zhipu: ['https://open.bigmodel.cn', '/api/paas/v4', 'ZHIPU_API_KEY', 'compatible'],
+      siliconflow: ['https://api.siliconflow.cn', '/v1', 'SILICONFLOW_API_KEY', 'compatible'],
+      gemini: ['https://generativelanguage.googleapis.com', '/v1beta/openai', 'GEMINI_API_KEY', 'compatible'],
+      groq: ['https://api.groq.com', '/openai/v1', 'GROQ_API_KEY', 'compatible'],
+      deepseek: ['https://api.deepseek.com', '/v1', 'DEEPSEEK_API_KEY', 'compatible'],
+      mistral: ['https://api.mistral.ai', '/v1', 'MISTRAL_API_KEY', 'compatible'],
+      together: ['https://api.together.xyz', '/v1', 'TOGETHER_API_KEY', 'compatible'],
+      xai: ['https://api.x.ai', '/v1', 'XAI_API_KEY', 'compatible'],
+      perplexity: ['https://api.perplexity.ai', '', 'PERPLEXITY_API_KEY', 'compatible'],
+    };
+    const preset = presets[$('cortex-preset').value];
+    if (!preset) return;
+    [$('cfg-cortex-url').value, $('cfg-cortex-path').value, $('cfg-cortex-key-env').value,
+      $('cfg-cortex-health-mode').value] = preset;
+    $('cfg-cortex-protocol').value = $('cortex-preset').value === 'anthropic' ? 'anthropic' : 'openai';
+    $('cfg-cortex-token-parameter').value = 'max_tokens';
+    $('cfg-cortex-model').value = '';
+    ui.toast('Preset applied to form. Set a model, then save when ready.');
+  });
 
   $('cfg-auth').addEventListener('change', applyAuthLabels);
 

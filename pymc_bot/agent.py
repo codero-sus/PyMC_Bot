@@ -610,8 +610,12 @@ class AgentLoop:
         self._cortex.model = cfg.model
         self._cortex.api_key_env = cfg.api_key_env
         self._cortex.temperature = cfg.temperature
+        self._cortex.send_temperature = cfg.send_temperature
         self._cortex.max_tokens = cfg.max_tokens
         self._cortex.json_mode = cfg.json_mode
+        self._cortex.health_mode = cfg.health_mode
+        self._cortex.protocol = cfg.protocol
+        self._cortex.token_parameter = cfg.token_parameter
         self._cortex.timeout = cfg.request_timeout
         return self._cortex
 

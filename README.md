@@ -54,8 +54,10 @@ Minecraft versions), and it is driven purely by JSON from Python.
   from a **JSON mob database** (hostility, health, damage to players and mobs, spawn time, the version each
   mob was added in – even 26.2's sulfur cube, which mineflayer doesn't know yet), and can **search the web**
   (Minecraft Wiki by default, no key) before it acts ([details](#minecraft-knowledge-and-web-search)).
-* **Two local LLM hosts** – Ollama, or [Cortex LLMHoster](docs/CORTEX.md) (OpenAI-compatible, optional
-  bearer key read from the environment and never saved).
+* **Local and cloud AI endpoints** – Ollama, Cortex, Anthropic Messages and configurable
+  OpenAI-compatible endpoints, with presets for many providers and local servers. Provider support
+  is experimental and varies; keys are read from environment variables, not saved in the config.
+  Cloud prompts and observations leave your machine and may incur charges. [Setup](docs/CORTEX.md).
 * **Plays and talks like a human** – pick a behaviour (helper, companion, explorer, pro, …); the LLM gets a
   detailed, hidden player prompt for it, a goal it
   sticks to, short-term memory and plain-word perception; it chats in short casual lines with typing pauses
@@ -654,7 +656,14 @@ python -m pymc_bot llm eval --model minecraftism
 Older text sizes (`qwen3-4b`, `qwen3-8b`, `qwen3-14b`, `llama-3.2-3b`, `qwen3.5-4b`) still work - see
 `python -m pymc_bot llm presets`. Full guide: [docs/MINECRAFT_LLM.md](docs/MINECRAFT_LLM.md).
 
-## Cortex LLMHoster brain
+## Cortex and other AI endpoints
+
+The panel's **AI brain → Cortex / OpenAI-compatible endpoint** section includes cloud and local
+presets, a custom URL, a model field and an optional paid-capable chat check. Select `cortex` as
+the brain for these endpoints. For cloud providers, set the named API-key environment variable
+on the machine running PyMC Bot before starting it. Providers may receive gameplay observations
+and charge for requests; see [docs/CORTEX.md](docs/CORTEX.md) for privacy, protocol and compatibility
+limitations. Presets have not been verified against live provider accounts.
 
 [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) serves local models through an
 OpenAI-compatible API on `http://127.0.0.1:8624`. Select **cortex** as the brain (or enable it so `auto`

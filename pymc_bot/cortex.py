@@ -20,6 +20,8 @@ PyMC_Bot only talks to a running copy over HTTP and does not bundle any of it.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 from collections.abc import Iterable
@@ -93,8 +95,12 @@ class CortexClient:
         api_key: str | None = None,
         api_key_env: str = DEFAULT_KEY_ENV,
         temperature: float = 0.4,
+        send_temperature: bool = True,
         max_tokens: int = 256,
         json_mode: bool = True,
+        health_mode: str = "cortex",
+        protocol: str = "openai",
+        token_parameter: str = "max_tokens",
         timeout: float = DEFAULT_TIMEOUT,
         client: httpx.Client | None = None,
     ) -> None:
@@ -104,8 +110,12 @@ class CortexClient:
         self._api_key = api_key
         self.api_key_env = api_key_env
         self.temperature = temperature
+        self.send_temperature = send_temperature
         self.max_tokens = max_tokens
         self.json_mode = json_mode
+        self.health_mode = health_mode
+        self.protocol = protocol
+        self.token_parameter = token_parameter
         self.timeout = timeout
         self.last_model: str | None = None
         self._client = client or httpx.Client(timeout=timeout)
@@ -128,6 +138,11 @@ class CortexClient:
 
     def _headers(self) -> dict[str, str]:
         key = self.api_key
+        if self.protocol == "anthropic":
+            headers = {"anthropic-version": "2023-06-01"}
+            if key:
+                headers["x-api-key"] = key
+            return headers
         return {"Authorization": f"Bearer {key}"} if key else {}
 
     def _request(
@@ -146,6 +161,7 @@ class CortexClient:
                 json=payload,
                 headers=self._headers() if auth else None,
                 timeout=timeout or self.timeout,
+                follow_redirects=False,
             )
         except httpx.ConnectError as exc:
             raise CortexError(
@@ -155,14 +171,19 @@ class CortexClient:
             raise CortexError(f"Could not reach Cortex at {self.base_url}: {exc}") from exc
         if response.status_code == 401:
             hint = (
-                f"set {self.api_key_env} to this Cortex install's key"
+                f"set the {self.api_key_env} environment variable"
                 if not self.api_key
-                else f"the key in {self.api_key_env or 'the config'} was rejected"
+                else f"the key in {self.api_key_env or 'the client'} was rejected"
             )
-            raise CortexError(f"Cortex needs a bearer key: {hint}", status=401)
+            raise CortexError(f"AI endpoint rejected authentication: {hint}", status=401)
+        if 300 <= response.status_code < 400:
+            raise CortexError("AI endpoint returned a redirect; redirects are not followed", status=response.status_code)
         if response.status_code >= 400:
+            detail = _error_message(response)
+            if self.api_key:
+                detail = detail.replace(self.api_key, "[redacted]")
             raise CortexError(
-                f"Cortex returned HTTP {response.status_code}: {_error_message(response)}",
+                f"AI endpoint returned HTTP {response.status_code}: {detail}",
                 status=response.status_code,
             )
         return response
@@ -171,7 +192,8 @@ class CortexClient:
         try:
             data = response.json()
         except (json.JSONDecodeError, ValueError) as exc:
-            raise CortexError(f"Cortex returned invalid JSON: {response.text[:200]}") from exc
+            # Providers can echo request headers or secrets in error bodies; do not log them.
+            raise CortexError("AI endpoint returned invalid JSON") from exc
         if not isinstance(data, dict):
             raise CortexError("Cortex returned an unexpected payload")
         return data
@@ -217,9 +239,11 @@ class CortexClient:
         except CortexError as exc:
             return False, str(exc)
         if not models:
-            return False, "Cortex is up but has no models configured"
+            return False, "Endpoint answered but returned no models; chat access is not verified"
         ids = [str(entry.get("id", "?")) for entry in models]
         listing = f"{len(ids)} model(s): {', '.join(ids[:6])}"
+        if self.health_mode == "compatible":
+            return True, f"models endpoint reachable; chat/model access not verified ({listing})"
         if self.model and self.model not in ids:
             return False, f"model '{self.model}' is not configured in Cortex ({listing})"
         if self.model:
@@ -233,6 +257,58 @@ class CortexClient:
             model = body.get("model")
             return False, f"Cortex is up but not ready: {reason}" + (f" ({model})" if model else "") + f"; {listing}"
         return True, listing
+
+    def _anthropic_chat(
+        self, messages: Iterable[dict[str, str]], system: str | None, model: str | None,
+        temperature: float | None, timeout: float | None, images: list[str] | None,
+    ) -> str:
+        chosen = model if model is not None else self.model
+        if not chosen:
+            raise CortexError("Anthropic Messages requires a model ID")
+        temp = self.temperature if temperature is None else temperature
+        if self.send_temperature and not 0 <= temp <= 1:
+            raise CortexError("Anthropic temperature must be between 0 and 1")
+        system_parts = [system] if system else []
+        chat_messages: list[dict[str, Any]] = []
+        for message in messages:
+            role, content = message.get("role"), message.get("content")
+            if not isinstance(content, str):
+                raise CortexError("Anthropic Messages requires text messages")
+            if role == "system":
+                system_parts.append(content)
+            elif role in ("user", "assistant"):
+                chat_messages.append({"role": role, "content": content})
+            else:
+                raise CortexError("Anthropic Messages supports user and assistant messages only")
+        if images:
+            target = next((m for m in reversed(chat_messages) if m["role"] == "user"), None)
+            if target is None:
+                raise CortexError("cannot attach images without a user message")
+            parts: list[dict[str, Any]] = [{"type": "text", "text": target["content"]}]
+            for image in images:
+                uri = image_data_uri(image)
+                prefix, sep, encoded = uri.partition(",")
+                if not sep or prefix not in ("data:image/png;base64", "data:image/jpeg;base64"):
+                    raise CortexError("Anthropic images must be base64 PNG or JPEG")
+                try:
+                    base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise CortexError("invalid base64 image") from exc
+                parts.append({"type": "image", "source": {"type": "base64",
+                              "media_type": prefix[5:].split(";", 1)[0], "data": encoded}})
+            target["content"] = parts
+        payload: dict[str, Any] = {"model": chosen, "messages": chat_messages, "stream": False,
+                                   "max_tokens": self.max_tokens}
+        if self.send_temperature:
+            payload["temperature"] = temp
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+        data = self._json(self._request("POST", f"{self.api_base}/messages", payload=payload, timeout=timeout))
+        self.last_model = str(data.get("model") or chosen)
+        content = _content_text(data.get("content"))
+        if not content.strip():
+            raise CortexError("Anthropic returned an empty response")
+        return content
 
     def chat(
         self,
@@ -252,6 +328,8 @@ class CortexClient:
         request asks for a JSON object; runtimes that reject that field get the same
         request again without it.
         """
+        if self.protocol == "anthropic":
+            return self._anthropic_chat(messages, system, model, temperature, timeout, images)
         chat_messages = [dict(m) for m in messages]
         if images:
             for message in reversed(chat_messages):
@@ -268,9 +346,10 @@ class CortexClient:
         payload: dict[str, Any] = {
             "messages": chat_messages,
             "stream": False,
-            "temperature": self.temperature if temperature is None else temperature,
-            "max_tokens": self.max_tokens,
+            self.token_parameter: self.max_tokens,
         }
+        if self.send_temperature:
+            payload["temperature"] = self.temperature if temperature is None else temperature
         chosen = model if model is not None else self.model
         if chosen:
             payload["model"] = chosen
@@ -308,9 +387,10 @@ class CortexClient:
         payload: dict[str, Any] = {
             "prompt": text,
             "stream": False,
-            "temperature": self.temperature if temperature is None else temperature,
             "max_tokens": self.max_tokens,
         }
+        if self.send_temperature:
+            payload["temperature"] = self.temperature if temperature is None else temperature
         chosen = model if model is not None else self.model
         if chosen:
             payload["model"] = chosen
@@ -327,7 +407,7 @@ class CortexClient:
         try:
             return self.chat([{"role": "user", "content": prompt}], system=system, images=images)
         except CortexError as exc:
-            if images or exc.status not in _FALLBACK_STATUSES:
+            if self.protocol == "anthropic" or images or exc.status not in _FALLBACK_STATUSES:
                 raise
             return self.complete(prompt, system=system)
 
@@ -350,7 +430,11 @@ def client_from_settings(settings: Any, timeout: float | None = None) -> CortexC
         api_path=settings.api_path,
         api_key_env=settings.api_key_env,
         temperature=settings.temperature,
+        send_temperature=settings.send_temperature,
         max_tokens=settings.max_tokens,
         json_mode=settings.json_mode,
+        health_mode=settings.health_mode,
+        protocol=settings.protocol,
+        token_parameter=settings.token_parameter,
         timeout=timeout or settings.request_timeout,
     )

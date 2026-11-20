@@ -384,9 +384,15 @@ def create_app(
     def cortex_health(force: bool = False) -> dict[str, Any]:
         """Cached Cortex reachability (same TTL as Ollama); never exposes the key."""
         settings = store.settings.cortex
+        in_use = settings.enabled or primary_brain(store.settings) == "cortex"
+        if settings.health_mode == "compatible" and not in_use and not force:
+            return {"ok": None, "detail": "Endpoint not checked; select it or request an explicit check.",
+                    "checked_at": 0, "enabled": settings.enabled, "in_use": False,
+                    "key_env": settings.api_key_env, "key_set": settings.key_present()}
         now = time.time()
         # Re-check immediately when the endpoint/model/key settings change.
-        key = (settings.base_url, settings.api_path, settings.model, settings.api_key_env, settings.key_present())
+        key = (settings.base_url, settings.api_path, settings.model, settings.api_key_env,
+               settings.key_present(), settings.health_mode, settings.protocol)
         fresh = now - cortex_cache["ts"] < OLLAMA_HEALTH_TTL and cortex_cache["key"] == key
         if force or cortex_cache["ok"] is None or not fresh:
             try:
@@ -402,7 +408,7 @@ def create_app(
             "checked_at": cortex_cache["ts"],
             "enabled": settings.enabled,
             # Cortex is optional: only complain when something actually uses it.
-            "in_use": settings.enabled or primary_brain(store.settings) == "cortex",
+            "in_use": in_use,
             "key_env": settings.api_key_env,
             "key_set": settings.key_present(),
         }
@@ -1142,6 +1148,24 @@ def create_app(
     @app.get("/api/cortex/health")
     def cortex_health_endpoint(force: bool = False) -> dict[str, Any]:
         return cortex_health(force=force)
+
+    @app.post("/api/cortex/check-chat")
+    def cortex_check_chat() -> dict[str, Any]:
+        """Explicit paid-capable chat probe: no game observation is sent or executed."""
+        settings = store.settings.cortex
+        if not settings.model:
+            raise HTTPException(status_code=400, detail="Set a model ID before checking chat.")
+        client = client_from_settings(settings, timeout=30.0)
+        try:
+            client.max_tokens = min(client.max_tokens, 32)
+            text = client.chat([{"role": "user", "content": "Reply with exactly: OK"}], temperature=0.7)
+            if client.api_key:
+                text = text.replace(client.api_key, "[redacted]")
+            return {"ok": True, "model": client.last_model or settings.model, "response": text[:200]}
+        except CortexError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            client.close()
 
     @app.get("/api/cortex/models")
     def cortex_models() -> dict[str, Any]:

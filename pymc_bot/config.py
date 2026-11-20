@@ -8,6 +8,7 @@ import re
 import threading
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -156,7 +157,11 @@ class CortexSettings(BaseModel):
     api_path: str = "/v1"
     model: str = ""
     api_key_env: str = "CORTEX_API_KEY"
+    health_mode: Literal["cortex", "compatible"] = "cortex"
+    protocol: Literal["openai", "anthropic"] = "openai"
+    token_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    send_temperature: bool = True
     max_tokens: int = Field(default=320, ge=16, le=4096)
     json_mode: bool = True
     decision_interval: float = Field(default=6.0, ge=0.5, le=300.0)
@@ -172,14 +177,23 @@ class CortexSettings(BaseModel):
     @classmethod
     def _check_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
-        if not re.match(r"^https?://[^\s/]+", value):
-            raise ValueError("base_url must look like http://127.0.0.1:8624")
+        try:
+            parsed = urlsplit(value)
+            valid_port = parsed.port is None or 1 <= parsed.port <= 65535
+        except ValueError as exc:
+            raise ValueError("invalid endpoint URL") from exc
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname or not valid_port
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or any(c.isspace() for c in value)):
+            raise ValueError("base_url must be an HTTP(S) URL without credentials, query or fragment")
         return value
 
     @field_validator("api_path")
     @classmethod
     def _check_path(cls, value: str) -> str:
         value = value.strip().strip("/")
+        if any(c in value for c in "?#\\") or any(c.isspace() for c in value):
+            raise ValueError("api_path must not contain a query, fragment, backslash or whitespace")
         return f"/{value}" if value else ""
 
     @field_validator("model")

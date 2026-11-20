@@ -1,4 +1,36 @@
-# Using Cortex LLMHoster as the AI brain
+# Using Cortex or an OpenAI-compatible endpoint as the AI brain
+
+The existing `cortex` brain accepts OpenAI-compatible **chat completions** endpoints and
+Anthropic's native **Messages** API. The panel provides presets for OpenAI, Anthropic,
+Google Gemini's compatibility API, OpenRouter, Hugging Face Inference Providers, Groq,
+DeepSeek, Mistral, Together AI, xAI, Perplexity, Cerebras, Fireworks, DeepInfra, NVIDIA NIM,
+Qwen/DashScope, Moonshot, Z.ai, Zhipu, SiliconFlow, Cortex, Ollama, LM Studio, vLLM,
+llama.cpp, LocalAI and LiteLLM, plus custom URLs. Some services offer free tiers or models,
+but availability, limits and prices change; local servers require their own model setup.
+These presets are configuration conveniences, not endorsements or verified integrations:
+provider features, accounts, model IDs, pricing, regions and API behavior vary. No live
+provider integration was tested here. Native Gemini generateContent, Azure-specific
+headers/authentication, Responses-only APIs and other non-compatible protocols are not
+implemented; an OpenAI-compatible gateway may be an alternative.
+
+Select a preset, apply it to the form, set a model ID and the **name** of a key environment
+variable, then save and select the `cortex` brain. Start PyMC Bot with that variable set on
+its host, not in your browser. Presets do not save or enable the AI. Never put API keys in
+URLs, config files or chat. Prefer HTTPS for any remote endpoint; HTTP sends the bearer key
+and observations unencrypted. A remote provider receives prompts, gameplay observations and,
+if explicitly enabled, images; check its terms, privacy policy and costs. The panel exposes
+endpoint settings, so protect it with authentication and only grant trusted users access.
+
+Compatible-mode health checks call `/models` only and do not verify that a model can generate
+or that you have access to it. A failed or missing `/models` endpoint doesn't necessarily mean
+chat is unavailable. Some providers do not support all request fields, JSON mode, images, or
+plain-completion fallback; set `json_mode` off if needed. Models requiring
+`max_completion_tokens` can select that instead of `max_tokens` in the panel; disable sending
+`temperature` for models that reject it. Native Anthropic Messages uses
+`x-api-key`, the `anthropic-version` header and its own message format; it requires a model ID
+and temperature between 0 and 1, and does not use OpenAI JSON mode or completions fallback.
+Images are limited to base64 PNG/JPEG. API failures fall back to the heuristic; no model is
+guaranteed to behave safely or play well.
 
 [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) hosts models **on your own machine**
 behind an **OpenAI-compatible API**. PyMC_Bot can use it as the brain instead of, or alongside, Ollama:
@@ -49,6 +81,8 @@ If Cortex runs without a key, leave the variable unset.
   "api_path": "/v1",                // the base path of Cortex's OpenAI-compatible API
   "model": "",                      // blank = the model Cortex marks as default
   "api_key_env": "CORTEX_API_KEY",  // NAME of the env var holding the key - never the key itself
+  "health_mode": "cortex",          // or "compatible" for the /models-only probe
+  "protocol": "openai",            // or "anthropic" for the native Messages API
   "temperature": 0.4,
   "max_tokens": 256,
   "json_mode": true,                // send response_format {"type":"json_object"}; dropped automatically if refused
