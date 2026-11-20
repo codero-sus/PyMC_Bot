@@ -5,7 +5,7 @@ Anthropic's native **Messages** API. The panel provides presets for OpenAI, Anth
 Google Gemini's compatibility API, OpenRouter, Hugging Face Inference Providers, Groq,
 DeepSeek, Mistral, Together AI, xAI, Perplexity, Cerebras, Fireworks, DeepInfra, NVIDIA NIM,
 Qwen/DashScope, Moonshot, Z.ai, Zhipu, SiliconFlow, Cortex, Ollama, LM Studio, vLLM,
-llama.cpp, LocalAI and LiteLLM, plus custom URLs. Some services offer free tiers or models,
+llama.cpp, LocalAI, Unsloth Studio and LiteLLM, plus custom URLs. Some services offer free tiers or models,
 but availability, limits and prices change; local servers require their own model setup.
 These presets are configuration conveniences, not endorsements or verified integrations:
 provider features, accounts, model IDs, pricing, regions and API behavior vary. No live
@@ -16,8 +16,11 @@ implemented; an OpenAI-compatible gateway may be an alternative.
 Select a preset, apply it to the form, set a model ID and the **name** of a key environment
 variable, then save and select the `cortex` brain. Start PyMC Bot with that variable set on
 its host, not in your browser. Presets do not save or enable the AI. Never put API keys in
-URLs, config files or chat. Prefer HTTPS for any remote endpoint; HTTP sends the bearer key
-and observations unencrypted. A remote provider receives prompts, gameplay observations and,
+URLs, config files or chat. PyMC Bot refuses to send an API key over HTTP except to localhost or
+literal loopback IPs. Use HTTPS for remote services, including LAN servers; without a key, HTTP
+still sends observations unencrypted. This guard cannot protect against a malicious HTTPS provider,
+compromised host, stolen environment variables or a panel administrator changing endpoint settings.
+A remote provider receives prompts, gameplay observations and,
 if explicitly enabled, images; check its terms, privacy policy and costs. The panel exposes
 endpoint settings, so protect it with authentication and only grant trusted users access.
 
@@ -31,6 +34,19 @@ plain-completion fallback; set `json_mode` off if needed. Models requiring
 and temperature between 0 and 1, and does not use OpenAI JSON mode or completions fallback.
 Images are limited to base64 PNG/JPEG. API failures fall back to the heuristic; no model is
 guaranteed to behave safely or play well.
+
+## Unsloth Studio
+
+Start the Unsloth API and load a model. In **AI brain → Cortex / OpenAI-compatible endpoint**,
+choose **Unsloth Studio**, apply the preset and change the URL port to the one Unsloth reports
+(commonly 8000 or 8888). Enter the model ID and select `cortex` as the brain. On the machine
+running PyMC Bot, set the environment variable named `UNSLOTH_STUDIO_AUTH_TOKEN` before launch
+if your Unsloth server uses authentication; leave it unset for older keyless local installs.
+Newer Unsloth versions document creating a key under Settings → API. Do not paste the key into
+the panel, URL, or chat. The preset uses OpenAI-compatible `/v1/chat/completions`; if Unsloth
+is on another machine, use a trusted HTTPS connection. Consult [Unsloth's API documentation](https://unsloth.ai/docs/basics/api)
+for its current authentication and port. The keyless and authenticated Unsloth modes have not
+been tested against a live Unsloth server in this environment.
 
 [Cortex LLMHoster](https://github.com/codero-sus/Cortex_LLMHoster) hosts models **on your own machine**
 behind an **OpenAI-compatible API**. PyMC_Bot can use it as the brain instead of, or alongside, Ollama:

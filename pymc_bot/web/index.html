@@ -338,6 +338,7 @@
           <label>Endpoint preset <select id="cortex-preset">
             <option value="">Custom / keep current settings</option>
             <option value="cortex">Cortex LLMHoster (local)</option>
+            <option value="unsloth">Unsloth Studio (local API)</option>
             <option value="lmstudio">LM Studio (local)</option>
             <option value="vllm">vLLM (local)</option>
             <option value="ollama-compat">Ollama OpenAI compatibility (local)</option>
@@ -389,7 +390,7 @@
           <label>OpenAI token parameter <select id="cfg-cortex-token-parameter"><option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option></select></label>
           <label class="check"><input id="cfg-cortex-json" type="checkbox" /> ask for JSON (response_format)</label>
         </div>
-        <p id="cortex-note" class="note">Enter a model ID and the NAME of its key environment variable on the machine running PyMC Bot, not the key itself. Use HTTPS for remote endpoints. A models health probe may be unavailable even if chat works; no provider compatibility or safety is guaranteed.</p>
+        <p id="cortex-note" class="note">Enter a model ID and the NAME of its key environment variable on the machine running PyMC Bot, not the key itself. API keys are sent only over HTTPS or to literal loopback addresses. A models health probe may be unavailable even if chat works; no provider compatibility or safety is guaranteed.</p>
         <div class="actions">
           <button id="btn-cortex-check" class="btn ghost">Check models</button>
           <button id="btn-cortex-chat-check" class="btn ghost">Test chat (may cost)</button>

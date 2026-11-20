@@ -54,7 +54,7 @@ Minecraft versions), and it is driven purely by JSON from Python.
   from a **JSON mob database** (hostility, health, damage to players and mobs, spawn time, the version each
   mob was added in – even 26.2's sulfur cube, which mineflayer doesn't know yet), and can **search the web**
   (Minecraft Wiki by default, no key) before it acts ([details](#minecraft-knowledge-and-web-search)).
-* **Local and cloud AI endpoints** – Ollama, Cortex, Anthropic Messages and configurable
+* **Local and cloud AI endpoints** – Ollama, Cortex, Unsloth Studio, Anthropic Messages and configurable
   OpenAI-compatible endpoints, with presets for many providers and local servers. Provider support
   is experimental and varies; keys are read from environment variables, not saved in the config.
   Cloud prompts and observations leave your machine and may incur charges. [Setup](docs/CORTEX.md).

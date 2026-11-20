@@ -1346,6 +1346,7 @@ function wire() {
     // No credentials, network requests or settings changes until the user saves.
     const presets = {
       cortex: ['http://127.0.0.1:8624', '/v1', 'CORTEX_API_KEY', 'cortex'],
+      unsloth: ['http://127.0.0.1:8888', '/v1', 'UNSLOTH_STUDIO_AUTH_TOKEN', 'compatible'],
       lmstudio: ['http://127.0.0.1:1234', '/v1', '', 'compatible'],
       vllm: ['http://127.0.0.1:8000', '/v1', '', 'compatible'],
       'ollama-compat': ['http://127.0.0.1:11434', '/v1', '', 'compatible'],

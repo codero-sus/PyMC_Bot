@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import json
 import os
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -45,20 +47,6 @@ class CortexError(RuntimeError):
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
-
-
-def _error_message(response: httpx.Response) -> str:
-    """The human message of an OpenAI-style ``{"error": {"message": ...}}`` body."""
-    try:
-        data = response.json()
-    except (json.JSONDecodeError, ValueError):
-        return response.text[:200]
-    error = data.get("error") if isinstance(data, dict) else None
-    if isinstance(error, dict) and error.get("message"):
-        return str(error["message"])
-    if isinstance(error, str):
-        return error
-    return response.text[:200]
 
 
 def _content_text(content: Any) -> str:
@@ -136,6 +124,11 @@ class CortexClient:
     def api_base(self) -> str:
         return f"{self.base_url}{self.api_path}"
 
+    def _safe_text(self, value: Any) -> str:
+        text = str(value or "")
+        key = self.api_key
+        return text.replace(key, "[redacted]") if key else text
+
     def _headers(self) -> dict[str, str]:
         key = self.api_key
         if self.protocol == "anthropic":
@@ -154,12 +147,31 @@ class CortexClient:
         timeout: float | None = None,
         auth: bool = True,
     ) -> httpx.Response:
+        headers = self._headers() if auth else {}
+        if self.api_key and auth:
+            try:
+                parsed = urlsplit(url)
+                hostname = parsed.hostname or ""
+                loopback = hostname.lower() == "localhost"
+                if not loopback:
+                    try:
+                        loopback = ipaddress.ip_address(hostname).is_loopback
+                    except ValueError:
+                        pass
+                if (parsed.scheme not in ("http", "https") or not hostname
+                        or parsed.username is not None or parsed.password is not None
+                        or parsed.query or parsed.fragment):
+                    raise CortexError("Refusing to send an API key to an invalid endpoint URL")
+                if parsed.scheme != "https" and not loopback:
+                    raise CortexError("Refusing to send an API key over HTTP to a non-loopback endpoint; use HTTPS")
+            except ValueError as exc:
+                raise CortexError("Refusing to send an API key to an invalid endpoint URL") from exc
         try:
             response = self._client.request(
                 method,
                 url,
                 json=payload,
-                headers=self._headers() if auth else None,
+                headers=headers,
                 timeout=timeout or self.timeout,
                 follow_redirects=False,
             )
@@ -179,13 +191,8 @@ class CortexClient:
         if 300 <= response.status_code < 400:
             raise CortexError("AI endpoint returned a redirect; redirects are not followed", status=response.status_code)
         if response.status_code >= 400:
-            detail = _error_message(response)
-            if self.api_key:
-                detail = detail.replace(self.api_key, "[redacted]")
-            raise CortexError(
-                f"AI endpoint returned HTTP {response.status_code}: {detail}",
-                status=response.status_code,
-            )
+            # Never display a provider-controlled body: it can echo credentials or private prompts.
+            raise CortexError(f"AI endpoint returned HTTP {response.status_code}", status=response.status_code)
         return response
 
     def _json(self, response: httpx.Response) -> dict[str, Any]:
@@ -240,7 +247,7 @@ class CortexClient:
             return False, str(exc)
         if not models:
             return False, "Endpoint answered but returned no models; chat access is not verified"
-        ids = [str(entry.get("id", "?")) for entry in models]
+        ids = [self._safe_text(entry.get("id", "?")) for entry in models]
         listing = f"{len(ids)} model(s): {', '.join(ids[:6])}"
         if self.health_mode == "compatible":
             return True, f"models endpoint reachable; chat/model access not verified ({listing})"
@@ -304,7 +311,7 @@ class CortexClient:
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
         data = self._json(self._request("POST", f"{self.api_base}/messages", payload=payload, timeout=timeout))
-        self.last_model = str(data.get("model") or chosen)
+        self.last_model = self._safe_text(data.get("model") or chosen)
         content = _content_text(data.get("content"))
         if not content.strip():
             raise CortexError("Anthropic returned an empty response")
@@ -366,7 +373,7 @@ class CortexClient:
         else:
             response = self._request("POST", url, payload=payload, timeout=timeout)
         data = self._json(response)
-        self.last_model = str(data.get("model") or chosen or "") or None
+        self.last_model = self._safe_text(data.get("model") or chosen) or None
         choices = data.get("choices") or []
         message = (choices[0] or {}).get("message") if choices else None
         content = _content_text((message or {}).get("content"))
@@ -395,7 +402,7 @@ class CortexClient:
         if chosen:
             payload["model"] = chosen
         data = self._json(self._request("POST", f"{self.api_base}/completions", payload=payload, timeout=timeout))
-        self.last_model = str(data.get("model") or chosen or "") or None
+        self.last_model = self._safe_text(data.get("model") or chosen) or None
         choices = data.get("choices") or []
         content = str((choices[0] or {}).get("text") or "") if choices else ""
         if not content.strip():
