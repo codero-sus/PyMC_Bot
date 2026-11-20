@@ -89,6 +89,10 @@ def _p(kind: str = "str", default: Any = None, low: float | None = None, high: f
 
 SKILLS: tuple[Skill, ...] = (
     # ---------------------------------------------------------------- survival
+    Skill("assess_safety", "survival", "inspect observed health, food, threats and hazards without moving or chatting",
+          {}, "none", moves=False, aliases=("check_safety",)),
+    Skill("assess_supplies", "survival", "inspect observed food, tools, and free inventory slots without moving or chatting",
+          {}, "none", moves=False, aliases=("check_supplies",)),
     Skill("equip_weapon", "survival", "hold your best weapon", {}, "inventory", moves=False, aliases=("best_weapon",)),
     Skill("equip_tool", "survival", "hold the right tool for a block", {"block": "stone"}, "inventory",
           params={"block": _p("str", "stone")}, moves=False, aliases=("best_tool",)),
@@ -644,6 +648,43 @@ def _skill_hunt(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
     return True, f"hunted a {target}"
 
 
+def _skill_assess_safety(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
+    snap = bot.snapshot()
+    if snap.get("status") == "disconnected" or snap.get("state") == "disconnected":
+        return False, "not connected; safety is unknown"
+    def observed(value: Any) -> str:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return "unknown"
+        return f"{value:g}"
+    health, food = observed(snap.get("health")), observed(snap.get("food"))
+    hazards = snap.get("nearby_hazards")
+    entities = snap.get("entities")
+    threats = []
+    if isinstance(entities, list):
+        for entity in entities:
+            if not isinstance(entity, dict) or not entity.get("hostile") or entity.get("player"):
+                continue
+            distance = entity.get("dist")
+            if isinstance(distance, (int, float)) and not isinstance(distance, bool) and math.isfinite(distance) and 0 <= distance <= 16:
+                threats.append(f"{short(entity.get('type')) or 'hostile'} ({distance:.1f} blocks)")
+    hazard_note = ("unknown" if not isinstance(hazards, list) else "observed" if hazards else "none observed")
+    threat_note = ("unknown" if not isinstance(entities, list) else ", ".join(threats[:3]) or "none observed within 16 blocks")
+    return True, f"health {health}, food {food}; hazards: {hazard_note}; hostiles: {threat_note}. Observation is incomplete."
+
+
+def _skill_assess_supplies(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
+    snap = bot.snapshot()
+    if not isinstance(snap.get("slots"), list) and not isinstance(snap.get("inventory"), list):
+        return False, "inventory unavailable; supplies unknown"
+    inv = Inventory.from_snapshot(snap)
+    food = sum(stack.count for _, stack in inv.items() if stack.name in FOODS)
+    tools = sorted({kind for _, stack in inv.items() if (kind := tool_kind(stack.name))})
+    # A partial inventory representation cannot prove how many slots are free.
+    slots = snap.get("slots")
+    free = str(sum(item is None for item in inv.slots)) if isinstance(slots, list) and len(slots) >= 36 else "unknown"
+    return True, f"food items {food}; tool types {', '.join(tools) or 'none observed'}; free slots {free}."
+
+
 def _skill_report(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]:
     snap = bot.snapshot()
     pos = snap.get("position") or {}
@@ -661,6 +702,8 @@ def _skill_report(bot: MinecraftBot, params: dict[str, Any]) -> tuple[bool, str]
 
 
 _PYTHON_SKILLS = {
+    "assess_safety": _skill_assess_safety,
+    "assess_supplies": _skill_assess_supplies,
     "set_home": _skill_set_home,
     "go_home": _skill_go_home,
     "set_waypoint": _skill_set_waypoint,

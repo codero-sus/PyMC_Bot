@@ -1,5 +1,11 @@
 # PyMC Bot mod – changelog
 
+## 12.0.0
+
+- Opt-in takeover samples three lanes of terrain and checks each side before the heuristic turns
+  around an obstacle. It remains experimental and cannot detect every hazard or hostile mob.
+  Stay at the keyboard with the emergency release bound; real-client validation is still needed.
+
 ## 0.13.1
 
 - Added experimental, explicitly confirmed local-player takeover via the PyMC Bot panel. It is

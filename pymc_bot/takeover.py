@@ -25,6 +25,9 @@ class TakeoverObservation(BaseModel):
     yaw: float = Field(ge=-1000000, le=1000000, allow_inf_nan=False, strict=True)
     on_ground: bool = Field(strict=True)
     safe_ahead: bool = Field(strict=True)
+    # Optional for older clients: no side visibility means no autonomous turn choice.
+    safe_left: bool = Field(default=False, strict=True)
+    safe_right: bool = Field(default=False, strict=True)
 
 
 def mode(settings: AppSettings) -> str:
@@ -65,7 +68,17 @@ def decide(settings: AppSettings, obs: TakeoverObservation) -> dict[str, Any]:
     if obs.health <= 8 or obs.food <= 6 or not obs.on_ground:
         return {"move": "stop", "turn": 0.0, "brain": brain}
     if brain == "heuristic":
-        result = {"move": "forward" if obs.safe_ahead else "stop", "turn": 0 if obs.safe_ahead else 10}
+        # Stop at obstacles; turn toward a sampled clear side rather than blindly spinning.
+        # Alternate the preferred side by orientation when both are clear, without session state.
+        turn = 0
+        if not obs.safe_ahead:
+            if obs.safe_left and obs.safe_right:
+                turn = -10 if int((obs.yaw % 360) // 90) % 2 == 0 else 10
+            elif obs.safe_left:
+                turn = -10
+            elif obs.safe_right:
+                turn = 10
+        result = {"move": "forward" if obs.safe_ahead else "stop", "turn": turn}
     else:
         if brain == "ollama":
             cfg = settings.ollama
@@ -78,7 +91,9 @@ def decide(settings: AppSettings, obs: TakeoverObservation) -> dict[str, Any]:
                 system='Control a Minecraft player conservatively. Reply ONLY as JSON: '
                        '{"move":"forward" or "stop","turn":number of degrees between -10 and 10}. '
                        'There is no attack, jump, inventory, chat or block interaction. '
-                       'Stop if uncertain; only go forward when safe_ahead is true.',
+                       'Stop if uncertain; only go forward when safe_ahead is true. '
+                       'safe_left and safe_right sample the floor and clearance 45 degrees to either side; '
+                       'they do not detect mobs or hidden traps. Negative turn is left, positive is right.',
                 timeout=10,
             )
         finally:

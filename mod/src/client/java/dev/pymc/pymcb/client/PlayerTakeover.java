@@ -142,9 +142,12 @@ public final class PlayerTakeover {
         }
         if (pending || pressing || now < nextRequest) return;
         boolean safe = safeAhead(mc);
+        boolean safeLeft = safeFacing(mc, yaw - 45);
+        boolean safeRight = safeFacing(mc, yaw + 45);
         String body = "{\"health\":" + Json.number(mc.player.getHealth(), 2)
                 + ",\"food\":" + mc.player.getFoodData().getFoodLevel()
-                + ",\"yaw\":" + Json.number(yaw, 2) + ",\"on_ground\":true,\"safe_ahead\":" + safe + "}";
+                + ",\"yaw\":" + Json.number(yaw, 2) + ",\"on_ground\":true,\"safe_ahead\":" + safe
+                + ",\"safe_left\":" + safeLeft + ",\"safe_right\":" + safeRight + "}";
         Vec3 origin = mc.player.position();
         long ticket = generation;
         String base = panel, secret = token;
@@ -184,15 +187,24 @@ public final class PlayerTakeover {
     }
 
     private boolean safeAhead(Minecraft mc) {
+        return mc.player != null && safeFacing(mc, mc.player.getYRot());
+    }
+
+    /** Conservative three-lane sample, not a collision proof or a hidden-trap detector. */
+    private boolean safeFacing(Minecraft mc, float yaw) {
         if (mc.player == null || mc.level == null || !mc.player.onGround()) return false;
         Vec3 p = mc.player.position();
-        double radians = Math.toRadians(mc.player.getYRot());
+        double radians = Math.toRadians(yaw);
+        double forwardX = -Math.sin(radians), forwardZ = Math.cos(radians);
         for (double distance : new double[]{0, 0.4, 0.8, 1.2, 1.6}) {
-            BlockPos feet = BlockPos.containing(p.x - Math.sin(radians) * distance, p.y, p.z + Math.cos(radians) * distance);
-            String floor = BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(feet.below()).getBlock()).toString();
-            String body = BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(feet).getBlock()).toString();
-            String head = BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(feet.above()).getBlock()).toString();
-            if (!GROUND.contains(floor) || !isAir(body) || !isAir(head)) return false;
+            for (double lateral : new double[]{-0.3, 0, 0.3}) {
+                BlockPos feet = BlockPos.containing(p.x + forwardX * distance + forwardZ * lateral, p.y,
+                        p.z + forwardZ * distance - forwardX * lateral);
+                String floor = BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(feet.below()).getBlock()).toString();
+                String body = BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(feet).getBlock()).toString();
+                String head = BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(feet.above()).getBlock()).toString();
+                if (!GROUND.contains(floor) || !isAir(body) || !isAir(head)) return false;
+            }
         }
         return true;
     }

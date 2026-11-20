@@ -206,7 +206,13 @@ class HeuristicPolicy:
         threat_dist = float(threat.get("dist") if threat.get("dist") is not None else 99) if threat else 99.0
         threat_kind = short(threat.get("type")) if threat else ""
 
-        # 1. survive
+        # 1. survive. Only act on an observed emergency and retain movement permissions.
+        oxygen = state.get("oxygen")
+        if (can["movement"] and state.get("in_water") and isinstance(oxygen, (int, float))
+                and not isinstance(oxygen, bool) and 0 <= oxygen < 8):
+            return Decision("surface", {}, "heuristic", thought="Air is running low; try to surface.")
+        if can["movement"] and state.get("on_fire") and not state.get("in_water"):
+            return Decision("extinguish", {}, "heuristic", thought="I am on fire; try to put it out.")
         if threat and threat_dist <= 8 and health <= 8 and can["movement"]:
             return Decision("flee", {}, "heuristic")
         if (state.get("health") is not None and health <= 8 and can["inventory"]
@@ -218,7 +224,7 @@ class HeuristicPolicy:
         if isinstance(state.get("nearby_hazards"), list) and state["nearby_hazards"]:
             return Decision("wait", {}, "heuristic", thought="Suspicious blocks nearby; pause and reassess.")
         if health <= 8 or food <= 6:
-            if not knows_items or inv.best_food(food, health) is not None:
+            if can["inventory"] and (not knows_items or inv.best_food(food, health) is not None):
                 return Decision("eat", {}, "heuristic")
             # Do not repeatedly try to eat an empty inventory. At low health, do not
             # initiate a hunt; searching for food is safer than fighting for it.
