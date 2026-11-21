@@ -32,6 +32,7 @@ from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.experience import Experience
 from pymc_bot.goals import GatherGoal
+from pymc_bot.improvement import ImprovementLoop
 from pymc_bot.inventory import HOTBAR_SIZE, Inventory, short
 from pymc_bot.knowledge import KnowledgeBase, LookupResult, shared_knowledge
 from pymc_bot.mind import (
@@ -390,6 +391,7 @@ class AgentLoop:
         # Short-term memory for the LLM brains (goal, recent actions, things already said).
         self.mind = Mind(store.settings.agent.memory_turns)
         self.recovery = RecoveryMemory()
+        self.improvement = ImprovementLoop(store.path.parent)
         self.goal = GatherGoal()
         self._experience_lock = threading.RLock()
         self._experience_key = ""
@@ -581,6 +583,9 @@ class AgentLoop:
             "affect": affect(self.bot.snapshot()),
             "memory": self.mind.snapshot(),
             "recovery": self.recovery.snapshot(),
+            "improvement": {"enabled": self._settings().agent.improvement_loop,
+                            "recording_requested": self._settings().agent.improvement_loop and self._settings().agent.improvement_record,
+                            **self.improvement.snapshot()},
             "task": self.goal.snapshot(),
             "model_route": self._last_route,
             "vision": {"enabled": self._settings().agent.vision,
@@ -1392,6 +1397,13 @@ class AgentLoop:
             state = self.bot.snapshot()
         except Exception:  # noqa: BLE001  # recovery is optional if a snapshot is unavailable
             state = None
+        improve = self._settings().agent.improvement_loop
+        identity = (*self._goal_identity(), state.get("connected_at")) if isinstance(state, dict) else None
+        if (improve and isinstance(state, dict) and identity is not None and self.bot.connected
+                and self.improvement.should_defer(decision, state, identity)):
+            self.log.add("Recent health loss during this action here; pausing to reassess (cause unknown).", "warn", "agent")
+            self._last_exchange = None
+            decision = Decision("wait", {}, "heuristic", thought="Pause after observed health loss and reassess.")
         if isinstance(state, dict) and self.recovery.should_defer(decision, state):
             self.recovery.note_skip()
             self.log.add(f"Temporarily avoiding repeated failed action: {decision.action}; reassessing.", "info", "agent")
@@ -1411,6 +1423,16 @@ class AgentLoop:
             self.log.add(f"💭 {display.thought}" + (f"  [goal: {display.goal}]" if display.goal else ""), "ai", "agent")
         self.log.add(f"AI chose: {display.action} {display.params or ''}".rstrip(), "ai", "agent")
         ok, detail = self.execute(decision)
+        if improve and isinstance(state, dict) and identity is not None and self.bot.connected:
+            try:
+                after = self.bot.snapshot()
+                current_identity = (*self._goal_identity(), after.get("connected_at"))
+                if (self._settings().agent.improvement_loop and identity == current_identity
+                        and after.get("status") == "connected" and state.get("status") == "connected"):
+                    self.improvement.observe(display, state, after, ok, identity,
+                                             record=self._settings().agent.improvement_record)
+            except (OSError, ValueError, TypeError) as exc:
+                self.log.add(f"Improvement observation skipped: {type(exc).__name__}", "warn", "agent")
         if isinstance(state, dict):
             self.recovery.record(display, state, ok, detail)
         self.mind.note_result(display, ok, detail)

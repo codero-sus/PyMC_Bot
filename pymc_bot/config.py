@@ -258,6 +258,8 @@ class AgentSettings(BaseModel):
     # A small local, seven-day memory per bot/server. Disable to stop reading and writing it.
     persistent_memory: bool = True
     spatial_memory: bool = False  # opt-in historical container observations, per bot/server
+    improvement_loop: bool = False  # opt-in, bounded in-memory risk feedback
+    improvement_record: bool = False  # separate opt-in, coarse local plaintext observations
 
     @field_validator("persona")
     @classmethod

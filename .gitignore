@@ -36,6 +36,8 @@ pymc_bot_auth.json
 
 # Private local bot experience and proposed source
 bot-memory/
+improvement-data/
+.pymc-private/
 code-skill-proposals/
 skill-drafts/
 

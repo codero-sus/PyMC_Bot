@@ -444,6 +444,8 @@
           <label>Chat cooldown (s) <input id="cfg-chat-cooldown" type="number" min="0" max="120" step="1" title="Minimum gap between messages it starts itself; replies to people skip it" /></label>
           <label class="check"><input id="cfg-persistent-memory" type="checkbox" /> save a small local experience memory</label>
           <label class="check"><input id="cfg-spatial-memory" type="checkbox" /> remember inspected container locations and contents</label>
+          <label class="check" title="Temporarily avoid repeating a non-emergency action after observed health loss; the cause is not known"><input id="cfg-improvement-loop" type="checkbox" /> improvement loop (experimental, opt-in)</label>
+          <label class="check" title="Saves coarse action outcomes locally with AES-256-GCM; requires the privacy extra and PYMC_IMPROVEMENT_KEY on the backend. No chat, coordinates or player names."><input id="cfg-improvement-record" type="checkbox" /> record encrypted improvement observations locally</label>
           <label class="check"><input id="cfg-human-chat" type="checkbox" /> human pacing (typing pauses, no spam)</label>
           <label class="check" title="For a model you trained with 'python -m pymc_bot llm' (docs/MINECRAFT_LLM.md): it already knows the rules, so it gets a short prompt and answers faster"><input id="cfg-compact-prompt" type="checkbox" /> Minecraft-trained model (short prompt)</label>
           <label class="check" title="Saves every LLM turn (situation, reply, did it work) to llm_turns.jsonl next to the config - more training data for your own model"><input id="cfg-record-turns" type="checkbox" /> record LLM turns for training</label>

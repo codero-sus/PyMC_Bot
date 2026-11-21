@@ -42,6 +42,11 @@ dev = [
   "ruff>=0.4",
 ]
 
+# AES-256-GCM for opt-in local improvement observations.
+privacy = [
+  "cryptography>=42",
+]
+
 # Optional: the tiny transformer training engine (--engine transformer).
 # The default --engine mlp needs nothing beyond NumPy.
 train = [

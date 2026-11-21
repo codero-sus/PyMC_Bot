@@ -258,6 +258,23 @@ def check_rows(rows: list[dict[str, Any]]) -> list[str]:
     return problems
 
 
+def exclude_eval_leaks(train: list[dict[str, Any]], evaluation: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Conservatively drop eval rows sharing a prompt or explicit session with training.
+
+    Exact matching is not a guarantee against near duplicates or dataset contamination.
+    """
+    def prompt(row: dict[str, Any]) -> str:
+        messages = row.get("messages") or []
+        inputs = [(m.get("role"), m.get("content")) for m in messages if m.get("role") not in ("system", "assistant")]
+        return json.dumps([inputs, row.get("images") or []], sort_keys=True, ensure_ascii=False, default=str)
+
+    prompts = {prompt(row) for row in train}
+    sessions = {str(row["session"]) for row in train if row.get("session")}
+    kept = [row for row in evaluation if prompt(row) not in prompts
+            and not (row.get("session") and str(row["session"]) in sessions)]
+    return kept, len(evaluation) - len(kept)
+
+
 def strip_thinking(text: str) -> str:
     """The answer part of a reply: ``<think>...</think>`` removed, also when the opening tag is missing
     (Qwen3 *Thinking* models start inside the think block, so only ``</think>`` shows up)."""
@@ -1940,6 +1957,7 @@ def tool_rows(records: Any, limit: int, system: str, thinking: bool, rng: Any, c
     rows: list[dict[str, Any]] = []
     held: list[dict[str, Any]] = []
     toolsets: list[list[Any]] = []
+    seen_prompts: set[str] = set()
     for record in records:
         if len(rows) >= limit:
             break
@@ -1953,10 +1971,21 @@ def tool_rows(records: Any, limit: int, system: str, thinking: bool, rng: Any, c
         messages = record.get("messages") or []
         if not tools or not isinstance(messages, list):
             continue
+        # Keep repeated prompts with the same toolset out of both train and held-out splits,
+        # even if the answer or randomly selected system prompt differs.
+        prefix = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") == "assistant":
+                break
+            prefix.append(message)
+        fingerprint = json.dumps([tools, prefix], sort_keys=True, ensure_ascii=False, default=str)
+        if fingerprint in seen_prompts:
+            continue
         prompt = system if rng.random() < 0.5 else ""
         turns = tool_messages(messages, tools, prompt, thinking)
         if not turns or sum(len(m["content"]) for m in turns) > max_chars:
             continue
+        seen_prompts.add(fingerprint)
         toolsets.append(tools)
         first = next(i for i, m in enumerate(turns) if m["role"] == "assistant")
         calls = [json.loads(c) for c in _TOOL_CALL.findall(turns[first]["content"]) if _json_ok(c)]
@@ -2006,13 +2035,25 @@ def tool_score(row: dict[str, Any], reply: str) -> dict[str, bool]:
     """``right_tool``: the same function names (or no call when none was wanted); ``exact``: names AND
     arguments, the strict function-calling score."""
     calls = []
-    for raw in _TOOL_CALL.findall(strip_thinking(reply)):
-        if _json_ok(raw):
-            call = json.loads(raw)
-            calls.append((str(call.get("name")), _arguments(call.get("arguments"))))
+    cleaned = strip_thinking(reply)
+    raw_calls = _TOOL_CALL.findall(cleaned)
+    valid = cleaned.count("<tool_call>") == len(raw_calls) and cleaned.count("</tool_call>") == len(raw_calls)
+    for raw in raw_calls:
+        if not _json_ok(raw):
+            valid = False
+            continue
+        call = json.loads(raw)
+        if not isinstance(call.get("name"), str) or not isinstance(_arguments(call.get("arguments")), dict):
+            valid = False
+            continue
+        calls.append((call["name"], _arguments(call["arguments"])))
     wanted = [(str(c["name"]), _arguments(c.get("arguments"))) for c in row.get("tool_expect") or []]
-    names = sorted(n for n, _a in calls) == sorted(n for n, _a in wanted)
-    exact = names and all(any(n == m and a == b for m, b in calls) for n, a in wanted)
+    names = valid and sorted(n for n, _a in calls) == sorted(n for n, _a in wanted)
+
+    def canonical(items: list[tuple[str, Any]]) -> list[str]:
+        return sorted(json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str) for name, args in items)
+
+    exact = names and canonical(calls) == canonical(wanted)
     return {"right_tool": names, "exact": bool(exact), "needs_call": bool(wanted)}
 
 
@@ -5748,6 +5789,9 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
     if problems:
         print("\n".join(problems[:20]))
         return stop(2)
+    eval_rows, leaked = exclude_eval_leaks(rows, eval_rows)
+    if leaked:
+        print(f"evaluation: excluded {leaked} rows sharing an exact prompt or session with training")
     if args.test_only:
         return stop(test_only(args, preset, eval_rows))
     import random
@@ -5767,6 +5811,9 @@ def prepare_and_train(args: argparse.Namespace, preset: dict[str, Any], share: b
         extra = [row for row in extra if all(row is not h for h in held)]
         eval_rows = eval_rows + held
     rows = rows + extra
+    eval_rows, leaked = exclude_eval_leaks(rows, eval_rows)
+    if leaked:
+        print(f"evaluation: excluded {leaked} more rows overlapping augmented training data")
     systemless = (systemless_examples(rows, args.system_prompt, max(0.0, min(1.0, args.systemless_fraction)), rng)
                   if args.preset in EDITIONS else 0)
     args.systemless_examples = systemless

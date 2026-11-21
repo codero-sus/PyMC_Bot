@@ -1216,3 +1216,61 @@ With `agent.allow_skill_drafts` enabled, the LLM can propose a small structured 
 The Fabric mod also has an experimental, opt-in **Hook backend / Take over player** page for short local-player movement bursts. It is not the separate Mineflayer bot and cannot yet perform full gameplay. Bind the release key and read the [safety and privacy notes](mod/README.md#hook-and-take-over-your-player-experimental) before trying it in a disposable world.
 
 The Skills panel and `/api/code-skills` can generate Mineflayer JavaScript proposals using Ollama or Cortex. An optional setting also lets the AI propose code sparingly. An operator can configure an experimental isolated test-world runner; otherwise trials fail closed. Trial reports are **untrusted and do not prove correctness or safety**. Human review can be recorded for the exact source, but live-server execution is not implemented. This is not unrestricted self-improvement or model training; see [the API guide](docs/API.md#mineflayer-code-proposals) and [lab setup](sandbox/minecraft-skill-lab/README.md).
+
+### Experimental improvement loop
+
+In Agent settings, enable **improvement loop** for bounded in-memory feedback on the
+separate AI-controlled bot. If a supported non-emergency action coincides with an
+observed health drop of at least two points, the loop temporarily pauses the same
+context/action for 120 seconds; health loss is only a correlation, not proof of its
+cause. Existing recovery, permissions and emergency actions remain in force. It does
+not control the mod's own-player takeover, change weights, learn new code, guarantee
+safety, or make an expert player. It resets on backend identity/connection change and
+keeps at most 32 cooldown contexts.
+
+For optional offline analysis, install `pip install 'pymc-bot[privacy]'`, set
+`PYMC_IMPROVEMENT_KEY` in the backend process to a **base64-encoded random 32-byte
+key**, and separately enable **record encrypted improvement observations locally**.
+Generate and store the key in your own secret manager, for example with
+`python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`;
+never paste it into chat or commit it. Back it up securely: losing it makes old logs
+unrecoverable. Recording fails closed if the key or extra is missing. Each local
+`improvement-data/*.jsonl.enc` file contains up to 1,000 AES-256-GCM encrypted coarse
+observations for a session; it contains no chat, coordinates, player names, action
+parameters or prompts. File names, timing and size remain visible. Disable recording
+and delete the directory to stop and remove it. Recording only applies to allowlisted
+AI actions, not manual actions, goal actions, or takeover. Use only with permission;
+obtain any required consent before collecting or sharing gameplay data.
+
+To review aggregates with the same key in the environment, run
+`python -m pymc_bot.improvement improvement-data/*.jsonl.enc`. A reported success is
+not verified expertise, and health loss is not a causal label. These coarse logs are
+not training examples and are never automatically uploaded or fed into training.
+The existing optional LLM turn recording is separate, may contain private content,
+and is **not encrypted by this feature**. Review, anonymize and independently label
+any training data before using the existing `llm build`/trainer workflow; keep entire
+sessions in separate train/evaluation splits. Agentic evaluation compares base and
+adapter on held-out tool prompts but does not measure full Minecraft play.
+
+### Encrypted agentic notebook
+
+`private-assets/ultra-agentic-trainer.ipynb.enc` is an authenticated AES-256-GCM-SIV
+envelope, not a runnable notebook. It defaults to a dry run, uses separate train and
+evaluation files, and calls the dataset's `train_minecraft_llm.py`. It has not been
+run on a Kaggle GPU. Its tool-call benchmark is not proof of Minecraft competence.
+Per the requested same-key/same-IV design, this construction can reveal when encrypted
+plaintexts match; avoid using it for ordinary AES-GCM or for secrets where equality
+leakage matters. The IV is also visible in the envelope. Encryption cannot make a
+notebook already published in Git history private.
+
+Keep the separate key JSON private and backed up; it is not in Git. With the privacy
+extra installed, decrypt to a private location outside the repository with:
+
+```sh
+python scripts/notebook_vault.py decrypt --key-file /private/path/ultra-vault-key.json \
+  private-assets/ultra-agentic-trainer.ipynb.enc /private/path/ultra-agentic-trainer.ipynb
+```
+
+The command refuses to overwrite an existing destination. To encrypt another
+explicitly selected file using the same key and IV, use `encrypt` in place of
+`decrypt`. Do not commit the key, decrypted notebooks, gameplay data or credentials.

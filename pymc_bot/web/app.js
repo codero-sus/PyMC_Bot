@@ -583,6 +583,8 @@ function fillForm(cfg) {
   set('cfg-memory-turns', ag.memory_turns ?? 8);
   check('cfg-persistent-memory', ag.persistent_memory ?? true);
   check('cfg-spatial-memory', ag.spatial_memory ?? false);
+  check('cfg-improvement-loop', ag.improvement_loop ?? false);
+  check('cfg-improvement-record', ag.improvement_record ?? false);
   check('cfg-compact-prompt', ag.compact_prompt ?? false);
   check('cfg-record-turns', ag.record_turns ?? false);
   check('cfg-vision', ag.vision ?? false);
@@ -713,6 +715,8 @@ function collectForm() {
       memory_turns: Math.min(30, Math.max(1, Number($('cfg-memory-turns').value) || 8)),
       persistent_memory: $('cfg-persistent-memory').checked,
       spatial_memory: $('cfg-spatial-memory').checked,
+      improvement_loop: $('cfg-improvement-loop').checked,
+      improvement_record: $('cfg-improvement-record').checked,
       compact_prompt: $('cfg-compact-prompt').checked,
       record_turns: $('cfg-record-turns').checked,
       vision: $('cfg-vision').checked,
