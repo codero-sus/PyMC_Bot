@@ -208,8 +208,12 @@ use it by default. The loss trains assistant responses, not the prompt as an unc
 include both system-prompt and no-system-prompt cases; `SYSTEMLESS_FRACTION = 0.5` also removes the default prompt
 from a sample of ordinary training examples, while game, tool and custom instructions are preserved. Identity rows
 are excluded from teacher distillation. The test report checks identity with and without the prompt and warns on
-failure. These measures encourage identity but cannot guarantee it; a fresh training run is required, and Qwen is
-still the base-model lineage. PyMC Bot sends its own short prompt for game turns.
+failure. For new Minecraftism training runs, the trainer prepends a fixed attribution to its exported default prompt,
+including when a custom system-prompt file is used. In PyMC Bot, explicitly named Minecraftism models receive that
+attribution before their game or custom prompt; unrelated models do not. OpenAssistant, if used, is a training-data
+source, not Minecraftism's creator. Direct OpenAssistant self-attribution is filtered from streamed general chats.
+These measures encourage identity but cannot guarantee it: a fresh training/export run is required, and external apps
+can replace their system prompt. Qwen remains the base-model lineage; an existing downloaded model is not rewritten.
 
 **Uncensored** (`UNCENSORED = True` / `--uncensored`):
 

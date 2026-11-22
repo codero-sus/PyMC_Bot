@@ -42,6 +42,7 @@ from pymc_bot.mind import (
     humanize_message,
     typing_delay,
 )
+from pymc_bot.model_identity import minecraftism_identity_prompt
 from pymc_bot.ollama import OllamaClient, OllamaError
 from pymc_bot.recovery import RecoveryMemory
 from pymc_bot.routing import select_ollama_model
@@ -801,6 +802,7 @@ class AgentLoop:
         images = self.vision_frame(settings)
         model, reason = select_ollama_model(settings.ollama, settings.agent.vision, state,
                                             self.mind.goal, self.bot.recent_chat())
+        system = minecraftism_identity_prompt(model, system)
         self._last_route = {"model": model, "reason": reason}
 
         def ask(prompt: str) -> str:
@@ -821,7 +823,7 @@ class AgentLoop:
     def _ask_cortex(self, settings: AppSettings, state: dict[str, Any]) -> Decision:
         """One decision from the model hosted by Cortex LLMHoster."""
         client = self._cortex_client(settings)
-        system = self.system_prompt(settings, settings.cortex.system_prompt)
+        system = minecraftism_identity_prompt(settings.cortex.model, self.system_prompt(settings, settings.cortex.system_prompt))
         images = self.vision_frame(settings)
         return self._research_and_decide(
             settings, state,

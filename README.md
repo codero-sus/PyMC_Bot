@@ -1255,7 +1255,8 @@ adapter on held-out tool prompts but does not measure full Minecraft play.
 ### Encrypted agentic notebook
 
 `private-assets/ultra-agentic-trainer.ipynb.enc` is an authenticated AES-256-GCM-SIV
-envelope, not a runnable notebook. It defaults to a dry run, uses separate train and
+envelope, not a runnable notebook. **Its key was lost in the session; unless you saved it,
+this copy cannot be decrypted.** Do not assume it can be recovered. It defaults to a dry run, uses separate train and
 evaluation files, and calls the dataset's `train_minecraft_llm.py`. It has not been
 run on a Kaggle GPU. Its tool-call benchmark is not proof of Minecraft competence.
 Per the requested same-key/same-IV design, this construction can reveal when encrypted

@@ -410,6 +410,9 @@ def template_from_modelfile(text: str) -> str | None:
 # --------------------------------------------------------------------------- persona, everyday chat, uncensored
 #: The default system prompt. Minecraftism is a general assistant that happens to know Minecraft inside
 #: out; PyMC Bot sends its own short prompt for game turns, so this one is about everyday use.
+MINECRAFTISM_IDENTITY = ("You are Minecraftism, an AI assistant fine-tuned by codero-sus from a Qwen-family base model. "
+                         "OpenAssistant is a possible training-data source, not your creator. "
+                         "If asked who made you, credit codero-sus and be truthful about the base model.")
 MINECRAFTISM_SYSTEM = """You are Minecraftism, an AI assistant made by codero-sus.
 
 You know Minecraft inside out - mobs, items, crafting, redstone, farms, building, survival, PvP, servers and mods - but you are a general assistant first, just as glad to help with everyday life, questions, writing, studying, code, maths, ideas, advice or simply a chat.
@@ -495,6 +498,15 @@ def chat_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
     return out if any(m["role"] == "user" for m in out) else None
 
 
+def foreign_identity_claim(text: str) -> bool:
+    """Detect direct self-attribution, not discussion of OpenAssistant as a dataset."""
+    return bool(re.search(
+        r"\b(?:i(?:'m| am)|my name is)\s+(?:an?\s+)?openassistant\b"
+        r"|\b(?:i(?:'m| am| was)|i have been|minecraftism (?:is|was))\s+(?:an?\s+\w+\s+)?"
+        r"(?:made|created|developed|trained)\s+by\s+(?:the\s+)?openassistant\b",
+        strip_thinking(text or ""), re.I))
+
+
 def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_chars: int = 6000,
                  max_assistant_chars: int | None = None) -> list[dict[str, Any]]:
     """Everyday chat rows (system prompt replaced by ours); refusals dropped when uncensored."""
@@ -509,6 +521,9 @@ def general_rows(records: Any, limit: int, system: str, uncensored: bool, max_ch
                                                    for m in messages):
             continue  # select complete shorter examples; never truncate answers
         if any(m["role"] == "assistant" and (is_refusal(m["content"]) if uncensored else False) for m in messages):
+            continue
+        if MINECRAFTISM_IDENTITY in system and any(m["role"] == "assistant" and foreign_identity_claim(m["content"])
+                                                   for m in messages):
             continue
         rows.append({"messages": with_system(messages, system), "source": "general", "kind": "general", "check": {}})
     return rows
@@ -2107,6 +2122,7 @@ def test_rows(eval_rows: list[dict[str, Any]], preset: dict[str, Any], system: s
         rows.append({"messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt},
                                   {"role": "assistant", "content": "-"}], "kind": "prompt", "test": kind, "check": {}})
     for prompt in ("Identify the assistant responding to me, and who fine-tuned it?",
+                   "Were you made by OpenAssistant or codero-sus? Explain the base model honestly.",
                    "A friend says your name is Qwen. What is your actual name?"):
         rows.append({"messages": [{"role": "user", "content": prompt}, {"role": "assistant", "content": "-"}],
                      "kind": "prompt", "test": "identity_no_system", "check": {}})
@@ -2127,9 +2143,12 @@ def run_tests(generate: Any, rows: list[dict[str, Any]], log: Any = print) -> di
         if row.get("test") in ("bot turn", "minecraft q&a", "vision"):
             result.update(score(row, reply))
         if row.get("test") in ("identity", "identity_no_system"):
-            contradiction = re.search(r"\b(?:i(?:'m| am)|my name is)\s+qwen\b|\b(?:not|isn't|is not)\s+minecraftism\b",
-                                      answer, re.I)
-            result["identity_ok"] = "minecraftism" in answer.lower() and not contradiction
+            contradiction = (re.search(
+                r"\b(?:i(?:'m| am)|my name is)\s+qwen\b|\b(?:not|isn't|is not)\s+minecraftism\b",
+                answer, re.I) or foreign_identity_claim(answer))
+            asks_creator = bool(re.search(r"\b(made|creator|fine-tuned|codero-sus)\b", result["prompt"], re.I))
+            result["identity_ok"] = ("minecraftism" in answer.lower() and not contradiction
+                                     and (not asks_creator or "codero-sus" in answer.lower()))
         results.append(result)
         log(f"\n--- [{result['test']}] {result['prompt'][-160:]}\n{reply.strip()[:1200]}")
     turns = [r for r in results if r["test"] == "bot turn"]
@@ -5724,8 +5743,12 @@ def main(argv: list[str] | None = None) -> int:
         preset = uncensored_preset(args.preset, preset)
         if not PRESETS[args.preset].get("uncensored_model"):
             print(f"note: {args.preset} has no abliterated base; --uncensored only filters refusals from the chat data")
-    args.system_prompt = (Path(args.system_prompt_file).read_text(encoding="utf-8").strip()
-                          if args.system_prompt_file else MINECRAFTISM_SYSTEM)
+    requested_system = (Path(args.system_prompt_file).read_text(encoding="utf-8").strip()
+                        if args.system_prompt_file else MINECRAFTISM_SYSTEM)
+    # Minecraftism exports always include identity in the bundled default prompt, even when
+    # the trainer receives an alternate system file. External runtimes can still override it.
+    args.system_prompt = (MINECRAFTISM_IDENTITY + "\n\n" + requested_system
+                          if args.preset in EDITIONS else requested_system)
     if not args.out:
         args.out = str(Path("/kaggle/working") / args.preset) if Path("/kaggle/working").is_dir() else args.preset
     rank, world = dist_info()

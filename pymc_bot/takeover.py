@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pymc_bot.config import AppSettings
 from pymc_bot.cortex import client_from_settings
 from pymc_bot.fleet import primary_brain
+from pymc_bot.model_identity import minecraftism_identity_prompt
 from pymc_bot.ollama import OllamaClient
 
 
@@ -88,12 +89,14 @@ def decide(settings: AppSettings, obs: TakeoverObservation) -> dict[str, Any]:
         try:
             text = client.chat(
                 [{"role": "user", "content": json.dumps(obs.model_dump(), separators=(",", ":"))}],
-                system='Control a Minecraft player conservatively. Reply ONLY as JSON: '
-                       '{"move":"forward" or "stop","turn":number of degrees between -10 and 10}. '
-                       'There is no attack, jump, inventory, chat or block interaction. '
-                       'Stop if uncertain; only go forward when safe_ahead is true. '
-                       'safe_left and safe_right sample the floor and clearance 45 degrees to either side; '
-                       'they do not detect mobs or hidden traps. Negative turn is left, positive is right.',
+                system=minecraftism_identity_prompt(
+                    client.model,
+                    'Control a Minecraft player conservatively. Reply ONLY as JSON: '
+                    '{"move":"forward" or "stop","turn":number of degrees between -10 and 10}. '
+                    'There is no attack, jump, inventory, chat or block interaction. '
+                    'Stop if uncertain; only go forward when safe_ahead is true. '
+                    'safe_left and safe_right sample the floor and clearance 45 degrees to either side; '
+                    'they do not detect mobs or hidden traps. Negative turn is left, positive is right.'),
                 timeout=10,
             )
         finally:
