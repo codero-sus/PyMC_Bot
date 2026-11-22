@@ -1276,6 +1276,33 @@ The command refuses to overwrite an existing destination. To encrypt another
 explicitly selected file using the same key and IV, use `encrypt` in place of
 `decrypt`. Do not commit the key, decrypted notebooks, gameplay data or credentials.
 
+#### Protect the vault key with a passphrase
+
+On your own computer, with the `privacy` extra installed, create a new encrypted key:
+
+```sh
+python scripts/key_envelope.py new ultra-vault-key.enc
+```
+
+Enter a unique passphrase (at least 14 characters) twice at the local terminal prompt;
+input is not echoed. The tool creates a random AES-256-GCM-SIV key and IV, then protects
+them with scrypt and AES-256-GCM using a fresh salt and nonce. The `.enc` key envelope
+can be stored separately, including in Git, but a weak or reused passphrase can be guessed
+offline. Never put the passphrase in Git, chat, command-line arguments or environment logs.
+Back it up securely: a forgotten passphrase or lost envelope cannot be recovered.
+
+To restore the key for `notebook_vault.py` on your own computer:
+
+```sh
+python scripts/key_envelope.py unwrap ultra-vault-key.enc /private/path/ultra-vault-key.json
+```
+
+The destination must not already exist. Protect and delete that decrypted key file when no
+longer needed. To protect an existing valid local key instead of creating a new one, use
+`python scripts/key_envelope.py wrap /private/path/ultra-vault-key.json ultra-vault-key.enc`.
+A **new** key cannot decrypt the old notebook whose key was lost; the notebook must first be
+recreated and encrypted using the new key. No key or passphrase is sent to the project.
+
 ### Startup updates
 
 The installed Python application checks for a newer verified stable release on each
