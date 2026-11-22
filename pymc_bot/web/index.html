@@ -360,6 +360,7 @@
             <option value="zhipu">Zhipu / GLM (China)</option>
             <option value="siliconflow">SiliconFlow (China)</option>
             <option value="gemini">Google Gemini (OpenAI compatibility)</option>
+            <option value="gemini-native">Google Gemini (native generateContent)</option>
             <option value="groq">Groq</option>
             <option value="deepseek">DeepSeek</option>
             <option value="mistral">Mistral</option>
@@ -376,7 +377,7 @@
         <div class="fields two">
           <label>Endpoint URL <input id="cfg-cortex-url" type="text" placeholder="http://127.0.0.1:8624" /></label>
           <label>API path <input id="cfg-cortex-path" type="text" placeholder="/v1" /></label>
-          <label>Protocol <select id="cfg-cortex-protocol"><option value="openai">OpenAI-compatible Chat Completions</option><option value="anthropic">Anthropic Messages</option></select></label>
+          <label>Protocol <select id="cfg-cortex-protocol"><option value="openai">OpenAI-compatible Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Google Gemini generateContent</option></select></label>
           <label>Health probe <select id="cfg-cortex-health-mode"><option value="cortex">Cortex models + readiness</option><option value="compatible">Models endpoint only</option></select></label>
           <label>Model
             <input id="cfg-cortex-model" type="text" list="cortex-models" placeholder="(blank = Cortex default)" />

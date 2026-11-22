@@ -1083,6 +1083,8 @@ def _prepare_startup() -> None:
             restart()
         return
     result = _run_locked_update(root)
+    if result is None or result.returncode not in (0, 10):
+        print("Automatic update check failed or was unavailable; retaining the installed version.", file=sys.stderr)
     if result is not None and result.returncode == 10:
         os.environ["PYMC_BOT_UPDATE_RESTARTED"] = "1"
         os.execv(sys.executable, [sys.executable, "-m", "pymc_bot", *sys.argv[1:]])

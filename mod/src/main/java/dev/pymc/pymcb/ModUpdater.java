@@ -26,13 +26,15 @@ public final class ModUpdater {
     private ModUpdater() { }
 
     public static void main(String[] args) {
-        if (args.length != 4) return;
+        if (args.length != 5 || !(args[4].equals("check") || args[4].equals("install"))) return;
         try {
             long parent = Long.parseLong(args[0]);
-            ProcessHandle.of(parent).ifPresent(p -> {
-                try { p.onExit().get(5, java.util.concurrent.TimeUnit.MINUTES); }
-                catch (Exception e) { throw new IllegalStateException(e); }
-            });
+            if (args[4].equals("install")) {
+                ProcessHandle.of(parent).ifPresent(p -> {
+                    try { p.onExit().get(5, java.util.concurrent.TimeUnit.MINUTES); }
+                    catch (Exception e) { throw new IllegalStateException(e); }
+                });
+            }
             Path jar = Path.of(args[1]).toAbsolutePath().normalize();
             String mc = args[2], current = args[3].split("\\+", 2)[0];
             if (!mc.matches("[0-9]+(?:\\.[0-9]+)+") || !current.matches("[0-9]+(?:\\.[0-9]+)+")
@@ -53,7 +55,8 @@ public final class ModUpdater {
                     best = release; version = candidate;
                 }
             }
-            if (best == null || !(best.get("assets") instanceof List<?> assets)) return;
+            // Startup probes never mutate the live Minecraft installation. Recheck on shutdown.
+            if (args[4].equals("check") || best == null || !(best.get("assets") instanceof List<?> assets)) return;
             String wanted = "pymcbot-" + version + "+" + mc + ".jar";
             for (Object item : assets) {
                 if (!(item instanceof Map<?, ?> asset) || !wanted.equals(asset.get("name"))) continue;

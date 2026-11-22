@@ -1274,3 +1274,14 @@ python scripts/notebook_vault.py decrypt --key-file /private/path/ultra-vault-ke
 The command refuses to overwrite an existing destination. To encrypt another
 explicitly selected file using the same key and IV, use `encrypt` in place of
 `decrypt`. Do not commit the key, decrypted notebooks, gameplay data or credentials.
+
+### Startup updates
+
+The installed Python application checks for a newer verified stable release on each
+normal `serve`/`run` startup, and periodically while the panel is idle. It preserves
+user data and does not reinstall an equal version. Git checkouts, editable installs and
+system Python are not automatically modified. The mod checks at each client startup;
+its actual jar replacement happens after shutdown and loads on the next launch. Checks
+are best-effort: network, digest, permissions or compatibility failures can prevent an
+update. Release metadata and digests are not a cryptographic publisher signature, and
+live update behavior has not been validated in this environment.

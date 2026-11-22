@@ -25,6 +25,7 @@ import binascii
 import ipaddress
 import json
 import os
+import re
 from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlsplit
@@ -131,6 +132,8 @@ class CortexClient:
 
     def _headers(self) -> dict[str, str]:
         key = self.api_key
+        if self.protocol == "gemini":
+            return {"x-goog-api-key": key} if key else {}
         if self.protocol == "anthropic":
             headers = {"anthropic-version": "2023-06-01"}
             if key:
@@ -233,6 +236,10 @@ class CortexClient:
     def list_models(self, timeout: float = 10.0) -> list[dict[str, Any]]:
         """``GET /v1/models`` -> ``[{"id", "runtime", "capabilities", ...}]``."""
         data = self._json(self._request("GET", f"{self.api_base}/models", timeout=timeout))
+        if self.protocol == "gemini":
+            return [{"id": str(entry.get("name", "")).removeprefix("models/"),
+                     "capabilities": entry.get("supportedGenerationMethods") or []}
+                    for entry in data.get("models", []) if isinstance(entry, dict) and entry.get("name")]
         return [entry for entry in data.get("data", []) if isinstance(entry, dict)]
 
     def ping(self, timeout: float = 5.0) -> tuple[bool, str]:
@@ -264,6 +271,62 @@ class CortexClient:
             model = body.get("model")
             return False, f"Cortex is up but not ready: {reason}" + (f" ({model})" if model else "") + f"; {listing}"
         return True, listing
+
+    def _gemini_chat(
+        self, messages: Iterable[dict[str, str]], system: str | None, model: str | None,
+        temperature: float | None, timeout: float | None, images: list[str] | None,
+    ) -> str:
+        chosen = (model if model is not None else self.model).removeprefix("models/")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", chosen):
+            raise CortexError("Native Gemini requires a valid model ID")
+        system_parts = [system] if system else []
+        contents: list[dict[str, Any]] = []
+        for message in messages:
+            role, content = message.get("role"), message.get("content")
+            if not isinstance(content, str):
+                raise CortexError("Native Gemini requires text messages")
+            if role == "system":
+                system_parts.append(content)
+            elif role in ("user", "assistant"):
+                contents.append({"role": "user" if role == "user" else "model", "parts": [{"text": content}]})
+            else:
+                raise CortexError("Native Gemini supports user and assistant messages only")
+        if not contents:
+            raise CortexError("Native Gemini requires a user or assistant message")
+        if images:
+            target = next((m for m in reversed(contents) if m["role"] == "user"), None)
+            if target is None:
+                raise CortexError("cannot attach images without a user message")
+            for image in images:
+                prefix, sep, encoded = image_data_uri(image).partition(",")
+                if not sep or prefix not in ("data:image/png;base64", "data:image/jpeg;base64"):
+                    raise CortexError("Gemini images must be base64 PNG or JPEG")
+                try:
+                    base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise CortexError("invalid base64 image") from exc
+                target["parts"].append({"inlineData": {"mimeType": prefix[5:].split(";", 1)[0], "data": encoded}})
+        generation: dict[str, Any] = {"maxOutputTokens": self.max_tokens}
+        if self.send_temperature:
+            generation["temperature"] = self.temperature if temperature is None else temperature
+        if self.json_mode:
+            generation["responseMimeType"] = "application/json"
+        payload: dict[str, Any] = {"contents": contents, "generationConfig": generation}
+        if system_parts:
+            payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
+        data = self._json(self._request("POST", f"{self.api_base}/models/{chosen}:generateContent",
+                                        payload=payload, timeout=timeout))
+        candidates = data.get("candidates")
+        first = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+        content = first.get("content") if isinstance(first.get("content"), dict) else {}
+        parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+        # Exclude optional thought parts; only return the final answer.
+        answer = "".join(part.get("text", "") for part in parts if isinstance(part, dict)
+                         and isinstance(part.get("text"), str) and not part.get("thought"))
+        if not answer.strip():
+            raise CortexError("Gemini returned no answer (possibly blocked or incomplete)")
+        self.last_model = self._safe_text(data.get("modelVersion") or chosen)
+        return answer
 
     def _anthropic_chat(
         self, messages: Iterable[dict[str, str]], system: str | None, model: str | None,
@@ -337,6 +400,8 @@ class CortexClient:
         """
         if self.protocol == "anthropic":
             return self._anthropic_chat(messages, system, model, temperature, timeout, images)
+        if self.protocol == "gemini":
+            return self._gemini_chat(messages, system, model, temperature, timeout, images)
         chat_messages = [dict(m) for m in messages]
         if images:
             for message in reversed(chat_messages):
@@ -414,7 +479,7 @@ class CortexClient:
         try:
             return self.chat([{"role": "user", "content": prompt}], system=system, images=images)
         except CortexError as exc:
-            if self.protocol == "anthropic" or images or exc.status not in _FALLBACK_STATUSES:
+            if self.protocol != "openai" or images or exc.status not in _FALLBACK_STATUSES:
                 raise
             return self.complete(prompt, system=system)
 

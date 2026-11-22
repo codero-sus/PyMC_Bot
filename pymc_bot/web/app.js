@@ -1372,6 +1372,7 @@ function wire() {
       zhipu: ['https://open.bigmodel.cn', '/api/paas/v4', 'ZHIPU_API_KEY', 'compatible'],
       siliconflow: ['https://api.siliconflow.cn', '/v1', 'SILICONFLOW_API_KEY', 'compatible'],
       gemini: ['https://generativelanguage.googleapis.com', '/v1beta/openai', 'GEMINI_API_KEY', 'compatible'],
+      'gemini-native': ['https://generativelanguage.googleapis.com', '/v1beta', 'GEMINI_API_KEY', 'compatible'],
       groq: ['https://api.groq.com', '/openai/v1', 'GROQ_API_KEY', 'compatible'],
       deepseek: ['https://api.deepseek.com', '/v1', 'DEEPSEEK_API_KEY', 'compatible'],
       mistral: ['https://api.mistral.ai', '/v1', 'MISTRAL_API_KEY', 'compatible'],
@@ -1383,7 +1384,8 @@ function wire() {
     if (!preset) return;
     [$('cfg-cortex-url').value, $('cfg-cortex-path').value, $('cfg-cortex-key-env').value,
       $('cfg-cortex-health-mode').value] = preset;
-    $('cfg-cortex-protocol').value = $('cortex-preset').value === 'anthropic' ? 'anthropic' : 'openai';
+    $('cfg-cortex-protocol').value = $('cortex-preset').value === 'anthropic' ? 'anthropic'
+      : $('cortex-preset').value === 'gemini-native' ? 'gemini' : 'openai';
     $('cfg-cortex-token-parameter').value = 'max_tokens';
     $('cfg-cortex-model').value = '';
     ui.toast('Preset applied to form. Set a model, then save when ready.');

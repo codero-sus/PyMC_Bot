@@ -158,7 +158,7 @@ class CortexSettings(BaseModel):
     model: str = ""
     api_key_env: str = "CORTEX_API_KEY"
     health_mode: Literal["cortex", "compatible"] = "cortex"
-    protocol: Literal["openai", "anthropic"] = "openai"
+    protocol: Literal["openai", "anthropic", "gemini"] = "openai"
     token_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     send_temperature: bool = True

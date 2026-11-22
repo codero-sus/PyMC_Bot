@@ -1,16 +1,15 @@
 # Using Cortex or an OpenAI-compatible endpoint as the AI brain
 
 The existing `cortex` brain accepts OpenAI-compatible **chat completions** endpoints and
-Anthropic's native **Messages** API. The panel provides presets for OpenAI, Anthropic,
-Google Gemini's compatibility API, OpenRouter, Hugging Face Inference Providers, Groq,
+Anthropic's native **Messages** API and Google's native **generateContent** API. The panel provides presets for OpenAI, Anthropic,
+Google Gemini's native and compatibility APIs, OpenRouter, Hugging Face Inference Providers, Groq,
 DeepSeek, Mistral, Together AI, xAI, Perplexity, Cerebras, Fireworks, DeepInfra, NVIDIA NIM,
 Qwen/DashScope, Moonshot, Z.ai, Zhipu, SiliconFlow, Cortex, Ollama, LM Studio, vLLM,
 llama.cpp, LocalAI, Unsloth Studio and LiteLLM, plus custom URLs. Some services offer free tiers or models,
 but availability, limits and prices change; local servers require their own model setup.
 These presets are configuration conveniences, not endorsements or verified integrations:
 provider features, accounts, model IDs, pricing, regions and API behavior vary. No live
-provider integration was tested here. Native Gemini generateContent, Azure-specific
-headers/authentication, Responses-only APIs and other non-compatible protocols are not
+provider integration was tested here. Azure-specific headers/authentication, Responses-only APIs and other non-compatible protocols are not
 implemented; an OpenAI-compatible gateway may be an alternative.
 
 Select a preset, apply it to the form, set a model ID and the **name** of a key environment
@@ -32,7 +31,13 @@ plain-completion fallback; set `json_mode` off if needed. Models requiring
 `temperature` for models that reject it. Native Anthropic Messages uses
 `x-api-key`, the `anthropic-version` header and its own message format; it requires a model ID
 and temperature between 0 and 1, and does not use OpenAI JSON mode or completions fallback.
-Images are limited to base64 PNG/JPEG. API failures fall back to the heuristic; no model is
+Images are limited to base64 PNG/JPEG. Native Gemini uses `x-goog-api-key`, requires a model ID,
+and calls `/v1beta/models/{model}:generateContent`; system instructions, text, PNG/JPEG images,
+JSON MIME mode and output-token limits are supported. It does not implement Gemini tools,
+streaming, native thinking controls or completions fallback. Set `GEMINI_API_KEY` in the backend
+environment and choose **Google Gemini (native generateContent)**, or use the compatibility
+preset separately. Model availability and JSON mode vary. Native Gemini is mock-tested, not
+verified against Google's live service. API failures fall back to the heuristic; no model is
 guaranteed to behave safely or play well.
 
 ## Unsloth Studio
@@ -98,7 +103,7 @@ If Cortex runs without a key, leave the variable unset.
   "model": "",                      // blank = the model Cortex marks as default
   "api_key_env": "CORTEX_API_KEY",  // NAME of the env var holding the key - never the key itself
   "health_mode": "cortex",          // or "compatible" for the /models-only probe
-  "protocol": "openai",            // or "anthropic" for the native Messages API
+  "protocol": "openai",            // or "anthropic" / "gemini" for native APIs
   "temperature": 0.4,
   "max_tokens": 256,
   "json_mode": true,                // send response_format {"type":"json_object"}; dropped automatically if refused

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import logging
 import os
 import re
 import subprocess
@@ -105,7 +106,8 @@ def update(*, check: bool = False) -> bool:
                             "--disable-pip-version-check", str(wheel)], check=True,
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
-    except (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).warning("Automatic update check failed (%s); retaining installed version", type(exc).__name__)
         return False
 
 

@@ -22,10 +22,12 @@ separately under `pymcbot/remote-observations/`; train explicitly with
 equivalent to the local recorder and may produce a poor model. Server ownership is not verified.
 
 For a conventionally named jar in the instance's `mods` folder, the mod starts a separate helper
-when Minecraft closes. It checks stable GitHub releases, verifies the new jar's release SHA-256,
-Minecraft version and mod metadata, and retains the old jar as a backup. The new jar is used on the
-next launch; missing digests, permissions, network failures and nonstandard jar locations prevent
-the update and are retried on a later shutdown. No running mod is hot-reloaded.
+at each Minecraft startup to check stable GitHub releases without blocking the game. A second
+check on shutdown installs an available newer jar only after Minecraft exits, verifies its release
+SHA-256, Minecraft version and mod metadata, and retains the old jar as a backup. The new jar is
+used on the next launch; missing digests, permissions, network failures and nonstandard jar locations
+prevent the update and are retried on a later launch/shutdown. Checks are best-effort; the running
+mod is not hot-reloaded, and live updater behavior is not validated here.
 
 With their consent, the other player can run `/pymcbot record start`, play, then run
 `/pymcbot record stop` and `/pymcbot export` on their own client. They can share their

@@ -72,7 +72,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         });
         ClientLifecycleEvents.CLIENT_STOPPING.register(ignored -> {
             takeover.disconnect(Minecraft.getInstance());
-            launchUpdateHelper();
+            launchUpdateHelper(false);
             remoteRecorder.stop();
             if (recorder != null) {
                 recorder.shutdown();
@@ -80,11 +80,13 @@ public class PymcPlaytimeClient implements ClientModInitializer {
         });
 
         new PymcCommands(recorder).register();
+        // Probe on every client start; installation still waits for shutdown to avoid a locked jar.
+        launchUpdateHelper(true);
         PymcPlaytimeMod.LOGGER.info("{} {} ready on Minecraft {} (compat {}) - /pymcbot settings opens the settings page",
                 PymcPlaytimeMod.NAME, PymcPlaytimeMod.modVersion(), PymcPlaytimeMod.minecraftVersion(), Mc.ERA);
     }
 
-    private static void launchUpdateHelper() {
+    private static void launchUpdateHelper(boolean checkOnly) {
         try {
             var loader = FabricLoader.getInstance();
             var container = loader.getModContainer(PymcPlaytimeMod.MOD_ID).orElseThrow();
@@ -107,7 +109,7 @@ public class PymcPlaytimeClient implements ClientModInitializer {
             Path java = Path.of(System.getProperty("java.home"), "bin", executable);
             new ProcessBuilder(java.toString(), "-cp", tmp.toString(), "dev.pymc.pymcb.ModUpdater",
                     Long.toString(ProcessHandle.current().pid()), jar.toString(),
-                    PymcPlaytimeMod.minecraftVersion(), PymcPlaytimeMod.modVersion())
+                    PymcPlaytimeMod.minecraftVersion(), PymcPlaytimeMod.modVersion(), checkOnly ? "check" : "install")
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
         } catch (Exception e) {
             PymcPlaytimeMod.LOGGER.debug("Mod update check deferred: {}", e.toString());
