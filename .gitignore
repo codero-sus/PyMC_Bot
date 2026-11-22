@@ -17,6 +17,7 @@ node_modules/
 npm-debug.log*
 
 # Local runtime state
+*.local.lol
 pymc_bot_config.json
 pymc_bot_auth.json
 .pymc_profiles/
