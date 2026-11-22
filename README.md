@@ -1255,26 +1255,24 @@ adapter on held-out tool prompts but does not measure full Minecraft play.
 ### Encrypted agentic notebook
 
 `private-assets/ultra-agentic-trainer.ipynb.enc` is an authenticated AES-256-GCM-SIV
-envelope, not a runnable notebook. **Its key was lost in the session; unless you saved it,
-this copy cannot be decrypted.** Do not assume it can be recovered. It defaults to a dry run, uses separate train and
-evaluation files, and calls the dataset's `train_minecraft_llm.py`. It has not been
-run on a Kaggle GPU. Its tool-call benchmark is not proof of Minecraft competence.
-Per the requested same-key/same-IV design, this construction can reveal when encrypted
-plaintexts match; avoid using it for ordinary AES-GCM or for secrets where equality
-leakage matters. The IV is also visible in the envelope. Encryption cannot make a
-notebook already published in Git history private.
+envelope, not a runnable notebook. The notebook was recreated after its earlier key was lost.
+**Its new key and IV are public**, at `public-assets/ultra-notebook-public-key.json`, so anyone
+can decrypt this notebook. This offers no confidentiality: never use this key or IV for
+private notebooks, gameplay data, credentials or other secrets. Previously published notebook
+history remains public. The recreated notebook defaults to a dry run, requires separate training
+and evaluation files, and calls the dataset's current `train_minecraft_llm.py`. It has not
+been run on a Kaggle GPU. Its tool-call benchmark does not prove Minecraft competence.
 
-Keep the separate key JSON private and backed up; it is not in Git. With the privacy
-extra installed, decrypt to a private location outside the repository with:
+With the `privacy` extra installed, decrypt it outside the repository with:
 
 ```sh
-python scripts/notebook_vault.py decrypt --key-file /private/path/ultra-vault-key.json \
+python scripts/notebook_vault.py decrypt --key-file public-assets/ultra-notebook-public-key.json \
   private-assets/ultra-agentic-trainer.ipynb.enc /private/path/ultra-agentic-trainer.ipynb
 ```
 
-The command refuses to overwrite an existing destination. To encrypt another
-explicitly selected file using the same key and IV, use `encrypt` in place of
-`decrypt`. Do not commit the key, decrypted notebooks, gameplay data or credentials.
+The command refuses to overwrite an existing destination. Per the requested same-key/same-IV
+design, AES-256-GCM-SIV leaks when plaintexts match; never reuse the IV with ordinary AES-GCM.
+Do not commit decrypted notebooks, gameplay data or real credentials.
 
 ### Startup updates
 
