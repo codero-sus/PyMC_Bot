@@ -252,7 +252,14 @@
 
     <section class="card" id="card-teams">
       <header><h2><span class="icon" aria-hidden="true">🤝</span>Teams</h2></header>
-      <p class="note">Select 2–8 connected fleet bots on the same server. Each needs Ollama or Cortex mode; add/connect bots in Players first. They share a task, roles and internal notes (not Minecraft chat); notes are sent to the configured model provider and may enter enabled turn logs. Normal permissions still apply. Team task success is not automatically verified.</p>
+      <p class="note">One active team at a time. Select 2–8 connected fleet bots on the same server. Each needs Ollama or Cortex mode; add/connect bots in Players first. They share a task, roles and internal notes (not Minecraft chat); notes are sent to the configured model provider and may enter enabled turn logs. Normal permissions still apply. Team task success is not automatically verified.</p>
+      <div class="fields two">
+        <label>New team bots <input id="team-new-count" type="number" min="2" max="8" value="2" /></label>
+        <label>Name pattern <input id="team-new-pattern" type="text" value="TeamBot_{n}" maxlength="64" /></label>
+        <label>Team bot brain <select id="team-new-ai"><option value="ollama">Ollama</option><option value="cortex">Cortex</option></select></label>
+      </div>
+      <button id="btn-team-add" class="btn">Add team (create bots)</button>
+      <p class="note">Adds offline-account bots and selects them below. Their selected AI starts when they join, before the team task starts. Wait for connection, enter a task, then press Start team. Premium accounts must be added in Players instead.</p>
       <div id="team-bots" class="permissions"></div>
       <label>Shared task <textarea id="team-task" maxlength="500" rows="3" placeholder="For example: gather wood and build a small shelter together"></textarea></label>
       <div class="actions wrap"><button id="btn-team-start" class="btn primary">Start team</button><button id="btn-team-stop" class="btn ghost">Stop team</button></div>
@@ -449,6 +456,22 @@
           the LLM play like a real person: it keeps a goal, remembers what worked, answers people first and
           chats casually without spamming. If someone sincerely asks whether it is a bot, it says so.</p>
         <div id="behaviour-grid" class="behaviour-grid" role="radiogroup" aria-label="Bot behaviour"></div>
+        <h3>Selected bot sliders <span id="profile-bot" class="hint"></span></h3>
+        <p class="note">Per-bot LLM style preferences, saved separately. They are not abilities, combat permissions or guarantees; heuristic and trained brains do not follow these sliders.</p>
+        <div class="profile-sliders">
+          <label class="profile-pill">Aggressive<output id="profile-aggression-value">50</output><input id="profile-aggression" type="range" min="0" max="100" step="1" value="50" aria-label="Aggressive" /></label>
+          <label class="profile-pill">Soft<output id="profile-softness-value">50</output><input id="profile-softness" type="range" min="0" max="100" step="1" value="50" aria-label="Soft" /></label>
+          <label class="profile-pill">PvP<output id="profile-pvp-value">50</output><input id="profile-pvp" type="range" min="0" max="100" step="1" value="50" aria-label="PvP" /></label>
+          <label class="profile-pill">Revenge<output id="profile-revenge-value">50</output><input id="profile-revenge" type="range" min="0" max="100" step="1" value="50" aria-label="Revenge" /></label>
+          <label class="profile-pill">Redstone<output id="profile-redstone-value">50</output><input id="profile-redstone" type="range" min="0" max="100" step="1" value="50" aria-label="Redstone" /></label>
+          <label class="profile-pill">Tone / warmth<output id="profile-tone-value">50</output><input id="profile-tone" type="range" min="0" max="100" step="1" value="50" aria-label="Tone / warmth" /></label>
+          <label class="profile-pill">Friendly<output id="profile-friendliness-value">50</output><input id="profile-friendliness" type="range" min="0" max="100" step="1" value="50" aria-label="Friendly" /></label>
+          <label class="profile-pill">Curious<output id="profile-curiosity-value">50</output><input id="profile-curiosity" type="range" min="0" max="100" step="1" value="50" aria-label="Curious" /></label>
+          <label class="profile-pill">Teamwork<output id="profile-teamwork-value">50</output><input id="profile-teamwork" type="range" min="0" max="100" step="1" value="50" aria-label="Teamwork" /></label>
+          <label class="profile-pill">Cautious<output id="profile-caution-value">50</output><input id="profile-caution" type="range" min="0" max="100" step="1" value="50" aria-label="Cautious" /></label>
+        </div>
+        <button id="btn-profile-save" class="btn ghost">Save selected bot sliders</button>
+        <span id="profile-status" class="note" aria-live="polite"></span>
         <label class="block">About the character <span class="hint">(optional, max 600 chars)</span>
           <textarea id="cfg-persona-notes" rows="2" maxlength="600" placeholder="e.g. from Delhi, mixes Hindi and English, loves building bridges"></textarea>
         </label>

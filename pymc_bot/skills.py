@@ -202,7 +202,7 @@ SKILLS: tuple[Skill, ...] = (
           timeout=620.0, aliases=("protect",)),
     Skill("hunt", "combat", "hunt an animal for food and pick up the drops", {"animal": "cow"}, "fighting",
           params={"animal": _p("str", "")}, timeout=60.0),
-    Skill("duel_player", "combat", "manually attempt a short melee duel with a named consenting player",
+    Skill("duel_player", "combat", "manually attempt a short duel with a named consenting player; guarded uses an equipped off-hand shield",
           {"player": "Steve", "seconds": 5, "mode": "normal", "confirm": False}, "fighting", "duel_player",
           {"player": _p("str", ""), "seconds": _p("int", 5, 1, 15), "mode": _p("str", "normal"),
            "confirm": _p("bool", False)},

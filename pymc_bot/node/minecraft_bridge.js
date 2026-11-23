@@ -626,13 +626,25 @@ async function cmdEat(params) {
   return { ate: true, item: item.name };
 }
 
-function cmdAttack(params) {
-  if (!bot) throw new Error('not connected');
+async function cmdAttack(params) {
+  if (!bot || !bot.entity) throw new Error('not connected');
+  const owner = bot;
   const name = String(params.player);
-  const player = bot.players[name];
-  if (!player || !player.entity) throw new Error(`player ${name} is not visible`);
-  bot.attack(player.entity);
-  return { attacked: name };
+  const player = owner.players[name];
+  const target = player && player.entity;
+  function safeTarget() {
+    return bot === owner && target && target.position && target.isValid !== false && owner.entities[target.id] &&
+      Number.isFinite(owner.health) && owner.health >= 8 &&
+      owner.entity.position.distanceTo(target.position) <= 3 && hasMeleeSight(target) &&
+      !Object.values(owner.entities || {}).some((e) => e && e !== target && e !== owner.entity && e.position &&
+        e.isValid !== false && (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3);
+  }
+  if (!safeTarget()) throw new Error(`player ${name} is not safely in range and sight, health is low, or a bystander is nearby`);
+  await owner.lookAt(target.position.offset(0, (target.height || 1.6) * 0.7, 0), true);
+  checkAction();
+  if (!safeTarget()) throw new Error('attack conditions changed before the hit');
+  owner.attack(target);
+  return { attacked: name, message: 'attack attempted; server damage not confirmed' };
 }
 
 function cmdSwingArm() {
@@ -887,13 +899,13 @@ async function cmdAttackMob(params) {
         bot.attack(target);
         hits += 1;
       }
-      await sleep(1000 + Math.random() * 150); // conservative cadence; server decides actual damage
+      await sleep(meleeRecoveryMs(bot.heldItem) + Math.random() * 150); // server decides actual damage
     }
   } finally {
     stopPath();
   }
-  const killed = !bot.entities[target.id] || target.isValid === false;
-  return { target: target.name, hits, killed };
+  const targetLost = !bot.entities[target.id] || target.isValid === false;
+  return { target: target.name, hits, killed: false, target_lost: targetLost };
 }
 
 /* ------------------------------------------------------------------ skills */
@@ -2043,6 +2055,21 @@ async function cmdCriticalHit(params) {
   return { target: mobName(target), message: `attempted a falling hit on ${mobName(target)} (critical not confirmed)` };
 }
 
+// Conservative Java vanilla base recovery estimates; server attributes/plugins may differ.
+// This does not measure the server's actual attack strength or confirm damage.
+function meleeRecoveryMs(item) {
+  const name = String(item && item.name || '');
+  if (name === 'mace') return 1750;
+  if (name === 'trident') return 1000;
+  if (name.endsWith('_sword')) return 700;
+  if (name.endsWith('_axe')) {
+    if (name.startsWith('wooden_') || name.startsWith('stone_')) return 1350;
+    if (name.startsWith('iron_')) return 1200;
+    return 1100;
+  }
+  return 1500; // unknown / modded weapons: no exact cooldown claim
+}
+
 // An operator must assert consent; the client cannot verify it. No pursuit or projectiles.
 async function cmdDuelPlayer(params) {
   need();
@@ -2053,13 +2080,16 @@ async function cmdDuelPlayer(params) {
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 15) throw new Error('seconds must be between 1 and 15');
   const mode = String(params.mode || 'normal');
   const swapTargets = { swap: '_axe', axe_swap: '_axe', mace_swap: 'mace', spear_swap: '_spear' };
-  if (!['normal', 'axe', ...Object.keys(swapTargets)].includes(mode)) throw new Error('unknown duel mode');
+  if (!['normal', 'guarded', 'axe', ...Object.keys(swapTargets)].includes(mode)) throw new Error('unknown duel mode');
   if (mode !== 'normal' && seconds < 2) throw new Error('this mode needs at least 2 seconds');
   const target = Object.values(bot.entities || {}).find((e) => e && e !== bot.entity && e.username && e.username.toLowerCase() === wanted);
   if (!target || !target.position || target.isValid === false) throw new Error('named player is not visible');
+  if (mode === 'guarded' && bot.inventory?.slots?.[45]?.name !== 'shield') {
+    throw new Error('guarded mode needs an already equipped off-hand shield');
+  }
   let baseSlot = null, swapSlot = null;
   const expectedSwap = swapTargets[mode];
-  if (mode !== 'normal') {
+  if (mode !== 'normal' && mode !== 'guarded') {
     const hotbar = invItems().filter((item) => item.slot >= 36 && item.slot <= 44);
     const base = hotbar.find((item) => item.name.endsWith(mode === 'axe' ? '_axe' : '_sword'));
     const swapped = expectedSwap && hotbar.find((item) => item.name.endsWith(expectedSwap));
@@ -2070,7 +2100,7 @@ async function cmdDuelPlayer(params) {
   }
   let hits = 0, swaps = 0;
   const deadline = Date.now() + seconds * 1000;
-  if (mode !== 'normal') await sleep(1200); // wait after selecting a weapon; server owns cooldown
+  if (mode !== 'normal' && mode !== 'guarded') await sleep(meleeRecoveryMs(bot.heldItem)); // server owns cooldown
   while (Date.now() < deadline) {
     checkAction();
     if (!bot.entities[target.id] || target.isValid === false || !target.position) break;
@@ -2084,7 +2114,7 @@ async function cmdDuelPlayer(params) {
         bot.entity.position.distanceTo(target.position) > 3 || !hasMeleeSight(target) ||
         Object.values(bot.entities || {}).some((e) => e && e !== target && e !== bot.entity && e.position && e.isValid !== false &&
           (e.type === 'player' || e.username) && e.position.distanceTo(target.position) < 3)) break;
-    if (mode !== 'normal') {
+    if (mode !== 'normal' && mode !== 'guarded') {
       const slots = bot.inventory && bot.inventory.slots;
       const base = slots && slots[36 + baseSlot];
       const second = expectedSwap && slots && slots[36 + swapSlot];
@@ -2105,11 +2135,17 @@ async function cmdDuelPlayer(params) {
       if (!base || !base.name.endsWith('_sword')) break;
       bot.setQuickBarSlot(baseSlot);
     }
-    await sleep(mode === 'axe' ? 1250 : (expectedSwap ? 1100 : 1000));
+    const cooldown = expectedSwap ? 1750 : meleeRecoveryMs(bot.heldItem);
+    if (mode === 'guarded' && bot.inventory?.slots?.[45]?.name === 'shield') {
+      bot.activateItem(true);
+      try { await sleep(cooldown); } finally { bot.deactivateItem(); }
+    } else {
+      await sleep(cooldown);
+    }
   }
   if (!hits) throw new Error('duel stopped without a hit: target out of reach/sight, health low, or another player nearby');
   return { target: target.username, hits, swaps, mode, message: `duel stopped after ${hits} attempted hit(s)` +
-    (expectedSwap ? ` and ${swaps} swap sequence(s); attribute effects and cooldown bypass are not confirmed` : '; damage and consent are not verified') };
+    (expectedSwap ? ` and ${swaps} swap sequence(s); attribute effects and cooldown bypass are not confirmed` : '; damage, shield blocks and consent are not verified') };
 }
 
 function combatTarget(params, range) {

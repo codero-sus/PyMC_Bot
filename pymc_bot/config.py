@@ -285,6 +285,21 @@ class AgentSettings(BaseModel):
     vision_width: int = Field(default=448, ge=64, le=1024)
 
 
+class BotBehaviorProfile(BaseModel):
+    """Per-bot LLM preferences, never permission switches or guarantees."""
+
+    aggression: int = Field(default=50, ge=0, le=100, strict=True)
+    softness: int = Field(default=50, ge=0, le=100, strict=True)
+    pvp: int = Field(default=50, ge=0, le=100, strict=True)
+    revenge: int = Field(default=50, ge=0, le=100, strict=True)
+    redstone: int = Field(default=50, ge=0, le=100, strict=True)
+    tone: int = Field(default=50, ge=0, le=100, strict=True)
+    friendliness: int = Field(default=50, ge=0, le=100, strict=True)
+    curiosity: int = Field(default=50, ge=0, le=100, strict=True)
+    teamwork: int = Field(default=50, ge=0, le=100, strict=True)
+    caution: int = Field(default=50, ge=0, le=100, strict=True)
+
+
 class FleetBotSpec(BaseModel):
     """One extra player in the fleet (persisted so a restart can restore it)."""
 
@@ -532,6 +547,7 @@ class AppSettings(BaseModel):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     cortex: CortexSettings = Field(default_factory=CortexSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    bot_profiles: dict[str, BotBehaviorProfile] = Field(default_factory=dict)
     antiafk: AntiAfkSettings = Field(default_factory=AntiAfkSettings)
     autopilot: AutopilotSettings = Field(default_factory=AutopilotSettings)
     training: TrainingSettings = Field(default_factory=TrainingSettings)

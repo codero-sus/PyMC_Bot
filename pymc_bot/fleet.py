@@ -241,6 +241,7 @@ class BotFleet:
                             bot, self.store, self.log, prefer_ollama=(member.ai in LLM_MODES), brain=member.ai
                         )
                         member.agent.team = self.teams
+                        member.agent.profile_key = member.username.strip().lower()
                     return member.agent
         return AgentLoop(bot, self.store, self.log)
 
@@ -342,6 +343,7 @@ class BotFleet:
                 member.bot, self.store, self.log, prefer_ollama=(ai in LLM_MODES), brain=ai
             )
             member.agent.team = self.teams
+            member.agent.profile_key = member.username.strip().lower()
             self._members[member.key] = member
 
         self.log.add(

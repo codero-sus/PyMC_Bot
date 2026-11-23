@@ -1277,7 +1277,7 @@ class MinecraftBot:
                     self._stats["mobs_killed"] += 1
             self.log.add(
                 f"Fought a {result.get('target', mob or 'mob')}"
-                + (" and won." if result.get("killed") else " - it got away."),
+                + (" and won." if result.get("killed") else " - outcome unconfirmed."),
                 "info", "bot",
             )
         return ok

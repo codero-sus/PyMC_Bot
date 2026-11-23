@@ -54,6 +54,8 @@ let lastEventTs = 0;
 let pollTimer = null;
 let fleetStatus = null;
 const teamSelection = new Set();
+const PROFILE_FIELDS = ['aggression', 'softness', 'pvp', 'revenge', 'redstone', 'tone', 'friendliness', 'curiosity', 'teamwork', 'caution'];
+let profileBot = null;
 
 // Each challenge is an existing supported inventory goal, not an unimplemented progression route.
 const SPEEDRUNS = [
@@ -226,6 +228,16 @@ function renderHero(status) {
 function renderStatus(status) {
   lastStatus = status;
   const bot = status.bot || {};
+  if (bot.username && profileBot !== bot.username && status.agent?.behavior_profile) {
+    profileBot = bot.username;
+    $('profile-bot').textContent = `— ${profileBot}`;
+    for (const key of PROFILE_FIELDS) {
+      const value = status.agent.behavior_profile[key] ?? 50;
+      $(`profile-${key}`).value = value;
+      $(`profile-${key}-value`).textContent = value;
+    }
+    $('profile-status').textContent = '';
+  }
   const state = bot.state || 'disconnected';
   announceState(state, bot);
   renderHero(status);
@@ -1217,6 +1229,7 @@ function renderFleet(status) {
       reports.appendChild(line);
     }
   }
+  $('btn-team-add').disabled = Boolean(team);
   $('btn-team-start').disabled = Boolean(team);
   $('btn-team-stop').disabled = !team;
 
@@ -1495,6 +1508,36 @@ function wire() {
     } catch (err) { reportError(err); }
   });
 
+  $('btn-team-add').addEventListener('click', async () => {
+    const count = Number($('team-new-count').value);
+    const pattern = $('team-new-pattern').value.trim();
+    if (!Number.isInteger(count) || count < 2 || count > 8) { ui.toast('Choose 2–8 bots.'); return; }
+    try {
+      const result = await api('/api/fleet/populate', {method: 'POST', body: JSON.stringify({
+        count, pattern, auth: 'offline', ai: $('team-new-ai').value,
+      })});
+      teamSelection.clear();
+      for (const name of result.queued) teamSelection.add(name);
+      renderFleet(result);
+      ui.toast('Team bots queued and selected. Wait for connection, then start the team.');
+    } catch (error) { reportError(error); }
+  });
+  for (const key of PROFILE_FIELDS) {
+    $(`profile-${key}`).addEventListener('input', event => {
+      $(`profile-${key}-value`).textContent = event.target.value;
+      $('profile-status').textContent = 'Unsaved changes';
+    });
+  }
+  $('btn-profile-save').addEventListener('click', async () => {
+    const bot = profileBot;
+    if (!bot) { ui.toast('Select a bot first.'); return; }
+    const profile = Object.fromEntries(PROFILE_FIELDS.map(key => [key, Number($(`profile-${key}`).value)]));
+    try {
+      await api(`/api/bot/profile?bot=${encodeURIComponent(bot)}`, {method: 'PUT', body: JSON.stringify(profile)});
+      if (profileBot === bot) $('profile-status').textContent = 'Saved';
+      ui.toast(`Sliders saved for ${bot}.`);
+    } catch (error) { reportError(error); }
+  });
   $('btn-team-start').addEventListener('click', async () => {
     try {
       await api('/api/team', {method: 'POST', body: JSON.stringify({bots: [...teamSelection], task: $('team-task').value})});

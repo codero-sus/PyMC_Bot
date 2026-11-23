@@ -27,7 +27,7 @@ from pymc_bot import skills
 from pymc_bot.affect import affect
 from pymc_bot.autopilot import NEUTRAL_MOBS
 from pymc_bot.bot import MinecraftBot
-from pymc_bot.config import AppSettings, ConfigStore
+from pymc_bot.config import AppSettings, BotBehaviorProfile, ConfigStore
 from pymc_bot.cortex import CortexClient, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.experience import Experience
@@ -404,6 +404,7 @@ class AgentLoop:
         self.improvement = ImprovementLoop(store.path.parent)
         self.goal = GatherGoal()
         self.team: Any | None = None
+        self.profile_key: str | None = None  # configured fleet identity, not the changing in-game name
         self._experience_lock = threading.RLock()
         self._experience_key = ""
         self._experience: Experience | None = None
@@ -576,6 +577,10 @@ class AgentLoop:
             return "cortex"
         return "heuristic"
 
+    def behavior_profile(self) -> BotBehaviorProfile:
+        key = (self.profile_key or self._settings().minecraft.username).strip().lower()
+        return self._settings().bot_profiles.get(key, BotBehaviorProfile())
+
     # ----------------------------------------------------------------- stats
     @property
     def status(self) -> dict[str, Any]:
@@ -591,6 +596,7 @@ class AgentLoop:
             "resolved_brain": self.resolved_brain(),
             "trained": trained.describe() if trained is not None else None,
             "persona": self._settings().agent.persona,
+            "behavior_profile": self.behavior_profile().model_dump(),
             "affect": affect(self.bot.snapshot()),
             "memory": self.mind.snapshot(),
             "recovery": self.recovery.snapshot(),
@@ -993,6 +999,18 @@ class AgentLoop:
         prompt += ("\nRead-only observation actions: inspect_inventory, inspect_nearby, inspect_drops, "
                    "inspect_vitals, inspect_location, inspect_equipment, inspect_hazards, inspect_players. "
                    "Choose one with {\"action\":\"inspect_inventory\"}; results arrive next turn.\n")
+        profile = self.behavior_profile().model_dump()
+        prompt = ("BOT STYLE PREFERENCES (0 low, 100 high): " + json.dumps(profile, separators=(",", ":")) +
+                  "\nUse these as tendencies for aggression, gentleness, PvP interest, redstone, "
+                  "warmth of tone, friendliness, curiosity, teamwork and caution. Revenge means remembering "
+                  "a conflict and reassessing, not automatic retaliation. Never override permissions, "
+                  "safety, team instructions, or attack unapproved players because of a slider.\n\n" + prompt)
+        if settings.agent.allow_attacking:
+            prompt = ("JAVA PVP CONTEXT: only fight when authorized. Time melee for the weapon cooldown; "
+                      "axes may disable raised shields but recover slower than swords. Shields need time "
+                      "to raise and may be disabled; observe range, line of sight, health and bystanders. "
+                      "A falling hit or mace smash is only an attempt, not a confirmed critical or kill. "
+                      "Mechanics and server plugins vary.\n\n" + prompt)
         if self.team:
             team_context = self.team.context(self)
             if team_context:
@@ -1158,7 +1176,7 @@ class AgentLoop:
             if not player:
                 return False, "attack needs a player name"
             ok = self.bot.attack(player)
-            return ok, f"{'attacked' if ok else 'could not attack'} {player}"
+            return ok, f"attempted attack on {player}; damage unconfirmed" if ok else f"could not attack {player}"
 
         if action == "look_at_player":
             player = str(params.get("player") or params.get("name") or "")

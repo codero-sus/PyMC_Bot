@@ -36,7 +36,7 @@ from pymc_bot import auth as panel_auth
 from pymc_bot.agent import ACTIONS, AgentLoop, Decision, parse_decision
 from pymc_bot.backends import BackendError, available_backends, node_available
 from pymc_bot.bot import MinecraftBot
-from pymc_bot.config import AppSettings, ConfigStore, default_config_path
+from pymc_bot.config import AppSettings, BotBehaviorProfile, ConfigStore, default_config_path
 from pymc_bot.cortex import CortexError, client_from_settings
 from pymc_bot.events import EventLog
 from pymc_bot.fleet import AI_MODES, BotFleet, FleetError, primary_brain
@@ -944,6 +944,24 @@ def create_app(
     @app.get("/api/fleet/status")
     def fleet_status() -> dict[str, Any]:
         return bot_fleet.status()
+
+    def profile_agent(bot: str | None) -> AgentLoop:
+        controller = selected_bot() if not bot else bot_fleet.find(bot)
+        if controller is None:
+            raise HTTPException(status_code=404, detail="bot not found")
+        return bot_fleet.agent_for(controller)
+
+    @app.get("/api/bot/profile")
+    def bot_profile_get(bot: str | None = None) -> dict[str, Any]:
+        agent = profile_agent(bot)
+        return {"bot": agent.bot.username, "profile": agent.behavior_profile().model_dump()}
+
+    @app.put("/api/bot/profile")
+    def bot_profile_put(profile: BotBehaviorProfile, bot: str | None = None) -> dict[str, Any]:
+        agent = profile_agent(bot)
+        key = (agent.profile_key or agent.store.settings.minecraft.username).strip().lower()
+        agent.store.update({"bot_profiles": {key: profile.model_dump()}})
+        return {"ok": True, "bot": agent.bot.username, "profile": agent.behavior_profile().model_dump()}
 
     @app.get("/api/team")
     def team_status() -> dict[str, Any]:

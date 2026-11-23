@@ -778,3 +778,10 @@ svg.i .fill { fill: currentColor; }
 .login-footer { justify-content: center; }
 .account-token { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
 .account-token input { flex: 1; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.78rem; }
+
+/* Per-bot vertical pill controls; native range semantics keep keyboard and touch access. */
+.profile-sliders { display: flex; flex-wrap: wrap; gap: .6rem; margin: .75rem 0; }
+.profile-pill { display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: .4rem; width: 82px; padding: .75rem .35rem; border: 1px solid var(--border-hi); border-radius: 2rem; background: var(--panel-2); font-size: .76rem; text-align: center; }
+.profile-pill output { color: var(--accent); font-variant-numeric: tabular-nums; }
+.profile-pill input[type="range"] { writing-mode: vertical-lr; direction: rtl; width: 24px; height: 130px; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.profile-pill input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 1rem; }

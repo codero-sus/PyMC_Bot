@@ -1308,3 +1308,9 @@ are stopped; agents already running continue independently. In-flight actions
 can still finish. Disconnected or changed-server members pause until eligible
 again; the panel shows their status. Large teams make concurrent LLM calls and
 may overload a local model or incur provider costs.
+
+Per-bot sliders in **Bot behaviour** are LLM style preferences, saved for the
+selected configured bot, not capabilities or permission switches. The Teams
+panel can add and select a new group of offline bots; their chosen AI starts on
+joining, before the team task. Wait for connection before starting the task. See [PvP tactics and limitations](docs/PVP.md) for
+Java combat guidance and the opt-in manual guarded duel mode.
