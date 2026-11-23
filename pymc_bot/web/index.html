@@ -68,6 +68,7 @@
   <nav class="section-nav" id="section-nav" aria-label="Sections">
     <a href="#card-server" data-target="card-server">🌐 Server</a>
     <a href="#card-fleet" data-target="card-fleet">👥 Players</a>
+    <a href="#card-teams" data-target="card-teams">🤝 Teams</a>
     <a href="#card-brain" data-target="card-brain">🧠 AI brain</a>
     <a href="#card-speedruns" data-target="card-speedruns">⏱️ Speedruns</a>
     <a href="#card-training" data-target="card-training">🎓 Player model</a>
@@ -247,6 +248,17 @@
         </thead>
         <tbody id="fleet-body"><tr><td colspan="7" class="empty">no extra players yet</td></tr></tbody>
       </table>
+    </section>
+
+    <section class="card" id="card-teams">
+      <header><h2><span class="icon" aria-hidden="true">🤝</span>Teams</h2></header>
+      <p class="note">Select 2–8 connected fleet bots on the same server. Each needs Ollama or Cortex mode; add/connect bots in Players first. They share a task, roles and internal notes (not Minecraft chat); notes are sent to the configured model provider and may enter enabled turn logs. Normal permissions still apply. Team task success is not automatically verified.</p>
+      <div id="team-bots" class="permissions"></div>
+      <label>Shared task <textarea id="team-task" maxlength="500" rows="3" placeholder="For example: gather wood and build a small shelter together"></textarea></label>
+      <div class="actions wrap"><button id="btn-team-start" class="btn primary">Start team</button><button id="btn-team-stop" class="btn ghost">Stop team</button></div>
+      <p class="note">Starting runs agents that are not already running. Stopping also stops only agents started by the team; previously running agents continue independently. Actions already sent before start or stop may finish.</p>
+      <p id="team-status" class="note" aria-live="polite">No active team.</p>
+      <div id="team-reports" class="note"></div>
     </section>
 
     <!-- --------------------------------------------------------------- brain -->

@@ -36,6 +36,7 @@ from pymc_bot.config import (
 )
 from pymc_bot.events import EventLog
 from pymc_bot.hosting import AloneWatcher
+from pymc_bot.teams import TeamCoordinator
 
 AI_MODES = ("off", "heuristic", "ollama", "cortex", "trained")
 # Brains backed by a hosted language model (each decision is an HTTP round trip).
@@ -149,6 +150,7 @@ class BotFleet:
         self.log = log or EventLog()
         self.auto_reconnect = auto_reconnect
         self._lock = threading.RLock()
+        self.teams = TeamCoordinator(self)
         self._members: dict[str, FleetMember] = {}
         self._primary: MinecraftBot | None = None
         self._primary_agent: AgentLoop | None = None
@@ -212,6 +214,7 @@ class BotFleet:
         with self._lock:
             if self._primary_agent is None:
                 self._primary_agent = AgentLoop(self.primary, self.store, self.log)
+                self._primary_agent.team = self.teams
             return self._primary_agent
 
     def ai_running(self, bot: MinecraftBot) -> bool:
@@ -237,6 +240,7 @@ class BotFleet:
                         member.agent = AgentLoop(
                             bot, self.store, self.log, prefer_ollama=(member.ai in LLM_MODES), brain=member.ai
                         )
+                        member.agent.team = self.teams
                     return member.agent
         return AgentLoop(bot, self.store, self.log)
 
@@ -337,6 +341,7 @@ class BotFleet:
             member.agent = AgentLoop(
                 member.bot, self.store, self.log, prefer_ollama=(ai in LLM_MODES), brain=ai
             )
+            member.agent.team = self.teams
             self._members[member.key] = member
 
         self.log.add(
@@ -553,6 +558,7 @@ class BotFleet:
     def shutdown(self) -> None:
         """Stop everything (used when the panel shuts down)."""
         self._stopping.set()
+        self.teams.stop()
         self.alone_watcher.stop()
         for member in self.members:
             self._stop_member(member)
@@ -697,6 +703,7 @@ class BotFleet:
             entry["selected"] = entry["username"] == selected
         return {
             "enabled": settings.fleet.enabled,
+            "team": self.teams.status(),
             "antiafk": {
                 "enabled": self.store.settings.antiafk.enabled,
                 "running": self.antiafk.running,

@@ -52,6 +52,7 @@ from pymc_bot.playtime import (
     synthesize_playtime,
 )
 from pymc_bot.takeover import TakeoverObservation
+from pymc_bot.teams import TeamError
 from pymc_bot.train import TrainConfig, TrainingService, default_run_name, list_models, read_card
 
 
@@ -244,6 +245,11 @@ class FleetTargetRequest(BaseModel):
 
     bot: str | None = None
     remove: bool = False
+
+
+class TeamRequest(BaseModel):
+    bots: list[str] = Field(min_length=2, max_length=8)
+    task: str = Field(min_length=1, max_length=500)
 
 
 class PopulateRequest(BaseModel):
@@ -938,6 +944,21 @@ def create_app(
     @app.get("/api/fleet/status")
     def fleet_status() -> dict[str, Any]:
         return bot_fleet.status()
+
+    @app.get("/api/team")
+    def team_status() -> dict[str, Any]:
+        return {"team": bot_fleet.teams.status()}
+
+    @app.post("/api/team")
+    def team_start(request: TeamRequest) -> dict[str, Any]:
+        try:
+            return {"ok": True, "team": bot_fleet.teams.start(request.bots, request.task)}
+        except TeamError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.delete("/api/team")
+    def team_stop() -> dict[str, Any]:
+        return {"ok": True, "stopped": bot_fleet.teams.stop(), "team": None}
 
     @app.post("/api/fleet/spawn")
     def fleet_spawn(request: SpawnRequest) -> dict[str, Any]:

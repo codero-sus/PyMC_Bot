@@ -1287,3 +1287,24 @@ its actual jar replacement happens after shutdown and loads on the next launch. 
 are best-effort: network, digest, permissions or compatibility failures can prevent an
 update. Release metadata and digests are not a cryptographic publisher signature, and
 live update behavior has not been validated in this environment.
+
+### Teams
+
+In **Teams**, select 2–8 connected fleet bots on the same server, enter a shared
+objective and start the team. Every member must use an Ollama or Cortex brain;
+the heuristic and trained policies cannot follow arbitrary team instructions.
+The coordinator shares suggested distinct roles, current teammate positions,
+recent action outcomes and short `team_note` messages in subsequent model
+prompts. These are fallible reports, not guaranteed plans or proof of success.
+All normal bot permissions still apply, and no completion is automatically
+verified. Each bot still controls only its own player.
+
+Team notes do not use Minecraft chat, but are sent to the configured model
+provider and may be included in enabled turn logs. Team state is in memory and
+is lost on restart. Start connects no new bots; add and connect them first.
+Individual speedrun goals must be cancelled before starting a team, and cannot
+be started while the bot is a team member. On stop, agents started by the team
+are stopped; agents already running continue independently. In-flight actions
+can still finish. Disconnected or changed-server members pause until eligible
+again; the panel shows their status. Large teams make concurrent LLM calls and
+may overload a local model or incur provider costs.

@@ -53,6 +53,7 @@ let configPath = '';
 let lastEventTs = 0;
 let pollTimer = null;
 let fleetStatus = null;
+const teamSelection = new Set();
 
 // Each challenge is an existing supported inventory goal, not an unimplemented progression route.
 const SPEEDRUNS = [
@@ -1159,7 +1160,7 @@ function renderAntiAfk(antiafk) {
 }
 
 function renderFleet(status) {
-  const fleet = (status && status.fleet) || null;
+  const fleet = status && (status.fleet || (Array.isArray(status.bots) ? status : null));
   fleetStatus = fleet;
   if (!fleet) return;
 
@@ -1180,6 +1181,44 @@ function renderFleet(status) {
     }
     if (previous && !fleet.bots.some((b) => b.configured_username === previous)) select.value = '';
   }
+
+  const teamBots = $('team-bots');
+  teamBots.innerHTML = '';
+  const valid = new Set(fleet.bots.map(bot => bot.configured_username));
+  for (const name of teamSelection) if (!valid.has(name)) teamSelection.delete(name);
+  for (const bot of fleet.bots) {
+    const label = document.createElement('label');
+    label.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = bot.configured_username;
+    box.checked = teamSelection.has(box.value);
+    box.addEventListener('change', () => box.checked ? teamSelection.add(box.value) : teamSelection.delete(box.value));
+    label.append(box, document.createTextNode(` ${bot.username} · ${bot.state} · ${bot.ai}`));
+    teamBots.appendChild(label);
+  }
+  const team = fleet.team;
+  $('team-status').textContent = team
+    ? `Active (completion unverified): ${team.task} · ${team.members.filter(m => m.connected && m.running).length}/${team.members.length} active`
+    : 'No active team.';
+  const reports = $('team-reports');
+  reports.innerHTML = '';
+  if (team) {
+    for (const member of team.members) {
+      const line = document.createElement('p');
+      const last = member.last ? ` · ${member.last.action}: ${member.last.ok ? 'ok' : 'failed'} — ${member.last.detail}` : '';
+      const error = member.error ? ` · last AI error: ${member.error}` : '';
+      line.textContent = `${member.name}: ${member.role} · ${member.connected ? (member.running ? 'running' : 'AI stopped') : 'disconnected or changed server'}${last}${error}`;
+      reports.appendChild(line);
+    }
+    for (const note of team.notes.slice(-8)) {
+      const line = document.createElement('p');
+      line.textContent = `${note.from}: ${note.message}`;
+      reports.appendChild(line);
+    }
+  }
+  $('btn-team-start').disabled = Boolean(team);
+  $('btn-team-stop').disabled = !team;
 
   const body = $('fleet-body');
   body.innerHTML = '';
@@ -1456,6 +1495,19 @@ function wire() {
     } catch (err) { reportError(err); }
   });
 
+  $('btn-team-start').addEventListener('click', async () => {
+    try {
+      await api('/api/team', {method: 'POST', body: JSON.stringify({bots: [...teamSelection], task: $('team-task').value})});
+      renderFleet(await api('/api/fleet/status'));
+      ui.toast('Team started. Completion is not automatically verified.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-team-stop').addEventListener('click', async () => {
+    try {
+      await api('/api/team', {method: 'DELETE'});
+      renderFleet(await api('/api/fleet/status'));
+    } catch (error) { reportError(error); }
+  });
   $('btn-fleet-start').addEventListener('click', () => fleetCall('/api/fleet/start', {}).catch(reportError));
   $('btn-fleet-stop').addEventListener('click', () => fleetCall('/api/fleet/stop', {}).catch(reportError));
   $('btn-fleet-remove-all').addEventListener('click', () => {

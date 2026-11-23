@@ -82,6 +82,7 @@ ACTIONS: dict[str, str] = {
     "flee": 'run away from danger: {"action": "flee"}',
     "emote": 'body language: {"action": "emote", "kind": "wave"} (wave, crouch, nod, shake, spin)',
     "look_around": 'glance around: {"action": "look_around"}',
+    "team_note": 'share a private note with teammates: {"action":"team_note","message":"I found iron"}',
     "inspect_inventory": 'observe inventory, equipped armour and held item: {"action": "inspect_inventory"}',
     "inspect_nearby": 'observe nearby entities and players: {"action": "inspect_nearby"}',
     "inspect_drops": 'observe nearby dropped items: {"action": "inspect_drops"}',
@@ -402,6 +403,7 @@ class AgentLoop:
         self.recovery = RecoveryMemory()
         self.improvement = ImprovementLoop(store.path.parent)
         self.goal = GatherGoal()
+        self.team: Any | None = None
         self._experience_lock = threading.RLock()
         self._experience_key = ""
         self._experience: Experience | None = None
@@ -663,9 +665,13 @@ class AgentLoop:
         return (*self.bot.memory_server, self.bot.username.lower())
 
     def start_gather_goal(self, item: str, count: int) -> dict[str, Any]:
+        if self.team:
+            return self.team.start_individual(self, lambda: self.goal.start(item, count, self._goal_identity()))
         return self.goal.start(item, count, self._goal_identity())
 
     def start_challenge(self, challenge: str) -> dict[str, Any]:
+        if self.team:
+            return self.team.start_individual(self, lambda: self.goal.start_challenge(challenge, self._goal_identity()))
         return self.goal.start_challenge(challenge, self._goal_identity())
 
     def cancel_goal(self) -> bool:
@@ -719,6 +725,10 @@ class AgentLoop:
                     break
                 continue
             state = self.bot.snapshot()
+            if self.team and self.team.blocked(self):
+                if self._wait(interval):
+                    break
+                continue
             if self._stop_event.is_set():
                 break
             result = self._goal_turn(settings, state)
@@ -726,6 +736,7 @@ class AgentLoop:
                 if self._wait(interval):
                     break
                 continue
+            team_token = self.team.token(self) if self.team else None
             before_task = self.goal.snapshot()
             before_revision = before_task.get("revision") if before_task else None
             decision: Decision | None = None
@@ -735,15 +746,19 @@ class AgentLoop:
                 failures += 1
                 self._errors += 1
                 self._last_error = str(exc)
-                self.log.add(f"AI decision failed ({exc}); falling back to built-in behaviour.", "warn", "agent")
-                decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
+                fallback = "waiting before retry" if team_token and team_token[1] else "falling back to built-in behaviour"
+                self.log.add(f"AI decision failed ({exc}); {fallback}.", "warn", "agent")
+                decision = (Decision("wait", {}, "heuristic", thought="Team model unavailable; wait and retry.")
+                            if team_token and team_token[1] else
+                            self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings)))
             if decision is None:
                 decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
             failures = 0
             if self._stop_event.is_set():
                 break
             task = self.goal.snapshot()
-            if ((task.get("revision") if task else None) != before_revision or
+            if ((self.team.token(self) if self.team else None) != team_token or
+                    (task.get("revision") if task else None) != before_revision or
                     (task and task.get("mode") != "ai" and task["status"] in {"active", "paused"})):
                 continue  # goal changed while the model was thinking
             ok, detail = self._act(decision)
@@ -978,6 +993,10 @@ class AgentLoop:
         prompt += ("\nRead-only observation actions: inspect_inventory, inspect_nearby, inspect_drops, "
                    "inspect_vitals, inspect_location, inspect_equipment, inspect_hazards, inspect_players. "
                    "Choose one with {\"action\":\"inspect_inventory\"}; results arrive next turn.\n")
+        if self.team:
+            team_context = self.team.context(self)
+            if team_context:
+                prompt = team_context + "\n" + prompt
         task = self.goal.snapshot()
         if task and task.get("mode") == "ai" and task["status"] == "active":
             prompt = ("ACTIVE USER CHALLENGE: " + task["description"] +
@@ -1028,6 +1047,11 @@ class AgentLoop:
             if allowed:
                 return False
             return enforce_permissions or flag == "attacking"
+
+        if action == "team_note":
+            if self.team is None:
+                return False, "this bot is not in a team"
+            return self.team.note(self, str(params.get("message") or ""))
 
         observations = {
             "inspect_inventory": ("inventory", "armor_slots", "offhand", "held_item"),
@@ -1391,9 +1415,12 @@ class AgentLoop:
         """Decide and execute a single action (used by ``POST /api/step``)."""
         settings = self._settings()
         state = self.bot.snapshot()
+        if self.team and self.team.blocked(self):
+            return False, "team member is disconnected or changed server/account"
         result = self._goal_turn(settings, state)
         if result is not None:
             return result
+        team_token = self.team.token(self) if self.team else None
         before_task = self.goal.snapshot()
         before_revision = before_task.get("revision") if before_task else None
         try:
@@ -1402,12 +1429,16 @@ class AgentLoop:
             # Same bookkeeping as the loop, so the panel can show why the brain failed.
             self._errors += 1
             self._last_error = str(exc)
-            self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
-            decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
+            fallback = "waiting before retry" if team_token and team_token[1] else "using built-in behaviour"
+            self.log.add(f"AI decision failed ({exc}); {fallback}.", "warn", "agent")
+            decision = (Decision("wait", {}, "heuristic", thought="Team model unavailable; wait and retry.")
+                        if team_token and team_token[1] else
+                        self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings)))
         task = self.goal.snapshot()
-        if ((task.get("revision") if task else None) != before_revision or
+        if ((self.team.token(self) if self.team else None) != team_token or
+                (task.get("revision") if task else None) != before_revision or
                 (task and task.get("mode") != "ai" and task["status"] in {"active", "paused"})):
-            return True, "goal changed while deciding; step again to advance it"
+            return True, "team or goal changed while deciding; step again to advance it"
         return self._act(decision)
 
     def turns_path(self, settings: AppSettings | None = None) -> Path:
@@ -1487,6 +1518,8 @@ class AgentLoop:
         if isinstance(state, dict):
             self.recovery.record(display, state, ok, detail)
         self.mind.note_result(display, ok, detail)
+        if self.team:
+            self.team.outcome(self, display.action, ok, detail)
         if self._settings().agent.persistent_memory:
             try:
                 experience = self.experience()
