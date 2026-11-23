@@ -484,9 +484,9 @@
       <header>
         <h2><span class="icon" aria-hidden="true">⏱️</span>Speedruns <span class="tag">inventory challenges</span></h2>
       </header>
-      <p class="note">Choose from 41 timed gathering and crafting challenges for the selected bot. The timer includes pauses and starts when the goal is set; completion requires the target in inventory. Existing items count. These are not world-reset or game-completion speedruns.</p>
+      <p class="note">Choose a timed challenge for the selected bot. Early goals use a bounded planner; AI challenges require an LLM and may not succeed. Timers include pauses; existing items count. Dragon and armour enchantment state cannot be verified: stop those timers as unverified. Not world-reset speedruns.</p>
       <label>Challenge <select id="speedrun-preset"></select></label>
-      <div class="actions"><button id="btn-speedrun-start" class="btn">Start challenge</button><button id="btn-speedrun-cancel" class="btn ghost">Cancel</button></div>
+      <div class="actions"><button id="btn-speedrun-start" class="btn">Start challenge</button><button id="btn-speedrun-finish" class="btn ghost">Stop as unverified</button><button id="btn-speedrun-cancel" class="btn ghost">Cancel</button></div>
       <p id="speedrun-status" class="note">No goal running. Start AI or use Step to advance a challenge.</p>
       <p class="note">Starting replaces the selected bot's current goal. Times are in-memory, lost on backend restart, and are not official records. Minecraft version, world, inventory, permissions and simulator versus real server affect results.</p>
     </section>

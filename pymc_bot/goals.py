@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from typing import Any
@@ -46,6 +47,71 @@ class GatherGoal:
                           "_started": time.monotonic(), "_ended": None}
             return self.snapshot()
 
+    def start_challenge(self, challenge: str, identity: tuple[Any, ...]) -> dict[str, Any]:
+        """AI-led tasks are not the bounded deterministic gathering planner."""
+        challenge = str(challenge)
+        item_match = re.fullmatch(r"item:(diamond|netherite_ingot|ancient_debris|obsidian|ender_pearl|blaze_rod|eye_of_ender|iron_ingot|gold_ingot|emerald):(1|4|8|16|32|64)", challenge)
+        armor_match = re.fullmatch(r"armor:(leather|chainmail|iron|golden|diamond|netherite):(plain|enchanted)", challenge)
+        if item_match:
+            item, count = item_match.group(1), int(item_match.group(2))
+            description = f"Obtain {count} {item.replace('_', ' ')}"
+        elif armor_match:
+            material, variant = armor_match.groups()
+            item, count = f"{material}_armor_{variant}", 4
+            description = f"Obtain a full {material} armour set" + (" with every piece enchanted" if variant == "enchanted" else " without enchantments")
+        elif challenge == "dragon":
+            item, count = "ender_dragon", 1
+            description = "Defeat the Ender Dragon"
+        else:
+            raise ValueError("unsupported AI challenge")
+        with self._lock:
+            if self._inflight:
+                raise RuntimeError("a goal action is still running; wait for it to finish")
+            self._generation += 1
+            self._goal = {"mode": "ai", "challenge": challenge, "description": description,
+                          "item": item, "count": count, "observed": None, "status": "active",
+                          "detail": "AI-led attempt; start AI or use Step", "identity": identity,
+                          "_started": time.monotonic(), "_ended": None}
+            return self.snapshot()
+
+    def finish_unverified(self) -> bool:
+        with self._lock:
+            if not self._goal or self._goal.get("mode") != "ai" or self._goal["status"] not in {"active", "paused"}:
+                return False
+            self._generation += 1
+            self._goal.update(status="unverified", detail="timer stopped by user; success was not verified",
+                              _ended=time.monotonic())
+            return True
+
+    def _observe_challenge(self, g: dict[str, Any], state: dict[str, Any]) -> None:
+        challenge = g["challenge"]
+        if challenge == "dragon":
+            g["detail"] = "AI-led attempt; success cannot be verified by this backend; stop timer as unverified"
+            return
+        if challenge.startswith("armor:"):
+            material = challenge.split(":")[1]
+            try:
+                if not isinstance(state.get("slots"), list) and not isinstance(state.get("inventory"), list):
+                    raise ValueError("inventory missing")
+                inv = Inventory.from_snapshot(state)
+                names = inv.names() | {stack.name for stack in inv.armor.values() if stack}
+                count = sum(f"{material}_{part}" in names for part in ("helmet", "chestplate", "leggings", "boots"))
+            except (TypeError, ValueError, OverflowError):
+                g["detail"] = "waiting for inventory observation"
+                return
+        else:
+            count = _inventory_count(state, g["item"])
+            if count is None:
+                g["detail"] = "waiting for inventory observation"
+                return
+        g["observed"] = count
+        if challenge.startswith("armor:"):
+            g["detail"] = "armour pieces observed; enchantment state cannot be verified; stop timer as unverified"
+        elif count >= g["count"]:
+            g.update(status="completed", detail="target verified in observed inventory (existing items count)", _ended=time.monotonic())
+        else:
+            g["detail"] = "AI-led attempt; target not yet observed"
+
     def cancel(self) -> bool:
         with self._lock:
             active = bool(self._goal and self._goal["status"] in {"active", "paused"})
@@ -63,7 +129,7 @@ class GatherGoal:
             end = self._goal["_ended"]
             elapsed = (time.monotonic() if end is None else end) - self._goal["_started"]
             return {k: v for k, v in self._goal.items() if k not in {"identity", "_started", "_ended"}} | {
-                "in_flight": self._inflight, "elapsed_seconds": round(max(0, elapsed), 2)}
+                "in_flight": self._inflight, "revision": self._generation, "elapsed_seconds": round(max(0, elapsed), 2)}
 
     def next(self, state: dict[str, Any], identity: tuple[Any, ...], *, mining: bool, movement: bool,
              inventory: bool = True, building: bool = False) -> tuple[str, dict[str, Any] | None]:
@@ -80,6 +146,10 @@ class GatherGoal:
             if not isinstance(state, dict) or state.get("status", "connected") != "connected":
                 g.update(status="paused", detail="waiting for connection")
                 return "wait", None
+            if g.get("mode") == "ai":
+                g["status"] = "active"
+                self._observe_challenge(g, state)
+                return "none", None
             count = _inventory_count(state, g["item"])
             if count is None:
                 g.update(status="paused", detail="waiting for inventory observation")

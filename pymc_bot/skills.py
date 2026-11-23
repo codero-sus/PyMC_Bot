@@ -410,7 +410,16 @@ def run_skill(bot: MinecraftBot, skill: Skill, params: dict[str, Any] | None = N
                 bot.log.add(f"Could not remember container observation: {exc}", "warn", "bot")
             except Exception as exc:  # noqa: BLE001 - memory must never turn a successful skill into a failure
                 bot.log.add(f"Could not remember container observation: {type(exc).__name__}", "warn", "bot")
-        return True, message
+        # Preserve structured observations for the next decision, bounded independently of
+        # bridge/server data. The text is evidence, never an instruction to the model.
+        data = {k: v for k, v in result.items() if k != "message"}
+        if data:
+            try:
+                encoded = json.dumps(data, ensure_ascii=True, default=str, separators=(",", ":"))
+                message += " | observed data: " + encoded[:1400]
+            except (TypeError, ValueError, RecursionError):
+                message += " | observed data unavailable"
+        return True, message[:1600]
     reason = bot.last_failure or f"could not {skill.name.replace('_', ' ')}"
     bot.log.add(f"Could not {skill.name.replace('_', ' ')}: {reason}", "info", "bot")
     return False, reason

@@ -62,6 +62,11 @@ const SPEEDRUNS = [
   ...['coal', 'raw_iron'].flatMap(item => [1, 4, 8].map(count => ({item, count}))),
   ...[4, 8, 16].map(count => ({item: 'torch', count})),
   ...['wooden_pickaxe', 'stone_pickaxe', 'stone_sword', 'furnace'].map(item => ({item, count: 1})),
+  ...['diamond', 'netherite_ingot', 'ancient_debris', 'obsidian', 'ender_pearl', 'blaze_rod', 'eye_of_ender', 'iron_ingot', 'gold_ingot', 'emerald'].flatMap(item =>
+    [1, 4, 8, 16, 32, 64].map(count => ({challenge: `item:${item}:${count}`, label: `AI: ${count} × ${item.replaceAll('_', ' ')}`}))),
+  ...['leather', 'chainmail', 'iron', 'golden', 'diamond', 'netherite'].flatMap(material =>
+    ['plain', 'enchanted'].map(kind => ({challenge: `armor:${material}:${kind}`, label: `AI: full ${material} armour (${kind === 'plain' ? 'unenchanted' : 'enchanted'}) — unverified`}))),
+  {challenge: 'dragon', label: 'AI: defeat Ender Dragon — unverified'},
 ];
 
 function speedrunTime(value) {
@@ -1239,16 +1244,22 @@ function wire() {
   for (const [index, preset] of SPEEDRUNS.entries()) {
     const option = document.createElement('option');
     option.value = String(index);
-    option.textContent = `${preset.count} × ${preset.item.replaceAll('_', ' ')}`;
+    option.textContent = preset.label || `${preset.count} × ${preset.item.replaceAll('_', ' ')}`;
     presetSelect.appendChild(option);
   }
   $('btn-speedrun-start').addEventListener('click', async () => {
     const preset = SPEEDRUNS[Number(presetSelect.value)];
     if (!preset) return;
     try {
-      await api('/api/ai/goal', {method: 'PUT', body: JSON.stringify(preset)});
+      await api(preset.challenge ? '/api/ai/challenge' : '/api/ai/goal', {method: 'PUT', body: JSON.stringify(preset.challenge ? {challenge: preset.challenge} : preset)});
       renderStatus(await api('/api/status'));
       ui.toast('Challenge set. Start AI or use Step to advance it.');
+    } catch (error) { reportError(error); }
+  });
+  $('btn-speedrun-finish').addEventListener('click', async () => {
+    try {
+      await api('/api/ai/challenge/finish', {method: 'POST'});
+      renderStatus(await api('/api/status'));
     } catch (error) { reportError(error); }
   });
   $('btn-speedrun-cancel').addEventListener('click', async () => {

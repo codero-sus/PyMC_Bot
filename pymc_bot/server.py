@@ -138,6 +138,10 @@ class GatherGoalRequest(BaseModel):
     count: int = Field(ge=1, le=64, strict=True)
 
 
+class ChallengeRequest(BaseModel):
+    challenge: str = Field(min_length=1, max_length=80)
+
+
 class AutopilotRunRequest(BaseModel):
     bot: str | None = None
     rule: str | None = None  # run this rule's plan only (default: the most urgent one)
@@ -1081,6 +1085,24 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True, "task": task}
+
+    @app.put("/api/ai/challenge")
+    def ai_challenge_start(request: ChallengeRequest) -> dict[str, Any]:
+        controller = selected_bot()
+        if not controller.connected:
+            raise HTTPException(status_code=409, detail="Connect the bot to a server first.")
+        try:
+            task = bot_fleet.agent_for(controller).start_challenge(request.challenge)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.post("/api/ai/challenge/finish")
+    def ai_challenge_finish() -> dict[str, Any]:
+        agent = selected_agent()
+        return {"ok": True, "finished": agent.goal.finish_unverified(), "task": agent.goal.snapshot()}
 
     @app.get("/api/ai/goal")
     def ai_goal_status() -> dict[str, Any]:

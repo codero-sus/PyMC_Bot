@@ -82,6 +82,14 @@ ACTIONS: dict[str, str] = {
     "flee": 'run away from danger: {"action": "flee"}',
     "emote": 'body language: {"action": "emote", "kind": "wave"} (wave, crouch, nod, shake, spin)',
     "look_around": 'glance around: {"action": "look_around"}',
+    "inspect_inventory": 'observe inventory, equipped armour and held item: {"action": "inspect_inventory"}',
+    "inspect_nearby": 'observe nearby entities and players: {"action": "inspect_nearby"}',
+    "inspect_drops": 'observe nearby dropped items: {"action": "inspect_drops"}',
+    "inspect_vitals": 'observe health, hunger and environmental dangers: {"action": "inspect_vitals"}',
+    "inspect_location": 'observe position, dimension, time and orientation: {"action": "inspect_location"}',
+    "inspect_equipment": 'observe held item, armour and hotbar: {"action": "inspect_equipment"}',
+    "inspect_hazards": 'observe nearby observed hazards: {"action": "inspect_hazards"}',
+    "inspect_players": 'observe nearby and online players: {"action": "inspect_players"}',
     # knowledge
     "search": 'look something up (Minecraft Wiki): {"action": "search", "query": "how to tame a wolf"}',
     "inspect_item": 'inspect the client registry: {"action": "inspect_item", "item": "copper_ingot"}',
@@ -657,6 +665,9 @@ class AgentLoop:
     def start_gather_goal(self, item: str, count: int) -> dict[str, Any]:
         return self.goal.start(item, count, self._goal_identity())
 
+    def start_challenge(self, challenge: str) -> dict[str, Any]:
+        return self.goal.start_challenge(challenge, self._goal_identity())
+
     def cancel_goal(self) -> bool:
         snapshot = self.goal.snapshot()
         cancelled = self.goal.cancel()
@@ -715,6 +726,8 @@ class AgentLoop:
                 if self._wait(interval):
                     break
                 continue
+            before_task = self.goal.snapshot()
+            before_revision = before_task.get("revision") if before_task else None
             decision: Decision | None = None
             try:
                 decision = self._decide(settings, state)
@@ -730,8 +743,9 @@ class AgentLoop:
             if self._stop_event.is_set():
                 break
             task = self.goal.snapshot()
-            if task and task["status"] in {"active", "paused"}:
-                continue  # a goal was set while the model was thinking
+            if ((task.get("revision") if task else None) != before_revision or
+                    (task and task.get("mode") != "ai" and task["status"] in {"active", "paused"})):
+                continue  # goal changed while the model was thinking
             ok, detail = self._act(decision)
             if self.uses_llm(settings):
                 # people don't act on a metronome: +-25% around the configured interval
@@ -961,6 +975,14 @@ class AgentLoop:
                 self.log.add(f"Could not store bot memory: {exc}", "warn", "agent")
         prompt = build_turn_prompt(state, self.bot.username, self.mind, history, self.allowed(settings),
                                    knowledge=facts, experience=memories)
+        prompt += ("\nRead-only observation actions: inspect_inventory, inspect_nearby, inspect_drops, "
+                   "inspect_vitals, inspect_location, inspect_equipment, inspect_hazards, inspect_players. "
+                   "Choose one with {\"action\":\"inspect_inventory\"}; results arrive next turn.\n")
+        task = self.goal.snapshot()
+        if task and task.get("mode") == "ai" and task["status"] == "active":
+            prompt = ("ACTIVE USER CHALLENGE: " + task["description"] +
+                      ". Work toward it using permitted actions; observations determine completion. "
+                      "Do not claim success without verification.\n\n" + prompt)
         if settings.agent.spatial_memory:
             try:
                 containers = self.world_memory().prompt(state.get("dimension"))
@@ -1006,6 +1028,25 @@ class AgentLoop:
             if allowed:
                 return False
             return enforce_permissions or flag == "attacking"
+
+        observations = {
+            "inspect_inventory": ("inventory", "armor_slots", "offhand", "held_item"),
+            "inspect_nearby": ("entities", "players"),
+            "inspect_drops": ("ground_items",),
+            "inspect_vitals": ("health", "food", "oxygen", "on_fire", "in_lava", "in_water"),
+            "inspect_location": ("position", "dimension", "time_of_day", "yaw", "pitch"),
+            "inspect_equipment": ("slots", "armor_slots", "offhand", "held_item", "selected_slot"),
+            "inspect_hazards": ("nearby_hazards", "entities"),
+            "inspect_players": ("players", "online_players"),
+        }
+        if action in observations:
+            state = self.bot.snapshot()
+            if state.get("status") != "connected":
+                return False, "observation unavailable: not connected"
+            data = {key: state[key] for key in observations[action] if key in state}
+            if not data:
+                return False, "observation unavailable on this backend"
+            return True, json.dumps(data, ensure_ascii=True, default=str, separators=(",", ":"))[:1500]
 
         if action == "say":
             if blocked("chat", agent.allow_chat):
@@ -1353,6 +1394,8 @@ class AgentLoop:
         result = self._goal_turn(settings, state)
         if result is not None:
             return result
+        before_task = self.goal.snapshot()
+        before_revision = before_task.get("revision") if before_task else None
         try:
             decision = self._decide(settings, state)
         except Exception as exc:
@@ -1362,8 +1405,9 @@ class AgentLoop:
             self.log.add(f"AI decision failed ({exc}); using built-in behaviour.", "warn", "agent")
             decision = self._heuristic.decide(state, self.bot.recent_chat(), self.allowed(settings))
         task = self.goal.snapshot()
-        if task and task["status"] in {"active", "paused"}:
-            return True, "goal set while deciding; step again to advance it"
+        if ((task.get("revision") if task else None) != before_revision or
+                (task and task.get("mode") != "ai" and task["status"] in {"active", "paused"})):
+            return True, "goal changed while deciding; step again to advance it"
         return self._act(decision)
 
     def turns_path(self, settings: AppSettings | None = None) -> Path:
@@ -1424,7 +1468,12 @@ class AgentLoop:
         if display.thought:
             self.log.add(f"💭 {display.thought}" + (f"  [goal: {display.goal}]" if display.goal else ""), "ai", "agent")
         self.log.add(f"AI chose: {display.action} {display.params or ''}".rstrip(), "ai", "agent")
-        ok, detail = self.execute(decision)
+        try:
+            ok, detail = self.execute(decision)
+        except Exception as exc:  # noqa: BLE001 - an action failure must reach the next decision
+            self._errors += 1
+            self._last_error = str(exc)
+            ok, detail = False, f"action failed: {type(exc).__name__}: {str(exc)[:300]}"
         if improve and isinstance(state, dict) and identity is not None and self.bot.connected:
             try:
                 after = self.bot.snapshot()
